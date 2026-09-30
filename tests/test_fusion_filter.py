@@ -7,6 +7,7 @@ import sys
 from types import ModuleType
 
 import pytest
+from pydantic import BaseModel
 
 from open_webui_openrouter_pipe.filters.fusion_filter_renderer import (
     FUSION_FILTER_FUNCTION_ID,

@@ -335,6 +335,40 @@ class TestPipeDashboardSub:
         await _pipe_dashboard_sub("sid-err")
         assert dashboard_socket._resync is False
 
+class _ValveStore:
+    def __init__(self, row):
+        self.row = row
+
+    async def get_function_by_id(self, id, db=None):
+        return types.SimpleNamespace(updated_at=1000)
+
+    async def get_function_valves_by_id(self, id, db=None):
+        return dict(self.row)
+
+    async def update_function_valves_by_id(self, id, valves, db=None):
+        self.row = dict(valves)
+        return types.SimpleNamespace(updated_at=1001)
+
+
+@pytest.fixture(autouse=True)
+def _persisted_master_switch_on(monkeypatch):
+    """The master switch as the operator's own save left it in the persisted row.
+
+    A deployment whose dashboard answers has `ENABLE_PLUGIN_SYSTEM` in that row: the
+    field's declared default is off, so writing it on stores the key. A readable row
+    that omits it therefore means off, which is the switch the Config-tab writer
+    leaves behind. Without this row every 'the dashboard is on' arm below would be
+    refused by the master switch rather than by the thing it is testing, and the
+    tests that install their own store afterwards (monkeypatch runs after this
+    fixture) still say which row they mean.
+    """
+    import open_webui.models.functions as functions_mod
+
+    monkeypatch.setattr(
+        functions_mod, "Functions", _ValveStore({"ENABLE_PLUGIN_SYSTEM": True})
+    )
+
+
 def _plugin_on_pipe():
     return types.SimpleNamespace(
         id="test-pipe",
@@ -643,9 +677,19 @@ def _redis_with_slices(slices):
     return client
 
 
-def _compact_slice(pid, active=1):
+_FOREIGN_HOST = "ffff0000ffff"
+
+
+def _compact_slice(pid, active=1, host=_FOREIGN_HOST):
+    """A slice as a *peer* writes it: another host's tag beside its pid.
+
+    The self-heal recognises its own row by host **and** pid, so a row that stands in
+    for this worker's own has to pass the live tag -- `test_a_healthy_read_containing_
+    this_pid_is_not_double_counted` is the row that does.
+    """
     return {
         "pid": pid,
+        "host": host,
         "up": 100.0,
         "c": {"ar": active, "mr": 50, "at": 0, "mt": 10},
         "q": {"rq": 0, "rm": 1000, "lq": 0, "aq": 0},

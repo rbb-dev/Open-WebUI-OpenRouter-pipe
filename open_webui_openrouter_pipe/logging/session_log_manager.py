@@ -859,6 +859,7 @@ class SessionLogManager:
                 base_dir, zip_password, zip_compression, zip_compresslevel = archive_settings
                 meta_message_id, meta_task = _split_archive_key(message_id)
                 fallback_message_id = message_id if surrogate_in_play else f"{message_id}.{request_id}"
+                meta_message_id, meta_task = _split_archive_key(message_id)
                 self._enqueue_archive_job(
                     _SessionLogArchiveJob(
                         base_dir=base_dir,
@@ -875,6 +876,7 @@ class SessionLogManager:
                         log_events=log_events,
                         meta_message_id=meta_message_id,
                         meta_task=meta_task,
+                        terminal=bool(terminal),
                         status=str(status or "").strip(),
                         reason=str(reason or "").strip(),
                     )
@@ -935,6 +937,10 @@ class SessionLogManager:
         backed_off = self._backoff_exclusion(lock_stale_seconds)
 
         def _record(key: tuple[str, str], assembled: bool | Any, *, stale_arm: bool = False) -> None:
+            from ..storage.owui_files import is_temporary_chat
+
+            if is_temporary_chat(key[0]):
+                return
             if assembled is not _LOCK_CONTENDED and assembled is not True and assembled is not False:
                 return
             with self._lock:

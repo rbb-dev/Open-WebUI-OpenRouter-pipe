@@ -180,7 +180,7 @@ class ReasoningConfigManager:
         cfg = dict(responses_body.reasoning) if isinstance(responses_body.reasoning, dict) else {}
         requested = bool(responses_body.include_reasoning) or bool(cfg and cfg.get("enabled", True) and not cfg.get("exclude", False))
         if not requested:
-            self._set_include_reasoning(responses_body, False)
+            self._set_include_reasoning(responses_body, None)
             return None
 
         if valves.GEMINI_THINKING_BUDGET == 0:

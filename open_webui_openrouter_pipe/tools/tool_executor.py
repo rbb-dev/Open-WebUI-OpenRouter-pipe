@@ -35,6 +35,7 @@ _OWUI_RESULT_WARN_COOLDOWN_S = 300.0
 _OWUI_RESULT_WARN_CAP = 256
 from ..storage.owui_files import is_temporary_chat, owui_file_content_url
 from ..storage.persistence import generate_item_id
+from .tool_registry import OWUI_OWNS_KEY
 from .tool_schema import _advertised_root_params, _declared_parameter_names
 
 if TYPE_CHECKING:
@@ -156,6 +157,12 @@ except Exception:
     _owui_get_updated_tool_function = None  # type: ignore[assignment]
 
 _ASK_USER_GRACE_SECONDS = 15.0
+
+OPEN_WEBUI_OWNED_NAMES_KEY = "_pipe_open_webui_owned_names"
+OPEN_WEBUI_OWNS_SKIPPED_REASON = (
+    "Open WebUI runs this tool, and this reply has spent the hand-back budget that would have "
+    "handed it back. Answer from what you have, or ask the person."
+)
 
 
 def _fallback_result_text(raw_result: Any) -> str:
@@ -424,16 +431,29 @@ class ToolExecutor:
             timeout_ms = 120_000
         return timeout_ms / 1000 + _ASK_USER_GRACE_SECONDS
 
+    def _open_webui_owned_names(
+        self, context: _ToolExecutionContext, tools: dict[str, dict[str, Any]]
+    ) -> frozenset[str]:
+        names: set[str] = {
+            name for name, cfg in tools.items()
+            if isinstance(cfg, dict) and cfg.get(OWUI_OWNS_KEY) is True
+        }
+        metadata = context.metadata if isinstance(context.metadata, dict) else {}
+        withheld = metadata.get(OPEN_WEBUI_OWNED_NAMES_KEY)
+        if isinstance(withheld, (set, frozenset)):
+            names.update(name for name in withheld if isinstance(name, str) and name)
+        return frozenset(names)
+
     def _ask_user_refusal(self, calls: list[dict], tools: dict[str, dict[str, Any]]) -> str | None:
-        is_ask_user = []
+        is_ask_user: list[bool] = []
+        raw_names: list[str] = []
         for call in calls:
             name = call.get("name")
+            raw_names.append(name if isinstance(name, str) else "")
             is_ask_user.append(self._is_builtin_ask_user(tools.get(name.strip() if isinstance(name, str) else "")))
         if not any(is_ask_user) or _owui_get_ask_user_tool_calls is None:
             return None
-        _, refusal = _owui_get_ask_user_tool_calls(
-            [{"function": {"name": "ask_user" if flag else ""}} for flag in is_ask_user]
-        )
+        _, refusal = _owui_get_ask_user_tool_calls([{"function": {"name": name}} for name in raw_names])
         return refusal
 
     def _parse_tool_arguments(self, raw_args: Any) -> dict[str, Any] | None:
@@ -593,6 +613,7 @@ class ToolExecutor:
         slots: list[dict[str, Any] | None] = [None] * len(calls)
         _on_complete = context.on_complete
         ask_user_refusal = self._ask_user_refusal(calls, tools)
+        owned_by_open_webui = self._open_webui_owned_names(context, tools)
 
         async def _append_and_notify(index: int, call: dict, result: dict) -> None:
             slots[index] = result
@@ -624,7 +645,14 @@ class ToolExecutor:
                     f"incomplete JSON for `{tool_name}`. Please try again.",
                 )
                 continue
-            if not tool_cfg:
+            if not tool_cfg or tool_name in owned_by_open_webui:
+                if tool_name in owned_by_open_webui:
+                    await _append_and_notify(index, call, self._build_tool_output(
+                        call,
+                        f"Tool '{tool_name}' skipped: {OPEN_WEBUI_OWNS_SKIPPED_REASON}",
+                        status="incomplete",
+                    ))
+                    continue
                 await _refuse(index, call, f'Error: Tool "{tool_name}" not found.')
                 continue
             if _owui_normalize_ask_user_request is not None and self._is_builtin_ask_user(tool_cfg):

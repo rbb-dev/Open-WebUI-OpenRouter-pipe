@@ -11,7 +11,12 @@ import pytest_asyncio
 from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.core.config import NO_CONTENT_AFTER_TOOLS_FALLBACK, _PIPE_METADATA_KEY, Valves
 from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
-from open_webui_openrouter_pipe.core.fusion_defaults import FusionRunPlan
+from open_webui_openrouter_pipe.core.fusion_defaults import (
+    DEFAULT_FUSION_JUDGE_SYSTEM_PROMPT,
+    DEFAULT_FUSION_PANEL_SYSTEM_PROMPT,
+    DEFAULT_FUSION_SYNTHESIS_SYSTEM_PROMPT,
+    FusionRunPlan,
+)
 from open_webui_openrouter_pipe.requests.fusion_engine import (
     ANALYSIS_SCHEMA,
     FusionCollector,
@@ -22,6 +27,7 @@ from open_webui_openrouter_pipe.requests.fusion_engine import (
     _inner_metadata,
     build_inner_valves,
     parse_analysis,
+    resolve_fusion_prompt,
     run_fusion_member,
 )
 
@@ -162,7 +168,6 @@ class TestAggregateSources:
             {"url": "https://a.example", "title": "A"},
             {"url": "https://c.example", "title": "C"},
         ]
-
 
 def _prepare_pipe(pipe):
     pipe._artifact_store._db_fetch = AsyncMock(return_value=None)

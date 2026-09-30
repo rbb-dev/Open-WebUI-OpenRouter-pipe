@@ -59,7 +59,11 @@ from tenacity import (
 )
 
 from ..core.timing_logger import timed
-from ..core.utils import _await_if_needed, is_picture_output
+from ..core.utils import (
+    _await_if_needed,
+    is_picture_output,
+    tool_output_text_and_pictures,
+)
 from ..core.warn_latch import warn_level
 from .owui_files import is_temporary_chat, temporary_chat_prefixes
 
@@ -2997,7 +3001,7 @@ def normalize_persisted_item(
         normalized["call_id"] = normalized.get("call_id") or generate_item_id()
         output_value = normalized.get("output")
         if not is_picture_output(output_value):
-            normalized["output"] = "" if output_value is None else str(output_value)
+            normalized["output"] = tool_output_text_and_pictures(output_value)[0]
         return normalized
 
     if item_type == "function_call":

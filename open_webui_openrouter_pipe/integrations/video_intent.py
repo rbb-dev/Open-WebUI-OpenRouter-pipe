@@ -1298,6 +1298,8 @@ def should_emit_confirmation_footer(
     """
     if confirm_mode == "never":
         return False
+    if intent.reason == "degrade_open_fallback":
+        return False
     if confirm_mode == "always":
         return True
     if _prompt_text_was_rewritten(intent.prompt, person_prompt_text):

@@ -149,7 +149,9 @@ Behaviour shared by both engines:
 
 On the internal engine the three stages are prompted by admin-editable templates
 (`FUSION_PANEL_SYSTEM_PROMPT`, `FUSION_JUDGE_SYSTEM_PROMPT`,
-`FUSION_SYNTHESIS_SYSTEM_PROMPT`). The judge runs at temperature 0 and must return a
+`FUSION_SYNTHESIS_SYSTEM_PROMPT`); clearing any one of the three boxes, or leaving only
+whitespace in it, restores that stage's shipped default, and a template that has content
+is sent to that stage verbatim, whitespace and all. The judge runs at temperature 0 and must return a
 strict five-key JSON analysis; if it fails validation twice the run degrades to
 no-analysis mode (panel answers stay usable, synthesis proceeds from the raw drafts).
 The final answer is written by the preset's judge model from the panel drafts plus the

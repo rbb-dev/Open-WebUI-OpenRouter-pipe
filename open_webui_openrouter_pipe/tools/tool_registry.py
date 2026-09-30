@@ -215,6 +215,18 @@ def _advertised_names_for_replayed_calls(items: Any, exposed_to_origin: dict[str
 
 
 
+OWUI_OWNS_KEY = "owui_owns"
+
+
+def _owui_owned_entry(origin_source: str, origin_name: str, exposed_name: str) -> dict[str, Any]:
+    return {
+        "origin_source": origin_source,
+        "origin_name": origin_name,
+        "exposed_name": exposed_name,
+        OWUI_OWNS_KEY: True,
+    }
+
+
 @timed
 def _build_collision_safe_tool_specs_and_registry(
     *,
@@ -465,6 +477,7 @@ def _build_collision_safe_tool_specs_and_registry(
             continue
         if owui_tool_passthrough and (tool_cfg.get("direct") is True or tool_cfg.get("type") == "builtin"):
             log.debug("Skipping registry entry %s (Open WebUI runs this one).", exposed_name)
+            exec_registry[exposed_name] = _owui_owned_entry(c["origin_source"], origin_name, exposed_name)
             continue
         cfg = dict(tool_cfg)
         cfg["origin_source"] = c["origin_source"]

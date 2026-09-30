@@ -331,6 +331,15 @@ class ImageGenerationAdapter:
         known = declared if isinstance(declared, dict) else {}
         if name in known:
             fitted, reason = ImageGenerationAdapter._fit_descriptor(known[name], value)
+            if fitted is not None or pixel_size(value) is not None:
+                return _Fitted(fitted, reason, name)
+            equivalent = TIER_EQUIVALENT.get(name)
+            if equivalent and equivalent in known:
+                other = known[equivalent]
+                if isinstance(other, dict) and other.get("type") == "enum":
+                    admitted, other_reason = ImageGenerationAdapter._fit_descriptor(other, value)
+                    if admitted is not None:
+                        return _Fitted(admitted, other_reason, equivalent)
             return _Fitted(fitted, reason, name)
         equivalent = TIER_EQUIVALENT.get(name)
         if not equivalent or pixel_size(value) is not None:
@@ -587,6 +596,7 @@ class ImageGenerationAdapter:
         self._contract_target = identity
         if previous is not None and previous != identity:
             self._endpoint_cache.clear()
+            self._endpoint_failed_at.clear()
         raw_ttl = getattr(valves, "MODEL_CATALOG_REFRESH_SECONDS", 0)
         ttl = float(raw_ttl) if isinstance(raw_ttl, (int, float)) and not isinstance(raw_ttl, bool) else 0.0
         ttl = ttl or 3600.0
@@ -614,7 +624,8 @@ class ImageGenerationAdapter:
             fallback, unserved = (
                 self._select_endpoint(cached[1], requested) if cached is not None else (None, "")
             )
-            self._endpoint_failed_at[api_model_id] = time.monotonic()
+            if self._contract_target == identity:
+                self._endpoint_failed_at[api_model_id] = time.monotonic()
             self._logger.log(
                 warn_level(_warned_image_endpoints, f"{api_model_id}:{type(exc).__name__}"),
                 "Image endpoint lookup failed for %r (%s); %s",
@@ -628,7 +639,8 @@ class ImageGenerationAdapter:
             fallback, unserved = (
                 self._select_endpoint(cached[1], requested) if cached is not None else (None, "")
             )
-            self._endpoint_failed_at[api_model_id] = time.monotonic()
+            if self._contract_target == identity:
+                self._endpoint_failed_at[api_model_id] = time.monotonic()
             self._logger.log(
                 warn_level(_warned_image_endpoints, f"{api_model_id}:empty"),
                 "OpenRouter returned no endpoint record for %r; %s",
@@ -636,6 +648,8 @@ class ImageGenerationAdapter:
                 _STALE_CONTRACT if fallback is not None else _NO_CONTRACT,
             )
             return fallback, unserved
+        if self._contract_target != identity:
+            return self._select_endpoint(records, requested)
         self._endpoint_cache[api_model_id] = (time.monotonic(), records)
         self._endpoint_failed_at.pop(api_model_id, None)
         return self._select_endpoint(records, requested)

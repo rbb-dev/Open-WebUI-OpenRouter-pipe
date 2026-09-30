@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import types
 from types import SimpleNamespace
@@ -20,6 +21,36 @@ from open_webui_openrouter_pipe.plugins.pipe_dashboard import http_routes
 def _on_valves() -> Any:
     """A pipe whose master plugin switch reads on: the route 404s without it."""
     return SimpleNamespace(id="openrouter", valves=Valves(ENABLE_PLUGIN_SYSTEM=True))
+
+
+class _PersistedSwitchOn:
+    """Open WebUI's `Functions` stand-in holding the row an operator's save leaves.
+
+    The route guard reads the PERSISTED row, and that field's declared default is off,
+    so a deployment whose action route answers carries `ENABLE_PLUGIN_SYSTEM` in its
+    row -- writing it on stores the key. A readable row without it is a route the
+    master switch has closed, which is not what any test in this file is about.
+    """
+
+    def __init__(self) -> None:
+        self.valves = {"ENABLE_PLUGIN_SYSTEM": True}
+
+    async def get_function_by_id(self, id, db=None):
+        return SimpleNamespace(updated_at=1000)
+
+    async def get_function_valves_by_id(self, id, db=None):
+        return dict(self.valves)
+
+    async def update_function_valves_by_id(self, id, valves, db=None):
+        self.valves = dict(valves)
+        return SimpleNamespace(updated_at=1001)
+
+
+@pytest.fixture(autouse=True)
+def _persisted_master_switch_on(monkeypatch):
+    import open_webui.models.functions as functions_mod
+
+    monkeypatch.setattr(functions_mod, "Functions", _PersistedSwitchOn())
 
 
 def _install_auth_stub(monkeypatch, *, decode=lambda t: {"id": "u1"}, valid=True,

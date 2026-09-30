@@ -374,6 +374,25 @@ def channel_id_for_chat(chat_id: Any) -> str | None:
     return None
 
 
+def _owui_upload_metadata(mime_type: str, chat_id: Any, message_id: Any) -> dict[str, Any]:
+    metadata: dict[str, Any] = {"mime_type": mime_type}
+    conversation_key: str | None = None
+    if isinstance(chat_id, str):
+        normalized_chat_id = chat_id.strip()
+        channel_id = channel_id_for_chat(normalized_chat_id)
+        if channel_id is not None:
+            conversation_key = "channel_id"
+            metadata["channel_id"] = channel_id
+        elif is_linkable_chat(normalized_chat_id):
+            conversation_key = "chat_id"
+            metadata["chat_id"] = normalized_chat_id
+    if conversation_key is not None and isinstance(message_id, str):
+        normalized_message_id = message_id.strip()
+        if normalized_message_id:
+            metadata["message_id"] = normalized_message_id
+    return metadata
+
+
 def _upload_identity(user: Any, owui_user_id: str | None) -> str | None:
     candidate = getattr(user, "id", None)
     if isinstance(candidate, str) and candidate.strip():
@@ -1155,18 +1174,7 @@ class OwuiFileGateway:
             self.logger.error("Open WebUI file upload helpers are unavailable; skipping OWUI storage upload.")
             return None
         try:
-            upload_metadata: dict[str, Any] = {"mime_type": mime_type}
-            if isinstance(chat_id, str):
-                normalized_chat_id = chat_id.strip()
-                channel_id = channel_id_for_chat(normalized_chat_id)
-                if channel_id is not None:
-                    upload_metadata["channel_id"] = channel_id
-                elif is_linkable_chat(normalized_chat_id):
-                    upload_metadata["chat_id"] = normalized_chat_id
-            if isinstance(message_id, str):
-                normalized_message_id = message_id.strip()
-                if normalized_message_id:
-                    upload_metadata["message_id"] = normalized_message_id
+            upload_metadata = _owui_upload_metadata(mime_type, chat_id, message_id)
 
             file_item = await upload_file_handler(
                 request=request,
@@ -1243,18 +1251,7 @@ class OwuiFileGateway:
             self.logger.error("Source path %s is not a file; aborting OWUI streaming upload.", source_path)
             return None
         try:
-            upload_metadata: dict[str, Any] = {"mime_type": mime_type}
-            if isinstance(chat_id, str):
-                normalized_chat_id = chat_id.strip()
-                channel_id = channel_id_for_chat(normalized_chat_id)
-                if channel_id is not None:
-                    upload_metadata["channel_id"] = channel_id
-                elif is_linkable_chat(normalized_chat_id):
-                    upload_metadata["chat_id"] = normalized_chat_id
-            if isinstance(message_id, str):
-                normalized_message_id = message_id.strip()
-                if normalized_message_id:
-                    upload_metadata["message_id"] = normalized_message_id
+            upload_metadata = _owui_upload_metadata(mime_type, chat_id, message_id)
 
             size_bytes = source_path.stat().st_size
 

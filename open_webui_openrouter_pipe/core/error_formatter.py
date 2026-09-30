@@ -155,6 +155,20 @@ def _transported_failure_response(
     )
 
 
+def _unreadable_body_failure_response(
+    exc: Any, *, code: int, stream: bool, path: str
+) -> StreamingResponse | None:
+    if stream or _is_anthropic_endpoint(path):
+        return None
+    return _transported_failure_response(
+        f"{exc.endpoint} answered with a body that is not an OpenRouter response "
+        f"(Content-Type: {exc.content_type})",
+        code=code,
+        stream=stream,
+        path=path,
+    )
+
+
 def _api_caller_error_response(
     exc: OpenRouterAPIError, *, stream: bool, path: str
 ) -> StreamingResponse | None:
@@ -436,6 +450,18 @@ class ErrorFormatter:
             context=context_defaults,
             shared=on_channel,
         )
+        if not content.strip():
+            content = exc.to_markdown(
+                model_label=model_display,
+                diagnostics=diagnostics or None,
+                fallback_model=api_model_id or normalized_model_id,
+                template=_FALLBACK_ERROR_TEMPLATE,
+                metrics=metrics,
+                normalized_model_id=normalized_model_id,
+                api_model_id=api_model_id,
+                context=context_defaults,
+                shared=on_channel,
+            )
         shown = join_answer_and_card(partial_answer, content)
         if not event_emitter:
             return shown

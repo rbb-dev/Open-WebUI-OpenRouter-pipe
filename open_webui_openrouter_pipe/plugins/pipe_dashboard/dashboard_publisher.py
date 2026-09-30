@@ -25,7 +25,9 @@ import inspect
 import json
 import logging
 import os
+import socket
 import time
+from functools import lru_cache
 from typing import Any
 
 from ...storage.owui_files import is_temporary_chat
@@ -120,6 +122,15 @@ _PD_SLOW_EVERY = 30
 _PD_SLOW_MIN_INTERVAL = 30.0
 
 
+@lru_cache(maxsize=1)
+def _host_tag() -> str:
+    raw = socket.gethostname() or "unknown"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+
+
+_PD_HOST_TAG = _host_tag()
+
+
 def _worker_health(pipe: Any) -> dict[str, Any]:
     http_state = collect_transport_session_state(pipe)
     rss = 0
@@ -175,6 +186,7 @@ def _collect_worker_payload(pipe: Any) -> dict[str, Any]:
 
     return {
         "pid": os.getpid(),
+        "host": _PD_HOST_TAG,
         "up": round(time.monotonic() - PROCESS_START, 1),
         "ls": int(time.time()),
         "c": {
@@ -262,6 +274,7 @@ def expand_worker_payload(compact: dict[str, Any]) -> dict[str, Any]:
         sessions["live_active"] = compact["sa"]
     return {
         "pid": compact.get("pid", 0),
+        "host": compact.get("host", ""),
         "uptime_s": compact.get("up", 0),
         "last_seen": compact.get("ls", 0),
         "concurrency": {_PD_CONCURRENCY_MAP[k]: v for k, v in compact.get("c", {}).items() if k in _PD_CONCURRENCY_MAP},
@@ -503,8 +516,8 @@ async def _build_emit_payload(
         else:
             read_ok = True
             agg_state["misses"] = 0
-        local_pids = {p.get("pid", 0) for p in worker_payloads}
-        if pid not in local_pids:
+        local_pids = {(p.get("host", ""), p.get("pid", 0)) for p in worker_payloads}
+        if (_PD_HOST_TAG, pid) not in local_pids:
             try:
                 worker_payloads.append(expand_worker_payload(_collect_worker_payload(pipe)))
             except Exception:
@@ -621,7 +634,7 @@ async def run_dashboard_publisher(
     """
     pid = os.getpid()
     active_key = f"{namespace}:dashboard:active"
-    worker_key = f"{namespace}:dashboard:worker:{pid}"
+    worker_key = f"{namespace}:dashboard:worker:{_PD_HOST_TAG}:{pid}"
     wake_channel = f"{namespace}:dashboard:wake"
 
     await asyncio.sleep(2.0)

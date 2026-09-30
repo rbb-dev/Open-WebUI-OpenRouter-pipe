@@ -40,6 +40,7 @@ from open_webui_openrouter_pipe.core.utils import CONTINUED_REPLY
 from open_webui_openrouter_pipe.filters.filter_manager import (
     _PIPE_INSTALLED_META_KEY,
     FilterManager,
+    _offered_web_tools,
 )
 from open_webui_openrouter_pipe.models.registry import ModelFamily, OpenRouterModelRegistry
 
@@ -392,7 +393,24 @@ _CATALOG = {"data": [
 
 
 class _FunctionsTable:
-    """Open WebUI's Functions table, in memory, recording every update written to it."""
+    """Open WebUI's Functions table, in memory, recording every update written to it.
+
+    Every read hands back a *fresh* object, and every write returns one. That is the
+    table's copy semantics, not decoration: `get_functions_by_type` runs its query in
+    the caller's session and returns `[FunctionModel.model_validate(function) for
+    function in result.scalars().all()]`
+    (`.external/open-webui/backend/open_webui/models/functions.py:262-270`), and
+    `update_function_by_id` issues the UPDATE, commits it, and re-reads the row with
+    `db.get` in that same session (`:398-415`). So a row read before a write is still
+    the pre-write row afterwards, and two reads of an unchanged row are two objects.
+
+    An earlier version of this double returned the stored `SimpleNamespace` and mutated
+    it in place. That aliasing is not a weaker stand-in, it is a different table: a
+    caller that enumerates the rows, writes one, and then re-reads the listing saw its
+    own write reflected back at it, which is exactly the sequence
+    `test_a_pass_does_not_revert_a_tool_the_valves_switch_on` is built around and
+    exactly what Open WebUI never gives it.
+    """
 
     def __init__(self) -> None:
         self.rows: dict[str, SimpleNamespace] = {}
@@ -400,12 +418,21 @@ class _FunctionsTable:
         self.listings = 0
         self.clock = 0
 
+    @staticmethod
+    def _copy(row: SimpleNamespace) -> SimpleNamespace:
+        return SimpleNamespace(**vars(row))
+
     async def get_functions_by_type(self, type, active_only=False, db=None):
         self.listings += 1
-        return [row for row in self.rows.values() if row.type == type and (row.is_active or not active_only)]
+        return [
+            self._copy(row)
+            for row in self.rows.values()
+            if row.type == type and (row.is_active or not active_only)
+        ]
 
     async def get_function_by_id(self, id, db=None):
-        return self.rows.get(id)
+        row = self.rows.get(id)
+        return self._copy(row) if row is not None else None
 
     async def insert_new_function(self, user_id, type, form_data, db=None):
         row = SimpleNamespace(
@@ -413,7 +440,7 @@ class _FunctionsTable:
             is_active=False, is_global=False, updated_at=1,
         )
         self.rows[row.id] = row
-        return row
+        return self._copy(row)
 
     async def update_function_by_id(self, id, updated, db=None):
         row = self.rows.get(id)
@@ -424,7 +451,7 @@ class _FunctionsTable:
             setattr(row, key, value)
         self.clock = max(self.clock, row.updated_at) + 1
         row.updated_at = self.clock
-        return row
+        return self._copy(row)
 
     async def get_function_valves_by_id(self, id, db=None):
         return {}

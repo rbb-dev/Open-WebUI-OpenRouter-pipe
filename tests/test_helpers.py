@@ -1832,6 +1832,12 @@ def test_marker_helpers_and_ulids():
 from open_webui_openrouter_pipe import Pipe
 
 
+def _status_field(description: str, index: int) -> str:
+    fields = [part.strip() for part in description.split(" | ")]
+    assert len(fields) > index, description
+    return fields[index]
+
+
 def test_format_final_status_description_includes_cost_tokens_and_tps(pipe_instance):
     pipe = pipe_instance
     usage = {
@@ -1850,7 +1856,7 @@ def test_format_final_status_description_includes_cost_tokens_and_tps(pipe_insta
     )
 
     assert description.startswith("Time: 3.21s  20.0 tps")
-    assert "Cost $0.012345" in description
+    assert _status_field(description, 1) == "Cost $0.012345", description
     assert "Total tokens: 160 (Input: 120, Output: 40, Cached: 20, Reasoning: 5)" in description
 
 
@@ -1950,7 +1956,9 @@ async def test_report_openrouter_error_expired_retry_after_not_rendered_raw(pipe
     Retry-After (parsed retry_after_seconds == 0) must not leak the raw date
     into the rendered message as '<date>s'. The formatter's context hint must
     select by presence (0 wins over the raw header); the default template's
-    {{#if}} guard then treats 0 as absent and suppresses the line entirely."""
+    {{#if}} guard then opens for it, because 0 is a number and a number is
+    present at every value, so the row renders as '0s' -- the delay is over --
+    rather than being suppressed."""
     pipe = pipe_instance_async
 
     class _CaptureEmitter:

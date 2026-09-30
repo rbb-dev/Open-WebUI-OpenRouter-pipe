@@ -493,6 +493,19 @@ def _inline(payload: bytes, declared: str = "image/png") -> str:
     return f"data:{declared};base64," + base64.b64encode(payload).decode()
 
 
+def _over_budget_png(side: int) -> bytes:
+    """A small, real PNG whose IHDR claims `side` x `side`.
+
+    The pixel budget is read off the header before `Image.load` (`image_pixel_size`),
+    which is exactly the claim being tested: a 2 KiB file that would cost hundreds of
+    megabytes to rasterise. Written in memory from a 4x4 encode, never as a file.
+    """
+    payload = bytearray(_png(4))
+    payload[16:20] = side.to_bytes(4, "big")
+    payload[20:24] = side.to_bytes(4, "big")
+    return bytes(payload)
+
+
 @pytest.mark.asyncio
 async def test_upstream_http_error_is_logged_without_a_traceback(icon_handler):
     """A 404 on an icon is a routine outcome; it must not print a stack."""

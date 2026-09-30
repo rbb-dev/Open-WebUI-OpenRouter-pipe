@@ -56,8 +56,8 @@ class CircuitBreaker:
         self._sweep_after: float = 0.0
         self._read_swept_at: float = 0.0
 
-    def _sweep_expired(self, now: float) -> None:
-        if now < self._sweep_after:
+    def _sweep_expired(self, now: float, *, force: bool = False) -> None:
+        if not force and now < self._sweep_after:
             return
         self._sweep_after = now + self._window_seconds
         window = self._window_seconds
@@ -137,7 +137,7 @@ class CircuitBreaker:
             return
         now = time.time()
         self._breaker_records[user_id].append(now)
-        self._sweep_expired(now)
+        self._sweep_expired(now, force=True)
 
     def reset(self, user_id: str) -> None:
         """Clear all failure records for a user, allowing requests again.
@@ -193,7 +193,7 @@ class CircuitBreaker:
             return
         now = time.time()
         self._tool_breakers[user_id][(tool_type, tool_name)].append(now)
-        self._sweep_expired(now)
+        self._sweep_expired(now, force=True)
 
     def reset_tool(self, user_id: str, tool_type: str, tool_name: str = "") -> None:
         """Clear failure records for a specific tool type.

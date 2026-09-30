@@ -23,8 +23,10 @@ from ..core.utils import (
     TOOL_CALL_STATUSES,
     _clean_str,
     is_picture_output,
+    is_text_part_output,
     opens_a_turn,
     strip_hidden_marker_lines,
+    tool_output_text_and_pictures,
 )
 from ..integrations.anthropic import _is_anthropic_model_id
 
@@ -227,7 +229,10 @@ def _sanitize_request_input(pipe: Pipe, body: ResponsesBody) -> BudgetOutcome | 
             if not (isinstance(call_id, str) and call_id.strip()):
                 return item, gated
             output = item.get("output")
-            if not isinstance(output, str) and not is_picture_output(output):
+            if is_text_part_output(output):
+                output = tool_output_text_and_pictures(output)[0]
+                changed = True
+            elif not isinstance(output, str) and not is_picture_output(output):
                 output = json.dumps(output, ensure_ascii=False)
                 changed = True
             cleaned = _without_hidden_marker_lines(output)

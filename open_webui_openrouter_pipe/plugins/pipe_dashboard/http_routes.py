@@ -18,7 +18,7 @@ from typing import Any, cast
 from fastapi import Depends, Request
 from pydantic import BaseModel
 
-from .actions import ACTIONS, _audit
+from .actions import ACTIONS, _audit, _redacted_args
 from .authz import can_view
 
 logger = logging.getLogger(__name__)
@@ -102,7 +102,7 @@ def _audit_off(user: Any, action: str, client_ip: Any) -> None:
 async def _dispatch_unavailable(
     pipe: Any, user: Any, name: str, args: Any, *, client_ip: Any = None, request: Any = None
 ) -> tuple[int, dict[str, Any]]:
-    _audit(user, name, "unavailable", client_ip, args)
+    _audit(user, name, "unavailable", client_ip, _redacted_args(pipe, args))
     return 503, {"error": "action unavailable"}
 
 

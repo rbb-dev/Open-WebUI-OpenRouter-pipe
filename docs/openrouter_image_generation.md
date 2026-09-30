@@ -1657,14 +1657,24 @@ pipes()
   │        suppresses the next attempt
   └─ ensure_image_catalog_loaded()   <- called on every build; the master
         valve is checked INSIDE it, not at this call site, and the refresh
-        is single-flight: concurrent callers on a cold cache queue on one
-        lock and one caller fetches, the rest re-check the clocks behind it
-        and take the catalogue that fetch produced. A refresh that fails or
-        returns nothing is still one refresh, and it stamps both the model
-        clock and the contract clock, so the retry after an OpenRouter
-        outage waits out MODEL_CATALOG_REFRESH_SECONDS. That is the price
-        of collapsing a burst of waiters onto one failed pass, and it is
-        what makes this loader behave like the video one.
+        is single-flight, on two locks. Concurrent callers on a cold
+        cache queue on the model-list lock and one caller fetches, the
+        rest re-check the clocks behind it and take the catalogue that
+        fetch produced. A refresh that fails or returns nothing is still
+        one refresh, and it stamps both the model clock and the contract
+        clock, so the retry after an OpenRouter outage waits out
+        MODEL_CATALOG_REFRESH_SECONDS. That is the price of collapsing a
+        burst of waiters onto one failed pass, and it is what makes this
+        loader behave like the video one.
+        The contract sweep behind it holds a second lock, and that is
+        what the request path's contract opt-out actually buys: such a
+        caller takes the model-list lock and never queues behind a sweep
+        it did not ask for, which is the promise the parameter's own
+        docstring makes. The two locks are adjacent, not nested, so a
+        cancellation between them leaves the models registered and the
+        model clock stamped -- strictly better than one lock held across
+        both halves, where a cancellation mid-sweep lost the models and
+        the clock together.
           ├─ if ENABLE_OPENROUTER_IMAGE_GENERATION is off: drop any models
           │  registered while it was on, then return -- ahead of the TTL
           │  check, which is why the picker empties on this build rather
@@ -1812,7 +1822,11 @@ exactly as it arrived; a read that failed is not a contract that shrank.
 A read of one model's `/images/models/<id>/endpoints` that fails is paced
 for 30 seconds: the generations in that window make no request and get back
 exactly what the failed read returned, and a read that succeeds clears the
-window.
+window. Both the cached records and that window belong to one credential: a
+change of `BASE_URL` or `API_KEY` drops them together at
+`integrations/image.py:594`, so the new credential's first read is made rather
+than paced, and a read that is still in flight when the credential changes
+answers the caller that asked for it and is published to no one.
 
 Key files:
 

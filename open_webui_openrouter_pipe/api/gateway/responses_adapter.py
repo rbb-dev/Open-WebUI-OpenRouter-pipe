@@ -101,6 +101,8 @@ def _should_retry_stream(emitted_any: bool, exc: BaseException | None) -> bool:
     """
     if emitted_any:
         return False
+    if isinstance(exc, AcceptedResponseLostBody):
+        return False
     return isinstance(exc, (aiohttp.ClientError, asyncio.TimeoutError)) or _classify_retryable_openrouter_error(exc)[0]
 
 
@@ -404,6 +406,7 @@ class ResponsesAdapter:
                         with attempt:
                             queued_any = False
                             delivered_any = False
+                            body_complete = False
                             buf = bytearray()
                             scanned = 0
                             event_data_parts: list[bytes] = []
@@ -504,6 +507,8 @@ class ResponsesAdapter:
                                         if stream_complete:
                                             break
 
+                                body_complete = True
+
                                 if not stream_complete and buf:
                                     tail_line = bytes(buf).strip()
                                     del buf[:]
@@ -542,6 +547,10 @@ class ResponsesAdapter:
                                         "Producer encountered error while streaming from OpenRouter"
                                     )
                                 producer_reported = True
+                                if not body_complete and isinstance(
+                                    producer_exc, (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError)
+                                ):
+                                    raise AcceptedResponseLostBody(str(producer_exc)) from producer_exc
                                 raise
                             for pending in held:
                                 await _put_seq(pending)

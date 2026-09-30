@@ -22,7 +22,7 @@ Available server tools:
 | `subagent` | Delegate a self-contained task to a worker model an admin chooses |
 | `chat_search_models` | Let the model search the OpenRouter model catalog |
 
-> Advisor and subagent each spawn an **additional model call**; both default **off** per chat and are gated by `ENABLE_ADVISOR` / `ENABLE_SUBAGENT`. The `SERVER_TOOLS_MAX_COST_USD` filter valve bounds the server-tool agent loop via the OpenRouter `stop_server_tools_when` request parameter (overrides `max_tool_calls`); it is sent only while an `openrouter:` server tool is on the request, and dropped when every tool it bounds has been switched off or stripped. The cap is per request: one request is one call the pipe makes, and an internal Fusion turn is one call per panel member plus the judge and the synthesis, each sent the whole cap, so the ceiling for that turn is that multiple. What a model charges is on OpenRouter's pricing page.
+> Advisor and subagent each spawn an **additional model call**; both default **off** per chat and are gated by `ENABLE_ADVISOR` / `ENABLE_SUBAGENT`. The `SERVER_TOOLS_MAX_COST_USD` filter valve bounds the server-tool agent loop via the OpenRouter `stop_server_tools_when` request parameter (overrides `max_tool_calls`); it is sent only while an `openrouter:` server tool is on the request, and dropped when every tool it bounds has been switched off or stripped. It is the cost bound, not the only one: OpenRouter treats `stop_server_tools_when` as an override, so a request that also carries a caller-set top-level `max_tool_calls` is stopped by whichever fires first, and at the default `0.0` — no cap, field absent — that step count is the only bound on the loop. The cap is per request: one request is one call the pipe makes, and an internal Fusion turn is one call per panel member plus the judge and the synthesis, each sent the whole cap, so the ceiling for that turn is that multiple. What a model charges is on OpenRouter's pricing page.
 
 The model decides **when** to call these tools based on the conversation context. The pipe does not invoke them directly; it includes the tool definitions in the outgoing request and OpenRouter handles execution.
 
@@ -59,7 +59,7 @@ These valves on the pipe control which server tools are available and how the co
 
 ### Tool gate valves
 
-Each tool has an enable gate. When a gate is disabled, the corresponding tool's user valves are excluded from the generated filter source entirely (users cannot see or enable the tool). The gate is also re-checked on every request: while it is off, the pipe never sends that tool, whether a filter writes it, the request itself lists it, or an internal-Fusion member re-runs a filter inlet. Every Web Tools filter this pipe maintains (one it installed, or one carrying no install record) that still offers a switched-off tool is rewritten without it, whatever its id and whether it is on or off (see below).
+Each tool has an enable gate. When a gate is disabled, the corresponding tool's user valves are excluded from the generated filter source entirely (users cannot see or enable the tool). The gate is also re-checked on every request: while it is off, the pipe never sends that tool, whether a filter writes it, the request itself lists it, an internal-Fusion member re-runs a filter inlet, or the request is a housekeeping task turn (a title generation, a tag pass, any other Task Model call). Every Web Tools filter this pipe maintains (one it installed, or one carrying no install record) that still offers a switched-off tool is rewritten without it, whatever its id and whether it is on or off (see below).
 
 | Valve | Type | Default | Purpose |
 | --- | --- | --- | --- |
@@ -107,7 +107,7 @@ These are configured on the companion filter functions themselves (Open WebUI Ad
 | `WEB_FETCH_BLOCKED_DOMAINS` | `str` | `""` | Comma-separated list of domains blocked from fetching. |
 | `ADVISOR_MODEL` | `str` | `""` | Advisor model to consult (any OpenRouter model). Empty uses the chat's own model. |
 | `SUBAGENT_MODEL` | `str` | `""` | Worker model for delegated subagent tasks. Empty uses the chat's own model. |
-| `SERVER_TOOLS_MAX_COST_USD` | `float` | `0.0` | Cap cumulative server-tool loop cost per request in USD (sets OpenRouter `stop_server_tools_when`). 0 means no cap. The cap is sent only while an `openrouter:` server tool is on the request. One request is one call the pipe makes, and an internal Fusion turn is one call per panel member plus the judge and the synthesis, each sent the whole cap, so the ceiling for the turn is that multiple. |
+| `SERVER_TOOLS_MAX_COST_USD` | `float` | `0.0` | Cap cumulative server-tool loop cost per request in USD (sets OpenRouter `stop_server_tools_when`). 0 means no cap — and then a caller-set top-level `max_tool_calls`, which the pipe forwards unchanged on both endpoints, is the fallback step bound, because OpenRouter's `stop_server_tools_when` overrides `max_tool_calls` rather than combining with it. The cap is sent only while an `openrouter:` server tool is on the request. One request is one call the pipe makes, and an internal Fusion turn is one call per panel member plus the judge and the synthesis, each sent the whole cap, so the ceiling for the turn is that multiple. |
 
 ### OpenRouter Image Generation filter valves (admin)
 

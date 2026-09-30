@@ -312,12 +312,39 @@ def test_example_13_timestamp_out_of_range():
 # -----------------------------------------------------------------------------
 
 class TestInvariants:
-    def test_drops_unknown_uploaded_attachment_index(self):
+    @pytest.mark.parametrize(
+        ("attachments_count", "source_index", "kept"),
+        [
+            pytest.param(1, 99, False, id="one-99-far-out"),
+            pytest.param(1, 0, True, id="one-zero-kept"),
+            pytest.param(1, 1, False, id="one-one-dropped"),
+            pytest.param(2, 1, True, id="two-one-kept"),
+            pytest.param(2, 2, False, id="two-two-dropped"),
+            pytest.param(3, 2, True, id="three-two-kept"),
+            pytest.param(3, 3, False, id="three-three-dropped"),
+            pytest.param(2, -1, False, id="two-negative-dropped"),
+        ],
+    )
+    def test_drops_unknown_uploaded_attachment_index(self, attachments_count, source_index, kept):
+        """A frame from an uploaded attachment survives iff that index names one of them.
+
+        The count is a parameter here, not a constant, and the table's spine is the boundary at
+        three counts: the largest valid index is accepted and the first invalid one is dropped, on
+        both sides. A fix that dropped everything fails the three kept rows; a fix that kept
+        everything fails the four dropped ones; and a bound pinned at a fixed count fails the two
+        in-range rows above one. The far-out `99` row is existing coverage and carries none of
+        that -- no index far past the end can tell a one-wide bound from a correct one.
+
+        The dropped rows also name the gate that refused, which is the part that distinguishes
+        the validator's own refusal from the applier's later re-check
+        (`integrations/video.py:2821`, `retarget_skipped_invalid_index_{n}`): the reader is told
+        the attachment is not on this turn, not that it went away between the two passes.
+        """
         raw = {
             "intent": "image_to_video",
             "frame_plan": [{
                 "source": "uploaded_attachment",
-                "source_index": 99,
+                "source_index": source_index,
                 "timestamp_seconds": None,
                 "target": "first_frame",
             }],
@@ -328,9 +355,18 @@ class TestInvariants:
             "clarification": _empty_clar(),
             "reason": "x",
         }
-        result = _validate(raw, attachments_count=1)
-        # Bad index dropped — frame_plan empty, intent downgraded
-        assert result.frame_plan == []
+        result = _validate(raw, attachments_count=attachments_count)
+        if kept:
+            assert len(result.frame_plan) == 1, result.frame_plan
+            assert result.frame_plan[0].source_index == source_index, result.frame_plan
+            assert not any(
+                d.startswith("dropped_uploaded_attachment_index") for d in result.downgrades
+            ), result.downgrades
+        else:
+            assert result.frame_plan == [], result.frame_plan
+            assert f"dropped_uploaded_attachment_index_{source_index}" in result.downgrades, (
+                result.downgrades
+            )
 
     def test_drops_out_of_range_prior_video(self):
         raw = {

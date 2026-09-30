@@ -36,7 +36,11 @@ import pytest
 
 from open_webui_openrouter_pipe import Pipe, ResponsesBody, _ToolExecutionContext
 from open_webui_openrouter_pipe.core.config import EncryptedStr
-from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError, RequiredInternalFileError
+from open_webui_openrouter_pipe.core.errors import (
+    OpenRouterAPIError,
+    RequiredInternalFileError,
+    StatusMessages,
+)
 from open_webui_openrouter_pipe.core.logging_system import SessionLogger
 from open_webui_openrouter_pipe.streaming.streaming_core import (
     StreamingHandler,
@@ -10238,62 +10242,6 @@ class TestReasoningStatusEmitGuard:
         assert len(reasoning_status) == 0 or result == "Hello"
 
 
-class TestImagePersistenceExtConversion:
-    """Tests for image persistence extension conversion (line 277)."""
-
-    @pytest.mark.asyncio
-    async def test_image_persistence_jpg_to_jpeg_conversion(self, monkeypatch, pipe_instance_async):
-        """Test that jpg extension is converted to jpeg (line 277)."""
-        pipe = pipe_instance_async
-        body = ResponsesBody(model="test/model", input=[], stream=True)
-
-        # Create a small valid PNG image
-        png_header = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82'
-        b64_image = base64.b64encode(png_header).decode()
-
-        events = [
-            {
-                "type": "response.output_item.done",
-                "item": {
-                    "type": "image_generation_call",
-                    "status": "completed",
-                    "result": f"data:image/jpg;base64,{b64_image}",
-                },
-            },
-            {"type": "response.output_text.delta", "delta": "Image generated"},
-            {"type": "response.completed", "response": {"output": [], "usage": {}}},
-        ]
-
-        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
-
-        async def mock_resolve_storage_context(request_context, user_obj):
-            return (Mock(), Mock())
-
-        uploaded_files: list[dict] = []
-        async def mock_upload(request, user, file_data, filename, mime_type, **kwargs):
-            uploaded_files.append({"filename": filename, "mime_type": mime_type})
-            return "file-123"
-
-        monkeypatch.setattr(pipe._file_gateway, "resolve_storage_context", mock_resolve_storage_context)
-        monkeypatch.setattr(pipe._file_gateway, "upload_to_owui_storage", mock_upload)
-
-        emitted: list[dict] = []
-        async def emitter(event):
-            emitted.append(event)
-
-        result = await pipe._streaming_handler._run_streaming_loop(
-            body,
-            pipe.valves,
-            emitter,
-            metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
-            tools={},
-            session=cast(Any, object()),
-            user_id="user-123",
-        )
-
-        assert "Image" in result or len(emitted) > 0
-
-
 class TestMaterializeImageFromStr:
     """Tests for _materialize_image_from_str paths (lines 294, 301, 303, 306-323)."""
 
@@ -11231,7 +11179,8 @@ class TestDataUrlImagePersistence:
             user_id="user-123",
         )
 
-        assert "Done" in result or "!" in result or "/api/v1/files" in result
+        assert status_calls == [(StatusMessages.IMAGE_BASE64_SAVED, False)], status_calls
+        assert "/api/v1/files/file-success-123/content" in result
 
 
 class TestImagePersistenceFailFallback:

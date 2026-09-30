@@ -97,6 +97,7 @@ _warned_write_refusals: dict[str, float] = {}
 _PIPE_OFF_META_KEY = "openrouter_pipe:switched_off_by_pipe"
 _PIPE_OFF_STAMP_META_KEY = "openrouter_pipe:switched_off_at"
 _PIPE_INSTALLED_META_KEY = "openrouter_pipe:installed_by"
+_DISPLAY_NAME_MAX_CHARS = 80
 _PIPE_OFF_LANDED_AT: dict[str, int] = {}
 
 
@@ -195,6 +196,13 @@ def _stored_source(row: Any) -> str:
 
 
 _REFUSED_FILTER_WRITES: set[str] = set()
+
+
+class _WriteOutcome:
+    __slots__ = ("refused",)
+
+    def __init__(self) -> None:
+        self.refused = False
 
 
 async def _write_function(Functions, function_id, updates, what, logger, raised=None, *, settle: bool = True) -> bool:
@@ -789,7 +797,7 @@ class FilterManager:
         rows: _FilterRows | None = None,
         tie_break_id: bool = False,
         candidates: list[Any] | None = None,
-    ) -> tuple[str | None, bool]:
+    ) -> tuple[str | None, _WriteOutcome]:
         """Generic filter install/update lifecycle shared by all filter types.
 
         Args:
@@ -805,14 +813,14 @@ class FilterManager:
         try:
             from open_webui.models.functions import Functions  # type: ignore
         except ImportError:
-            return None, False
+            return None, _WriteOutcome()
         except Exception:
             logging.getLogger(__name__).warning(
                 "open_webui.models.functions failed to import for a reason other than absence; "
                 "the features that depend on it are now disabled",
                 exc_info=True,
             )
-            return None, False
+            return None, _WriteOutcome()
 
         if rows is None:
             try:
@@ -825,7 +833,7 @@ class FilterManager:
                 )
                 raise _FilterEnumerationUnavailable(str(exc)) from exc
         elif not rows.available:
-            return None, False
+            return None, _WriteOutcome()
         else:
             filters = rows.all_rows or []
 
@@ -854,9 +862,10 @@ class FilterManager:
         prefer_id: str | None = None,
         tie_break_id: bool = False,
         candidates: list[Any] | None = None,
-    ) -> tuple[str | None, bool]:
+    ) -> tuple[str | None, _WriteOutcome]:
         from open_webui.models.functions import Functions  # type: ignore
 
+        outcome = _WriteOutcome()
         candidates = (
             candidates
             if candidates is not None
@@ -895,11 +904,11 @@ class FilterManager:
                 )
 
         if chosen is not None and not _claimable_by(chosen, owner):
-            return str(getattr(chosen, "id", "") or "").strip(), False
+            return str(getattr(chosen, "id", "") or "").strip(), outcome
 
         if chosen is None:
             if not getattr(self.valves, auto_install_valve, False):
-                return None, False
+                return None, outcome
 
             self._validate_before_write(desired_source, log_label)
             desired_meta = {
@@ -917,8 +926,9 @@ class FilterManager:
                     break
                 if matches_candidate(_stored_source(existing)) and _claimable_by(existing, owner):
                     if getattr(existing, "is_active", False):
-                        return str(getattr(existing, "id", "") or ""), False
-                    return None, True
+                        return str(getattr(existing, "id", "") or ""), outcome
+                    outcome.refused = True
+                    return None, outcome
                 suffix += 1
                 candidate_id = f"{preferred_id}_{suffix}"
                 if suffix == 1:
@@ -941,7 +951,7 @@ class FilterManager:
                         log_label,
                         preferred_id,
                     )
-                    return None, False
+                    return None, outcome
 
             try:
                 from open_webui.models.functions import (  # type: ignore
@@ -949,14 +959,14 @@ class FilterManager:
                     FunctionMeta,
                 )
             except ImportError:
-                return None, False
+                return None, outcome
             except Exception:
                 logging.getLogger(__name__).warning(
                     "open_webui.models.functions failed to import for a reason other than absence; "
                     "the features that depend on it are now disabled",
                     exc_info=True,
                 )
-                return None, False
+                return None, outcome
 
             desired_meta = _manifest_id_for(desired_meta, candidate_id)
             meta_obj = FunctionMeta(**desired_meta)
@@ -970,7 +980,8 @@ class FilterManager:
             if not created:
                 created = await Functions.get_function_by_id(candidate_id)
             if not created:
-                return None, True
+                outcome.refused = True
+                return None, outcome
             if not await _write_function(
                 Functions,
                 candidate_id,
@@ -992,9 +1003,10 @@ class FilterManager:
                         "that can write.",
                         log_label, candidate_id,
                     )
-                return None, True
+                outcome.refused = True
+                return None, outcome
             self.logger.info("Installed %s: %s", log_label, candidate_id)
-            return candidate_id, False
+            return candidate_id, outcome
 
         function_id = str(getattr(chosen, "id", "") or "").strip()
         if not function_id:
@@ -1018,15 +1030,17 @@ class FilterManager:
                 )
             if existing_content != desired_source:
                 self._validate_before_write(desired_source, log_label)
+                live = await Functions.get_function_by_id(function_id)
+                row = live if live is not None else chosen
                 if await _write_function(
                     Functions,
                     function_id,
                     {
                         "content": desired_source,
                         "name": desired_name,
-                        "meta": _merged_meta(chosen, desired_meta, off_by_pipe=False),
+                        "meta": _merged_meta(row, desired_meta, off_by_pipe=False),
                         "type": "filter",
-                        "is_active": switch_on,
+                        "is_active": _switch_on(row),
                         "is_global": False,
                     },
                     f"updating the stored source of the installed {log_label}",
@@ -1036,14 +1050,16 @@ class FilterManager:
             else:
                 needs_write = _row_needs_update(chosen, desired_name, desired_meta)
                 if needs_write:
+                    live = await Functions.get_function_by_id(function_id)
+                    row = live if live is not None else chosen
                     await _write_function(
                         Functions,
                         function_id,
                         {
                             "name": desired_name,
-                            "meta": _merged_meta(chosen, desired_meta, off_by_pipe=False),
+                            "meta": _merged_meta(row, desired_meta, off_by_pipe=False),
                             "type": "filter",
-                            "is_active": switch_on,
+                            "is_active": _switch_on(row),
                             "is_global": False,
                         },
                         f"refreshing the stored settings of the installed {log_label}",
@@ -1061,7 +1077,7 @@ class FilterManager:
                 auto_install_valve,
             )
 
-        return function_id, False
+        return function_id, outcome
 
 
     @staticmethod
@@ -1523,7 +1539,7 @@ class FilterManager:
     ) -> str | None:
         """Ensure the OpenRouter Web Tools filter exists (and is up to date), returning its OWUI function id."""
 
-        function_id, _write_not_installed = await self._ensure_filter_installed(
+        function_id, _outcome = await self._ensure_filter_installed(
             desired_source=self.render_openrouter_web_tools_filter_source(
                 enable_web_search=enable_web_search,
                 enable_web_fetch=enable_web_fetch,
@@ -1793,7 +1809,7 @@ class FilterManager:
                 return False
             return _OPENROUTER_FUSION_FILTER_MARKER in content and "class Filter" in content
 
-        function_id, write_not_installed = await self._ensure_filter_installed(
+        function_id, outcome = await self._ensure_filter_installed(
             desired_source=render_openrouter_fusion_filter_source(
                 marker=_OPENROUTER_FUSION_FILTER_MARKER,
             ).strip() + "\n",
@@ -1819,7 +1835,7 @@ class FilterManager:
             rows=rows,
         )
         unresolved = not function_id and bool(
-            write_not_installed
+            outcome.refused
             or getattr(self.valves, "AUTO_ATTACH_FUSION_FILTER", False)
         )
         self._unresolved_fusion_filter_id = unresolved
@@ -1911,7 +1927,7 @@ class FilterManager:
         if not valid:
             raise ValueError(f"Generated OpenRouter Image Generation filter is invalid: {error}")
 
-        function_id, _write_not_installed = await self._ensure_filter_installed(
+        function_id, _outcome = await self._ensure_filter_installed(
             desired_source=desired_source,
             desired_name="OR Image Gen",
             desired_meta={
@@ -2113,16 +2129,16 @@ class FilterManager:
             model_id=model_id,
             video_model=video_model,
         ).strip() + "\n"
-        function_id, _write_not_installed = await self._ensure_filter_installed(
+        function_id, _outcome = await self._ensure_filter_installed(
             desired_source=desired_source,
-            desired_name=f" {spec.display_name}"[:80],
+            desired_name=f" {spec.display_name}"[:_DISPLAY_NAME_MAX_CHARS],
             desired_meta={
                 "description": (
                     f"Configure OpenRouter async video generation for {spec.display_name}."
                 ),
                 "toggle": True,
                 "manifest": {
-                    "title": spec.display_name[:80],
+                    "title": spec.display_name[:_DISPLAY_NAME_MAX_CHARS],
                     "id": spec.function_id,
                     "version": "0.1.0",
                     "license": "MIT",
@@ -2135,7 +2151,7 @@ class FilterManager:
             rows=rows,
             candidates=candidates,
         )
-        return function_id, _write_not_installed
+        return function_id, _outcome.refused
 
 
     @staticmethod
@@ -2329,7 +2345,7 @@ class FilterManager:
             image_spec_id = str(image_model.get("id") or canonical_id or "").strip()
 
             try:
-                function_id, write_not_installed = await self._ensure_single_image_filter_function_id(
+                function_id, outcome = await self._ensure_single_image_filter_function_id(
                     model_id=canonical_id,
                     image_model=image_model,
                     endpoint_record=endpoint_record,
@@ -2362,7 +2378,7 @@ class FilterManager:
                 installed[model_id] = [function_id]
                 if isinstance(original_id, str) and original_id.strip() and original_id != model_id:
                     installed[original_id] = [function_id]
-            elif write_not_installed:
+            elif outcome.refused:
                 unresolved.add(model_id)
                 if isinstance(original_id, str) and original_id.strip() and original_id != model_id:
                     unresolved.add(original_id)
@@ -2468,7 +2484,7 @@ class FilterManager:
         rows: _FilterRows | None = None,
         variant_ids: tuple[str, ...] = (),
         candidates: list[Any] | None = None,
-    ) -> tuple[str | None, bool]:
+    ) -> tuple[str | None, _WriteOutcome]:
         from .image_filter_renderer import build_image_model_filter_spec
 
         spec = build_image_model_filter_spec(
@@ -2479,7 +2495,7 @@ class FilterManager:
             variant_ids=variant_ids,
         )
         if not spec.contract_read:
-            return None, False
+            return None, _WriteOutcome()
 
         # Built with the same expression the renderer emits, not a reconstruction of it.
         # Rebuilding the literal by hand missed any id whose repr needs an escape -- an
@@ -2508,16 +2524,16 @@ class FilterManager:
             variant_ids=variant_ids,
             spec=spec,
         ).strip() + "\n"
-        function_id, _write_not_installed = await self._ensure_filter_installed(
+        function_id, _outcome = await self._ensure_filter_installed(
             desired_source=desired_source,
-            desired_name=spec.display_name[:80],
+            desired_name=spec.display_name[:_DISPLAY_NAME_MAX_CHARS],
             desired_meta={
                 "description": (
                     f"Configure OpenRouter native image generation for {spec.display_name}."
                 ),
                 "toggle": True,
                 "manifest": {
-                    "title": spec.display_name[:80],
+                    "title": spec.display_name[:_DISPLAY_NAME_MAX_CHARS],
                     "id": spec.function_id,
                     "version": "0.1.0",
                     "license": "MIT",
@@ -2531,7 +2547,7 @@ class FilterManager:
             rows=rows,
             candidates=candidates,
         )
-        return function_id, _write_not_installed
+        return function_id, _outcome
 
     # DIRECT UPLOADS FILTER
 
@@ -2999,7 +3015,7 @@ __KEEP_WHAT_STILL_FITS__
                 return False
             return _DIRECT_UPLOADS_FILTER_MARKER in content and "class Filter" in content
 
-        function_id, _write_not_installed = await self._ensure_filter_installed(
+        function_id, _outcome = await self._ensure_filter_installed(
             desired_source=self.render_direct_uploads_filter_source().strip() + "\n",
             desired_name="OR Direct Uploads",
             desired_meta={
@@ -3491,14 +3507,18 @@ __KEEP_WHAT_STILL_FITS__
         @classmethod
         def _drop_unusable_setting(cls, value: Any, info: ValidationInfo) -> Any:
             field = cls.model_fields[info.field_name]
-            metadata = field.metadata
-            annotated = (
-                Annotated[(field.annotation, *metadata)]
-                if metadata
-                else field.annotation
-            )
+            table = _adapters_for(cls)
+            adapter = table.get(info.field_name)
+            if adapter is None:
+                metadata = field.metadata
+                annotated = (
+                    Annotated[(field.annotation, *metadata)]
+                    if metadata
+                    else field.annotation
+                )
+                adapter = table[info.field_name] = TypeAdapter(annotated)
             try:
-                TypeAdapter(annotated).validate_python(value)
+                adapter.validate_python(value)
             except ValidationError:
                 _warn_unusable_setting(info.field_name, value, field.get_default())
                 return field.get_default(call_default_factory=True)
@@ -3509,8 +3529,12 @@ __KEEP_WHAT_STILL_FITS__
         @classmethod
         def _drop_unusable_priority(cls, value: Any, info: ValidationInfo) -> Any:
             field = cls.model_fields[info.field_name]
+            table = _adapters_for(cls)
+            adapter = table.get(info.field_name)
+            if adapter is None:
+                adapter = table[info.field_name] = TypeAdapter(field.annotation)
             try:
-                TypeAdapter(field.annotation).validate_python(value)
+                adapter.validate_python(value)
             except ValidationError:
                 _warn_unusable_setting(info.field_name, value, field.get_default())
                 return field.get_default(call_default_factory=True)
@@ -3560,6 +3584,8 @@ import logging
 from typing import Annotated, Any, Literal, get_args
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, ValidationInfo, field_validator
+
+{_ADAPTER_CACHE}
 
 try:
     from open_webui.env import SRC_LOG_LEVELS
@@ -3918,14 +3944,16 @@ class Filter:
                 if existing_content != desired_source:
                     if not _validate_or_skip(slug, desired_source):
                         continue
+                    live = await Functions.get_function_by_id(existing_id)
+                    row = live if live is not None else existing
                     if await _write_function(
                         Functions,
                         existing_id,
                         {
                             "content": desired_source,
                             "name": desired_name,
-                            "meta": _merged_meta(existing, desired_meta, off_by_pipe=False),
-                            "is_active": switch_on,
+                            "meta": _merged_meta(row, desired_meta, off_by_pipe=False),
+                            "is_active": _switch_on(row),
                             "is_global": False,
                         },
                         f"updating the stored source of the provider routing filter for {slug}",
@@ -3936,12 +3964,14 @@ class Filter:
                     else:
                         writes_ok = False
                 elif _row_needs_update(existing, desired_name, desired_meta):
+                    live = await Functions.get_function_by_id(existing_id)
+                    row = live if live is not None else existing
                     if not await _write_function(
                         Functions,
                         existing_id,
                         {
-                            "is_active": switch_on,
-                            "meta": _merged_meta(existing, desired_meta, off_by_pipe=False),
+                            "is_active": _switch_on(row),
+                            "meta": _merged_meta(row, desired_meta, off_by_pipe=False),
                             "name": desired_name,
                             "type": "filter",
                             "is_global": False,

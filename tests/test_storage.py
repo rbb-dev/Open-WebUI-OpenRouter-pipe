@@ -1461,11 +1461,14 @@ def test_shutdown_without_executor(pipe_instance):
 
 
 def test_shutdown_with_executor(pipe_instance):
-    """Test shutdown shuts down executor."""
+    """close() hands the pool back: the executor it captured refuses new work."""
     store = pipe_instance._artifact_store
-    store._db_executor = ThreadPoolExecutor(max_workers=1)
+    executor = ThreadPoolExecutor(max_workers=1)
+    store._db_executor = executor
     store.close()
     assert store._db_executor is None
+    with pytest.raises(RuntimeError):
+        executor.submit(lambda: None)
 
 
 def test_shutdown_executor_type_error(pipe_instance, monkeypatch):
@@ -1492,6 +1495,7 @@ def test_shutdown_executor_generic_error(pipe_instance, caplog):
     store._db_executor = _FailingExecutor()
     caplog.set_level(logging.DEBUG)
     store.close()
+    assert [r for r in caplog.records if r.message == "Failed to shutdown DB executor cleanly"]
 
 
 # -----------------------------------------------------------------------------

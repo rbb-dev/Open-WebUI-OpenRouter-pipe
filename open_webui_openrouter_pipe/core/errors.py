@@ -541,6 +541,10 @@ def _bounded_card_value(text: str) -> str:
     return f"{text[:limit]}\n...(truncated: {omitted:,} characters omitted)..."
 
 
+def _bounded_card_span(text: str) -> str:
+    return _inline_span(_bounded_card_value(text))
+
+
 def _fenced_block(text: str) -> str:
     return wrap_code_block(text, "") if text else ""
 
@@ -592,22 +596,24 @@ def _build_error_template_values(
         retry_after = _resolve_retry_after_seconds(error.metadata)
     replacements: dict[str, Any] = {
         "heading": _inline_span(heading),
-        "detail": _inline_span(detail),
-        "sanitized_detail": _inline_span(detail),
+        "detail": _bounded_card_span(detail),
+        "sanitized_detail": _bounded_card_span(detail),
         "provider": _inline_span(error.provider or ""),
-        "reason": _inline_span(str(error)),
+        "reason": _bounded_card_span(str(error)),
         "raw_body": _fenced_block(raw_body),
         "model_identifier": _inline_span(model_identifier or ""),
         "requested_model": _inline_span(error.requested_model or ""),
         "openrouter_code": _inline_span(str(error.openrouter_code or "")),
         "upstream_type": _inline_span(error.upstream_type or ""),
-        "upstream_message": _inline_span(error.upstream_message or ""),
-        "openrouter_message": _inline_span(error.openrouter_message or ""),
+        "upstream_message": _bounded_card_span(error.upstream_message or ""),
+        "openrouter_message": _bounded_card_span(error.openrouter_message or ""),
         "request_id": _inline_span(error.request_id or ""),
         "request_id_reference": (
             f"Request reference: `{_inline_span(error.request_id)}`" if error.request_id else ""
         ),
-        "moderation_reasons": "\n".join(f"- {_inline_span(reason)}" for reason in moderation_lines),
+        "moderation_reasons": _bounded_card_value(
+            "\n".join(f"- {_inline_span(reason)}" for reason in moderation_lines)
+        ),
         "flagged_excerpt": _fenced_block(flagged_excerpt),
         "context_limit_tokens": f"{context_limit_value:,}" if context_limit_value else "",
         "max_output_tokens": f"{max_output_tokens_value:,}" if max_output_tokens_value else "",

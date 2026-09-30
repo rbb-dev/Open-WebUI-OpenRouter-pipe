@@ -12,7 +12,7 @@ import inspect
 import json
 import logging
 from collections import OrderedDict
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
 import aiohttp
@@ -40,6 +40,7 @@ from ..core.context_budget import (
 from ..core.error_formatter import (
     _api_caller_error_response,
     _transported_failure_response,
+    _unreadable_body_failure_response,
 )
 from ..core.errors import (
     FileUnavailableError,
@@ -507,6 +508,16 @@ def _required_with_no_callable_tool(responses_body: ResponsesBody) -> bool:
     return not has_active_fusion_entry(responses_body.plugins)
 
 
+def _strip_switched_off_server_tools(responses_body: ResponsesBody, valves: Any) -> None:
+    switched_off = {t for t, switch in _SERVER_TOOL_SWITCHES.items() if not getattr(valves, switch)}
+    if not switched_off:
+        return
+    existing = list(responses_body.tools or [])
+    kept = [e for e in existing if not (isinstance(e, dict) and e.get("type") in switched_off)]
+    if len(kept) != len(existing):
+        responses_body.tools = kept or None
+
+
 def _apply_server_tools_metadata(
     responses_body: ResponsesBody,
     metadata: Any,
@@ -516,16 +527,8 @@ def _apply_server_tools_metadata(
     records: list[dict[str, Any]] | None = None,
     model_resolver: Any = None,
 ) -> list[tuple[str, Any]]:
+    _strip_switched_off_server_tools(responses_body, valves)
     switched_off = {t for t, switch in _SERVER_TOOL_SWITCHES.items() if not getattr(valves, switch)}
-    if switched_off:
-        existing = list(responses_body.tools or [])
-        kept = [
-            entry
-            for entry in existing
-            if not (isinstance(entry, dict) and entry.get("type") in switched_off)
-        ]
-        if len(kept) != len(existing):
-            responses_body.tools = kept or None
     pipe_meta = (metadata or {}).get(_PIPE_METADATA_KEY, {})
     if not isinstance(pipe_meta, dict):
         return []
@@ -594,7 +597,7 @@ def _block_key(block: dict[str, Any]) -> Any:
             len(url),
             hash(url),
         )
-    return json.dumps(block, sort_keys=True)
+    return None
 
 
 def _pre_present_keys(content_blocks: list[Any]) -> set[Any]:
@@ -677,7 +680,7 @@ class RequestOrchestrator:
         resolved_user_model: Any = _UNSET,
         resolved_user_done: bool = False,
         attachment_bytes: dict[str, Any] | None = None,
-    ) -> AsyncGenerator[str, None] | dict[str, Any] | str | StreamingResponse | None:
+    ) -> dict[str, Any] | str | StreamingResponse | None:
         user_id = user_id or str(__user__.get("id") or __metadata__.get("user_id") or "")
         user_model, user_model_resolved = await _resolve_user_model(
             user_id, resolved_user_model, self.logger
@@ -1204,8 +1207,18 @@ class RequestOrchestrator:
             for name, cfg in owui_registry.items()
             if isinstance(name, str) and name.strip() and is_builtin_ask_user(cfg)
         }
+        withheld_builtin_ask_user_names: set[str] = set()
+        withheld_open_webui_names: frozenset[str] = frozenset()
         if withhold_owui_tools:
             resolved_names = _resolved_tool_names(owui_registry, direct_registry) | unreachable_direct_names
+            for name, cfg in owui_registry.items():
+                if not self._pipe._ensure_tool_executor()._is_builtin_ask_user(cfg):
+                    continue
+                withheld_builtin_ask_user_names.add(name)
+                spec_name = (cfg.get("spec") or {}).get("name") if isinstance(cfg, dict) else None
+                if isinstance(spec_name, str) and spec_name.strip():
+                    withheld_builtin_ask_user_names.add(spec_name.strip())
+            withheld_open_webui_names = frozenset(resolved_names)
             owui_registry = {}
             direct_registry = {}
             incoming_tools = [
@@ -1580,6 +1593,7 @@ class RequestOrchestrator:
                 task_reasoning._apply_gemini_thinking_config(responses_body, valves, honour_existing_budget=False)
                 task_reasoning._fit_effort_none_to_model(responses_body, settings_applied=True)
 
+            _strip_switched_off_server_tools(responses_body, valves)
             result = await self._pipe._ensure_task_model_adapter()._run_task_model_request(
                 responses_body.model_dump(),
                 valves,
@@ -1737,8 +1751,12 @@ class RequestOrchestrator:
         __tools__ = exec_registry
         if isinstance(__metadata__, dict) and exposed_to_origin:
             __metadata__["_pipe_exposed_to_origin"] = exposed_to_origin
-        if isinstance(__metadata__, dict) and builtin_ask_user_names:
-            __metadata__["_pipe_builtin_ask_user_names"] = frozenset(builtin_ask_user_names)
+        if isinstance(__metadata__, dict) and (builtin_ask_user_names or withheld_builtin_ask_user_names):
+            __metadata__["_pipe_builtin_ask_user_names"] = frozenset(
+                builtin_ask_user_names | withheld_builtin_ask_user_names
+            )
+        if isinstance(__metadata__, dict) and withheld_open_webui_names:
+            __metadata__["_pipe_open_webui_owned_names"] = withheld_open_webui_names
 
         context = self._pipe._TOOL_CONTEXT.get()
         if context is not None and _reaches_display_file(exposed_to_origin):
@@ -2169,8 +2187,8 @@ class RequestOrchestrator:
         except UpstreamBodyUnreadable as exc:
             code = getattr(exc, "status", None) or 502
             if _is_api_caller(__metadata__):
-                escape = _transported_failure_response(
-                    exc.evidence(), code=code, stream=responses_body.stream,
+                escape = _unreadable_body_failure_response(
+                    exc, code=code, stream=responses_body.stream,
                     path=getattr(getattr(__request__, "url", None), "path", "") or "",
                 )
                 if escape is not None:

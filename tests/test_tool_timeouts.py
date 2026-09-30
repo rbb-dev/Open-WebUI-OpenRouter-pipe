@@ -492,18 +492,23 @@ async def test_a_users_own_tool_named_ask_user_may_share_its_turn(pipe_instance_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("exposed", ["ask_user", "owui__ask_user"])
 async def test_ask_user_sharing_its_turn_with_another_tool_is_refused_and_the_other_tool_runs(
-    pipe_instance_async, monkeypatch, exposed
+    pipe_instance_async, monkeypatch
 ):
+    # The bare spelling only. The collision-renamed `owui__ask_user` arm used to sit here beside it and
+    # was refused for the same reason, on the same one-line defect: the synthetic list handed to Open WebUI
+    # hard-coded the bare literal, so a name Open WebUI would not recognise as the builtin was judged by a
+    # rule Open WebUI never applied to it. H2301-2 reversed that, and the arm moved to
+    # `tests/test_the_ask_user_only_call_rule_is_open_webui_s_rule.py`, where the differential against the
+    # real `get_ask_user_tool_calls` is what states the rule rather than a string written out here.
     trace: list[str] = []
     registry = {
-        exposed: _builtin_ask_user(_answers_after(1, trace), exposed=exposed),
+        "ask_user": _builtin_ask_user(_answers_after(1, trace)),
         "lookup": _entry(_lookup(trace), tool_type="function", name="lookup"),
     }
 
     outputs, _ = await _run(
-        pipe_instance_async, monkeypatch, registry, [_call("c1", exposed, _ask(90_000)), _call("c2", "lookup")]
+        pipe_instance_async, monkeypatch, registry, [_call("c1", "ask_user", _ask(90_000)), _call("c2", "lookup")]
     )
 
     assert trace == ["looked up"]

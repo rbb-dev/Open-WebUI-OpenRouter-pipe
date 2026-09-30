@@ -25,6 +25,7 @@ from open_webui_openrouter_pipe.core.errors import (
     _build_openrouter_api_error,
 )
 from open_webui_openrouter_pipe.filters import FilterManager
+from open_webui_openrouter_pipe.filters.filter_manager import _WriteOutcome
 from open_webui_openrouter_pipe.filters.video_filter_renderer import (
     _CONTROL_TEXT,
     _PASSTHROUGH_CONTROLS,
@@ -5553,7 +5554,7 @@ async def test_a_video_filter_is_re_identified_whatever_its_id_needs_escaping(mo
     pipe = MagicMock()
     manager = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
     manager._ensure_filter_installed = AsyncMock(
-        side_effect=lambda **kw: (captured.update(kw), (kw["preferred_id"], False))[1]
+        side_effect=lambda **kw: (captured.update(kw), (kw["preferred_id"], _WriteOutcome()))[1]
     )
 
     await manager._ensure_single_video_gen_filter_function_id(
@@ -5611,7 +5612,7 @@ async def test_one_video_models_install_failure_costs_only_that_model():
         attempted.append(kwargs["preferred_id"])
         if kwargs["preferred_id"] == doomed_id:
             raise RuntimeError("the database is locked")
-        return kwargs["preferred_id"], False
+        return kwargs["preferred_id"], _WriteOutcome()
 
     pipe = MagicMock()
     fm = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())

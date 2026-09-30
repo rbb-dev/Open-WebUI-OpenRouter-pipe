@@ -4221,7 +4221,9 @@ async def test_the_installed_filter_is_built_for_the_model_its_own_valve_names(
 
     async def _record(**kwargs):
         captured.update(kwargs)
-        return "or_image_gen", False
+        from open_webui_openrouter_pipe.filters.filter_manager import _WriteOutcome
+
+        return "or_image_gen", _WriteOutcome()
 
     manager._ensure_filter_installed = _record
 

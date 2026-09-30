@@ -504,7 +504,10 @@ def aggregate_sources(results: list[FusionMemberResult]) -> list[dict[str, str]]
             if not url or url in seen:
                 continue
             seen.add(url)
-            out.append({"url": url, "title": src.get("title") or url})
+            title = src.get("title") or url
+            if title == src.get("url"):
+                title = url
+            out.append({"url": url, "title": title})
     return out
 
 

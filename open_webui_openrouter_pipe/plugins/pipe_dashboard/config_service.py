@@ -8,6 +8,7 @@ from typing import Any
 
 import annotated_types as at
 from pydantic import ValidationError
+from pydantic_core import PydanticUndefined
 
 from ...core.config import EncryptedStr, _is_template_valve, _valve_schema
 from ...core.valve_salvage import carry_renamed_valves
@@ -222,6 +223,17 @@ async def stored_row_readable(pipe_id: str, stored: Any) -> tuple[bool, str]:
 GATE_VALVE_KEYS = ("PIPE_DASHBOARD_ENABLE", "ENABLE_PLUGIN_SYSTEM")
 
 
+def _declared_gate_default(valves: Any, key: str) -> Any:
+    fields = getattr(type(valves), "model_fields", None)
+    info = fields.get(key) if isinstance(fields, dict) else None
+    if info is None:
+        return None
+    default = getattr(info, "default", None)
+    if default is PydanticUndefined or default is None:
+        return None
+    return default
+
+
 async def stored_gate_valves(pipe_id: Any, valves: Any) -> tuple[dict[str, Any], bool]:
     stored: Any = None
     try:
@@ -250,12 +262,31 @@ async def stored_gate_valves(pipe_id: Any, valves: Any) -> tuple[dict[str, Any],
         return {}, False
     merged: dict[str, Any] = {}
     for key in GATE_VALVE_KEYS:
-        value = getattr(valves, key, None)
-        if value is not None:
-            merged[key] = value
+        declared = _declared_gate_default(valves, key)
+        if declared is not None:
+            merged[key] = declared
         if isinstance(stored, dict) and stored.get(key) is not None:
             merged[key] = stored[key]
     return merged, True
+
+
+async def persisted_dashboard_enabled(pipe: Any) -> tuple[bool, bool]:
+    valves = getattr(pipe, "valves", None)
+    if valves is None:
+        return True, True
+    merged, read_ok = await stored_gate_valves(getattr(pipe, "id", ""), valves)
+    if not read_ok:
+        return False, False
+    if not hasattr(valves, "PIPE_DASHBOARD_ENABLE") and "PIPE_DASHBOARD_ENABLE" not in merged:
+        return True, True
+    return bool(merged.get("PIPE_DASHBOARD_ENABLE", _dashboard_valve_default())), True
+
+
+def _dashboard_valve_default() -> bool:
+    from .plugin import PipeDashboardPlugin
+
+    _type, field = PipeDashboardPlugin.plugin_valves["PIPE_DASHBOARD_ENABLE"]
+    return bool(getattr(field, "default", False))
 
 
 def merge_for_save_with_drops(

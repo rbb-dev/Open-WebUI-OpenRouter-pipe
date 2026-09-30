@@ -297,14 +297,22 @@ def test_the_image_gen_note_never_promises_fewer_settings_than_the_panel_draws()
     )
 
 
-def _size_records(published: dict[str, tuple[str, ...] | None]) -> list[dict]:
-    """One record per company, publishing the tier list it was given."""
+def _size_records(
+    published: dict[str, tuple[str, ...] | None], name: str = "resolution"
+) -> list[dict]:
+    """One record per company, publishing the tier list it was given, under ``name``.
+
+    The published name is a parameter because OpenRouter documents the two as
+    equivalent and a model may use either: every classification downstream of this
+    fixture is supposed to hold whichever one a company chose, and hardcoding
+    ``resolution`` here is what let a ``size`` publisher go unchecked.
+    """
     return [
         {
             "provider_slug": slug,
             "provider_tag": slug,
             "supported_parameters": (
-                {} if values is None else {"resolution": {"type": "enum", "values": list(values)}}
+                {} if values is None else {name: {"type": "enum", "values": list(values)}}
             ),
         }
         for slug, values in published.items()
@@ -315,6 +323,22 @@ _GEN_TIER_CONTRACTS: dict[str, list[dict]] = {
     "companies-sharing-a-list": _size_records({"alpha": ("1K", "2K"), "beta": ("1K", "2K", "4K")}),
     "companies-with-different-lists": _size_records({"alpha": ("1K", "2K"), "beta": ("4K",)}),
     "one-company-with-no-list": _size_records({"alpha": None}),
+    "tiers-under-size-one-company": _size_records({"alpha": ("1K", "2K")}, "size"),
+    "tiers-under-size-two-companies": _size_records(
+        {"alpha": ("1K", "2K"), "beta": ("1K", "2K", "4K")}, "size"
+    ),
+    "tiers-under-both-names": [
+        {
+            "provider_slug": "alpha",
+            "provider_tag": "alpha",
+            "supported_parameters": {"size": {"type": "enum", "values": ["1K", "2K"]}},
+        },
+        {
+            "provider_slug": "beta",
+            "provider_tag": "beta",
+            "supported_parameters": {"resolution": {"type": "enum", "values": ["1K", "2K", "4K"]}},
+        },
+    ],
 }
 
 
@@ -348,6 +372,14 @@ def test_the_gen_note_and_the_size_field_read_one_classification_of_the_tiers(ca
     )
     from open_webui_openrouter_pipe.integrations.image_types import TIER_EQUIVALENT
 
+    # The clause is labelled from the control the panel actually drew, so the name is
+    # read back off the title that control carries rather than assumed to be the
+    # `resolution` one -- which is the name a `size` publisher's panel does not draw.
+    _SIZE_NAME_OF_TITLE = {
+        IMAGE_KNOB_TITLES["size"][0]: "size",
+        IMAGE_KNOB_TITLES[TIER_EQUIVALENT["size"]][0]: TIER_EQUIVALENT["size"],
+    }
+
     model_id = "vendor/probe"
     records = _GEN_TIER_CONTRACTS[case]
     spec = build_image_model_filter_spec(
@@ -376,7 +408,7 @@ def test_the_gen_note_and_the_size_field_read_one_classification_of_the_tiers(ca
         )
         state = states.pop()
 
-    clause = gen_tier_clause(state, model_id)
+    clause = gen_tier_clause(state, model_id, _SIZE_NAME_OF_TITLE[drawn[0]])
     assert clause in note, (
         f"{case}: the panel draws {drawn[0]} and its box reads as {state!r}, and the note "
         f"above it accounts for the size control differently: {note!r}"

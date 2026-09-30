@@ -17,6 +17,7 @@ from ..core.logging_system import SessionLogger
 from ..core.warn_latch import warn_level
 from .client import (
     TaskModelFault,
+    _content_part_text,
     _model_answer,
     normalise_model_content,
     output_message_text,
@@ -67,6 +68,8 @@ def _response_text(response: Any) -> str:
                 content = _model_answer(message)
                 if isinstance(content, str):
                     return content
+                if isinstance(content, dict):
+                    return _content_part_text(content) or ""
                 if content is not None:
                     return normalise_model_content(content)
         output = response.get("output")
@@ -155,7 +158,6 @@ async def call_with_candidates(
         raise TaskModelFault("no_task_model_candidates")
 
     last_error: Exception | None = None
-    seen_output: list[str] = []
     deadline = time.monotonic() + timeout_s
 
     async def _attempt(fd: dict[str, Any]) -> Any:
@@ -167,6 +169,7 @@ async def call_with_candidates(
         return params
 
     for index, model_id in enumerate(candidates):
+        seen_output: list[str] = []
         try:
             form_data = build_form_data(model_id)
         except asyncio.CancelledError:

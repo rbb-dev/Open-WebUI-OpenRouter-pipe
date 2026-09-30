@@ -91,6 +91,10 @@ A model the catalogue marks `reasoning.mandatory` is not asked to stop, whatever
 
 Housekeeping tasks are still passed through the same OpenRouter request-field filter (only documented OpenRouter Responses fields are retained; explicit `null` values are dropped). That filter runs on the responses branch only: a task routed to `/chat/completions` is translated after the filter has already had its say, so the field it drops is the one the responses endpoint does not take.
 
+### The server-tool switches apply here too
+
+A task turn's request is filtered by the same `ENABLE_*` server-tool switches as a chat turn's: while one is off, the pipe does not send that tool on a task request either, even if an inlet filter or an admin's Task Model parameters row put it there. The switch is about the deployment, not about the kind of request. Nothing else about a task turn changes — the pipe still *injects* no server tools on this leg, so a title generation never gains a web search or an advisor of its own.
+
 ### Nothing a housekeeping task does reaches the chat message
 
 Open WebUI launches housekeeping tasks with the metadata of the turn that just

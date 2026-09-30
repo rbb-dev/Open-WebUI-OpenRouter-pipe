@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import io
 import logging
 import math
@@ -14,9 +15,10 @@ import shutil
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
+import weakref
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 import imageio.v3 as iio  # type: ignore[import-untyped]
 from PIL import Image
@@ -65,7 +67,8 @@ _PLAYLIST_MAGIC: tuple[bytes, ...] = (
 )
 _PLAYLIST_HEAD_BYTES = 64
 
-_extraction_semaphore: asyncio.Semaphore | None = None
+_extraction_semaphores: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+_ACTIVE_SLOT: contextvars.ContextVar = contextvars.ContextVar("extraction_slot", default=None)
 _ABANDONED = "extraction abandoned: the awaiting task was cancelled"
 
 
@@ -73,12 +76,67 @@ def _cancelled(cancel: threading.Event | None) -> bool:
     return cancel is not None and cancel.is_set()
 
 
+class _ExtractionSlot:
+    def __init__(self, sem: asyncio.Semaphore, loop: asyncio.AbstractEventLoop) -> None:
+        self._sem = sem
+        self._loop = loop
+        self._lock = threading.Lock()
+        self._pending = 0
+        self._closed = False
+        self._given_back = False
+
+    async def __aenter__(self) -> Self:
+        await self._sem.acquire()
+        _ACTIVE_SLOT.set(self)
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        _ACTIVE_SLOT.set(None)
+        with self._lock:
+            self._closed = True
+            if self._given_back or self._pending:
+                return
+            self._given_back = True
+        self._sem.release()
+
+    def spend(self) -> None:
+        with self._lock:
+            self._pending += 1
+
+    def reclaim(self) -> None:
+        with self._lock:
+            self._pending -= 1
+            if self._given_back or not self._closed or self._pending:
+                return
+            self._given_back = True
+        try:
+            self._loop.call_soon_threadsafe(self._sem.release)
+        except RuntimeError:
+            pass
+
+
+def _extraction_slot() -> _ExtractionSlot:
+    return _ExtractionSlot(_ensure_extraction_semaphore(), asyncio.get_running_loop())
+
+
 async def _abandonable(
     func, /, *args, deadline: float | None = None, label: str = "", **kwargs
 ):
     cancel = threading.Event()
-    try:
+    slot = _ACTIVE_SLOT.get()
+    if slot is None:
         offload = asyncio.to_thread(func, *args, cancel=cancel, **kwargs)
+    else:
+        slot.spend()
+
+        def _run():
+            try:
+                return func(*args, cancel=cancel, **kwargs)
+            finally:
+                slot.reclaim()
+
+        offload = asyncio.to_thread(_run)
+    try:
         if deadline is None:
             return await offload
         return await asyncio.wait_for(offload, timeout=deadline)
@@ -91,22 +149,15 @@ async def _abandonable(
 
 
 def _ensure_extraction_semaphore() -> asyncio.Semaphore:
-    global _extraction_semaphore
     try:
-        current_loop = asyncio.get_running_loop()
+        loop: Any = asyncio.get_running_loop()
     except RuntimeError:
-        current_loop = None
-    sem = _extraction_semaphore
-    if sem is not None:
-        try:
-            sem_loop = getattr(sem, "_get_loop", lambda: None)()
-        except RuntimeError:
-            sem_loop = None
-        if current_loop is not None and sem_loop is not current_loop:
-            _extraction_semaphore = None
-    if _extraction_semaphore is None:
-        _extraction_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_EXTRACTIONS)
-    return _extraction_semaphore
+        return asyncio.Semaphore(_MAX_CONCURRENT_EXTRACTIONS)
+    sem = _extraction_semaphores.get(loop)
+    if sem is None:
+        sem = asyncio.Semaphore(_MAX_CONCURRENT_EXTRACTIONS)
+        _extraction_semaphores[loop] = sem
+    return sem
 
 
 class FrameExtractionError(Exception):
@@ -231,7 +282,9 @@ def _ffprobe_stream_duration(path: Path) -> float | None:
     return _usable_duration((proc.stdout or "").strip())
 
 
-def _ffmpeg_binary() -> str | None:
+def _ffmpeg_binary(cancel: threading.Event | None = None) -> str | None:
+    if _cancelled(cancel):
+        return None
     binary = shutil.which("ffmpeg")
     if binary is not None:
         return binary
@@ -321,7 +374,11 @@ def _last_time_seconds(stderr: str) -> float | None:
     return None
 
 
-def _video_track_seconds_sync(path: Path) -> float | None:
+def _video_track_seconds_sync(
+    path: Path, cancel: threading.Event | None = None,
+) -> float | None:
+    if _cancelled(cancel):
+        return None
     try:
         _refuse_unsafe_input(path)
     except FrameExtractionError:
@@ -344,7 +401,9 @@ def _video_track_seconds_sync(path: Path) -> float | None:
 
 
 async def _video_track_seconds(path: Path) -> float | None:
-    return await asyncio.to_thread(_video_track_seconds_sync, path)
+    return await _abandonable(
+        _video_track_seconds_sync, path, label="video_track_seconds",
+    )
 
 
 def _probe_video_sync(path: Path, cancel: threading.Event | None = None) -> VideoMetadata:
@@ -400,6 +459,17 @@ async def probe_video(path: Path) -> VideoMetadata:
     )
 
 
+async def _pictures_own_length(meta: VideoMetadata, path: Path) -> float:
+    if meta.duration_is_stream or not meta.has_audio:
+        return meta.duration_seconds
+    video_s = await _video_track_seconds(path)
+    if video_s is None:
+        return meta.duration_seconds
+    if meta.duration_seconds - video_s <= _TRACK_LENGTH_TOLERANCE_S:
+        return meta.duration_seconds
+    return video_s
+
+
 async def _container_length_is_the_pictures(meta: VideoMetadata, path: Path) -> bool:
     if meta.duration_is_stream or not meta.has_audio:
         return True
@@ -451,6 +521,11 @@ def _declared_size(path: Path) -> tuple[int, int] | None:
     return None
 
 
+def _scaled_frame_size(width: int, height: int) -> tuple[int, int]:
+    out_w = min(_MAX_FRAME_WIDTH, width)
+    return out_w, max(2, int(height * out_w / width / 2.0 + 0.5) * 2)
+
+
 def _read_cap(max_frame_bytes: int) -> int:
     if max_frame_bytes <= 0:
         return 0
@@ -485,7 +560,11 @@ async def _stop_child(
             await stderr_task
 
 
-def _normalise_frame_sync(stdout: bytes) -> tuple[bytes, int, int]:
+def _normalise_frame_sync(
+    stdout: bytes, cancel: threading.Event | None = None,
+) -> tuple[bytes, int, int]:
+    if _cancelled(cancel):
+        raise FrameExtractionError(_ABANDONED)
     img = Image.open(io.BytesIO(stdout))
     if _over_pixel_cap(img.width, img.height):
         raise _ffmpeg_pixel_cap_refusal(img.width, img.height)
@@ -547,7 +626,7 @@ async def _extract_frame_ffmpeg(
     path_str = str(path)
     input_format = _refuse_unsafe_input(path)
 
-    ffmpeg_bin = await asyncio.to_thread(_ffmpeg_binary)
+    ffmpeg_bin = await _abandonable(_ffmpeg_binary, label="ffmpeg_binary")
     if ffmpeg_bin is None:
         raise FrameExtractionError("ffmpeg unavailable")
 
@@ -615,7 +694,9 @@ async def _extract_frame_ffmpeg(
                 )
             if not stdout:
                 raise FrameExtractionError("ffmpeg produced empty output", no_frame=True)
-            stdout, width, height = await asyncio.to_thread(_normalise_frame_sync, stdout)
+            stdout, width, height = await _abandonable(
+                _normalise_frame_sync, stdout, label="normalise",
+            )
             if saw_damage is not None:
                 saw_damage.append(walked_past_damage)
             if hop_index is not None:
@@ -706,6 +787,7 @@ async def extract_frame(
     logger: logging.Logger | None = None,
     max_frame_bytes: int = 0,
     meta: VideoMetadata | None = None,
+    probe_failed: bool = False,
 ) -> ExtractedFrame:
     return await _extract_frame_with_budget(
         path,
@@ -716,6 +798,7 @@ async def extract_frame(
         logger=logger,
         max_frame_bytes=max_frame_bytes,
         meta=meta,
+        probe_failed=probe_failed,
     )
 
 
@@ -729,6 +812,7 @@ async def _extract_frame_with_budget(
     logger: logging.Logger | None = None,
     max_frame_bytes: int = 0,
     meta: VideoMetadata | None = None,
+    probe_failed: bool = False,
 ) -> ExtractedFrame:
     """Extract a frame from a video file.
 
@@ -748,7 +832,7 @@ async def _extract_frame_with_budget(
             "at_timestamp requires a finite non-negative timestamp_seconds"
         )
 
-    async with _ensure_extraction_semaphore():
+    async with _extraction_slot():
         downgrade_note = ""
         requested_ts = timestamp_seconds if target == "at_timestamp" else None
         use_end_seek = False
@@ -760,14 +844,23 @@ async def _extract_frame_with_budget(
             actual_ts = 0.0
             resolved_target = "first_frame"
         elif target in ("last_frame", "at_timestamp"):
-            if probed_meta is None:
+            if probed_meta is None and not probe_failed:
                 try:
                     probed_meta = await probe_video(path)
                 except FrameExtractionError:
                     probed_meta = None
+                    probe_failed = True
             if target == "last_frame":
                 if probed_meta and probed_meta.duration_seconds > 0:
-                    actual_ts = _index_end(probed_meta, "last")
+                    actual_ts = _index_end(
+                        replace(
+                            probed_meta,
+                            duration_seconds=await _pictures_own_length(
+                                probed_meta, path,
+                            ),
+                        ),
+                        "last",
+                    )
                 else:
                     # No probe -> can't compute a duration-based timestamp. Input
                     # seeking past EOF returns 0 bytes, so seek from the end instead
@@ -824,6 +917,21 @@ async def _extract_frame_with_budget(
                     resolved_target=resolved_target,
                 )
 
+        display_size: tuple[int, int] | None = None
+        if probed_meta is not None and probed_meta.width > 0 and probed_meta.height > 0:
+            display_size = (probed_meta.width, probed_meta.height)
+        elif not probe_failed:
+            try:
+                display_size = await asyncio.wait_for(
+                    asyncio.to_thread(_declared_size, path), timeout=_PROBE_DEADLINE_S,
+                )
+            except TimeoutError:
+                display_size = None
+        if display_size is not None and display_size[0] > 0 and display_size[1] > 0:
+            out_w, out_h = _scaled_frame_size(*display_size)
+            if _over_pixel_cap(out_w, out_h):
+                raise _ffmpeg_pixel_cap_refusal(out_w, out_h)
+
         direct_saw_damage: list[bool] = []
         direct_hop: list[int] = []
         try:
@@ -876,7 +984,15 @@ async def _extract_frame_with_budget(
                     and probed_meta is not None
                     and probed_meta.duration_seconds > 0
                 ):
-                    last_index_end = _index_end(probed_meta, "last")
+                    last_index_end = _index_end(
+                        replace(
+                            probed_meta,
+                            duration_seconds=await _pictures_own_length(
+                                probed_meta, path,
+                            ),
+                        ),
+                        "last",
+                    )
                     try:
                         png_bytes, w, h = await _extract_frame_ffmpeg(
                             path, timestamp_seconds=last_index_end,
@@ -886,6 +1002,15 @@ async def _extract_frame_with_budget(
                     except FrameExtractionError:
                         pass
                     else:
+                        _check_frame_bytes(png_bytes, max_frame_bytes)
+                        walked_past_damage = bool(
+                            (direct_saw_damage and direct_saw_damage[0])
+                            or (ladder_saw_damage and ladder_saw_damage[0])
+                        )
+                        if walked_past_damage and not downgrade_note:
+                            downgrade_note = "frame_damaged_used_last_decodable_frame"
+                        elif not downgrade_note and overshoot_measured:
+                            downgrade_note = overshoot_downgrade
                         return ExtractedFrame(
                             image_bytes=png_bytes, width=w, height=h,
                             actual_timestamp_seconds=last_index_end,

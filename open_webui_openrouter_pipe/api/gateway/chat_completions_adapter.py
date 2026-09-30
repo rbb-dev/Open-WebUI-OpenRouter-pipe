@@ -348,7 +348,7 @@ class ChatCompletionsAdapter:
 
         def _match_open_tool_call(
             slots: dict[int, dict[str, Any]], raw_call: dict[str, Any]
-        ) -> int:
+        ) -> int | None:
             raw_id = raw_call.get("id")
             has_raw_id = isinstance(raw_id, str) and bool(raw_id.strip())
             function_frame = raw_call.get("function")
@@ -370,6 +370,10 @@ class ChatCompletionsAdapter:
                     if _slot_is_open(slots[open_index]):
                         matched = open_index
                         break
+            if matched is None and not has_raw_id and not has_frame_name:
+                arguments = function_frame.get("arguments") if isinstance(function_frame, dict) else None
+                if not isinstance(arguments, str) or not arguments.lstrip().startswith("{"):
+                    return None
             if matched is None:
                 matched = max(slots.keys(), default=-1) + 1
             return matched
@@ -770,6 +774,8 @@ class ChatCompletionsAdapter:
                     index = raw_call.get("index")
                     if not isinstance(index, int):
                         index = _match_open_tool_call(tool_calls_by_index, raw_call)
+                        if index is None:
+                            continue
                     current = tool_calls_by_index.setdefault(index, {})
                     raw_id = raw_call.get("id")
                     if isinstance(raw_id, str) and raw_id.strip():

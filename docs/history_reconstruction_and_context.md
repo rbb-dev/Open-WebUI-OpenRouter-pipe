@@ -254,7 +254,9 @@ only through the card Open WebUI keeps for it in the browser, and none with card
   is recorded the same way, as a stored call carrying no result, because Open WebUI writes that round into the chat
   under the name the pipe handed back and that name is the bare one. A record is readable only through its marker
   line on the assistant message and a store that answers, so a round whose rows are gone is judged by the request's
-  tool set as before.
+  tool set as before. The identity is read from the registry **as this request received it**, even on a turn that
+  withheld the built-in from the model before the model ever saw it -- ask approval, and `function_calling: "legacy"`,
+  both empty the registry on their way to the model, and neither of them changes what a name in it is.
   The exemption is also **per round**, not per call id: a model may reuse one `call_id` across two rounds, and on the
   replay path the exempt round is the one whose own stored call is the built-in, while the other round on that same
   id is withheld. Because each output is paired with its own call, a tool round that shares an id with a built-in

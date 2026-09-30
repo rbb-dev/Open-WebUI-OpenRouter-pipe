@@ -2258,6 +2258,7 @@ async def test_one_request_never_dispatches_two_contradictory_generation_events(
         ("image/png", "png"),
         ("image/jpeg", "jpeg"),
         ("image/svg+xml", "svg"),
+        ("image/tif", "tiff"),
         ("image/exe", "png"),
         ("image/" + "Z" * 400, "png"),
     ],

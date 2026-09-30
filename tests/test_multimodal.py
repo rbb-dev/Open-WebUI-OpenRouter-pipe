@@ -26,6 +26,10 @@ import pytest
 import pytest_asyncio
 
 from open_webui_openrouter_pipe import Pipe
+from open_webui_openrouter_pipe.core.config import (
+    _REMOTE_FILE_MAX_SIZE_DEFAULT_MB,
+    _REMOTE_FILE_MAX_SIZE_MAX_MB,
+)
 from open_webui_openrouter_pipe.core.url_scheme import url_scheme
 from open_webui_openrouter_pipe.requests import transformer as transformer_module
 from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input

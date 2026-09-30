@@ -3054,8 +3054,8 @@ class TestFilterOpenrouterRequestResponsesExtensions:
     # real chat filter, from the same table rather than a parallel list of values.
     # See `tests/test_a_service_tier_and_prompt_cache_key_reach_the_chat_endpoint.py`
     # for the end-to-end statement on the wire.
-    SHARED_WITH_CHAT = ("prompt_cache_key", "service_tier")
-    RESPONSES_ONLY = ("max_tool_calls", "safety_identifier")
+    SHARED_WITH_CHAT = ("max_tool_calls", "prompt_cache_key", "service_tier")
+    RESPONSES_ONLY = ("safety_identifier",)
 
 class TestImageConfigPydanticRoundTrip:
     """`image_config` on `ResponsesBody` is now `Optional[Dict[str, Any]]` (was `Optional[Union[str, float]]`).

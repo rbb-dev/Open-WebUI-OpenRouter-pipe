@@ -221,10 +221,7 @@ __KEEP_WHAT_STILL_FITS__
                 except Exception:
                     return self.UserValves()
             if isinstance(raw, dict):
-                try:
-                    return self.UserValves(**raw)
-                except Exception:
-                    return self.UserValves()
+                return self.UserValves.model_validate(raw)
         return self.UserValves()
 
     def inlet(

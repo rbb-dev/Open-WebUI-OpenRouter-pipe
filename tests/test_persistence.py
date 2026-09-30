@@ -1422,11 +1422,14 @@ def test_shutdown_no_executor(pipe_instance):
 
 
 def test_shutdown_with_cancel_futures(pipe_instance):
-    """Test shutdown with cancel_futures support."""
+    """close() hands the pool back: the executor it captured refuses new work."""
     _install_fake_store(pipe_instance)
     store = pipe_instance._artifact_store
+    executor = store._db_executor
     store.close()
     assert store._db_executor is None
+    with pytest.raises(RuntimeError):
+        executor.submit(lambda: None)
 
 
 def test_shutdown_without_cancel_futures(pipe_instance, monkeypatch):

@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.filters import FilterManager
 from open_webui_openrouter_pipe.filters.filter_manager import (
+    _WriteOutcome,
     _PIPE_INSTALLED_META_KEY,
     _PIPE_OFF_META_KEY,
     _meta_dict,
@@ -3128,7 +3129,7 @@ async def test_a_valve_read_that_failed_leaves_the_installed_filter_alone():
 
     pipe = MagicMock()
     manager = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
-    manager._ensure_filter_installed = AsyncMock(return_value=("openrouter_image_gen", False))
+    manager._ensure_filter_installed = AsyncMock(return_value=("openrouter_image_gen", _WriteOutcome()))
 
     installed = SimpleNamespace(id="openrouter_image_gen", content=_OPENROUTER_IMAGE_GEN_FILTER_MARKER)
 

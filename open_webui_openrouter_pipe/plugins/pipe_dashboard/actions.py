@@ -24,8 +24,8 @@ from .config_service import (
     is_secret,
     json_safe,
     merge_for_save_with_drops,
+    persisted_dashboard_enabled,
     readable_stored,
-    stored_gate_valves,
     stored_row_readable,
 )
 from .dashboard_socket import emit_config_changed, publish_valves_changed
@@ -192,12 +192,7 @@ def _audit(user: Any, name: str, outcome: str, client_ip: Any, args: Any = None)
 
 
 async def _dashboard_enabled(pipe: Any) -> bool:
-    if pipe is None:
-        return True
-    merged, read_ok = await stored_gate_valves(getattr(pipe, "id", ""), getattr(pipe, "valves", None))
-    if not read_ok:
-        return False
-    return bool(merged.get("PIPE_DASHBOARD_ENABLE", True))
+    return (await persisted_dashboard_enabled(pipe))[0]
 
 
 async def dispatch_action(
@@ -473,9 +468,6 @@ async def _persist_config_edit(
 ) -> tuple[dict[str, Any], bool]:
     current_rev = await _current_config_rev(pipe)
     client_rev = args.get("rev")
-    # An unreadable revision is a conflict on its own, independent of what the caller
-    # sent. Open WebUI's get_function_by_id catches its own DB errors and returns None,
-    # so the except arm below can never fire for a real fault -- and config_get then
     if current_rev is None or client_rev is None or client_rev != current_rev:
         effective, _dropped, stored, conflict_read_ok = await _effective_valves_and_state(pipe)
         if not conflict_read_ok and stored is None:

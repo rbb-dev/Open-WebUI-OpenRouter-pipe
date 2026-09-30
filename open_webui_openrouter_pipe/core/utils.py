@@ -238,8 +238,16 @@ def is_picture_output(output: Any) -> bool:
     )
 
 
+def is_text_part_output(output: Any) -> bool:
+    return (
+        isinstance(output, list)
+        and bool(output)
+        and all(isinstance(part, dict) and part.get("type") == "input_text" for part in output)
+    )
+
+
 def tool_output_text_and_pictures(output: Any) -> tuple[str, list[str]]:
-    if is_picture_output(output):
+    if is_picture_output(output) or is_text_part_output(output):
         text = "".join(str(part.get("text") or "") for part in output if part.get("type") == "input_text")
         return text, [str(part["image_url"]) for part in output if part.get("type") == "input_image" and part.get("image_url")]
     return (output if isinstance(output, str) else ("" if output is None else str(output))), []
@@ -624,7 +632,7 @@ def _render_error_template(template: str, values: dict[str, Any]) -> str:
             token = match.group(1) or ""
             var_name = match.group(2)
             if token.startswith("#if"):
-                condition_stack.append(bool(values.get(var_name or "")))
+                condition_stack.append(_template_value_present(values.get(var_name or "")))
             else:
                 if condition_stack:
                     condition_stack.pop()

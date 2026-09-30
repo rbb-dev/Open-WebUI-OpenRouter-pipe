@@ -7318,6 +7318,7 @@ class TestFilterAutoInstall:
             mock_functions_mod = ModuleType("open_webui.models.functions")
             mock_Functions = Mock()
             mock_Functions.get_functions_by_type = AsyncMock(return_value=[existing_filter])
+            mock_Functions.get_function_by_id = AsyncMock(return_value=existing_filter)
             mock_Functions.update_function_by_id = AsyncMock(return_value=None)
             mock_functions_mod.Functions = mock_Functions
 
@@ -9340,6 +9341,7 @@ class TestFilterAutoInstallationPaths:
 
             mock_functions_class = MagicMock()
             mock_functions_class.get_functions_by_type = AsyncMock(return_value=[mock_filter])
+            mock_functions_class.get_function_by_id = AsyncMock(return_value=mock_filter)
             mock_functions_class.update_function_by_id = AsyncMock()
 
             mock_module = MagicMock()
@@ -9574,6 +9576,7 @@ class TestDirectUploadsFilterPaths:
 
             mock_functions_class = MagicMock()
             mock_functions_class.get_functions_by_type = AsyncMock(return_value=[mock_filter])
+            mock_functions_class.get_function_by_id = AsyncMock(return_value=mock_filter)
             mock_functions_class.update_function_by_id = AsyncMock()
 
             mock_module = MagicMock()

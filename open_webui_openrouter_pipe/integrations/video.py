@@ -561,6 +561,29 @@ def _write_and_close(handle: int, blob: bytes) -> None:
         sink.write(blob)
 
 
+def _refuse_frame_over_byte_budget(
+    logger: logging.Logger,
+    *,
+    entry: FramePlanEntry,
+    position: int,
+    exc: FrameExtractionError,
+    intent: VideoIntentResult,
+    thumb_urls: list[str],
+) -> None:
+    logger.log(
+        warn_level(
+            _warned_frame_not_materialised,
+            f"byte_budget:{entry.source_index}",
+        ),
+        "frame over the byte budget for entry %s: %s",
+        entry.source_index, exc,
+    )
+    intent.downgrades.append(
+        f"frame_over_byte_budget_idx_{entry.source_index}_at_{position}"
+    )
+    thumb_urls.append("")
+
+
 class VideoResizableSemaphore(asyncio.Semaphore):
     _debt: int
 
@@ -866,6 +889,13 @@ class VideoGenerationAdapter:
                     self._apply_uploaded_attachment_retargeting(
                         intent_result, video_meta_pre, valves,
                     )
+                    confirm_mode = str(
+                        resolve_intent_user_setting(
+                            metadata, "confirm_mode",
+                            valves, "VIDEO_INTENT_CONFIRM_MODE", "on_reference",
+                        )
+                        or "on_reference"
+                    )
                     thumbs = await self._materialise_frame_plan(
                         intent=intent_result,
                         video_meta=video_meta_pre,
@@ -877,21 +907,19 @@ class VideoGenerationAdapter:
                         frame_max_bytes=_frame_max_bytes(valves),
                         video_model=video_model,
                         valves=valves,
+                        want_thumbnails=confirm_mode != "never",
                     )
                     if isinstance(metadata, dict):
                         pipe_meta = metadata.setdefault(_PIPE_METADATA_KEY, {})
                         if isinstance(pipe_meta, dict):
                             pipe_meta["video_generation"] = video_meta_pre
-                    confirm_mode = str(
-                        resolve_intent_user_setting(
-                            metadata, "confirm_mode",
-                            valves, "VIDEO_INTENT_CONFIRM_MODE", "on_reference",
-                        )
-                        or "on_reference"
-                    )
                     if should_emit_confirmation_footer(
                         intent_result, confirm_mode=confirm_mode,
-                        person_prompt_text=prompt,
+                        person_prompt_text=(
+                            prompt
+                            if intent_result.prompt == prompt
+                            else self._extract_user_prompt(body)
+                        ),
                     ):
                         disclosure_block = render_intent_disclosure_block(
                             intent=intent_result,
@@ -3083,6 +3111,7 @@ class VideoGenerationAdapter:
         frame_max_bytes: int = _DEFAULT_FRAME_MAX_BYTES,
         video_model: Any = None,
         valves: Any = None,
+        want_thumbnails: bool = True,
     ) -> list[str]:
         """For each prior_video_* entry in frame_plan, extract the frame from
         the prior video file, upload it as a new OWUI image, and inject into
@@ -3114,6 +3143,7 @@ class VideoGenerationAdapter:
 
         materialised: dict[str, Path] = {}
         probed: dict[str, VideoMetadata] = {}
+        probe_failed: set[str] = set()
         try:
             for position, entry in enumerate(intent.frame_plan):
                 if entry.source == "uploaded_attachment":
@@ -3173,7 +3203,9 @@ class VideoGenerationAdapter:
                             try:
                                 probed[file_id] = await probe_video(tmp_path)
                             except FrameExtractionError:
-                                pass
+                                probe_failed.add(file_id)
+                            else:
+                                probe_failed.discard(file_id)
 
                         frame = await extract_frame(
                             tmp_path, target=target, timestamp_seconds=ts,
@@ -3182,6 +3214,7 @@ class VideoGenerationAdapter:
                             logger=self.logger,
                             max_frame_bytes=frame_max_bytes,
                             meta=probed.get(file_id),
+                            probe_failed=file_id in probe_failed,
                         )
                         if frame.downgrade_note:
                             intent.downgrades.append(frame.downgrade_note)
@@ -3206,8 +3239,19 @@ class VideoGenerationAdapter:
                                     logger=self.logger,
                                     max_frame_bytes=frame_max_bytes,
                                     meta=probed.get(file_id),
+                                    probe_failed=file_id in probe_failed,
                                 )
-                            except FrameExtractionError:
+                            except FrameExtractionError as retry_exc:
+                                if getattr(retry_exc, "byte_budget", False):
+                                    _refuse_frame_over_byte_budget(
+                                        self.logger,
+                                        entry=entry,
+                                        position=position,
+                                        exc=retry_exc,
+                                        intent=intent,
+                                        thumb_urls=thumb_urls,
+                                    )
+                                    continue
                                 raise exc
                             intent.downgrades.append(
                                 f"frame_pixel_cap_used_scaled_frame_idx_{entry.source_index}_at_{position}"
@@ -3218,18 +3262,14 @@ class VideoGenerationAdapter:
                             if frame.downgrade_note:
                                 intent.downgrades.append(frame.downgrade_note)
                         elif getattr(exc, "byte_budget", False):
-                            self.logger.log(
-                                warn_level(
-                                    _warned_frame_not_materialised,
-                                    f"byte_budget:{entry.source_index}",
-                                ),
-                                "frame over the byte budget for entry %s: %s",
-                                entry.source_index, exc,
+                            _refuse_frame_over_byte_budget(
+                                self.logger,
+                                entry=entry,
+                                position=position,
+                                exc=exc,
+                                intent=intent,
+                                thumb_urls=thumb_urls,
                             )
-                            intent.downgrades.append(
-                                f"frame_over_byte_budget_idx_{entry.source_index}_at_{position}"
-                            )
-                            thumb_urls.append("")
                             continue
                         else:
                             self.logger.log(
@@ -3275,6 +3315,14 @@ class VideoGenerationAdapter:
 
                     if entry.target in ("first_frame", "last_frame"):
                         extracted = entry.target
+                        supported_types = self._supported_frame_types(video_model)
+                        if supported_types and extracted not in supported_types:
+                            extracted = next(
+                                (c for c in (entry.target, "first_frame") if c in supported_types),
+                                extracted,
+                            )
+                            if "frame_source_mismatch_used_first_frame" not in intent.downgrades:
+                                intent.downgrades.append("frame_source_mismatch_used_first_frame")
                         fi_list = video_meta.setdefault("frame_images", [])
                         if isinstance(fi_list, list):
                             fi_list.append({
@@ -3291,6 +3339,10 @@ class VideoGenerationAdapter:
                                 "name": f"intent-frame-input_reference.{frame_ext}",
                                 "content_type": frame_mime,
                             })
+
+                    if not want_thumbnails:
+                        thumb_urls.append("")
+                        continue
 
                     try:
                         thumb = await asyncio.to_thread(make_thumbnail, frame.image_bytes)

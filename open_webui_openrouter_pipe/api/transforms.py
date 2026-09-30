@@ -51,6 +51,7 @@ from ..core.utils import (
     _parse_model_fallback_csv,
     _sticky_session_key,
     is_picture_output,
+    is_text_part_output,
     opens_a_turn,
     recorded_tool_text,
     server_tool_arguments,
@@ -501,6 +502,7 @@ ALLOWED_OPENROUTER_CHAT_FIELDS = {
     "tools",
     "tool_choice",
     "parallel_tool_calls",
+    "max_tool_calls",
     "plugins",
     "user",
     "session_id",
@@ -1299,6 +1301,8 @@ def _responses_input_to_chat_messages(
                 if is_picture_output(output):
                     content, pictures = tool_output_text_and_pictures(output)
                     tool_pictures.extend(pictures)
+                elif is_text_part_output(output):
+                    content = tool_output_text_and_pictures(output)[0]
                 else:
                     content = output if isinstance(output, str) else (json.dumps(output, ensure_ascii=False) if output is not None else "")
                 messages.append({"role": "tool", "tool_call_id": call_id.strip(), "content": content})
@@ -1409,6 +1413,7 @@ def _responses_payload_to_chat_completions_payload(
         "max_completion_tokens",
         "web_search_options",
         "parallel_tool_calls",
+        "max_tool_calls",
         "service_tier",
         "prompt_cache_key",
     )

@@ -231,7 +231,15 @@ def _detached_task(
 def _drop_task(task: asyncio.Task | None) -> None:
     if task is not None and not task.done():
         with contextlib.suppress(Exception):
-            task.cancel()
+            loop = task.get_loop()
+            try:
+                on_running_loop = loop is asyncio.get_running_loop()
+            except RuntimeError:
+                on_running_loop = False
+            if not on_running_loop and not loop.is_closed():
+                loop.call_soon_threadsafe(task.cancel)
+            else:
+                task.cancel()
 
 
 def _wake_refused_stream(job: _PipeJob) -> None:
@@ -346,6 +354,17 @@ def _future_failed(future: asyncio.Future[Any]) -> bool:
         return False
     except Exception:  # noqa: BLE001
         return False
+
+
+def _backstop_session_log_status(outcome: dict[str, Any], future: Any) -> tuple[str, str]:
+    if future.cancelled() or outcome.get("was_cancelled") is True:
+        return "cancelled", str(outcome.get("reason") or "cancelled")
+    exc = None
+    with contextlib.suppress(Exception):
+        exc = future.exception()
+    if outcome.get("error_occurred") is True or exc is not None:
+        return "error", str(outcome.get("reason") or ("" if exc is None else str(exc)))
+    return "complete", ""
 
 
 def _reports_transport_failure(result: Any) -> bool:
@@ -1706,7 +1725,7 @@ class Pipe:
                 if _is_install_enumeration_failure(exc):
                     raise
         try:
-            if not await self._ensure_filter_manager().repair_web_tools_filters(rows):
+            if not await self._ensure_filter_manager().repair_web_tools_filters():
                 ok = False
         except Exception as exc:
             ok = False
@@ -2210,6 +2229,13 @@ class Pipe:
                     _admission_bound(type(self)._semaphore_limit or int(valves.MAX_CONCURRENT_REQUESTS), int(self._QUEUE_MAXSIZE)),
                     job.request_id,
                 )
+                if referer_override_invalid and wants_stream:
+                    await self._event_emitter_handler._emit_notification(
+                        safe_event_emitter,
+                        "HTTP_REFERER_OVERRIDE must be a full URL including http(s)://. "
+                        "Falling back to the default pipe referer.",
+                        level="warning",
+                    )
                 return await self._refuse_at_admission(job, wants_stream=wants_stream)
             _enqueued = True
         except Exception:
@@ -2256,9 +2282,21 @@ class Pipe:
 
             @timed
             async def _stream() -> AsyncGenerator[dict[str, Any] | str, None]:
+                reported = False
                 try:
                     while True:
                         if future.done() and stream_queue.empty():
+                            if not reported and not future.cancelled():
+                                exc = future.exception()
+                                if exc is not None:
+                                    yield {
+                                        "error": {
+                                            "detail": self._ensure_error_formatter()._safe_detail(
+                                                "Request failed. Please retry.",
+                                            ),
+                                        },
+                                        "done": True,
+                                    }
                             break
                         item = await _next_stream_item()
                         if item is _NO_FRAME:
@@ -2266,10 +2304,14 @@ class Pipe:
                         stream_queue.task_done()
                         if item is None:
                             break
+                        if isinstance(item, dict) and "error" in item:
+                            reported = True
                         yield item
                 finally:
                     if not future.done():
                         future.cancel()
+                    elif not future.cancelled():
+                        future.exception()
                     if job.admission_refused and future.cancelled():
                         await self._refuse_at_admission(job, wants_stream=wants_stream)
                     SessionLogger.cleanup()
@@ -2606,8 +2648,6 @@ class Pipe:
             except asyncio.QueueEmpty:
                 break
             drained += 1
-            if drained > Pipe._QUEUE_MAXSIZE:
-                break
             SessionLogger.process_record(record)
             with contextlib.suppress(ValueError):
                 owned_queue.task_done()
@@ -3318,17 +3358,7 @@ class Pipe:
                     with SessionLogger._state_lock:
                         fallback_events = list(SessionLogger.logs.get(rid, []))
                     if fallback_events:
-                        status = "complete"
-                        reason = ""
-                        if job.future.cancelled():
-                            status = "cancelled"
-                            reason = "cancelled"
-                        else:
-                            with contextlib.suppress(Exception):
-                                exc = job.future.exception()
-                                if exc is not None:
-                                    status = "error"
-                                    reason = str(exc)
+                        status, reason = _backstop_session_log_status(outcome, job.future)
 
                         from .logging.session_log_manager import resolve_message_id
                         resolved_user_id = str(job.user_id or job.user.get("id") or job.metadata.get("user_id") or "")
@@ -3476,6 +3506,13 @@ class Pipe:
         return tokens
 
 
+    @staticmethod
+    def _mark_failed_outcome(outcome_sink: dict[str, Any] | None, reason: str) -> None:
+        if outcome_sink is None:
+            return
+        outcome_sink["error_occurred"] = True
+        outcome_sink["reason"] = str(reason or "")
+
     @timed
     async def _handle_pipe_call(
         self,
@@ -3494,12 +3531,8 @@ class Pipe:
         valves: Pipe.Valves | None = None,
         session: aiohttp.ClientSession | None = None,
         outcome_sink: dict[str, Any] | None = None,
-    ) -> AsyncGenerator[str, None] | dict[str, Any] | str | StreamingResponse | None:
+    ) -> dict[str, Any] | str | StreamingResponse | None:
         """Process a user request and return either a stream or final text.
-
-        When ``body['stream']`` is ``True`` the method yields deltas from
-        ``_run_streaming_loop``.  Otherwise it falls back to
-        ``_run_nonstreaming_loop`` and returns the aggregated response.
         """
         if not isinstance(body, dict):
             body = {}
@@ -3529,6 +3562,7 @@ class Pipe:
             self._artifact_store._ensure_artifact_store(valves, pipe_identifier)
         except Exception as e:
             self.logger.exception("Unexpected error in _handle_pipe_call request processing")
+            self._mark_failed_outcome(outcome_sink, str(e) or type(e).__name__)
             shown = await self._ensure_error_formatter()._emit_templated_error(
                 _task_visible_channel_emitter(__event_emitter__, __task__),
                 template=valves.INTERNAL_ERROR_TEMPLATE,
@@ -3568,6 +3602,7 @@ class Pipe:
         __event_emitter__ = _task_visible_channel_emitter(__event_emitter__, __task__)
         if use_task_model_adapter and self._auth_failure_active():
             reason = "OpenRouter access is temporarily disabled after an authentication failure."
+            self._mark_failed_outcome(outcome_sink, reason)
             await self._event_emitter_handler._emit_notification(
                 __event_emitter__, reason, level="warning"
             )
@@ -3578,6 +3613,7 @@ class Pipe:
 
         api_key_value, api_key_error = self._resolve_openrouter_api_key(valves)
         if api_key_error:
+            self._mark_failed_outcome(outcome_sink, api_key_error)
             if use_task_model_adapter:
                 await self._event_emitter_handler._emit_notification(
                     __event_emitter__, api_key_error, level="warning"
@@ -3626,6 +3662,13 @@ class Pipe:
                     f"**Error ID:** `{error_id}`\n\n"
                     "Verify the API key configured for this pipe."
                 )
+            if not markdown:
+                markdown = (
+                    "### 🔐 Authentication Failed\n\n"
+                    f"{api_key_error}\n\n"
+                    f"**Error ID:** `{error_id}`\n\n"
+                    "Verify the API key configured for this pipe."
+                )
             return self._build_chat_completion_payload(
                 model=str(body.get("model") or openwebui_model_id or "pipe"),
                 content=join_answer_and_card("", markdown),
@@ -3662,6 +3705,9 @@ class Pipe:
             )
         except ValueError:
             self.logger.exception("OpenRouter catalog configuration error")
+            self._mark_failed_outcome(
+                outcome_sink, "OpenRouter configuration error. Please check this pipe's settings."
+            )
             shown = await self._ensure_error_formatter()._emit_error(
                 __event_emitter__,
                 self._ensure_error_formatter()._safe_detail(
@@ -3681,6 +3727,9 @@ class Pipe:
         except Exception as exc:
             available_models = OpenRouterModelRegistry.list_models()
             if not available_models:
+                self._mark_failed_outcome(
+                    outcome_sink, "OpenRouter model catalog unavailable. Please retry shortly."
+                )
                 shown = await self._ensure_error_formatter()._emit_error(
                     __event_emitter__,
                     "OpenRouter model catalog unavailable. Please retry shortly.",
@@ -3787,6 +3836,7 @@ class Pipe:
                 outcome_sink=outcome_sink,
             )
         except OpenRouterAPIError as e:
+            self._mark_failed_outcome(outcome_sink, str(e))
             shown = await self._ensure_error_formatter()._report_openrouter_error(
                 e,
                 event_emitter=__event_emitter__,
@@ -3795,6 +3845,7 @@ class Pipe:
             )
 
         except RequiredInternalFileError as e:
+            self._mark_failed_outcome(outcome_sink, e.user_message)
             shown = await self._ensure_error_formatter()._emit_error(
                 __event_emitter__,
                 e.user_message,
@@ -3806,6 +3857,7 @@ class Pipe:
         # Generic catch-all
         except Exception as e:
             self.logger.exception("Unexpected error in _handle_pipe_call request processing")
+            self._mark_failed_outcome(outcome_sink, str(e) or type(e).__name__)
             shown = await self._ensure_error_formatter()._emit_templated_error(
                 __event_emitter__,
                 template=valves.INTERNAL_ERROR_TEMPLATE,
@@ -3849,7 +3901,7 @@ class Pipe:
         user_valves: Pipe.UserValves | None = None,
         rejected_user_valves: list[str] | None = None,
         outcome_sink: dict[str, Any] | None = None,
-    ) -> AsyncGenerator[str, None] | dict[str, Any] | str | StreamingResponse | None:
+    ) -> dict[str, Any] | str | StreamingResponse | None:
         return await self._ensure_request_orchestrator().process_request(
             body, __user__, __request__, __event_emitter__, __event_call__, __metadata__, __tools__,
             __task__, __task_body__, valves, session, openwebui_model_id, pipe_identifier,

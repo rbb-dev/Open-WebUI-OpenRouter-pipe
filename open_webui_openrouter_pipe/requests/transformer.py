@@ -64,6 +64,7 @@ from ..core.utils import (
     contains_marker,
     is_picture_output,
     is_server_tool_call_id,
+    is_text_part_output,
     is_tool_image_handoff,
     is_tool_image_handoff_for_round,
     opens_a_turn,
@@ -1418,6 +1419,8 @@ async def transform_messages_to_input(
                 tool_content_text = ""
             elif is_picture_output(tool_content):
                 tool_content_text, tool_pictures = tool_output_text_and_pictures(tool_content)
+            elif is_text_part_output(tool_content):
+                tool_content_text = tool_output_text_and_pictures(tool_content)[0]
             elif isinstance(tool_content, str):
                 tool_content_text = tool_content
             else:

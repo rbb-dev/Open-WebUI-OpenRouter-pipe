@@ -546,7 +546,11 @@ def renders_control(spec: ImageModelFilterSpec, published: str) -> bool:
 
 
 def drawn_tier_state(spec: ImageModelFilterSpec) -> str:
-    if renders_control(spec, TIER_EQUIVALENT["size"]):
+    if renders_control(spec, TIER_EQUIVALENT["size"]) or any(
+        value in _SIZE_TIERS
+        for name in _SIZE_TIER_SOURCES
+        for value in dict(spec.enums).get(name, ())
+    ):
         return "own"
     return "split" if spec.publishes_size_tiers else "none"
 
@@ -564,7 +568,11 @@ def image_knob_text(name: str, spec: ImageModelFilterSpec) -> tuple[str, str]:
     title, description = IMAGE_KNOB_TITLES.get(name, (name, ""))
     if name != "size":
         return title, description
-    if any(published == name for published, _values in spec.enums):
+    if any(
+        published == name
+        and not any(value in _SIZE_TIERS for value in values)
+        for published, values in spec.enums
+    ):
         return title, _SIZE_PUBLISHED_LIST
     ratio = renders_control(spec, "aspect_ratio")
     tier = _SIZE_MEANING[(tier_state(spec), ratio)][0]
@@ -1117,7 +1125,18 @@ def image_gen_tool_wire_keys() -> dict[str, str]:
 def build_image_gen_tool_spec(spec: ImageModelFilterSpec) -> ImageModelFilterSpec:
     published = dict(spec.enums)
     sized = next(
-        ((source, published[source]) for source in _SIZE_TIER_SOURCES if published.get(source)),
+        (
+            (
+                source,
+                tuple(dict.fromkeys(
+                    value
+                    for name in _SIZE_TIER_SOURCES
+                    for value in published.get(name, ())
+                )),
+            )
+            for source in _SIZE_TIER_SOURCES
+            if published.get(source)
+        ),
         None,
     )
     enums: list[tuple[str, tuple[Any, ...]]] = []
@@ -1178,11 +1197,17 @@ def named_settings(spec: ImageModelFilterSpec) -> str:
     return ", ".join(spec.unkeyable_passthrough)
 
 
-def gen_tier_clause(state: str, named: str) -> str:
+def gen_tier_clause(state: str, named: str, drawn: str | None = None) -> str:
+    drawn_name = drawn or "size"
+    other = TIER_EQUIVALENT["size"] if drawn_name == "size" else "size"
+    if state == "own":
+        tiered, plain = drawn_name, other
+    else:
+        tiered, plain = other, drawn_name
     return GEN_TIER_CLAUSES[state].format(
         named=named,
-        tiered=IMAGE_KNOB_TITLES[TIER_EQUIVALENT["size"]][0],
-        plain=IMAGE_KNOB_TITLES["size"][0],
+        tiered=IMAGE_KNOB_TITLES[tiered][0],
+        plain=IMAGE_KNOB_TITLES[plain][0],
     )
 
 
@@ -1209,7 +1234,15 @@ def image_gen_model_note(spec: ImageModelFilterSpec, *, catalog_match: bool) -> 
             "below offer what OpenRouter's image API accepts in general rather than this "
             "model's own choices. They narrow to its own once it can be read again."
         )
-    sized = gen_tier_clause(drawn_tier_state(build_image_gen_tool_spec(spec)), named)
+    tool = build_image_gen_tool_spec(spec)
+    sized = gen_tier_clause(
+        drawn_tier_state(tool),
+        named,
+        next(
+            (source for source, _values in tool.enums if source in _SIZE_TIER_SOURCES),
+            "size",
+        ),
+    )
     if spec.has_knobs:
         cause = ""
     elif spec.unkeyable_passthrough:

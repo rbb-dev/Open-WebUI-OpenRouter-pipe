@@ -1833,3 +1833,9 @@ async def _t384_card(monkeypatch, pipe_instance_async, status: int, error: dict[
         else:
             shown = str(result)
     return shown
+
+
+def _status_field(description: str, index: int) -> str:
+    fields = [part.strip() for part in description.split(" | ")]
+    assert len(fields) > index, description
+    return fields[index]

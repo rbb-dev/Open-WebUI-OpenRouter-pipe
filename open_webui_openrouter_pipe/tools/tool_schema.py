@@ -300,6 +300,37 @@ def _nested_def_containers(node: Any):
                     yield from _nested_def_containers(definition)
 
 
+def _unique_def_name(taken: set[str], def_name: str) -> str:
+    candidate = def_name
+    suffix = 1
+    while candidate in taken:
+        candidate = f"{def_name}_{suffix}"
+        suffix += 1
+    return candidate
+
+
+def _repoint_shadowed_refs(node: Any, defs_key: str, renames: dict[str, str]) -> None:
+    if isinstance(node, dict):
+        ref_value = node.get("$ref")
+        if isinstance(ref_value, str) and ref_value.startswith(f"#/{defs_key}/"):
+            new_name = renames.get(ref_value[len(defs_key) + 3:])
+            if new_name is not None:
+                node["$ref"] = f"#/{defs_key}/{new_name}"
+        container = node.get(defs_key)
+        if isinstance(container, dict):
+            for definition in list(container.values()):
+                _repoint_shadowed_refs(definition, defs_key, renames)
+        for defs_container in _DEFS_CONTAINER_KEYS:
+            if defs_container == defs_key:
+                continue
+            _repoint_shadowed_refs(node.get(defs_container), defs_key, renames)
+        for value in node.values():
+            _repoint_shadowed_refs(value, defs_key, renames)
+    elif isinstance(node, list):
+        for item in node:
+            _repoint_shadowed_refs(item, defs_key, renames)
+
+
 def _hoist_nested_definitions(schema: dict[str, Any]) -> None:
     for node in list(_nested_def_containers(schema)):
         if not isinstance(node, dict):
@@ -312,12 +343,20 @@ def _hoist_nested_definitions(schema: dict[str, Any]) -> None:
             if not isinstance(root_defs, dict):
                 root_defs = {}
                 schema[defs_key] = root_defs
+            taken = set(root_defs)
+            renames: dict[str, str] = {}
+            for def_name in defs:
+                new_name = _unique_def_name(taken, def_name)
+                taken.add(new_name)
+                if new_name != def_name:
+                    renames[def_name] = new_name
+            if renames:
+                _repoint_shadowed_refs(node, defs_key, renames)
             for def_name, def_body in list(defs.items()):
-                if def_name in root_defs:
-                    continue
-                root_defs[def_name] = def_body
+                new_name = renames.get(def_name, def_name)
+                root_defs[new_name] = def_body
                 defs.pop(def_name, None)
-                logger.debug("Hoisted nested %s/%s to the document root.", defs_key, def_name)
+                logger.debug("Hoisted nested %s/%s to the document root.", defs_key, new_name)
             if not defs:
                 node.pop(defs_key, None)
 
