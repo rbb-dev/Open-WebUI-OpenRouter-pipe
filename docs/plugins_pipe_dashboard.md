@@ -160,8 +160,10 @@ builds — forks inherit the release workflow, so assets, digests, and the chang
   version), snapshots the current code, exec-validates the new bundle through Open WebUI's own
   loader, and only then writes the function row — and verifies the database accepted the write,
   failing the update loudly instead of reporting a success that did not persist. A load failure
-  surfaces the real error in the tab and the pipe keeps serving the old code — except when the database also
-  refuses the write that puts the row back, in which case the tab reports `exec_failed_inactive` and tells
+  surfaces the real error in the tab and the pipe keeps serving the old code, and it leaves the pipe's
+  on/off switch exactly as you had it — so a pipe you had already switched off in Workspace > Functions
+  stays off rather than being switched back on by an update that failed. It is only when the database
+  also refuses the write that puts a *live* row back that the tab reports `exec_failed_inactive` and tells
   you to switch the pipe on in Workspace > Functions. And a **refused write of the
   newly loaded code** is the same: the freshly loaded bundle is un-installed from the running process
   (every `sys.modules` key and `sys.meta_path` entry **the load itself** wrote is put back to its

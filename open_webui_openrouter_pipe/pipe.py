@@ -228,6 +228,27 @@ def _detached_task(
     return loop.create_task(coro, name=name, context=contextvars.Context())
 
 
+def _release_permit(semaphore: Any) -> None:
+    with contextlib.suppress(Exception):
+        semaphore.release()
+
+
+class _PermitHandoff:
+    __slots__ = ("_claimed",)
+
+    def __init__(self) -> None:
+        self._claimed = False
+
+    def claim(self) -> None:
+        self._claimed = True
+
+    def release_unclaimed(self, semaphore: Any) -> None:
+        if self._claimed:
+            return
+        self._claimed = True
+        _release_permit(semaphore)
+
+
 def _drop_task(task: asyncio.Task | None) -> None:
     if task is not None and not task.done():
         with contextlib.suppress(Exception):
@@ -3156,12 +3177,17 @@ class Pipe:
                 from .core.timing_logger import clear_timing_context as _clear_job_tc
                 from .core.timing_logger import set_timing_context as _set_job_tc
                 _set_job_tc(job.request_id, bool(job.valves.ENABLE_TIMING_LOG))
+                handed = _PermitHandoff()
                 try:
                     task = asyncio.create_task(
-                        job.pipe._execute_pipe_job(job, semaphore_held=True, semaphore=semaphore)
+                        job.pipe._execute_pipe_job(
+                            job, semaphore_held=True, semaphore=semaphore, permit_handoff=handed
+                        )
                     )
                 finally:
                     _clear_job_tc()
+
+                task.add_done_callback(lambda _t, _h=handed, _s=semaphore: _h.release_unclaimed(_s))
 
                 active = job.pipe._active_jobs
                 active[task] = job
@@ -3192,6 +3218,8 @@ class Pipe:
         job: _PipeJob,
         semaphore_held: bool = False,
         semaphore: Any = _SEMAPHORE_NOT_GIVEN,
+        *,
+        permit_handoff: _PermitHandoff | None = None,
     ) -> None:
         """Isolate per-request context, HTTP session, and semaphore slot."""
         if job.counter_state is not None:
@@ -3217,6 +3245,8 @@ class Pipe:
         completed = False
         deferred_result: Any = None
         permit_handed_to_manager = False
+        if permit_handoff is not None:
+            permit_handoff.claim()
         try:
             stream_emitter = (
                 self._event_emitter_handler._make_middleware_stream_emitter(job, stream_queue)
@@ -3362,8 +3392,7 @@ class Pipe:
                 job.future.set_exception(exc)
         finally:
             if semaphore_held and not permit_handed_to_manager:
-                with contextlib.suppress(Exception):
-                    semaphore.release()
+                _release_permit(semaphore)
             session_rid = SessionLogger.request_id.get() or ""
             try:
                 _drop_backlog_latch(job.request_id)

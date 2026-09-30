@@ -489,9 +489,12 @@ class SessionLogger:
 
         main_loop = cls._main_loop
         if main_loop and not main_loop.is_closed():
-            main_loop.call_soon_threadsafe(cls._safe_put, queue, record)
-        else:
-            cls.process_record(record)
+            try:
+                main_loop.call_soon_threadsafe(cls._safe_put, queue, record)
+                return
+            except RuntimeError:
+                pass
+        cls.process_record(record)
 
     @classmethod
     def _safe_put(cls, queue: asyncio.Queue[logging.LogRecord], record: logging.LogRecord) -> None:

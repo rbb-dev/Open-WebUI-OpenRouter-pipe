@@ -390,6 +390,7 @@ class SessionLogManager:
         "_stale_filter_warnings",
         "_read_fault_warnings",
         "_captured_turns",
+        "_captured_row_ids",
         "_capture_exempt",
         "_rescue_pending",
     )
@@ -432,6 +433,7 @@ class SessionLogManager:
         self._stale_filter_warnings: dict[str, float] = {}
         self._read_fault_warnings: dict[str, float] = {}
         self._captured_turns: set[str] = set()
+        self._captured_row_ids: dict[str, str] = {}
         self._capture_exempt: set[tuple[str, str]] = set()
         self._skip_info_emitted: set[str] = set()
         self._warned_temporary_chat: dict[str, float] = {}
@@ -1312,8 +1314,11 @@ class SessionLogManager:
         from ..core.utils import _stable_crockford_id
 
         key = f"{chat_id}:{message_id}"
-        if key in self._captured_turns:
-            self._capture_exempt.discard((chat_id, message_id))
+        already = key in self._captured_turns and all(
+            i <= self._captured_row_ids.get(key, "") for i in (ids or ())
+        )
+        self._capture_exempt.discard((chat_id, message_id))
+        if already:
             return True
         if not self.valves.SESSION_LOG_STORE_ENABLED:
             self.logger.log(
@@ -1362,6 +1367,23 @@ class SessionLogManager:
         before_stat = None
         with contextlib.suppress(Exception):
             before_stat = rescue_path.stat()
+        if before_stat is not None and rescue_path.is_file():
+            try:
+                _prior_meta, prior_events = self.read_archive(
+                    rescue_path, (base_dir, zip_password, zip_compression, zip_compresslevel)
+                )
+            except Exception:
+                self.logger.log(
+                    warn_level(self._unreadable_archive_warnings,
+                               f"session_log_rescue_unreadable:{rescue_path}", cooldown_s=3600.0),
+                    "Refusing to re-capture stranded session log turn chat_id=%s message_id=%s over an "
+                    "unreadable rescue archive; the existing file and the newly staged segments are left "
+                    "intact (path=%s).", chat_id, message_id, str(rescue_path), exc_info=True,
+                )
+                return False
+            if prior_events:
+                events = self.dedupe_events(prior_events + events)
+                events.sort(key=lambda evt: float(evt.get("created") or 0.0))
         try:
             self._write_archive(
                 _SessionLogArchiveJob(
@@ -1420,6 +1442,7 @@ class SessionLogManager:
 
         self._unreadable_archive_attempts.pop(key, None)
         self._captured_turns.add(key)
+        self._captured_row_ids[key] = max([self._captured_row_ids.get(key, ""), *list(ids or [])])
         self._capture_exempt.add((chat_id, message_id))
         self._rescue_pending.pop((chat_id, message_id), None)
         self._release_assembly_lock(

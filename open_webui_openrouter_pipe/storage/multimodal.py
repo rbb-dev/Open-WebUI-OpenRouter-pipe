@@ -106,6 +106,43 @@ _AI_ADDRCONFIG = socket.AI_ADDRCONFIG
 if hasattr(socket, "AI_MASK"):
     _AI_ADDRCONFIG &= socket.AI_MASK  # pyright: ignore[reportAttributeAccessIssue]
 
+_NO_VERDICT: bool | None = None
+
+_ADDRESS_BUDGET_REFUSAL = (
+    "Refusing to forward {field}: the address check reached no verdict before its "
+    "budget ran out, so the address was neither cleared nor refused and nothing was "
+    "sent. The link may well be reachable; nothing here says it is private."
+)
+
+_FORWARD_ALLOWLIST_REFUSAL = (
+    "Refusing to forward unsafe URL in '{field}'. Use https:// or an allowlisted "
+    "http:// destination."
+)
+
+_PAYLOAD_ALLOWLIST_REFUSAL = (
+    "Refusing to send the address in '{field}'. Use https, or a plain http address "
+    "this deployment allows."
+)
+
+_REFERENCE_ALLOWLIST_REFUSAL = (
+    "Refusing to send the reference image link {field}. Use https, or a plain http "
+    "address this deployment allows."
+)
+
+
+def _address_verdict(
+    verdict: bool | None,
+    *,
+    field: str,
+    refused: str = _FORWARD_ALLOWLIST_REFUSAL,
+) -> str | None:
+    if verdict:
+        return None
+    if verdict is _NO_VERDICT:
+        return _ADDRESS_BUDGET_REFUSAL.format(field=field)
+    return refused.format(field=field)
+
+
 _VETTED_CONNECTION_LIMIT = 20
 
 _VETTED_CONNECTION_LIMIT_PER_HOST = 10

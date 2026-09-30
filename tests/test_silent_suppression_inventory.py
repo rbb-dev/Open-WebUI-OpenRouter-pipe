@@ -177,11 +177,13 @@ _EXPECTED: dict[str, int] = {
     # then calls the private `_release_waiter()`; if that call is missing or raises, the
     # raised limit is already in place and waiting requests take the new slots at the next
     # connection release, so the only consequence is a later wake, not a lost resize.
-    # 34th (B223, H784-1): the release of the worker's own permit in `_execute_pipe_job`
-    # when the job died before the `async with _acquire_semaphore(...)` took it over. A
-    # semaphore that raises on `release()` -- a loop-bound one whose loop is gone -- must
-    # not replace the failure that is already unwinding the request; the permit is
-    # already accounted for either way.
+    # 34th (B223, H784-1): the release of the worker's own permit, now in the module-level
+    # `_release_permit` helper in `pipe.py`, when the job died before the
+    # `async with _acquire_semaphore(...)` took it over and before the body's own release
+    # claimed it; the dispatch loop's done callback reaches the same helper for a job
+    # cancelled before its first step. A semaphore that raises on `release()` -- a
+    # loop-bound one whose loop is gone -- must not replace the failure that is already
+    # unwinding the request; the permit is already accounted for either way.
     # 35th (B248, H900-1): the close-path drain in `_do_close`, which commits whatever is
     # still in the Redis pending queue before the client goes down. It swallows
     # `CancelledError` for the same reason the four in `streaming/streaming_core.py` do: a

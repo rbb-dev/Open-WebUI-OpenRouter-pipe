@@ -1915,7 +1915,7 @@ class ModelCatalogManager:
             ):
                 _video_filter_manager = self._pipe._ensure_filter_manager()
                 try:
-                    video_gen_filter_function_ids = (
+                    video_gen_filter_function_ids, video_filter_ids_unresolved = (
                         await _video_filter_manager.ensure_openrouter_video_gen_filter_function_ids(models)
                     )
                 except Exception as exc:
@@ -1925,7 +1925,6 @@ class ModelCatalogManager:
                     )
                     video_gen_filter_function_ids = {}
                     video_family_off = False
-                video_filter_ids_unresolved = _video_filter_manager.unresolved_video_filter_ids
             elif not valves.ENABLE_VIDEO_GENERATION:
                 try:
                     await self._pipe._ensure_filter_manager()._retire_variant_video_filters()

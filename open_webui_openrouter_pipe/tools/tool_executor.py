@@ -747,7 +747,8 @@ class ToolExecutor:
                 self.logger.debug("Enqueued tool %s (batch=%s)", call.get("name"), allow_batch)
             pending.append((index, queued, self._ask_user_window(tool_cfg, args)))
 
-        self._ensure_tool_workers(context)
+        if batches:
+            self._ensure_tool_workers(context)
         if breaker_skips:
             try:
                 async with asyncio.timeout_at(started_at + context.batch_timeout) if context.batch_timeout else contextlib.nullcontext():

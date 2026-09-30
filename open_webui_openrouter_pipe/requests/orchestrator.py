@@ -519,6 +519,20 @@ def _required_with_no_callable_tool(responses_body: ResponsesBody) -> bool:
     return not has_active_fusion_entry(responses_body.plugins)
 
 
+def _reconcile_tool_fields(responses_body: ResponsesBody) -> None:
+    if _required_with_no_callable_tool(responses_body):
+        responses_body.tool_choice = None
+    choice = responses_body.tool_choice
+    if isinstance(choice, dict):
+        named = choice.get("type")
+        if isinstance(named, str) and named.startswith(_SERVER_TOOL_PREFIX) and not any(
+            isinstance(t, dict) and t.get("type") == named for t in (responses_body.tools or [])
+        ):
+            responses_body.tool_choice = None
+    if responses_body.stop_server_tools_when and not _has_server_tool(responses_body.tools):
+        responses_body.stop_server_tools_when = None
+
+
 def _strip_switched_off_server_tools(responses_body: ResponsesBody, valves: Any) -> None:
     switched_off = {t for t, switch in _SERVER_TOOL_SWITCHES.items() if not getattr(valves, switch)}
     if not switched_off:
@@ -1634,6 +1648,7 @@ class RequestOrchestrator:
                 task_reasoning._fit_effort_none_to_model(responses_body, settings_applied=True)
 
             _strip_switched_off_server_tools(responses_body, valves)
+            _reconcile_tool_fields(responses_body)
             result = await self._pipe._ensure_task_model_adapter()._run_task_model_request(
                 responses_body.model_dump(),
                 valves,
@@ -1938,11 +1953,7 @@ class RequestOrchestrator:
                 responses_body.parallel_tool_calls = None
                 responses_body.stop_server_tools_when = None
 
-        if _required_with_no_callable_tool(responses_body):
-            responses_body.tool_choice = None
-
-        if responses_body.stop_server_tools_when and not _has_server_tool(responses_body.tools):
-            responses_body.stop_server_tools_when = None
+        _reconcile_tool_fields(responses_body)
 
         setattr(responses_body, "api_model", OpenRouterModelRegistry.api_model_id(selected_model_id) or normalized_model_id)  # noqa: B010 - dynamic attribute not declared on ResponsesBody
 

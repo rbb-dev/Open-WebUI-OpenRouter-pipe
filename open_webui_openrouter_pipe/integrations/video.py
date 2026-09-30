@@ -50,6 +50,7 @@ from ..requests.fusion_engine import asks_for_help, latest_user_text
 from ..storage.multimodal import (
     ADDRESS_CHECK_BUDGET_SECONDS,
     ADDRESS_CHECK_SECONDS,
+    _address_verdict,
 )
 from ..storage.owui_files import (
     PUBLISHING_NEEDS_OWNERSHIP,
@@ -774,7 +775,7 @@ class VideoGenerationAdapter:
             provider_options = self._extract_provider_options(
                 getattr(responses_body, "provider", None), metadata
             )
-            vetted_addresses: dict[str, bool] = {}
+            vetted_addresses: dict[str, bool | None] = {}
             await self._vet_passthrough_addresses_before_admission(
                 api_model_id=api_model_id,
                 prompt=prompt,
@@ -1814,7 +1815,7 @@ class VideoGenerationAdapter:
         provider_block: dict[str, Any] | None,
         provider_options: dict[str, Any],
         valves: Any,
-        vetted: dict[str, bool],
+        vetted: dict[str, bool | None],
     ) -> None:
         skeleton = self._build_passthrough_payload(
             api_model_id=api_model_id,
@@ -1989,7 +1990,7 @@ class VideoGenerationAdapter:
         provider_block: dict[str, Any] | None = None,
         input_references: list[dict[str, Any]] | None = None,
         withheld: list[tuple[str, str]] | None = None,
-        vetted: dict[str, bool] | None = None,
+        vetted: dict[str, bool | None] | None = None,
         video_reference_allowed_domains: str | None = None,
     ) -> dict[str, Any]:
         payload = self._build_passthrough_payload(
@@ -2043,9 +2044,9 @@ class VideoGenerationAdapter:
         self,
         payload: dict[str, Any],
         withheld: list[tuple[str, str]] | None = None,
-        seen: dict[str, bool] | None = None,
+        seen: dict[str, bool | None] | None = None,
         budget: list[int] | None = None,
-        vetted: dict[str, bool] | None = None,
+        vetted: dict[str, bool | None] | None = None,
         depth: int = 0,
         deadline: float | None = None,
         video_reference_allowed_domains: str | None = None,
@@ -2101,17 +2102,16 @@ class VideoGenerationAdapter:
         async def _check(url: str, field_name: str) -> None:
             if url.startswith("data:"):
                 return
-            safe = seen.get(url)
-            if safe is None:
-                safe = bool(await handler._is_safe_url(
+            if url in seen:
+                safe = seen[url]
+            else:
+                safe = await handler._is_safe_url(
                     url, seconds=min(ADDRESS_CHECK_SECONDS, deadline - time.monotonic()),
-                ))
-                seen[url] = safe
-            if not safe:
-                raise VideoGenerationError(
-                    f"Refusing to forward unsafe URL in '{field_name}'. Use https:// or "
-                    f"an allowlisted http:// destination."
                 )
+                seen[url] = safe
+            refusal = _address_verdict(safe, field=field_name)
+            if refusal is not None:
+                raise VideoGenerationError(refusal)
             if entries and not _is_pipe_published(field_name, url, relayed) and not _host_in_scope(url, entries):
                 self.logger.log(
                     warn_level(
@@ -2355,7 +2355,7 @@ class VideoGenerationAdapter:
         relayed: set[tuple[str, str]] | None = None,
         companions: bool = False,
         event_emitter: Any = None,
-        vetted: dict[str, bool] | None = None,
+        vetted: dict[str, bool | None] | None = None,
         spent: dict[str, int] | None = None,
     ) -> list[dict[str, Any]]:
         raw = resolve_reference_items(video_meta)

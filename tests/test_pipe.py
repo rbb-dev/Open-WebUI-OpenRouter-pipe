@@ -9251,7 +9251,7 @@ class TestFilterAutoInstallationPaths:
                 manager._fetch_frontend_model_catalog = AsyncMock(return_value=None)
                 filters = pipe._ensure_filter_manager()
                 filters.ensure_openrouter_image_gen_filter_function_id = AsyncMock(return_value=None)
-                filters.ensure_openrouter_video_gen_filter_function_ids = AsyncMock(return_value={})
+                filters.ensure_openrouter_video_gen_filter_function_ids = AsyncMock(return_value=({}, frozenset()))
                 filters.ensure_openrouter_image_filter_function_ids = AsyncMock(
                     return_value=({}, frozenset())
                 )
@@ -9488,7 +9488,7 @@ class TestDirectUploadsFilterPaths:
                 filters = pipe._ensure_filter_manager()
                 filters.ensure_openrouter_web_tools_filter_function_id = AsyncMock(return_value=None)
                 filters.ensure_openrouter_image_gen_filter_function_id = AsyncMock(return_value=None)
-                filters.ensure_openrouter_video_gen_filter_function_ids = AsyncMock(return_value={})
+                filters.ensure_openrouter_video_gen_filter_function_ids = AsyncMock(return_value=({}, frozenset()))
                 filters.ensure_openrouter_image_filter_function_ids = AsyncMock(
                     return_value=({}, frozenset())
                 )

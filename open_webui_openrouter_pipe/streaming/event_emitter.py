@@ -655,14 +655,15 @@ class EventEmitterHandler:
         self,
         stream_queue: asyncio.Queue[dict[str, Any] | str | None],
         item: dict[str, Any] | str | None,
-    ) -> None:
+    ) -> bool:
         try:
             stream_queue.put_nowait(item)
         except asyncio.QueueFull:
-            return
+            return False
         except Exception:
             self.logger.debug("Dropped middleware stream item after unexpected enqueue error", exc_info=True)
-            return
+            return False
+        return True
 
 
     async def _put_middleware_stream_terminal(
@@ -672,8 +673,7 @@ class EventEmitterHandler:
         item: dict[str, Any] | str | None,
     ) -> bool:
         if job.future.cancelled():
-            self._try_put_middleware_stream_nowait(stream_queue, item)
-            return True
+            return self._try_put_middleware_stream_nowait(stream_queue, item)
 
         if stream_queue.maxsize <= 0:
             await stream_queue.put(item)

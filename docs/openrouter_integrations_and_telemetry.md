@@ -494,7 +494,7 @@ Valves:
 - `COSTS_REDIS_TTL_SECONDS` (default `900`) controls retention in Redis.
 
 Behavior (as implemented):
-- Writes occur only when Redis caching is already enabled and available (`_redis_enabled=True`).
+- Writes occur only while `ENABLE_REDIS_CACHE` is on and Redis is available (`_redis_enabled=True`). The valve is authoritative at the write in the very turn that turns it off: that turn's snapshot is not written, and neither is any later one, for as long as the valve is off.
 - Snapshots are written only when all required fields are present:
   - Open WebUI user ID (`guid`)
   - user `email`

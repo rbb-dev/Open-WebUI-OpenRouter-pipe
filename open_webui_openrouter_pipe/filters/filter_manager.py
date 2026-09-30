@@ -2059,14 +2059,14 @@ class FilterManager:
         self,
         models: list[dict[str, Any]],
         rows: _FilterRows | None = None,
-    ) -> dict[str, str]:
+    ) -> tuple[dict[str, str], frozenset[str]]:
         from ..models.registry import ModelFamily, OpenRouterModelRegistry
 
         if rows is None:
             prefetched = await self._filter_rows()
             rows = _FilterRows(prefetched, None, prefetched is not None)
         if not rows.available or rows.all_rows is None:
-            return {}
+            return {}, frozenset()
         index, unindexed = _sweep_candidate_index(
             rows.all_rows, "VIDEO_MODEL_ID", _OPENROUTER_VIDEO_GEN_FILTER_MARKER
         )
@@ -2136,7 +2136,7 @@ class FilterManager:
                     unresolved.add(original_id)
 
         self._unresolved_video_filter_ids = frozenset(unresolved)
-        return installed
+        return installed, frozenset(unresolved)
 
     async def _ensure_single_video_gen_filter_function_id(
         self,

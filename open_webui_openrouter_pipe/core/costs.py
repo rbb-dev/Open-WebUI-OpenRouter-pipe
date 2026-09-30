@@ -47,6 +47,9 @@ async def maybe_dump_costs_snapshot(
     """
     if not valves.COSTS_REDIS_DUMP:
         return
+    store = getattr(pipe, "_artifact_store", None)
+    if store is None or getattr(store, "_redis_valve_off", True):
+        return
     if not (pipe._redis_enabled and pipe._redis_client):
         return
 

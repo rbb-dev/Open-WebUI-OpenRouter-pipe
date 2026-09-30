@@ -674,35 +674,46 @@ class UpdateService:
         content = owp.replace_imports(content)
         before = {k: sys.modules[k] for k in sys.modules}
         before_meta_path = list(sys.meta_path)
+        was_active = bool(getattr(await self._row(), "is_active", True))
         try:
             instance, _ftype, frontmatter = await owp.load_function_module_by_id(
                 pipe_id, content=content
             )
         except Exception as exc:
             _restore_module_state(before, before_meta_path, pipe_id)
-            try:
-                repaired = await self._functions().update_function_by_id(
-                    pipe_id, {"is_active": True}
+            if was_active:
+                try:
+                    repaired = await self._functions().update_function_by_id(
+                        pipe_id, {"is_active": True}
+                    )
+                except Exception:
+                    logger.warning("update: is_active repair failed", exc_info=True)
+                    repaired = None
+                refused = repaired is None
+                logger.warning(
+                    "update: %r did not load; the database %s its is_active repair, so the "
+                    "function row is switched %s in Open WebUI",
+                    pipe_id,
+                    "refused" if refused else "accepted",
+                    "off" if refused else "on",
                 )
-            except Exception:
-                logger.warning("update: is_active repair failed", exc_info=True)
-                repaired = None
-            refused = repaired is None
+                if refused:
+                    raise UpdateError(
+                        "exec_failed_inactive",
+                        f"the new code did not load and the database refused to switch the "
+                        f"pipe back on, so {pipe_id} is switched off in Open WebUI; switch it "
+                        f"on in Workspace > Functions",
+                    ) from exc
+                raise UpdateError("exec_failed", str(exc)) from exc
             logger.warning(
-                "update: %r did not load; the database %s its is_active repair, so the "
-                "function row is switched %s in Open WebUI",
+                "update: %r did not load, and the function row was already switched off, "
+                "so it is left as the operator left it",
                 pipe_id,
-                "refused" if refused else "accepted",
-                "off" if refused else "on",
             )
-            if refused:
-                raise UpdateError(
-                    "exec_failed_inactive",
-                    f"the new code did not load and the database refused to switch the "
-                    f"pipe back on, so {pipe_id} is switched off in Open WebUI; switch it "
-                    f"on in Workspace > Functions",
-                ) from exc
-            raise UpdateError("exec_failed", str(exc)) from exc
+            raise UpdateError(
+                "exec_failed",
+                f"{exc}; {pipe_id} was already switched off and is left as the operator left it",
+            ) from exc
         return instance, dict(frontmatter or {}), content, _restorer(
             before, before_meta_path, pipe_id
         )

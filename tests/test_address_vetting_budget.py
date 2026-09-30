@@ -107,7 +107,11 @@ async def test_a_request_full_of_stalled_addresses_stops_at_the_request_budget()
     """Per-lookup alone still lets sixteen addresses cost sixteen budgets in a row.
 
     The refusal is the point: an expired request budget is a check that did not pass, so
-    the request is refused rather than sent unchecked.
+    the request is refused rather than sent unchecked. The stub answers `None` when it is
+    handed nothing, which is what the real check does when its `wait_for` expires: it
+    reached no verdict, which is neither `True` nor the `False` a refused address earns.
+    The sentence asserted is that check's own, so a spent budget is no longer reported as
+    a policy refusal.
     """
     slow = 0.15
     checked: list[str] = []
@@ -115,7 +119,7 @@ async def test_a_request_full_of_stalled_addresses_stops_at_the_request_budget()
     async def _is_safe(url, *, seconds=ADDRESS_CHECK_SECONDS):
         checked.append(url)
         await asyncio.sleep(min(slow, max(0.0, seconds)))
-        return seconds > 0
+        return None if seconds <= 0 else True
 
     adapter = _adapter(_is_safe)
     payload = {
@@ -129,7 +133,11 @@ async def test_a_request_full_of_stalled_addresses_stops_at_the_request_budget()
     elapsed = time.monotonic() - started
 
     assert elapsed < 16 * slow, f"the request budget did not bind: {elapsed:.2f}s"
-    assert "unsafe" in str(refused.value).lower(), refused.value
+    said = str(refused.value)
+    assert "budget" in said, said
+    assert "unsafe" not in said.lower(), (
+        f"a check that reached no verdict is reported as an unsafe URL: {said}"
+    )
     assert len(checked) < 16, checked
 
 

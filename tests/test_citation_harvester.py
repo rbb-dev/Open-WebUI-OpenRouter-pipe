@@ -100,10 +100,17 @@ def test_json_depth_capped():
 
 
 def test_json_node_count_capped():
-    payload = json.dumps({"items": [{"filler": i} for i in range(5000)]
+    # The url sits at the HEAD, because `_harvest_json` pushes children in reversed
+    # order onto a LIFO stack and the push guard truncates that list
+    # (`citation_harvester.py:110-111`), so the walk visits the LAST children first
+    # and the last one is always reached. At the tail this row would hold at any
+    # node budget, because the walk simply harvests nothing.
+    payload = json.dumps({"items": [{"url": "https://head.example/"}]
+                          + [{"filler": i} for i in range(5000)]
                           + [{"url": "https://tail.example/"}]})
-    results = harvest_tool_citations(payload)
-    assert len(results) <= 15
+    urls = {r[0] for r in harvest_tool_citations(payload)}
+    assert "https://head.example/" not in urls, "the walk reached past its node budget"
+    assert "https://tail.example/" in urls, "the walk harvested nothing, so the budget bit nothing"
 
 
 def test_json_huge_array_within_cap_bounded():

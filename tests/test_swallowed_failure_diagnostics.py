@@ -420,6 +420,12 @@ _NOT_A_WARN_LATCH = {
     ),
     ("persistence.py", "reason != failure_reason"): "re-announces when the failure MODE changes",
     ("persistence.py", "flush_reason != last_flush_failure"): "re-announces when the failure MODE changes",
+    ("update_service.py", "was_active"): (
+        "chooses WHICH state to report -- a row the operator had already switched off is a "
+        "different outcome from a refused repair, and each is a fact about the row, not a "
+        "repeat of a report already made. Both arms still log unconditionally, so a "
+        "database that keeps failing is reported every time"
+    ),
 }
 
 # The same rule for the EXPRESSION form -- `level if seen else other` inside a .log()

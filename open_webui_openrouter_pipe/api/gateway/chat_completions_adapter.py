@@ -59,6 +59,7 @@ from ..transforms import (
 from .responses_adapter import (
     _BODY_EXCERPT_CHARS,
     _backlog_cause,
+    _backlog_debug_due,
     _body_not_an_object,
     _count_failed_call,
     _decode_json_body,
@@ -1279,16 +1280,19 @@ class ChatCompletionsAdapter:
         def _warn_pump_backlog(qsize: int) -> None:
             if not self._pipe._should_warn_event_queue_backlog(qsize, event_queue_warn_size):
                 return
-            self.logger.log(
-                warn_level(
-                    _warned_queue_backlog,
-                    _backlog_cause("chat_pump_queue", SessionLogger.request_id.get() or ""),
-                    cooldown_s=30.0,
-                ),
-                "Chat-completions pump queue backlog high: %d items (session=%s)",
-                qsize,
-                SessionLogger.session_id.get() or "unknown",
+            _rid = SessionLogger.request_id.get() or ""
+            level = warn_level(
+                _warned_queue_backlog,
+                _backlog_cause("chat_pump_queue", _rid),
+                cooldown_s=30.0,
             )
+            if level != logging.DEBUG or _backlog_debug_due("chat_pump_queue", _rid):
+                self.logger.log(
+                    level,
+                    "Chat-completions pump queue backlog high: %d items (session=%s)",
+                    qsize,
+                    SessionLogger.session_id.get() or "unknown",
+                )
 
         if endpoint == "chat_completions":
             async for event in nagle_coalesce_stream(

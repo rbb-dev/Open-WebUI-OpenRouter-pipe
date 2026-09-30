@@ -46,13 +46,22 @@ _MATROSKA_DURATION = re.compile(r"DURATION\s*:\s*(\d+):(\d+):([\d.]+)")
 _MOV_DURATION = re.compile(r"Processing st:\s*(\d+),[^\n]*duration:\s*(\d+)")
 _TIME_BASE = re.compile(r"1/(\d+)\s*:")
 _PICTURE_CODEC = re.compile(r"Video:\s*(?:png|mjpeg|bmp|gif|webp|tiff)\b")
+_VIDEO_STREAM = re.compile(r"Stream #\d+:\d+.*Video:")
+_VIDEO_STREAM_SIZE = re.compile(r"(?<=\s)(\d{1,5})x(\d{1,5})(?![0-9x])")
+_VIDEO_STREAM_RATE = re.compile(r"(\d+(?:\.\d+)?)\s+(?:fps|tbr)\b")
+_AUDIO_STREAM = re.compile(r"Stream #\d+:\d+.*Audio:")
+_CONTAINER_DURATION = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
 _INPUT_DEMUXER: dict[str, str] = {
     ".mp4": "mov",
     ".m4v": "mov",
     ".mov": "mov",
+    ".3gp": "mov",
+    ".3g2": "mov",
     ".mkv": "matroska",
     ".webm": "matroska",
     ".avi": "avi",
+    ".ogv": "ogg",
+    ".mpeg": "mpegvideo",
     ".h264": "h264",
     ".264": "h264",
     ".h265": "hevc",
@@ -64,6 +73,7 @@ _PLAYLIST_MAGIC: tuple[bytes, ...] = (
     b"#EXTM3U",
     b"#EXT-X-",
     b"<?xml",
+    b"<MPD",
 )
 _PLAYLIST_HEAD_BYTES = 64
 
@@ -205,7 +215,12 @@ def _refuse_unsafe_input(path: Path) -> str:
             raise FrameExtractionError(
                 "refusing input that is a playlist naming a second file"
             )
-    return _INPUT_DEMUXER.get(path.suffix.lower(), "")
+    demuxer = _INPUT_DEMUXER.get(path.suffix.lower())
+    if not demuxer:
+        raise FrameExtractionError(
+            "refusing input whose container is not one the pipe names"
+        )
+    return demuxer
 
 
 @dataclass
@@ -269,8 +284,13 @@ def _ffprobe_stream_duration(path: Path) -> float | None:
     if binary is None:
         return None
     try:
+        input_format = _refuse_unsafe_input(path)
+    except FrameExtractionError:
+        return None
+    try:
         proc = subprocess.run(
-            [binary, "-v", "error", "-select_streams", "v:0",
+            [binary, "-v", "error", "-f", input_format,
+             "-select_streams", "v:0",
              "-show_entries", "stream=duration", "-of", "csv=p=0",
              "-protocol_whitelist", "file", str(path)],
             capture_output=True, text=True, timeout=_PROBE_TIMEOUT_S, check=False,
@@ -342,8 +362,13 @@ def _mov_stream_seconds(stderr: str) -> float | None:
 
 def _ffmpeg_video_stream_duration(path: Path, binary: str) -> float | None:
     try:
+        input_format = _refuse_unsafe_input(path)
+    except FrameExtractionError:
+        return None
+    try:
         proc = subprocess.run(
             [binary, "-hide_banner", "-nostats", "-protocol_whitelist", "file",
+             "-f", input_format,
              "-loglevel", "debug", "-i", str(path)],
             capture_output=True, text=True, errors="replace",
             timeout=_PROBE_TIMEOUT_S, check=False,
@@ -352,6 +377,49 @@ def _ffmpeg_video_stream_duration(path: Path, binary: str) -> float | None:
         return None
     stderr = proc.stderr or ""
     return _matroska_track_seconds(stderr) or _mov_stream_seconds(stderr)
+
+
+def _pinned_probe(path: Path) -> dict[str, Any]:
+    input_format = _refuse_unsafe_input(path)
+    binary = _ffmpeg_binary()
+    if binary is None:
+        raise FrameExtractionError("ffmpeg unavailable")
+    try:
+        proc = subprocess.run(
+            [binary, "-hide_banner", "-nostats", "-f", input_format,
+             "-protocol_whitelist", "file", "-i", str(path)],
+            capture_output=True, text=True, errors="replace",
+            timeout=_PROBE_TIMEOUT_S, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise FrameExtractionError(f"header read failed: {exc}") from exc
+    stderr = proc.stderr or ""
+    width, height = 0, 0
+    fps = 0.0
+    seen_video = False
+    for line in stderr.splitlines():
+        if _VIDEO_STREAM.search(line):
+            seen_video = True
+            size = _VIDEO_STREAM_SIZE.search(line)
+            if size is not None:
+                width, height = int(size.group(1)), int(size.group(2))
+            rate = _VIDEO_STREAM_RATE.search(line)
+            if rate is not None:
+                fps = float(rate.group(1))
+            break
+    if not seen_video:
+        raise FrameExtractionError("header read found no video stream to measure")
+    duration = 0.0
+    found = _CONTAINER_DURATION.search(stderr)
+    if found is not None:
+        hours, minutes, seconds = found.groups()
+        duration = int(hours) * 3600.0 + int(minutes) * 60.0 + float(seconds)
+    return {
+        "duration": duration,
+        "fps": fps,
+        "size": (width, height),
+        "audio_codec": "audio" if _AUDIO_STREAM.search(stderr) else None,
+    }
 
 
 def _last_time_seconds(stderr: str) -> float | None:
@@ -380,7 +448,7 @@ def _video_track_seconds_sync(
     if _cancelled(cancel):
         return None
     try:
-        _refuse_unsafe_input(path)
+        input_format = _refuse_unsafe_input(path)
     except FrameExtractionError:
         return None
     binary = _ffmpeg_binary()
@@ -389,6 +457,7 @@ def _video_track_seconds_sync(
     try:
         proc = subprocess.run(
             [binary, "-hide_banner", "-nostats", "-protocol_whitelist", "file",
+             "-f", input_format,
              "-i", str(path), "-map", "0:v:0", "-c", "copy", "-f", "null", "-"],
             capture_output=True, text=True, timeout=_PROBE_TIMEOUT_S, check=False,
         )
@@ -412,7 +481,7 @@ def _probe_video_sync(path: Path, cancel: threading.Event | None = None) -> Vide
         raise FrameExtractionError(_ABANDONED)
     _refuse_unsafe_input(path)
     try:
-        meta = iio.immeta(str(path), exclude_applied=False)  # type: ignore[no-any-return]
+        meta = _pinned_probe(path)
         if _cancelled(cancel):
             raise FrameExtractionError(_ABANDONED)
         duration = _usable_duration(meta.get("duration")) or 0.0
@@ -512,7 +581,7 @@ def _scale_to_max_width(img: Image.Image) -> Image.Image:
 def _declared_size(path: Path) -> tuple[int, int] | None:
     _refuse_unsafe_input(path)
     try:
-        meta = iio.immeta(str(path), exclude_applied=False)
+        meta = _pinned_probe(path)
         size = meta.get("size")
         if isinstance(size, (list, tuple)) and len(size) >= 2:
             return int(size[0]), int(size[1])
@@ -583,20 +652,20 @@ def _extract_frame_imageio_sync(
     on decompression-bomb-sized output."""
     if _cancelled(cancel):
         raise FrameExtractionError(_ABANDONED)
-    _refuse_unsafe_input(path)
+    input_format = _refuse_unsafe_input(path)
     try:
         declared = declared_size if declared_size is not None else _declared_size(path)
         if _cancelled(cancel):
             raise FrameExtractionError(_ABANDONED)
         if declared is not None and _over_pixel_cap(*declared):
             raise _pixel_cap_refusal(*declared)
-        read_kwargs: dict[str, Any] = {}
+        read_kwargs: dict[str, Any] = {
+            "plugin": "FFMPEG",
+            "input_params": ["-f", input_format, "-protocol_whitelist", "file"],
+        }
         if declared is not None and declared[0] > _MAX_FRAME_WIDTH:
             read_kwargs["output_params"] = ["-vf", f"scale={_MAX_FRAME_WIDTH}:-2"]
-        try:
-            arr = iio.imread(str(path), index=frame_index, **read_kwargs)
-        except TypeError:
-            arr = iio.imread(str(path), index=frame_index)
+        arr = iio.imread(str(path), index=frame_index, **read_kwargs)
         if arr is None or len(arr.shape) < 2:
             raise FrameExtractionError("imageio returned empty frame")
         h = int(arr.shape[0])
@@ -651,7 +720,7 @@ async def _extract_frame_ffmpeg(
             ffmpeg_bin,
             "-protocol_whitelist", "file",
             *seek_args,
-            *(("-f", input_format) if input_format else ()),
+            "-f", input_format,
             "-i", path_str,
             "-frames:v", "1",
             "-vf", vf,

@@ -5622,7 +5622,7 @@ async def test_one_video_models_install_failure_costs_only_that_model():
     fm._ensure_filter_installed = AsyncMock(side_effect=_install)
 
     models = OpenRouterModelRegistry.list_models()
-    result = await fm.ensure_openrouter_video_gen_filter_function_ids(models)
+    result, _unresolved = await fm.ensure_openrouter_video_gen_filter_function_ids(models)
 
     assert len(attempted) == len(wanted), (
         f"every model must be attempted; only {len(attempted)} were: {attempted}"
@@ -6957,7 +6957,7 @@ async def test_the_relay_records_its_verdict_where_the_link_is_minted(link, fami
         MEDIA_FILE_HOST="litterbox",
         FILE_HOST_NOTICE="Sending your {kind} to {host} so the model can read it, {retention}.",
     )
-    vetted: dict[str, bool] = {}
+    vetted: dict[str, bool | None] = {}
 
     with patch.object(video_module, "get_file_by_id", _file), \
          patch.object(video_module, "infer_file_mime_type", lambda _o: mime), \

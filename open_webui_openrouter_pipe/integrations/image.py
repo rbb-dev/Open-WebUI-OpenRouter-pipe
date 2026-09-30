@@ -23,7 +23,14 @@ from ..core.warn_latch import warn_level
 from ..filters.image_filter_renderer import IMAGE_KNOB_TITLES
 from ..models.registry import _contract_target
 from ..requests.fusion_engine import latest_user_text
-from ..storage.multimodal import ADDRESS_CHECK_BUDGET_SECONDS, ADDRESS_CHECK_SECONDS
+from ..storage.multimodal import (
+    _NO_VERDICT,
+    _PAYLOAD_ALLOWLIST_REFUSAL,
+    _REFERENCE_ALLOWLIST_REFUSAL,
+    ADDRESS_CHECK_BUDGET_SECONDS,
+    ADDRESS_CHECK_SECONDS,
+    _address_verdict,
+)
 from .image_client import OpenRouterImageClient
 from .image_types import (
     SCHEMA_ENUMS,
@@ -860,23 +867,23 @@ class ImageGenerationAdapter:
         return (mode if mode in _REFERENCE_MODES else "auto"), urls
 
     async def _fetchable(
-        self, url: str, seen: dict[str, bool] | None = None, deadline: float | None = None
-    ) -> bool:
+        self, url: str, seen: dict[str, bool | None] | None = None, deadline: float | None = None
+    ) -> bool | None:
         if url.startswith("data:"):
             return True
         if seen is not None and url in seen:
             return seen[url]
         if deadline is None:
             deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
-        verdict = bool(await self._pipe._multimodal_handler._is_safe_url(
+        verdict = await self._pipe._multimodal_handler._is_safe_url(
             url, seconds=min(ADDRESS_CHECK_SECONDS, deadline - time.monotonic()),
-        ))
+        )
         if seen is not None:
             seen[url] = verdict
         return verdict
 
     async def _vet_payload_addresses(
-        self, payload: dict[str, Any], seen: dict[str, bool],
+        self, payload: dict[str, Any], seen: dict[str, bool | None],
         deadline: float | None = None,
     ) -> None:
         try:
@@ -893,25 +900,29 @@ class ImageGenerationAdapter:
                         "is past that."
                     )
                 budget -= 1
-            if not await self._fetchable(url, seen, deadline):
-                raise ImageGenerationError(
-                    f"Refusing to send the address in '{where}'. Use https, or a plain "
-                    "http address this deployment allows."
-                )
+            refusal = _address_verdict(
+                await self._fetchable(url, seen, deadline),
+                field=where,
+                refused=_PAYLOAD_ALLOWLIST_REFUSAL,
+            )
+            if refusal is not None:
+                raise ImageGenerationError(refusal)
 
     async def _vetted_reference_urls(
-        self, urls: list[str], seen: dict[str, bool] | None = None,
+        self, urls: list[str], seen: dict[str, bool | None] | None = None,
         deadline: float | None = None,
     ) -> list[str]:
         if not urls:
             return []
         vetted: list[str] = []
         for url in urls[:_SCHEMA_REFERENCE_CAP]:
-            if not await self._fetchable(url, seen, deadline):
-                raise ImageGenerationError(
-                    f"Refusing to send the reference image link {_clamp(url)}. Use https, "
-                    "or a plain http address this deployment allows."
-                )
+            refusal = _address_verdict(
+                await self._fetchable(url, seen, deadline),
+                field=_clamp(url),
+                refused=_REFERENCE_ALLOWLIST_REFUSAL,
+            )
+            if refusal is not None:
+                raise ImageGenerationError(refusal)
             vetted.append(url)
         return vetted
 
@@ -919,20 +930,24 @@ class ImageGenerationAdapter:
         self,
         attached: list[dict[str, Any]],
         notes: list[_Note],
-        seen: dict[str, bool] | None = None,
+        seen: dict[str, bool | None] | None = None,
         deadline: float | None = None,
         *,
         room: int | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
         kept: list[dict[str, Any]] = []
         refused = 0
+        unchecked = 0
         for reference in reversed(attached):
             if room is not None and len(kept) >= room:
                 break
             payload = reference.get("image_url")
             url = payload.get("url") if isinstance(payload, dict) else None
-            if isinstance(url, str) and await self._fetchable(url, seen, deadline):
+            verdict = await self._fetchable(url, seen, deadline) if isinstance(url, str) else False
+            if verdict:
                 kept.append(reference)
+            elif verdict is _NO_VERDICT:
+                unchecked += 1
             else:
                 refused += 1
         if refused:
@@ -944,8 +959,18 @@ class ImageGenerationAdapter:
                     "would ask OpenRouter to fetch an address this deployment does not allow",
                 )
             )
+        if unchecked:
+            notes.append(
+                _Note(
+                    "refs-unchecked",
+                    "input_references",
+                    f"dropped {unchecked} reference image(s) already in this chat whose address "
+                    "check reached no verdict before its budget ran out, so whether this "
+                    "deployment allows them is unknown; nothing was sent for them",
+                )
+            )
         kept.reverse()
-        return kept, refused
+        return kept, refused + unchecked
 
     async def _reference_payload(
         self,
@@ -954,7 +979,7 @@ class ImageGenerationAdapter:
         *,
         record: dict[str, Any] | None,
         notes: list[_Note],
-        seen: dict[str, bool] | None = None,
+        seen: dict[str, bool | None] | None = None,
         deadline: float | None = None,
     ) -> list[dict[str, Any]]:
         mode, chosen = self._reference_settings(metadata)
@@ -1291,7 +1316,7 @@ class ImageGenerationAdapter:
         payload: dict[str, Any] = {"model": api_model_id, "prompt": prompt}
         payload.update(top_level)
 
-        vetted: dict[str, bool] = {}
+        vetted: dict[str, bool | None] = {}
         address_deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
         refs = await self._reference_payload(
             responses_body, metadata, record=record, notes=notes, seen=vetted,

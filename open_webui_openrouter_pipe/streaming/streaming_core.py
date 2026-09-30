@@ -3376,11 +3376,14 @@ class StreamingHandler:
                     )
                     if len(counts) >= max_keys:
                         for oldest in list(counts):
-                            if counts[oldest] > valves.MAX_FUNCTION_CALL_LOOPS:
+                            if oldest != reply_key and counts[oldest] > valves.MAX_FUNCTION_CALL_LOOPS:
                                 counts.pop(oldest, None)
                                 break
                         else:
-                            counts.pop(next(iter(counts)), None)
+                            for oldest in list(counts):
+                                if oldest != reply_key:
+                                    counts.pop(oldest, None)
+                                    break
                     while len(hand_back_seen) > max_keys:
                         for orphan in list(hand_back_seen):
                             if orphan != reply_key and orphan not in counts:
@@ -4449,7 +4452,8 @@ class StreamingHandler:
                 for field, _log_label, _notify_label, _key_fn in _TURN_METADATA_FIELDS
                 if turn_values[field]
             }
-            if (not was_cancelled) and (not handed_back_for_retry) and chat_id and message_id and payload and Chats is not None:
+            if (not was_cancelled) and (not handed_back_for_retry) and chat_id and message_id \
+                    and payload and Chats is not None and is_linkable_chat(chat_id):
                 stored_message: dict[str, Any] = {}
                 try:
                     chat_row = await Chats.get_chat_by_id(chat_id)
