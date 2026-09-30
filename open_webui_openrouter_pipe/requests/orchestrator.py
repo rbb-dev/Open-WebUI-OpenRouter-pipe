@@ -2251,8 +2251,12 @@ class RequestOrchestrator:
                 __event_emitter__,
                 template=valves.SERVICE_ERROR_TEMPLATE,
                 variables={"error_type": type(exc).__name__, "status_code": str(code),
-                           "reason": exc.evidence()},
-                log_message=f"Unexpected error in request loop: {exc}",
+                           "reason": exc.summary(),
+                           "body_excerpt": exc.body_excerpt_block()},
+                log_message=(
+                    f"Unexpected error in request loop: {exc} "
+                    f"(Content-Type: {exc.content_type}): {exc.body_excerpt[:200]}"
+                ),
             )
             await self._pipe._dispatch_generation_complete(
                 None,

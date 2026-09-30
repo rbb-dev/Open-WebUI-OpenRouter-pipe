@@ -133,6 +133,15 @@ alias, so `required` would be a requirement the model cannot meet. The pipe drop
 requirement for that turn rather than sending it. The Fusion plugin entry is still added, so the
 model can still call Fusion voluntarily — the request simply does not insist that it does.
 
+There is a second, mirror-image case: a **fusion** model whose Fusion plugin entry is explicitly
+`enabled: false`, with **no other tool in the request**. An entry the caller switched off is not a
+server-injected Fusion tool, so the requirement has nothing to satisfy it there either, and the
+pipe drops it the same way — on the `/responses` leg and on the `/chat/completions` fallback. The
+entry itself is still sent: on the OpenRouter engine it configures what Fusion would deliberate
+with if it ran, and removing it would change the run rather than the requirement. An entry with no
+`enabled` key at all is still active, which is the shape the filter and every other caller
+produce.
+
 ## Engine backends
 
 The `FUSION_BACKEND` pipe valve chooses which engine actually runs a deliberation when

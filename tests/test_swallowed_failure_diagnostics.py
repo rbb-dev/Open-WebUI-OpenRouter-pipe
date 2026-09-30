@@ -123,8 +123,10 @@ class TestDashboardSocketImportGuards:
         # reads the PERSISTED dashboard valve, so the row has to be committed too or the
         # read cannot be confirmed and the driver never reaches the seam it exists to
         # drive -- and it must carry the master switch as well, which is another field
-        # read from that row with a declared default of off. The valve class is a real
-        # `Valves` because that read validates against
+        # read from that row with a declared default of off. Both switches are named in
+        # it for the same reason: a key the row leaves out is silence, and silence reads
+        # as the declared default -- off for both. The valve class is a real `Valves`
+        # because that read validates against
         # the class's pydantic schema and a `SimpleNamespace` has none.
         from open_webui_openrouter_pipe.core.config import Valves
 

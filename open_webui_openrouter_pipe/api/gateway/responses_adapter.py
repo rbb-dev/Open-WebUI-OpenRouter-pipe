@@ -405,10 +405,12 @@ class ResponsesAdapter:
                     async for attempt in retryer:
                         with attempt:
                             queued_any = False
+                            saw_data_line = False
                             delivered_any = False
                             body_complete = False
                             buf = bytearray()
                             scanned = 0
+                            excerpt = bytearray()
                             event_data_parts: list[bytes] = []
                             stream_complete = False
                             held: list[bytes] = []
@@ -475,6 +477,8 @@ class ResponsesAdapter:
                                             timing_mark("responses_first_chunk")
                                         view = memoryview(chunk)
                                         buf.extend(view)
+                                        if len(excerpt) < _BODY_EXCERPT_CHARS:
+                                            excerpt.extend(view[: _BODY_EXCERPT_CHARS - len(excerpt)])
                                         sse_lines, scanned = _split_sse_lines(buf, scanned)
                                         for stripped in sse_lines:
                                             if not stripped:
@@ -492,6 +496,7 @@ class ResponsesAdapter:
                                             if stripped.startswith(b":"):
                                                 continue
                                             if stripped.startswith(b"data:"):
+                                                saw_data_line = True
                                                 payload = bytes(stripped[5:].lstrip())
                                                 if payload == _RESPONSES_SSE_DONE_SENTINEL:
                                                     if event_data_parts:
@@ -514,6 +519,7 @@ class ResponsesAdapter:
                                     del buf[:]
                                     scanned = 0
                                     if tail_line.startswith(b"data:"):
+                                        saw_data_line = True
                                         event_data_parts.append(bytes(tail_line[5:].lstrip()))
 
                                 if event_data_parts and not stream_complete:
@@ -529,7 +535,13 @@ class ResponsesAdapter:
                                                 continue
                                             await _dispatch(blob)
                                 if not queued_any:
-                                    raise aiohttp.ClientPayloadError("OpenRouter closed the stream before sending anything")
+                                    if saw_data_line or not chunk_count:
+                                        raise aiohttp.ClientPayloadError("OpenRouter closed the stream before sending anything")
+                                    raise UpstreamBodyUnreadable(
+                                        endpoint="/responses",
+                                        body_excerpt=excerpt.decode("utf-8", "replace"),
+                                        content_type=resp.headers.get("Content-Type"),
+                                    )
                                 if not delivered_any:
                                     raise aiohttp.ClientPayloadError("OpenRouter sent no user-visible events on /responses")
                             except Exception as producer_exc:

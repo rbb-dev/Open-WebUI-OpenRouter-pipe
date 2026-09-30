@@ -14,12 +14,13 @@ from typing import Any
 
 from ...core.warn_latch import warn_level
 from .authz import (
+    _VIEW_MODEL_UNREAD,
     can_view,
     can_view_known,
-    dashboard_model,
     remember_socket_user_id,
     resolve_socket_user_id,
     resolve_user,
+    resolve_view_model,
 )
 
 logger = logging.getLogger(__name__)
@@ -337,20 +338,20 @@ async def reauthorize_local_viewers() -> None:
         )
         return
     enabled = await _socket_dashboard_enabled(pipe)
-    verdicts: dict[str | None, bool | None] = {}
-    model: Any = None
-    model_read = False
-    for sid in list(get_session_ids_from_room(VIEWERS_ROOM) or []):
-        if not enabled:
+    if not enabled:
+        for sid in list(get_session_ids_from_room(VIEWERS_ROOM) or []):
             await _evict(sio, sid, "dashboard disabled")
-            continue
+        return
+    sids = list(get_session_ids_from_room(VIEWERS_ROOM) or [])
+    if not sids:
+        return
+    resolved, model = await resolve_view_model(pipe)
+    verdicts: dict[str | None, bool | None] = {}
+    for sid in sids:
         uid = await resolve_socket_user_id(sid)
         if uid not in verdicts:
-            if not model_read:
-                model_read = True
-                model = await dashboard_model(pipe)
             verdicts[uid] = await can_view_known(
-                await resolve_user(uid), pipe, model
+                await resolve_user(uid), pipe, model if resolved else _VIEW_MODEL_UNREAD
             )
         if verdicts[uid] is False:
             await _evict(sio, sid, "authorization no longer holds")

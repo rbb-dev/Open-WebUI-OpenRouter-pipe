@@ -872,6 +872,16 @@ releases, so a value you saved earlier can fall back to the model's own
 default — see
 [The chat filter UI](#the-chat-filter-ui-uservalves).
 
+Attachments Direct Uploads has already taken are not offered here: the
+video filter honours the diversion and does not put one back into the
+request or into `input_references`.
+
+A video filter attached by hand to a non-video model does nothing: the
+filter acts only on a request whose `model` is its own, in any spelling
+the picker can hold. Without that, attaching one to a chat model would
+take the person's attachments out of the request and record them where
+only the video path reads them.
+
 Four further controls are on every video filter and are in none of these
 tables, because they are pipe behaviour rather than anything a model
 publishes:
@@ -1405,7 +1415,12 @@ anchored on them: one that breaks a limit fails the whole request. The
 same three limits are applied again to anything sent only as a reference
 (below), and there a file that breaks one is left out with a warning
 notice in the chat naming it and the reason, while the video still
-renders. Frames and reference pictures share the one combined budget,
+renders — with one exception: a **clip or a sound file** over the
+`MEDIA_FILE_HOST_MAX_SIZE_MB` relay cap stops the request instead, naming
+the cap it broke. A picture stays on the left-out rule, because a picture
+is a frame companion and the video still renders without it; a clip is the
+thing being edited, so rendering without it would be the silent
+degradation. Frames and reference pictures share the one combined budget,
 the frames first. A **picture** is held to the per-picture byte cap,
 whichever way it takes: one over `VIDEO_FRAME_IMAGE_MAX_BYTES` is left out
 of the request with a notice naming it, and the video still renders. What

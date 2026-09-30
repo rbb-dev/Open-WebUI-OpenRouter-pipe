@@ -193,8 +193,11 @@ class PipeDashboardPlugin(PluginBase):
             title="Auto-update",
             description=(
                 "Apply eligible new releases automatically after the quarantine delay. Runs "
-                "headless: whenever this and the Update tab are enabled, the background task "
-                "keeps updating even while the Pipe Dashboard model itself is switched off."
+                "headless: whenever this, the Update tab and the plugin system master switch "
+                "are all enabled, the background task keeps updating even while the Pipe "
+                "Dashboard model itself is switched off. Turning the master switch off stops "
+                "the next cycle rather than the current one, so an update already in flight "
+                "still finishes."
             ),
         )),
         "PIPE_DASHBOARD_UPDATE_AUTO_DELAY_HOURS": (int, Field(

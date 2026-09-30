@@ -19,10 +19,15 @@ Inputs (high level):
   - `openwebui_model_id`
   - `artifact_loader(chat_id, message_id, ulids)` (async) — called once per rebuild rather than
     once per message: the markers of every message sharing a `message_id` are gathered first and
-    asked for together, so a whole history normally costs one call. `message_id` scopes the store's
-    own SELECT, so it is never widened: a history whose messages carry distinct ids still costs one
-    call per id, each asking only for its own group. On the replayed path the messages arrive
-    without an id at all, so the id a batched call passes is `None`.
+    asked for together, so a history whose messages carry no id at all costs one call. `message_id`
+    scopes the store's own SELECT, so it is never widened: a history whose messages carry distinct
+    ids costs one call per id, each asking only for its own group. A saved-chat history is the
+    second shape, not the first: every rebuilt message is keyed by its id
+    (`utils/middleware.py:2221`, `models/chat_messages.py:386`), so it costs one call per distinct
+    `message_id` — a sixteen-turn chat, sixteen calls. Those calls are issued **together**, in
+    bounded batches, so their cost tracks the slowest group rather than their sum; the batches are
+    capped at a fixed constant, so a longer history adds work rather than overlap. The id-less
+    shape above is the API caller's, not the replayed path's.
 - Retention/pruning:
   - `pruning_turns` (from `TOOL_OUTPUT_RETENTION_TURNS`)
   - `replayed_reasoning_refs` (for the `PERSIST_REASONING_TOKENS="next_reply"` and `"disabled"` cleanup)
@@ -141,7 +146,7 @@ place that knows which lines it owns; leaving it to the strip would mean the str
 For each marker segment:
 - the pipe looks up the referenced persisted artifact payload (via `artifact_loader` when available;
   the lookups are batched across the whole rebuild, one call per distinct `message_id` rather than one
-  per message),
+  per message, and those calls are issued together in bounded batches rather than one after another),
 - normalizes it to the schema expected by upstream (`normalize_persisted_item`) — once per marker, and the orphan guard below is run over exactly the payloads that normalization **kept**, not over the raw rows. A row the normalizer rejects is therefore not an artifact the guard ever sees: its own output is left orphaned and is dropped and named in the transformer's own `missing calls` warning, while a marker with no row at all stays the separate `missing_artifact_markers` case. A row the normalizer gives a minted `call_id` to is paired against that minted id, so a call and its output stored without ids cannot pair;
 - and appends it directly into the `input` array as a structured item.
 
@@ -156,7 +161,9 @@ If any of these are missing, marker segments will not be replayed.
 
 The same four preconditions decide whether the batched lookup runs at all, and they are load-bearing for it: a
 fusion member carries no `chat_id` and so never reaches the loader, and the batch is grouped by the same
-`message_id` the store scopes its read by. Artifacts are still classified per message, not over the group, so a
+`message_id` the store scopes its read by. That scoping is unchanged by the groups being read concurrently:
+each call still asks only for its own group's markers, and each result is written back under the group id
+it was asked for, so the rebuilt `input` is identical to the one a serial pass produces. Artifacts are still classified per message, not over the group, so a
 `function_call` in one message whose output lives in another is dropped as the orphan it is rather than paired.
 
 ---
@@ -290,7 +297,7 @@ cleanup. It is never published as an output item, so Open WebUI neither draws it
 
 ## 6. Reasoning replay and `PERSIST_REASONING_TOKENS`
 
-When replayed artifacts include reasoning items, the pipe can optionally record references in `replayed_reasoning_refs` so the caller can delete those artifacts after replay when reasoning retention is limited to a single turn. Under `next_reply` and `disabled` alike, the cleanup runs only on a generation that finished the reply: it must not have been cancelled or errored, and it must not have handed its tool calls back for another request to answer. The two ways a reply is not finished are both guarded by the same clause. A Continue keeps the rows of the message that request is still writing, so continuing an answer does not delete the reasoning of the generation it continues; a hand-back keeps them, because the request that comes back to answer the tool results is the one that will need them, and when that request arrives it is the one that deletes them; if it never arrives -- the user stops, or the sender errors -- the rows wait for the housekeeping sweep, because no generation finished the reply and `next_reply` has nothing to bind to. The tool-round copies of §5.4 are not reasoning and are not deleted with it.
+When replayed artifacts include reasoning items, the pipe can optionally record references in `replayed_reasoning_refs` so the caller can delete those artifacts after replay when reasoning retention is limited to a single turn. Under `next_reply` and `disabled` alike, the cleanup runs only on a generation that finished the reply: it must not have been cancelled or errored, and it must not have handed its tool calls back for another request to answer. The two ways a reply is not finished are both guarded by the same clause. A Continue keeps the rows of the message that request is still writing, so continuing an answer does not delete the reasoning of the generation it continues; a hand-back keeps them, because the request that comes back to answer the tool results is the one that will need them, and when that request arrives it is the one that deletes them; if it never arrives -- the user stops, or the sender errors -- the rows wait for the housekeeping sweep, because no generation finished the reply and `next_reply` has nothing to bind to. A delete that fails does not fail the reply: the turn has already been answered, so the store reports the failure, keeps the rows and the references, and the next turn retries the delete. The tool-round copies of §5.4 are not reasoning and are not deleted with it.
 
 System default is `PERSIST_REASONING_TOKENS="conversation"`; see [Valves & Configuration Atlas](valves_and_configuration_atlas.md) for the exact semantics and defaults.
 
@@ -399,7 +406,7 @@ and carries no `content` for the frontend to write over the prefix with.
 
 ## 7. Failure modes (what happens when artifacts are missing)
 
-- If the artifact loader fails (DB errors, network issues), the pipe logs a warning and continues without replaying artifacts for that assistant message — or, since the lookups are batched, for the whole group that one lookup covered, every message sharing its `message_id`, which on the replayed path is the whole history — and the person is told: the store emits a warning notification saying that earlier tool results could not be loaded, so the model did not receive them. The notice names no cause, because the store cannot tell a database blip from a decryption failure, and it promises no retry. A read that *succeeds* but returns fewer rows than it asked for is a different state and is announced differently: it says how many rows were unreadable and which artifact kinds they were, and it names no id and no cause. That is deliberately not folded into the notice above, because the two are told apart by the decrypt set rather than by a shortfall — a row that was legitimately deleted is missing from the result too, and reporting it would announce every retention sweep as a lost round. It is a notification rather than a status because Open WebUI renders only the newest status (`StatusHistory.svelte` shows `history.at(-1)` and defaults `expand = false`), so a status would replace the line above it instead of saying anything after the fact. The cache refill that follows a successful read is a separate case and is not this one: a fault there returns the rows the database gave, clears the breaker window, and is logged as a cache fault, because nothing was lost and announcing a lost round would be false.
+- If the artifact loader fails (DB errors, network issues), the pipe logs a warning and continues without replaying artifacts for that assistant message — or, since the lookups are batched, for the whole group that one lookup covered, every message sharing its `message_id`, which on the replayed path is the whole history — and the person is told: the store emits a warning notification saying that earlier tool results could not be loaded, so the model did not receive them. The notice names no cause, because the store cannot tell a database blip from a decryption failure, and it promises no retry. A read that *succeeds* but returns fewer rows than it asked for is a different state and is announced differently: it says how many rows were unreadable and which artifact kinds they were, and it names no id and no cause. That is deliberately not folded into the notice above, because the two are told apart by the decrypt set rather than by a shortfall — a row that was legitimately deleted is missing from the result too, and reporting it would announce every retention sweep as a lost round. It is a notification rather than a status because Open WebUI renders only the newest status (`StatusHistory.svelte` shows `history.at(-1)` and defaults `expand = false`), so a status would replace the line above it instead of saying anything after the fact. The cache refill that follows a successful read is a separate case and is not this one: a fault there returns the rows the database gave, clears the breaker window, and is logged as a cache fault, because nothing was lost and announcing a lost round would be false. A third arm reaches the same state without the failure: if the store never initialised at all there is no database to ask, and it announces the same missing round in the same cause-free words and logs that the store is not configured, without charging the per-user database breaker — that one is a state rather than a fault, so charging it would make the next turn report a repeated-error skip that never happened.
 - If an individual marker cannot be resolved to a payload (for example after key rotation or cleanup), the pipe logs a warning and skips that artifact, and says nothing to the person. That stays log-only on purpose: at this layer a row consumed by `PERSIST_REASONING_TOKENS=next_reply`, a row lost to a rotated key and a row lost to a failed read are one state, and the first is a normal steady state on every turn of every default-configured reasoning conversation. In a temporary chat a later turn's markers resolve to nothing by design, since the pipe keeps none of its rows, and are logged only at debug level. A call that carries no `chat_id` never gets markers at all, so there is nothing for it to resolve.
 
 Operational implications:

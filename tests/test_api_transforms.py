@@ -934,7 +934,6 @@ class TestChatToolsToResponsesTools:
         result = _chat_tools_to_responses_tools(tools)
         assert "cache_control" not in result[0]
 
-
 # ============================================================================
 # Tool Choice Conversion Tests
 # ============================================================================

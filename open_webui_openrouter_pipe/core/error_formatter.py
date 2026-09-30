@@ -214,6 +214,7 @@ class ErrorFormatter:
         show_error_message: bool = True,
         show_error_log_citation: bool = False,
         done: bool = False,
+        terminal: bool = True,
         partial_answer: str = "",
     ) -> str:
         if not self._event_emitter_handler:
@@ -224,6 +225,7 @@ class ErrorFormatter:
             show_error_message=show_error_message,
             show_error_log_citation=show_error_log_citation,
             done=done,
+            terminal=terminal,
             partial_answer=partial_answer,
         )
 
@@ -235,6 +237,7 @@ class ErrorFormatter:
         variables: dict[str, Any],
         log_message: str,
         log_level: int = logging.ERROR,
+        terminal: bool = True,
         partial_answer: str = "",
         fallback_template: str | None = None,
     ) -> str:
@@ -246,6 +249,7 @@ class ErrorFormatter:
             variables=variables,
             log_message=log_message,
             log_level=log_level,
+            terminal=terminal,
             partial_answer=partial_answer,
             fallback_template=fallback_template,
         )
@@ -422,6 +426,7 @@ class ErrorFormatter:
         api_model_id: str | None,
         usage: dict[str, Any] | None = None,
         partial_answer: str = "",
+        terminal: bool = True,
     ) -> str:
         """Emit a user-facing markdown message for OpenRouter 400 responses."""
         if is_sign_in_failure(exc):
@@ -488,7 +493,7 @@ class ErrorFormatter:
                 event_emitter,
                 content=shown if on_channel else "",
                 usage=usage or None,
-                done=True,
+                done=terminal,
             )
         except Exception:
             self.logger.exception(

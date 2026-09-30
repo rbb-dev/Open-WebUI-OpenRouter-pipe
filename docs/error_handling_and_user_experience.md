@@ -43,7 +43,11 @@ of its own, through the same seam the breaker's notice uses, saying that earlier
 that the model did not receive them. Only a failure of the *read* does that: a fault in the replay-cache refill that
 follows a successful read returns the rows anyway, clears the breaker window, and is logged as a cache fault instead —
 nothing was lost, so there is nothing to announce. It names no cause — the store cannot tell a database blip from a decryption failure
-— and it promises no retry. It is kept apart from the two budget notices on purpose: a budget that trimmed successfully
+— and it promises no retry. A third arm says the same thing without the fault: a store that never came up has no
+database to read from, so it announces the same missing round in the same words, logs a warning saying the store is not
+configured, and does **not** charge the DB breaker — it is a state, not a failure, and charging it would open the
+breaker and tell the next turn its round was skipped "due to repeated errors", which is a cause this deployment does
+not have. It is kept apart from the two budget notices on purpose: a budget that trimmed successfully
 and a read that failed are different conditions, and one turn can hit both, so folding the wordings together would have
 each of them announce the other's condition. A marker that simply resolves to nothing stays log-only, because a
 legitimately consumed row is indistinguishable from a lost one at that layer; see
@@ -103,12 +107,15 @@ the breaker, 503 for the other four.
 
 **A channel card is reduced, a saved-chat card is not.** Every member of a channel can
 read what the pipe writes there, so a card that reaches a channel is rendered as though
-twelve of its placeholders were empty: `session_id`, `user_id`, `detail`,
+thirteen of its placeholders were empty: `session_id`, `user_id`, `detail`,
 `sanitized_detail`, `reason`, `openrouter_message`, `upstream_message`,
-`moderation_reasons`, `flagged_excerpt`, `raw_body`, `metadata_json` and
-`provider_raw_json`. Those are the requester's identifiers, the text they wrote and the
+`moderation_reasons`, `flagged_excerpt`, `raw_body`, `metadata_json`,
+`provider_raw_json` and `body_excerpt`. Those are the requester's identifiers, the text they wrote and the
 provider's own prose about it — and a provider's rejection body routinely quotes the
-prompt back, so the prose *can* be their words. The reduction happens at the render, on
+prompt back, so the prose *can* be their words. `body_excerpt` is on the list for the
+same reason `raw_body` is: it is the part of a reply the pipe could not parse, which is
+the part an attacker chooses, and a WAF challenge page is not something to broadcast to a
+room. The reduction happens at the render, on
 every path that can reach a channel, and it is keyed on the surface rather than on the
 template: an admin's custom template gets the same answer, and there is no valve to put
 the ids back. `error_id`, the model, the provider, `openrouter_code`, `status_code`, the
@@ -184,7 +191,7 @@ When a chat reply's call to OpenRouter fails without being rejected, or anything
 | --- | --- |
 | A timeout before any answer text has arrived | `NETWORK_TIMEOUT_TEMPLATE` |
 | A connection that cannot be opened or drops, a stream that sent nothing the pipe could read on every attempt, or one whose readable frames published nothing a reader could use, an accepted status whose body was lost before it finished arriving, or a non-streamed 200 carrying no `output` key on `/responses`, or an `output` that is neither a list nor null, and no `choices` on `/chat/completions`, before any answer text has arrived and before the model has named the tool it is calling | `CONNECTION_ERROR_TEMPLATE` |
-| An accepted status whose body is not a JSON object (a proxy, WAF or gateway rewrote the reply) | `SERVICE_ERROR_TEMPLATE` |
+| An accepted status whose body is not a JSON object (a proxy, WAF or gateway rewrote the reply) | `SERVICE_ERROR_TEMPLATE`, with the quoted body in a separate `{body_excerpt}` block rather than inside `{reason}` |
 | A timeout, a failed or dropped connection, or a stream that published nothing a reader could use, after answer text arrived earlier in the reply or after the model named the tool it is calling | `STREAM_INTERRUPTED_TEMPLATE`, appended after the kept text |
 | Any other exception | `INTERNAL_ERROR_TEMPLATE` |
 
@@ -192,7 +199,7 @@ The timeout template's `timeout_seconds` is the limit that ran out: `HTTP_CONNEC
 
 **A non-streamed 200 that holds no output items is a failure the person can retry, not an empty turn, and it is not a connection fault.** With streaming off, OpenRouter can answer a `/responses` request with `200` and an `output` that is `[]` or `null`: the call connected, the model ran, and it produced nothing. Both shapes take the same path as a body with no `output` key at all — the full `TRANSIENT_RETRY_MAX_ATTEMPTS` budget, one strike on the breaker — and the retry can still bring a real answer. The card is then `OPENROUTER_ERROR_TEMPLATE`, because the connection-failure card would tell the person to check their firewall and their DNS about a reply that arrived; its reason reads that the model returned an empty answer (no output items) on `/responses`, and the person can simply send the message again. A body carrying at least one output item is unchanged, and a body with no `output` key and a body with no `choices` key are still the connection card above.
 
-**A mangled whole body is not retried and does not count against the breaker.** "Whole" is what this says: the body arrived, and what came back is not an OpenRouter document — the `UpstreamBodyUnreadable` case, which the provider produced and a proxy, CDN or WAF may have rewritten. The provider answered, with a reply code the pipe accepted, so a re-POST asks it the same question and a rewritten reply is rewritten again; and the fault is in the network path rather than in OpenRouter, so counting it would punish a user for somebody else's firewall. The reason a caller is handed names the endpoint that answered and carries the upstream `Content-Type`. Those two are the load-bearing half of the diagnosis, and the chat card additionally quotes the first 200 characters of what the provider sent, which is where the proxy's own error page becomes visible. The API error envelope quotes nothing: a chatless caller has no chat to write a diagnosis into, so its JSON body is composed by the pipe out of the two values the pipe itself derived, rather than transported from a body that never parsed into an `error` object at all (see [Security & Encryption](security_and_encryption.md#log-safety)). One sentence is therefore rendered on three deliveries — the chat card, a task route's card, and the Anthropic Messages card, each as its `reason` — while a chatless, non-streamed caller's envelope carries the same sentence without the excerpt, as its `message`.
+**A mangled whole body is not retried and does not count against the breaker.** "Whole" is what this says: the body arrived, and what came back is not an OpenRouter document — the `UpstreamBodyUnreadable` case, which the provider produced and a proxy, CDN or WAF may have rewritten. The provider answered, with a reply code the pipe accepted, so a re-POST asks it the same question and a rewritten reply is rewritten again; and the fault is in the network path rather than in OpenRouter, so counting it would punish a user for somebody else's firewall. The reason a caller is handed names the endpoint that answered and carries the upstream `Content-Type`. Those two are the load-bearing half of the diagnosis, and the chat card additionally quotes the first 200 characters of what the provider sent, which is where the proxy's own error page becomes visible. **Those first 200 characters are the provider's own text, so how they are rendered is a property of the surface, not one sentence for all of them.** On the card the excerpt arrives separately in `{body_excerpt}`, already inside a code fence, while `{reason}` carries only the two facts the pipe states itself. That split is deliberate: a body a proxy rewrote is the part of the reply an attacker chose, and left inline on a card its `![beacon](…)`, `[click me](…)`, `<script>` or unclosed ``` would render — a live image request, a live link, a live tag, and a fence that swallowed the rest of the card. The fence is not a scrub: the excerpt reaches the card verbatim, in full, and an operator who needs the whole payload reads it on the error object and in the session log. The API error envelope quotes nothing: a chatless caller has no chat to write a diagnosis into, so its JSON body is composed by the pipe out of the two values the pipe itself derived, rather than transported from a body that never parsed into an `error` object at all (see [Security & Encryption](security_and_encryption.md#log-safety)). One sentence is therefore rendered on three deliveries — the chat card, a task route's card, and the Anthropic Messages card, each as its `reason` — while a chatless, non-streamed caller's envelope carries the same sentence without the excerpt, as its `message`. This holds on the streaming leg as well as the non-streaming one: a 200 whose body yielded **no decodable frame** because it carried no `data:` line at all is not retried and does not charge the breaker, and the connection card is not what a person sees. A body that carried at least one `data:` line and decoded none of them is a different fault — the provider did answer in SSE and then sent nothing readable — and stays a retried, counted `ClientPayloadError`, as does a body with no bytes at all.
 
 **A body lost before it finished arriving is a different class, and it does count.** Here the connection was accepted and the body died on the way — a dropped connection behind a `200`, which reaches the pipe as a payload fault rather than as a document. OpenRouter has already run the call, so the request is **not** re-POSTed; but nothing was delivered, so it is one failed call and is counted once against the breaker, and it renders `CONNECTION_ERROR_TEMPLATE` like any other pre-answer connection fault. The two halves are deliberate: a body the provider produced and something else rewrote is nobody's bill but the reader's outage, while a body the transport lost is a real failure of a real call.
 
@@ -280,6 +287,7 @@ The OpenRouter error formatter supports a larger set of optional values, includi
 - `retry_after_seconds`, `rate_limit_type`
 - `include_model_limits`, `context_limit_tokens`, `max_output_tokens`
 - `metadata_json`, `provider_raw_json`, `diagnostics` — every value derived from the provider's payload is cut at 16,384 characters, with a marker naming how many characters were removed: the two JSON values `metadata_json` and `provider_raw_json`, the five inline copies of the provider's message (`detail`, `sanitized_detail`, `reason`, `upstream_message`, `openrouter_message`) and the joined `moderation_reasons` list. A cut JSON value is no longer parseable JSON; a cut inline value is still one logical line, its marker space-joined onto the card's line. `raw_body` and `flagged_excerpt` are not cut and arrive whole
+- `body_excerpt` — the provider's own first 200 characters when an accepted response's body was not decodable at all, arriving inside a code fence. Filled on that fault only, never cut, and never scrubbed: a proxy's own words are the evidence. Pair it with a `reason` that names the endpoint and the `Content-Type`, and do not put the excerpt in `reason` as well. It is withheld on a channel chat, so a room's card is the diagnosis that names no one
 - `error_chunk_id`, `error_chunk_created`, `is_streaming_error`, `native_finish_reason`, `request_id_reference`
 - `streaming_provider`, `streaming_model` — filled only for a failure reported inside a reply that has already started; empty on a rejected request however the provider is named, and empty when such a failure names no provider at all
 
@@ -378,7 +386,8 @@ If this persists, contact support and include the Error ID.
 
 ### Example: operator-forward template (adds diagnostic JSON)
 
-A value that arrives already fenced must not be fenced again by the template: `metadata_json` carries its
+A value that arrives already fenced must not be fenced again by the template: `metadata_json` and
+`body_excerpt` carry their
 own fence, so a template that adds a ```json … ``` pair around it closes that fence early and the JSON
 escapes the block.
 
@@ -386,8 +395,8 @@ You do not have to edit a stored template that already fences one of these value
 the template's own fences, so a row written as ` ```json ` / `{metadata_json}` / ` ``` ` — the shape
 shipped before 2.7.4, and the shape the pipe's own example used to show — renders as exactly one
 code block holding the payload, with the label above it and the card text after it. A template that
-does not fence the value is unaffected. The same holds for `{raw_body}`, `{flagged_excerpt}` and
-`{provider_raw_json}`; a value is only unwrapped when the template supplies the fence. A value that arrives cut ends mid-payload and its `...(truncated: N characters omitted)...` marker sits on its own line inside the fence, so read a cut value as the start of the payload rather than the whole of it. An inline cut value is the other shape: its marker is space-joined onto the card's line rather than given a line of its own, because an inline value is always one logical line, so the same marker text appears mid-line there.
+does not fence the value is unaffected. The same holds for `{raw_body}`, `{flagged_excerpt}`,
+`{provider_raw_json}` and `{body_excerpt}`; a value is only unwrapped when the template supplies the fence. A value that arrives cut ends mid-payload and its `...(truncated: N characters omitted)...` marker sits on its own line inside the fence, so read a cut value as the start of the payload rather than the whole of it. An inline cut value is the other shape: its marker is space-joined onto the card's line rather than given a line of its own, because an inline value is always one logical line, so the same marker text appears mid-line there.
 
 ````markdown
 ### 🧾 Provider error

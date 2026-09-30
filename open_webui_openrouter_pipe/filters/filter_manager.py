@@ -2042,6 +2042,7 @@ class FilterManager:
         *,
         model_id: str = "openrouter/video",
         video_model: dict[str, Any] | None = None,
+        variant_ids: Any = None,
     ) -> str:
         from .video_filter_renderer import render_video_filter_source
 
@@ -2050,6 +2051,7 @@ class FilterManager:
             video_model=video_model,
             pipe_metadata_key=_PIPE_METADATA_KEY,
             admin_valves=self.valves,
+            variant_ids=variant_ids,
         )
 
     @timed
@@ -2068,6 +2070,21 @@ class FilterManager:
         index, unindexed = _sweep_candidate_index(
             rows.all_rows, "VIDEO_MODEL_ID", _OPENROUTER_VIDEO_GEN_FILTER_MARKER
         )
+
+        from ..models.registry import sanitize_model_id
+
+        variant_ids_by_canonical: dict[str, set[str]] = {}
+        for model in models:
+            model_id = model.get("id")
+            if not isinstance(model_id, str) or not model_id.strip():
+                continue
+            model_id = model_id.strip()
+            original_id = model.get("original_id")
+            canonical_id = (
+                original_id if isinstance(original_id, str) and original_id.strip() else model_id
+            )
+            if sanitize_model_id(model_id) != sanitize_model_id(canonical_id):
+                variant_ids_by_canonical.setdefault(canonical_id, set()).add(model_id)
 
         installed: dict[str, str] = {}
         unresolved: set[str] = set()
@@ -2093,6 +2110,9 @@ class FilterManager:
                     model_id=canonical_id,
                     video_model=video_model,
                     rows=rows,
+                    variant_ids=tuple(
+                        sorted(variant_ids_by_canonical.get(canonical_id, ()))
+                    ),
                     candidates=_sweep_candidates(
                         index, unindexed, f"VIDEO_MODEL_ID = {video_spec_id!r}"
                     ),
@@ -2125,9 +2145,14 @@ class FilterManager:
         video_model: dict[str, Any] | None,
         rows: _FilterRows | None = None,
         candidates: list[Any] | None = None,
+        variant_ids: tuple[str, ...] = (),
     ) -> str | None:
         function_id, _refused = await self._install_single_video_gen_filter(
-            model_id=model_id, video_model=video_model, rows=rows, candidates=candidates,
+            model_id=model_id,
+            video_model=video_model,
+            rows=rows,
+            candidates=candidates,
+            variant_ids=variant_ids,
         )
         return function_id
 
@@ -2138,10 +2163,11 @@ class FilterManager:
         video_model: dict[str, Any] | None,
         rows: _FilterRows | None = None,
         candidates: list[Any] | None = None,
+        variant_ids: tuple[str, ...] = (),
     ) -> tuple[str | None, bool]:
         from .video_filter_renderer import build_video_filter_spec
 
-        spec = build_video_filter_spec(model_id, video_model)
+        spec = build_video_filter_spec(model_id, video_model, variant_ids=variant_ids)
         if not spec.contract_read:
             self.logger.info(
                 "Catalogue entry for %s publishes no video contract, so no OpenRouter Video "
@@ -2162,6 +2188,7 @@ class FilterManager:
         desired_source = self.render_openrouter_video_gen_filter_source(
             model_id=model_id,
             video_model=video_model,
+            variant_ids=variant_ids,
         ).strip() + "\n"
         function_id, _outcome = await self._ensure_filter_installed(
             desired_source=desired_source,

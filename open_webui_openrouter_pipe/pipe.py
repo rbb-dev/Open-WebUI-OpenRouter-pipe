@@ -479,6 +479,9 @@ _warned_user_valves: set[str] = set()
 _warned_timing_file: set[str] = set()
 _SEMAPHORE_NOT_GIVEN: Any = object()
 
+_REQUEST_FAILED_DETAIL = "Request failed. Please retry."
+_SERVER_BUSY_DETAIL = "Server busy (503)"
+
 
 def _admission_bound(max_concurrent_requests: int, queue_maxsize: int) -> int:
     return max_concurrent_requests + queue_maxsize + 2
@@ -2629,6 +2632,7 @@ class Pipe:
                 break
             drained += 1
             if not abandoned.future.done():
+                Pipe._put_streaming_refusal(abandoned, _REQUEST_FAILED_DETAIL)
                 with contextlib.suppress(RuntimeError):
                     abandoned.future.set_exception(
                         RuntimeError("Request queue was replaced before this request ran.")
@@ -3076,14 +3080,16 @@ class Pipe:
 
 
     @staticmethod
-    def _put_missing_stream_terminator(job: _PipeJob) -> None:
+    def _put_streaming_refusal(job: _PipeJob, detail: str | None = None) -> None:
         stream_queue = job.stream_queue
         if stream_queue is None:
             return
-        try:
-            stream_queue.put_nowait(None)
-        except asyncio.QueueFull:
-            return
+        items = (None,) if detail is None else ({"error": {"detail": detail}}, None)
+        for item in items:
+            try:
+                stream_queue.put_nowait(item)
+            except asyncio.QueueFull:
+                return
 
     @staticmethod
     def _admission_failed(
@@ -3102,7 +3108,7 @@ class Pipe:
             _wake_refused_stream(job)
         elif not job.future.cancelled():
             job.future.set_result("Server busy (503)")
-        Pipe._put_missing_stream_terminator(job)
+        Pipe._put_streaming_refusal(job, None if cancel_future else _SERVER_BUSY_DETAIL)
         return True
 
     async def _refuse_at_admission(self, job: _PipeJob, *, wants_stream: bool) -> Any:
@@ -3133,9 +3139,9 @@ class Pipe:
                     continue
                 semaphore = type(job.pipe)._global_semaphore
                 if semaphore is None:
+                    Pipe._put_streaming_refusal(job, _REQUEST_FAILED_DETAIL)
                     if not job.future.done():
                         job.future.set_exception(RuntimeError("Semaphore unavailable"))
-                    Pipe._put_missing_stream_terminator(job)
                     queue.task_done()
                     continue
                 try:
@@ -3193,9 +3199,9 @@ class Pipe:
         if semaphore is _SEMAPHORE_NOT_GIVEN:
             semaphore = type(self)._global_semaphore
         if semaphore is None:
+            Pipe._put_streaming_refusal(job, _REQUEST_FAILED_DETAIL)
             if not job.future.done():
                 job.future.set_exception(RuntimeError("Semaphore unavailable"))
-            Pipe._put_missing_stream_terminator(job)
             if job.counter_state is not None:
                 Pipe._release_stream_counter(job.pipe, job.counter_state)
             return

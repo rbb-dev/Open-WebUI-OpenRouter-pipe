@@ -6,7 +6,6 @@ import asyncio
 import copy
 import logging
 import time
-from collections import namedtuple
 from collections.abc import Callable
 from typing import Any
 
@@ -26,27 +25,6 @@ _UQ_MEMO: dict[tuple[str | None, str, bool, int, bool, int], tuple[float, dict[s
 _UQ_MEMO_TTL = 30.0
 _UQ_MEMO_MAX = 256
 
-_USAGE_ROW_COLUMNS = (
-    "ts",
-    "kind",
-    "status",
-    "retries",
-    "tokens_in",
-    "tokens_out",
-    "tokens_reasoning",
-    "tokens_cached",
-    "cost",
-    "tools_ok",
-    "tools_failed",
-    "cache_savings",
-    "user_id",
-    "user_name",
-    "model_id",
-)
-
-usage_row = namedtuple("usage_row", _USAGE_ROW_COLUMNS)
-
-
 logger = logging.getLogger(__name__)
 
 _warned_row_timestamps: set[str] = set()
@@ -60,25 +38,236 @@ def _new_acc() -> dict[str, float]:
     }
 
 
-def _add(acc: dict[str, float], r: Any, is_task: bool) -> None:
-    if not is_task:
-        acc["sessions"] += 1
-        if r.status == "failed":
-            acc["failed"] += 1
-        elif r.status == "cancelled":
-            acc["cancelled"] += 1
-        if (r.retries or 0) > 0:
-            acc["retried"] += 1
-    acc["tokens_in"] += r.tokens_in or 0
-    acc["tokens_out"] += r.tokens_out or 0
-    acc["tokens_reasoning"] += r.tokens_reasoning or 0
-    acc["tokens_cached"] += r.tokens_cached or 0
-    acc["cost"] += r.cost or 0.0
-    if is_task:
-        acc["task_cost"] += r.cost or 0.0
-    acc["tools"] += (r.tools_ok or 0) + (r.tools_failed or 0)
-    acc["tools_failed"] += r.tools_failed or 0
-    acc["savings"] += r.cache_savings or 0.0
+def _int(value: Any) -> int:
+    return 0 if value is None else int(value)
+
+
+def _float(value: Any) -> float:
+    return 0.0 if value is None else float(value)
+
+
+def _is_chat_row(model: Any) -> Any:
+    from sqlalchemy import or_
+
+    return or_(model.kind != "task", model.kind.is_(None))
+
+
+def _counted_rows(model: Any, include_tasks: bool) -> Any:
+    from sqlalchemy import true
+
+    return true() if include_tasks else _is_chat_row(model)
+
+
+def _grouped_key(column: Any) -> Any:
+    from sqlalchemy import case, or_
+
+    return case((or_(column.is_(None), column == ""), "?"), else_=column)
+
+
+def _epoch_or_zero(value: Any) -> float:
+    try:
+        return epoch_from_usage_ts(value)
+    except (AttributeError, OSError, OverflowError, ValueError):
+        _level = warn_level(_warned_row_timestamps, "unusable_row_timestamp")
+        logger.log(
+            _level,
+            "usage query: a stored row has an unusable timestamp; the time it reports "
+            "is being left out of the answer",
+            exc_info=True,
+        )
+        return 0.0
+
+
+def _window_cards(model: Any, session: Any, lo: Any, hi: Any, counted: Any) -> dict[str, float]:
+    from sqlalchemy import and_, case, func, select
+
+    chat = _is_chat_row(model)
+    stmt = select(
+        func.sum(case((chat, 1), else_=0)),
+        func.sum(case((and_(chat, model.status == "failed"), 1), else_=0)),
+        func.sum(case((and_(chat, model.status == "cancelled"), 1), else_=0)),
+        func.sum(case((and_(chat, model.retries > 0), 1), else_=0)),
+        func.sum(func.coalesce(model.tokens_in, 0)),
+        func.sum(func.coalesce(model.tokens_out, 0)),
+        func.sum(func.coalesce(model.tokens_reasoning, 0)),
+        func.sum(func.coalesce(model.tokens_cached, 0)),
+        func.sum(func.coalesce(model.cost, 0.0)),
+        func.sum(case((model.kind == "task", func.coalesce(model.cost, 0.0)), else_=0.0)),
+        func.sum(func.coalesce(model.tools_ok, 0) + func.coalesce(model.tools_failed, 0)),
+        func.sum(func.coalesce(model.tools_failed, 0)),
+        func.sum(func.coalesce(model.cache_savings, 0.0)),
+    ).where(model.ts >= lo, counted)
+    if hi is not None:
+        stmt = stmt.where(model.ts < hi)
+    row = session.execute(stmt).one()
+    acc = _new_acc()
+    acc["sessions"] = _int(row[0])
+    acc["failed"] = _int(row[1])
+    acc["cancelled"] = _int(row[2])
+    acc["retried"] = _int(row[3])
+    acc["tokens_in"] = _int(row[4])
+    acc["tokens_out"] = _int(row[5])
+    acc["tokens_reasoning"] = _int(row[6])
+    acc["tokens_cached"] = _int(row[7])
+    acc["cost"] = _float(row[8])
+    acc["task_cost"] = _float(row[9])
+    acc["tools"] = _int(row[10])
+    acc["tools_failed"] = _int(row[11])
+    acc["savings"] = _float(row[12])
+    return acc
+
+
+def _bucket_edges(start: float, now: float, bucket_s: int, off: int) -> list[int]:
+    first = int((start + off) // bucket_s * bucket_s - off)
+    last = int((now + off) // bucket_s * bucket_s - off)
+    return list(range(first, last + bucket_s, bucket_s))
+
+
+def _window_buckets(
+    model: Any, session: Any, lo: Any, edges: list[int], bucket_s: int, counted: Any
+) -> dict[int, dict[str, float]]:
+    from sqlalchemy import and_, case, func, select
+
+    if not edges:
+        return {}
+    index = case(
+        *[
+            (
+                and_(
+                    model.ts >= usage_ts_from_epoch(b),
+                    model.ts < usage_ts_from_epoch(b + bucket_s),
+                ),
+                position,
+            )
+            for position, b in enumerate(edges)
+        ],
+        else_=None,
+    )
+    stmt = (
+        select(
+            index.label("bucket"),
+            func.sum(func.coalesce(model.tokens_in, 0) + func.coalesce(model.tokens_out, 0)),
+            func.sum(func.coalesce(model.cost, 0.0)),
+            func.sum(case((_is_chat_row(model), 1), else_=0)),
+            func.sum(case((and_(_is_chat_row(model), model.status == "failed"), 1), else_=0)),
+            func.sum(func.coalesce(model.tools_ok, 0) + func.coalesce(model.tools_failed, 0)),
+            func.sum(func.coalesce(model.tokens_in, 0)),
+            func.sum(func.coalesce(model.tokens_cached, 0)),
+        )
+        .where(model.ts >= lo, counted)
+        .group_by(index)
+    )
+    out: dict[int, dict[str, float]] = {}
+    for position, tokens, cost, sessions, failed, tools, tin, tcached in session.execute(stmt):
+        if position is None:
+            continue
+        out[edges[int(position)]] = {
+            "tokens": _int(tokens),
+            "cost": _float(cost),
+            "sessions": _int(sessions),
+            "failed": _int(failed),
+            "tools": _int(tools),
+            "tokens_in": _int(tin),
+            "tokens_cached": _int(tcached),
+        }
+    return out
+
+
+def _window_models(model: Any, session: Any, lo: Any, counted: Any) -> list[dict[str, Any]]:
+    from sqlalchemy import func, select
+
+    kind = func.coalesce(model.kind, "chat")
+    mid = _grouped_key(model.model_id)
+    stmt = (
+        select(
+            mid.label("model_id"),
+            kind.label("kind"),
+            func.count(),
+            func.sum(func.coalesce(model.tokens_in, 0)),
+            func.sum(func.coalesce(model.tokens_cached, 0)),
+            func.sum(func.coalesce(model.tokens_out, 0)),
+            func.sum(func.coalesce(model.tools_ok, 0) + func.coalesce(model.tools_failed, 0)),
+            func.sum(func.coalesce(model.tools_failed, 0)),
+            func.sum(func.coalesce(model.cost, 0.0)),
+        )
+        .where(model.ts >= lo, counted)
+        .group_by(mid, kind)
+    )
+    return [
+        {
+            "model_id": row[0],
+            "is_task": row[1] == "task",
+            "sessions": _int(row[2]),
+            "tokens_in": _int(row[3]),
+            "tokens_cached": _int(row[4]),
+            "tokens_out": _int(row[5]),
+            "tools": _int(row[6]),
+            "tools_failed": _int(row[7]),
+            "cost": _float(row[8]),
+        }
+        for row in session.execute(stmt)
+    ]
+
+
+def _newest_user_names(model: Any, session: Any, lo: Any, counted: Any) -> dict[str, str]:
+    from sqlalchemy import func, select
+
+    uid = _grouped_key(model.user_id)
+    ranked = (
+        select(
+            uid.label("user_id"),
+            model.user_name.label("user_name"),
+            func.row_number().over(partition_by=uid, order_by=model.ts.desc()).label("rank"),
+        )
+        .where(
+            model.ts >= lo,
+            counted,
+            model.user_name.isnot(None),
+            model.user_name != "",
+        )
+        .subquery()
+    )
+    stmt = select(ranked.c.user_id, ranked.c.user_name).where(ranked.c.rank == 1)
+    return {user_id: name for user_id, name in session.execute(stmt)}
+
+
+def _window_users(model: Any, session: Any, lo: Any, counted: Any) -> list[dict[str, Any]]:
+    from sqlalchemy import case, func, select
+
+    uid = _grouped_key(model.user_id)
+    stmt = (
+        select(
+            uid.label("user_id"),
+            func.sum(case((_is_chat_row(model), 1), else_=0)),
+            func.sum(func.coalesce(model.tokens_in, 0)),
+            func.sum(func.coalesce(model.tokens_cached, 0)),
+            func.sum(func.coalesce(model.tokens_out, 0)),
+            func.sum(func.coalesce(model.tools_ok, 0) + func.coalesce(model.tools_failed, 0)),
+            func.sum(func.coalesce(model.tools_failed, 0)),
+            func.sum(func.coalesce(model.cost, 0.0)),
+            func.max(model.ts),
+        )
+        .where(model.ts >= lo, counted)
+        .group_by(uid)
+    )
+    names = _newest_user_names(model, session, lo, counted)
+    out: list[dict[str, Any]] = []
+    for row in session.execute(stmt):
+        out.append(
+            {
+                "user_id": row[0],
+                "user_name": names.get(row[0]) or "?",
+                "sessions": _int(row[1]),
+                "tokens_in": _int(row[2]),
+                "tokens_cached": _int(row[3]),
+                "tokens_out": _int(row[4]),
+                "tools": _int(row[5]),
+                "tools_failed": _int(row[6]),
+                "cost": _float(row[7]),
+                "last_active": _epoch_or_zero(row[8]),
+            }
+        )
+    return out
 
 
 def _cards(acc: dict[str, float]) -> dict[str, Any]:
@@ -129,7 +318,7 @@ def query_usage_stats(
     off = int(tz_offset_min) * 60
 
     with _db_session(session_factory) as session:
-        from sqlalchemy import case, func, or_, select
+        from sqlalchemy import case, func, or_
 
         totals_q = session.query(
             func.sum(case((model.kind == "task", 0), else_=1)), func.min(model.ts),
@@ -141,85 +330,25 @@ def query_usage_stats(
             totals_q = totals_q.filter(or_(model.kind != "task", model.kind.is_(None)))
         total_count, min_ts, tot_tin, tot_tcached, tot_tout, tot_tools, tot_cost = totals_q.one()
 
-        rows = [
-            usage_row(*row)
-            for row in session.execute(
-                select(*(getattr(model, name) for name in _USAGE_ROW_COLUMNS)).where(
-                    model.ts >= usage_ts_from_epoch(prev_start)
-                )
-            )
-        ]
-
-    cur = _new_acc()
-    prev = _new_acc()
-    buckets: dict[int, dict[str, float]] = {}
-    by_model: dict[tuple[str, bool], dict[str, Any]] = {}
-    by_user: dict[str, dict[str, Any]] = {}
-
-    for r in rows:
-        try:
-            ts = epoch_from_usage_ts(r.ts)
-        except (AttributeError, OSError, OverflowError, ValueError):
-            _level = warn_level(_warned_row_timestamps, "unusable_row_timestamp")
-            logger.log(
-                _level,
-                "usage query: a stored row has an unusable timestamp and is being "
-                "excluded; reported totals will be short",
-                exc_info=True,
-            )
-            continue
-        is_task = (r.kind or "chat") == "task"
-        if is_task and not include_tasks:
-            continue
-        acc = cur if ts >= start else prev
-        _add(acc, r, is_task)
-        if acc is not cur:
-            continue
-
-        b = int((ts + off) // bucket_s * bucket_s - off)
-        bucket = buckets.setdefault(
-            b,
-            {"tokens": 0, "cost": 0.0, "sessions": 0, "tools": 0,
-             "failed": 0, "tokens_in": 0, "tokens_cached": 0},
+        counted = _counted_rows(model, include_tasks)
+        lo = usage_ts_from_epoch(start)
+        cur = _window_cards(model, session, lo, None, counted)
+        prev = _window_cards(model, session, usage_ts_from_epoch(prev_start), lo, counted)
+        buckets = _window_buckets(
+            model, session, lo, _bucket_edges(start, now, bucket_s, off), bucket_s, counted
         )
-        bucket["tokens"] += (r.tokens_in or 0) + (r.tokens_out or 0)
-        bucket["cost"] += r.cost or 0.0
-        if not is_task:
-            bucket["sessions"] += 1
-            if r.status == "failed":
-                bucket["failed"] += 1
-        bucket["tokens_in"] += r.tokens_in or 0
-        bucket["tokens_cached"] += r.tokens_cached or 0
-        bucket["tools"] += (r.tools_ok or 0) + (r.tools_failed or 0)
-
-        uid = r.user_id or "?"
-        user = by_user.setdefault(uid, {
-            "user_id": uid, "user_name": r.user_name or "?", "sessions": 0,
-            "tokens_in": 0, "tokens_cached": 0, "tokens_out": 0, "tools": 0, "tools_failed": 0,
-            "cost": 0.0, "last_active": 0.0,
-        })
-        user["sessions"] += 0 if is_task else 1
-        user["tokens_in"] += r.tokens_in or 0
-        user["tokens_cached"] += r.tokens_cached or 0
-        user["tokens_out"] += r.tokens_out or 0
-        user["tools"] += (r.tools_ok or 0) + (r.tools_failed or 0)
-        user["tools_failed"] += r.tools_failed or 0
-        user["cost"] += r.cost or 0.0
-        user["last_active"] = max(user["last_active"], ts)
-        if r.user_name:
-            user["user_name"] = r.user_name
-
-        _model_add(by_model, (r.model_id or "?", is_task), r, count_session=True)
+        grouped_models = _window_models(model, session, lo, counted)
+        grouped_users = _window_users(model, session, lo, counted)
 
     total_cost_window = cur["cost"] or 0.0
     model_rows = []
-    for (mid, synthetic), agg in by_model.items():
-        name = name_fn(mid) if name_fn else mid
-        if synthetic:
+    for agg in grouped_models:
+        name = name_fn(agg["model_id"]) if name_fn else agg["model_id"]
+        if agg["is_task"]:
             name = f"{name} (tasks)"
         sessions = agg["sessions"]
         model_rows.append({
-            "model_id": mid,
+            "model_id": agg["model_id"],
             "model_name": name,
             "sessions": sessions,
             "tokens_in": agg["tokens_in"],
@@ -244,7 +373,7 @@ def query_usage_stats(
         "tools_failed": u["tools_failed"],
         "cost": round(u["cost"], 6),
         "last_active": int(u["last_active"]) or None,
-    } for u in sorted(by_user.values(), key=lambda u: -u["cost"])]
+    } for u in sorted(grouped_users, key=lambda u: -u["cost"])]
 
     bucket_rows = [
         {"t": t, "tokens": int(v["tokens"]), "cost": round(v["cost"], 6),
@@ -290,21 +419,6 @@ def query_usage_stats(
             "include_tasks": include_tasks,
         },
     }
-
-
-def _model_add(by_model: dict, key: tuple[str, bool], r: Any, *, count_session: bool) -> None:
-    agg = by_model.setdefault(key, {
-        "sessions": 0, "tokens_in": 0, "tokens_cached": 0, "tokens_out": 0,
-        "tools": 0, "tools_failed": 0, "cost": 0.0,
-    })
-    if count_session:
-        agg["sessions"] += 1
-    agg["tokens_in"] += r.tokens_in or 0
-    agg["tokens_cached"] += r.tokens_cached or 0
-    agg["tokens_out"] += r.tokens_out or 0
-    agg["tools"] += (r.tools_ok or 0) + (r.tools_failed or 0)
-    agg["tools_failed"] += r.tools_failed or 0
-    agg["cost"] += r.cost or 0.0
 
 
 def _warm_usage_store(store: Any, usage_store: Any, valves: Any, pipe_id: str) -> str | None:

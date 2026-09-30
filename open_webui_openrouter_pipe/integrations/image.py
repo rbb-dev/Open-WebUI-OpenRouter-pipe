@@ -21,7 +21,7 @@ from ..core.logging_system import SessionLogger
 from ..core.utils import clamp_text, summarise_names
 from ..core.warn_latch import warn_level
 from ..filters.image_filter_renderer import IMAGE_KNOB_TITLES
-from ..models.registry import _fingerprint
+from ..models.registry import _contract_target
 from ..requests.fusion_engine import latest_user_text
 from ..storage.multimodal import ADDRESS_CHECK_BUDGET_SECONDS, ADDRESS_CHECK_SECONDS
 from .image_client import OpenRouterImageClient
@@ -142,11 +142,6 @@ _STALE_CONTRACT = (
     "the previously cached contract is being reused and may be stale, so a knob may be "
     "gated against limits this model no longer publishes."
 )
-
-
-def _contract_target(valves: Any) -> tuple[str, str]:
-    base_url = (getattr(valves, "BASE_URL", "") or "https://openrouter.ai/api/v1").rstrip("/")
-    return base_url, _fingerprint(str(getattr(valves, "API_KEY", "") or ""))
 
 
 if TYPE_CHECKING:

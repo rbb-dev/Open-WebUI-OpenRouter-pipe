@@ -12,7 +12,7 @@ from PIL import Image
 
 from .image_conversion import composite_on_white, open_upright
 
-_MAX_INPUT_BYTES = 50 * 1024 * 1024
+_MAX_INPUT_BYTES = 64 * 1024 * 1024
 _MAX_INPUT_PIXELS = 50_000_000
 
 

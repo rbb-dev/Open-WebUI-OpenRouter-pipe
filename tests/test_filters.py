@@ -3200,7 +3200,7 @@ async def test_setting_frames_to_none_stops_every_picture_reaching_the_model(
         {"id": f"img-{tag}", "name": f"{tag}.png", "content_type": "image/png"}
         for tag in ("A", "B", "C")
     ]
-    body = {"files": list(files), "messages": [{"role": "user", "content": "go"}]}
+    body = {"model": model_id, "files": list(files), "messages": [{"role": "user", "content": "go"}]}
     signature = inspect.signature(instance.inlet)
     metadata: dict = {}
     supplied = {

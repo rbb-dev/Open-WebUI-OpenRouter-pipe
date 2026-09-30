@@ -3064,6 +3064,7 @@ class StreamingHandler:
                         variables={"model": body.model or ""},
                         log_message=f"Stream ended without completion event for model={body.model}",
                         log_level=logging.WARNING,
+                        terminal=False,
                         partial_answer=assistant_message,
                         fallback_template=DEFAULT_STREAM_INTERRUPTED_TEMPLATE,
                     )
@@ -4005,6 +4006,7 @@ class StreamingHandler:
                 api_model_id=getattr(body, "api_model", None),
                 usage=total_usage,
                 partial_answer=assistant_message,
+                terminal=False,
             )
             if reported:
                 assistant_message = reported
@@ -4018,6 +4020,7 @@ class StreamingHandler:
                 show_error_message=True,
                 done=True,
                 partial_answer=assistant_message,
+                terminal=False,
             )
             if reported:
                 assistant_message = reported
@@ -4031,9 +4034,14 @@ class StreamingHandler:
                     event_emitter,
                     template=valves.SERVICE_ERROR_TEMPLATE,
                     variables={"error_type": type(e).__name__, "status_code": "502",
-                               "reason": e.evidence()},
-                    log_message=f"Unreadable upstream body from {e.endpoint}: {e}",
+                               "reason": e.summary(),
+                               "body_excerpt": e.body_excerpt_block()},
+                    log_message=(
+                        f"Unreadable upstream body from {e.endpoint}: {e} "
+                        f"(Content-Type: {e.content_type}): {e.body_excerpt[:200]}"
+                    ),
                     partial_answer=assistant_message,
+                    terminal=False,
                 )
                 if reported:
                     assistant_message = reported
@@ -4062,6 +4070,7 @@ class StreamingHandler:
                     variables=variables,
                     log_message=f"OpenRouter call failed in streaming loop: {type(e).__name__}: {e}",
                     partial_answer=assistant_message,
+                    terminal=False,
                 )
             else:
                 reported = await self._pipe._ensure_error_formatter()._emit_templated_error(
@@ -4070,6 +4079,7 @@ class StreamingHandler:
                     variables={"error_type": type(e).__name__},
                     log_message=f"Unexpected error in streaming loop: {e}",
                     partial_answer=assistant_message,
+                    terminal=False,
                 )
             if reported:
                 assistant_message = reported
@@ -4341,11 +4351,22 @@ class StreamingHandler:
                 (not handed_back_for_retry)
                 and (not was_cancelled)
                 and terminal
-                and (emitted_output_items or not error_occurred)
+                and (
+                    emitted_output_items
+                    or not error_occurred
+                    or open_message_id is not None
+                    or assistant_message
+                )
             ):
-                await _capture_seeded_output()
+                if not error_occurred or emitted_output_items:
+                    await _capture_seeded_output()
                 terminal_output = _terminal_output_items(assistant_message)
-            if outcome_sink is not None and terminal_output and terminal:
+            if (
+                outcome_sink is not None
+                and terminal_output
+                and terminal
+                and (body.stream or not error_occurred or emitted_output_items)
+            ):
                 outcome_sink["output"] = terminal_output
                 if total_usage:
                     outcome_sink["usage"] = dict(total_usage)
@@ -4364,13 +4385,18 @@ class StreamingHandler:
                         exc_info=True,
                     )
 
-            if (not error_occurred) and (not was_cancelled):
-                self._audit_orphan_tool_cards(emitted_tool_call_items, emitted_tool_output_items)
+            if not was_cancelled:
+                if not error_occurred:
+                    self._audit_orphan_tool_cards(emitted_tool_call_items, emitted_tool_output_items)
                 try:
                     if terminal:
                         final_content = (
                             None
-                            if (body.stream and (emitted_response_output_items or open_webui_keeps_stored_output))
+                            if (
+                                body.stream
+                                and not (error_occurred and is_channel_chat(chat_id))
+                                and (emitted_response_output_items or open_webui_keeps_stored_output)
+                            )
                             else assistant_message
                         )
                         final_output = None

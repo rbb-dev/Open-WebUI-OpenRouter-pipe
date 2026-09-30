@@ -112,7 +112,8 @@ _BOOLEAN_PLACEHOLDER_RULE = (
 _CHANNEL_CARD_RULE = (
     "On a channel chat, which every member of the room reads, the values behind session_id, user_id, "
     "detail, sanitized_detail, reason, openrouter_message, upstream_message, moderation_reasons, "
-    "flagged_excerpt, raw_body, metadata_json and provider_raw_json are withheld, and the card is rendered "
+    "flagged_excerpt, raw_body, metadata_json, provider_raw_json and body_excerpt are withheld, and the card "
+    "is rendered "
     "as though each were empty. Wrap a line that uses one in {{#if name}} and it is left out; otherwise the "
     "name is left in the text verbatim, exactly as for a value the pipe never supplies. error_id, the model, "
     "the provider, openrouter_code and status_code still render on a channel, and error_id is the handle to "
@@ -450,6 +451,10 @@ DEFAULT_SERVICE_ERROR_TEMPLATE = (
     "{{/if}}\n"
     "{{#if reason}}\n"
     "**Details:** {reason}\n"
+    "{{/if}}\n"
+    "{{#if body_excerpt}}\n"
+    "**Response body (not an OpenRouter reply):**\n"
+    "{body_excerpt}\n"
     "{{/if}}\n"
     "{{#if timestamp}}\n"
     "**Time:** {timestamp}\n"
@@ -1555,11 +1560,11 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     )
     ARTIFACT_ENCRYPTION_KEY: EncryptedStr = Field(
         default_factory=_default_artifact_encryption_key,
-        description="Use at least 16 chars. Encrypt reasoning tokens (and optionally all persisted artifacts). Changing the key creates a new table; prior artifacts become inaccessible. Clearing it stops artifact encryption and returns the setting to its default, which is empty. Both the artifact table and the usage-history table are named from a hash of this key, so new writes after a clear go to a fresh, unencrypted pair of tables and everything already saved under the previous key is stranded there, unread. A value that cannot be read under the current WEBUI_SECRET_KEY cannot be used either, whether it was stored under a key that no longer decrypts or is a damaged row: the pipe refuses to write artifacts while the key is unreadable rather than storing them in the clear, and the person in the chat is told once, on the turn it happens, that the items will be missing from later turns; the key must be re-entered here before writes resume. A passphrase typed here that begins with encrypted: and continues with an all-base64 character body is read as a damaged stored value and refused the same way, so enter it without the prefix. The cipher is rebuilt against the current key on every call, so a rotation never leaves the store using a retired one; a write already inside that cipher build when the change lands is still written under the previous key, cannot be read afterwards, and is dropped with a warning naming its artifact kind.",
+        description="Use at least 16 chars. Encrypt reasoning tokens (and optionally all persisted artifacts). Changing the key creates a new table; prior artifacts become inaccessible. Clearing it stops artifact encryption and returns the setting to its default, which is empty. Both the artifact table and the usage-history table are named from a hash of this key, so new writes after a clear go to a fresh, unencrypted pair of tables and everything already saved under the previous key is stranded there, unread. A value that cannot be read under the current WEBUI_SECRET_KEY cannot be used either, whether it was stored under a key that no longer decrypts or is a damaged row that still looks like a Fernet token: the pipe refuses to write artifacts while the key is unreadable rather than storing them in the clear, and the person in the chat is told once, on the turn it happens, that the items will be missing from later turns; the key must be re-entered here before writes resume. A row damaged out of that shape is not read as a ciphertext, so it does not arm this refusal — which is also why an install that leaves Open WebUI's ENABLE_VALVE_ENCRYPTION at its default, and so stores this valve as plain JSON, is not stopped by it. A passphrase typed here that begins with encrypted: and continues with an all-base64 character body is read as a damaged stored value and refused the same way, so enter it without the prefix. The cipher is rebuilt against the current key on every call, so a rotation never leaves the store using a retired one; a write already inside that cipher build when the change lands is still written under the previous key, cannot be read afterwards, and is dropped with a warning naming its artifact kind.",
     )
     ENCRYPT_ALL: bool = Field(
         default=True,
-        description="Encrypt every persisted artifact when ARTIFACT_ENCRYPTION_KEY is set. When False, only reasoning tokens are encrypted. This decides what is written; a row already stored encrypted stays encrypted, and the replay cache keeps it encrypted, whatever this is set to. If ARTIFACT_ENCRYPTION_KEY is set but cannot be decrypted after a WEBUI_SECRET_KEY rotation, the pipe stops writing artifacts rather than storing them in the clear, and the person in the chat is told once, on the turn it happens, that the items will be missing from later turns.",
+        description="Encrypt every persisted artifact when ARTIFACT_ENCRYPTION_KEY is set. When False, only reasoning tokens are encrypted. This decides what is written; a row already stored encrypted stays encrypted, and the replay cache keeps it encrypted, whatever this is set to. If ARTIFACT_ENCRYPTION_KEY is set but cannot be decrypted after a WEBUI_SECRET_KEY rotation, the pipe stops writing artifacts rather than storing them in the clear; that refusal is armed by a stored row that still looks like a Fernet token and will not open, so a plain-JSON valve row, which is what an install with Open WebUI's ENABLE_VALVE_ENCRYPTION at its default has, never arms it, and the person in the chat is told once, on the turn it happens, that the items will be missing from later turns.",
     )
     ENABLE_LZ4_COMPRESSION: bool = Field(
         default=True,
@@ -1596,7 +1601,10 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "Tools are also sent with `strict: true` on `/chat/completions`, nested under each `function`; "
             "a provider that does not support strict tool calling there will reject the request. "
             "On the Responses route the registry and direct-tool specs the pipe advertises also carry "
-            "`strict: true`, so the provider enforces the strictified schema. The strictified schema is not "
+            "`strict: true`, so the provider enforces the strictified schema. A tool the pipe does not "
+            "strictify (Open WebUI tool mode, a hand-back, or this valve off) is sent there with an "
+            "explicit `strict: false`, so that endpoint's own `true` default never applies to a schema "
+            "the pipe did not strictify. The strictified schema is not "
             "renamed to meet strict mode's property-name rules, so a tool whose author gave a property a name "
             "with a dot, a space, or more than 64 characters, or a free-form array whose `items` declare no "
             "properties, can be rejected by a strict provider; turn this valve off for such a tool. "
@@ -1995,7 +2003,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     SERVICE_ERROR_TEMPLATE: str = Field(
         default=DEFAULT_SERVICE_ERROR_TEMPLATE,
         description=(
-            "Markdown template for OpenRouter 5xx errors, for an accepted response whose body is not a JSON object (a proxy, CDN or WAF in front of this deployment rewrote the reply), and for a failure OpenRouter reports inside a reply it has already started under one of its own typed codes: provider_unavailable, provider_overloaded, timeout, server or unmapped, or under its native code server_error. Available variables: {error_id}, {status_code}, {reason}, {timestamp}, {session_id}, {user_id}, {support_email}. A 5xx that OpenRouter itself returned also fills {request_id}, its own reference for that request. A 5xx reported inside a started reply fills it whenever the failure carries an id: the failed response's id on Responses, the generation id on Chat Completions, also available as {error_chunk_id}; {provider} likewise appears only when the error names the provider. A 5xx raised by the connection to OpenRouter carries no such reference and a line using it prints the braces verbatim unless it is wrapped in a conditional. Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to show them only when that value is set."
+            "Markdown template for OpenRouter 5xx errors, for an accepted response whose body is not a JSON object (a proxy, CDN or WAF in front of this deployment rewrote the reply), and for a failure OpenRouter reports inside a reply it has already started under one of its own typed codes: provider_unavailable, provider_overloaded, timeout, server or unmapped, or under its native code server_error. Available variables: {error_id}, {status_code}, {reason}, {timestamp}, {session_id}, {user_id}, {support_email}. A 5xx that OpenRouter itself returned also fills {request_id}, its own reference for that request. A 5xx reported inside a started reply fills it whenever the failure carries an id: the failed response's id on Responses, the generation id on Chat Completions, also available as {error_chunk_id}; {provider} likewise appears only when the error names the provider. A 5xx raised by the connection to OpenRouter carries no such reference and a line using it prints the braces verbatim unless it is wrapped in a conditional. An accepted response whose body is not decodable at all also fills {body_excerpt} with the provider's own first 200 characters, already inside a code fence: {reason} then names only the endpoint and the Content-Type, and the template must NOT fence {body_excerpt} again -- a second fence either nests inside the value's or, in a stored row that already fences the placeholder, collapses onto it. Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to show them only when that value is set."
             + _CHANNEL_CARD_RULE
         )
     )

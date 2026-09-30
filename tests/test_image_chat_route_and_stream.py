@@ -34,6 +34,26 @@ GPT5_IMAGE = "openai/gpt-5-image"
 GPT_IMAGE_2 = "openai/gpt-image-2"
 
 
+def publish_contracts(published: dict[str, Any]) -> None:
+    """Publish contracts bound to the identity this module's pipes run under.
+
+    The published contracts are stamped with the `(BASE_URL, fingerprint(API_KEY))` they
+    were read under and dropped when that pair changes, so seeding them without the stamp
+    would let the first catalog load drop them again.
+    """
+    from open_webui_openrouter_pipe import EncryptedStr
+    from open_webui_openrouter_pipe.core.config import Valves
+    from open_webui_openrouter_pipe.models.registry import (
+        OpenRouterModelRegistry as Registry,
+        _contract_target,
+    )
+
+    valves = Valves(API_KEY=EncryptedStr("test-api-key"))
+    valves.BASE_URL = BASE
+    Registry.adopt_image_contract_target(_contract_target(valves))
+    Registry.set_image_endpoints(published)
+
+
 def records(model_id: str) -> list[dict[str, Any]]:
     """The model's own published contract, as recorded from the live endpoints listing."""
     name = model_id.replace("/", "_")
@@ -455,7 +475,7 @@ async def test_a_chat_image_models_settings_are_fitted_on_the_way_out_of_the_pip
     from open_webui_openrouter_pipe import EncryptedStr, Pipe
     from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
 
-    OpenRouterModelRegistry.set_image_endpoints({GEMINI: records(GEMINI)})
+    publish_contracts({GEMINI: records(GEMINI)})
     pipe = Pipe()
     sent: list[dict[str, Any]] = []
     try:

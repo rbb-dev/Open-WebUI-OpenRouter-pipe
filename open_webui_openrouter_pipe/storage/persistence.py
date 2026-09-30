@@ -79,6 +79,7 @@ except ImportError:
     aioredis = None
 
 from ..core.config import (
+    _FERNET_VERSION_HEAD,
     _ULID_TIME_MASK,
     CROCKFORD_ALPHABET,
     ULID_LENGTH,
@@ -116,17 +117,35 @@ def _webui_secret_key() -> str:
     return os.getenv("WEBUI_SECRET_KEY", os.getenv("WEBUI_JWT_SECRET_KEY", ""))
 
 
+def _valve_column_body(raw: str) -> str:
+    stripped = raw.strip()
+    try:
+        stored = json.loads(stripped)
+    except ValueError:
+        return stripped
+    if isinstance(stored, str):
+        return stored
+    if isinstance(stored, dict):
+        return ""
+    return stripped
+
+
 def raw_valve_column_decodes(raw: Any) -> bool:
     if not isinstance(raw, str) or not raw.strip():
         return True
     secret = _webui_secret_key()
     if not secret:
         return True
+    body = _valve_column_body(raw)
+    if not bool(re.fullmatch(r"[A-Za-z0-9_-]+={0,2}", body)) or not body.startswith(
+        _FERNET_VERSION_HEAD
+    ):
+        return True
     key = secret.encode()
     if len(secret) != 44:
         key = base64.urlsafe_b64encode(hashlib.sha256(key).digest())
     try:
-        Fernet(key).decrypt(raw.encode())
+        Fernet(key).decrypt(body.encode())
     except (InvalidToken, ValueError, TypeError):
         return False
     return True
@@ -2094,7 +2113,18 @@ class ArtifactStore:
             await self._touch_cached(chat_id, message_id, list(cached))
             return cached
 
-        if not (self._db_executor and self._item_model and self._session_factory):
+        if not self._artifact_store_ready():
+            self.logger.warning(
+                "Artifact store is not configured; %d stored item(s) could not be loaded.",
+                len(missing_ids),
+            )
+            context = self._TOOL_CONTEXT.get() if self._TOOL_CONTEXT else None
+            if self._emit_notification:
+                await self._emit_notification(
+                    context.event_emitter if context else None,
+                    "Earlier tool results could not be loaded, so the model did not receive them.",
+                    level="warning",
+                )
             return cached
 
         from open_webui_openrouter_pipe.core.logging_system import SessionLogger
@@ -2240,9 +2270,21 @@ class ArtifactStore:
             return False
 
         loop = asyncio.get_running_loop()
-        kept = await loop.run_in_executor(
-            self._db_executor, functools.partial(self._delete_artifacts_sync, ids, keep_message_id)
-        )
+        try:
+            kept = await loop.run_in_executor(
+                self._db_executor, functools.partial(self._delete_artifacts_sync, ids, keep_message_id)
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._record_db_failure(user_id)
+            self.logger.warning(
+                "Artifact delete failed; keeping %d row(s) for the next turn: %s",
+                len(ids),
+                exc,
+                exc_info=True,
+            )
+            return False
         if keep_message_id:
             kept = kept | {row_id for row_id, owner in owners.items() if owner == keep_message_id}
         if self._redis_enabled and self._redis_client:

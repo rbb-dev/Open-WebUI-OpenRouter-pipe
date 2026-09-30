@@ -27,6 +27,7 @@ from ..core.utils import (
 from ..storage.owui_files import is_channel_chat
 
 _PIPE_GENERATED_TEMPLATE_KEYS = frozenset({
+    "body_excerpt",
     "error_type",
     "enforced_endpoint",
     "required_endpoint",
@@ -229,6 +230,7 @@ class EventEmitterHandler:
         show_error_message: bool = True,
         show_error_log_citation: bool = False,
         done: bool = False,
+        terminal: bool = True,
         partial_answer: str = "",
     ) -> str:
         """Log an error and optionally surface it to the UI.
@@ -255,7 +257,7 @@ class EventEmitterHandler:
                 continuing = CONTINUED_REPLY.get() is not None
                 completion: dict[str, Any] = {
                     "error": {"message": error_message},
-                    "done": done,
+                    "done": terminal,
                 }
                 if on_channel or continuing:
                     await self._publish_card(event_emitter, shown, on_channel, continuing)
@@ -292,6 +294,7 @@ class EventEmitterHandler:
         variables: dict[str, Any],
         log_message: str,
         log_level: int = logging.ERROR,
+        terminal: bool = True,
         partial_answer: str = "",
         fallback_template: str | None = None,
     ) -> str:
@@ -361,7 +364,7 @@ class EventEmitterHandler:
                 "data": {"description": "The request could not be completed. See details below.", "done": True},
             })
             await self._publish_card(event_emitter, shown, on_channel, continuing)
-            completion: dict[str, Any] = {"done": True}
+            completion: dict[str, Any] = {"done": terminal}
             if shown and (on_channel or not continuing):
                 completion["content"] = shown
             await event_emitter({

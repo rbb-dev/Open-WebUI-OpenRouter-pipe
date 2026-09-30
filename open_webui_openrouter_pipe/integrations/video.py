@@ -2444,9 +2444,17 @@ class VideoGenerationAdapter:
                     user=user_obj,
                 )
             except RequiredInternalFileError as exc:
-                if family == "image" and getattr(exc, "kind", None) == "size":
-                    _skip(file_id, "over-single", _over_reference_single)
-                    continue
+                if getattr(exc, "kind", None) == "size":
+                    if family == "image":
+                        _skip(file_id, "over-single", _over_reference_single)
+                        continue
+                    bound = relay_max if via_file_host else (
+                        image_max if family == "image" else asset_max
+                    )
+                    raise VideoGenerationError(
+                        f"The attached {family} is {megabytes(declared_file_size(file_obj) or 0)}"
+                        f" and the limit for one {family} is {megabytes(bound)}."
+                    ) from exc
                 _skip(file_id, "not-allowed", exc.user_message)
                 continue
             except InlineFileTooLargeError:

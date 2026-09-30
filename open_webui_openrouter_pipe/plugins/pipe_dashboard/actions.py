@@ -433,10 +433,10 @@ async def _config_set(
     """Merge edits into the stored custom subset (not the live model) and persist; rev-guarded."""
     async with _config_write_lock(getattr(pipe, "id", "")):
         result, committed = await _persist_config_edit(pipe, user, args, request)
-    if committed:
-        result["values"], result["secrets"], result["post_reset"] = await _saved_values(
-            pipe, args["edits"]
-        )
+        if committed:
+            result["values"], result["secrets"], result["post_reset"] = await _saved_values(
+                pipe, args["edits"]
+            )
     return result
 
 

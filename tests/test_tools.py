@@ -4174,6 +4174,7 @@ def test_chat_tools_to_responses_tools_converts_function_shape():
                 "properties": {"q": {"type": "string"}},
                 "required": ["q"],
             },
+            "strict": False,
         }
     ]
 
@@ -4211,6 +4212,7 @@ async def test_responsesbody_from_completions_keeps_and_normalizes_tools():
             "type": "function",
             "name": "get_current_timestamp",
             "parameters": {"type": "object", "properties": {}},
+            "strict": False,
         }
     ]
 

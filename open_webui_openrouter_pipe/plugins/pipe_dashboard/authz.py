@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 UNDETERMINED = object()
 _warned_undeterminable: dict[str, float] = {}
 
+_VIEW_MODEL_UNSET = object()
+_VIEW_MODEL_UNREAD = object()
+
 _PD_MODEL_SUFFIX = "pipe-dashboard"
 
 
@@ -116,7 +119,9 @@ async def resolve_socket_user_id(sid: str) -> str | None:
         return None
 
 
-async def _authorized(user: Any, pipe: Any, permission: str, model: Any = None) -> bool | None:
+async def _authorized(
+    user: Any, pipe: Any, permission: str, model: Any = _VIEW_MODEL_UNSET
+) -> bool | None:
     from fastapi import HTTPException
 
     if user is None:
@@ -127,7 +132,7 @@ async def _authorized(user: Any, pipe: Any, permission: str, model: Any = None) 
     try:
         o = _owui()
         o.get_verified_user(user)
-        if model is None:
+        if model is _VIEW_MODEL_UNSET:
             model = await o.Models.get_model_by_id(mid)
         if permission == "read":
             await o.check_model_access(user, model, bypass_filter=o.BYPASS_MODEL)
@@ -168,19 +173,23 @@ async def _authorized(user: Any, pipe: Any, permission: str, model: Any = None) 
         return None
 
 
-async def dashboard_model(pipe: Any) -> Any:
+async def resolve_view_model(pipe: Any) -> tuple[bool, Any]:
     mid = model_id(pipe)
     if not mid:
-        return None
+        return False, None
     try:
-        return await _owui().Models.get_model_by_id(mid)
+        return True, await _owui().Models.get_model_by_id(mid)
     except Exception:
-        logger.debug("pipe_dashboard: dashboard model row unreadable", exc_info=True)
-        return None
+        logger.debug(
+            "pipe_dashboard: the dashboard model row could not be read; the viewer sweep "
+            "asks again next tick",
+            exc_info=True,
+        )
+        return False, None
 
 
-async def can_view_known(user: Any, pipe: Any, model: Any = None) -> bool | None:
-    if user is UNDETERMINED:
+async def can_view_known(user: Any, pipe: Any, model: Any = _VIEW_MODEL_UNSET) -> bool | None:
+    if user is UNDETERMINED or model is _VIEW_MODEL_UNREAD:
         return None
     return await _authorized(user, pipe, "read", model)
 
@@ -191,7 +200,7 @@ async def can_act_known(user: Any, pipe: Any) -> bool | None:
     return await _authorized(user, pipe, "write")
 
 
-async def can_view(user: Any, pipe: Any, model: Any = None) -> bool:
+async def can_view(user: Any, pipe: Any, model: Any = _VIEW_MODEL_UNSET) -> bool:
     return await can_view_known(user, pipe, model) is True
 
 

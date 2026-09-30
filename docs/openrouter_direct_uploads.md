@@ -100,6 +100,8 @@ The blocklist (`open_webui_openrouter_pipe/models/blocklists.py`) includes:
 
 One entry therefore covers the model under every spelling OpenRouter publishes it as: a routing suffix (`:nitro`, `:floor`, `:exacto`, `:online`), a catalog suffix (`:free`, `:batch`, `:thinking`, `:extended`), any combination of them, and a dated `-YYYY-MM-DD` snapshot. A `:free` twin of a blocklisted model is the same model, so it loses its Direct Uploads switch too. A `~…-latest` **alias row** counts as another spelling: an alias resolves through its `alias_target` to the model it names, and a blocklisted model withholds Direct Uploads from that alias too. (Every other capability of the alias row is still answered from the alias row itself — see [Zero Data Retention](openrouter_zdr.md), which draws the same one hop for the same reason.) No shipped catalogue publishes such an alias today; the hop is here so the blocklist is exhaustive over spellings rather than over today's snapshot.
 
+The blocklist also covers the capability Open WebUI acts on directly. A blocklisted model publishes `file_upload: false` alongside the missing `file_input`, so Open WebUI does not offer it the chat file tools — `view_file`, `query_chat_files`, `grep_chat_files` and `list_chat_files` — which it injects when a model accepts uploads but its Workspace row has `file_context` off. The cover is live only where that row's `file_context` is off: Open WebUI treats an absent capability as on, so on a stock install the model row is left alone and the tools are offered as they are for any other model.
+
 ### Audio and video input
 
 For `audio_input` and `video_input`, the pipe still relies on OpenRouter's declared `architecture.input_modalities`, as these modalities are less commonly supported and require explicit provider enablement
@@ -111,7 +113,7 @@ For `audio_input` and `video_input`, the pipe still relies on OpenRouter's decla
 ### 1) Filter diversion (inlet)
 
 When the filter diverts an upload, it:
-- Removes the diverted items from the request `files[]` list **and** from `metadata.files`, so Open WebUI won’t treat them as knowledge inputs.
+- Removes the diverted items from the request `files[]` list **and** from `metadata.files`, so Open WebUI won’t treat them as knowledge inputs. The video filter honours the removal: it is the one pipe filter that reads attachments, and it will not put a diverted file back into the request or into `video_generation.input_references`.
 - Records lightweight references (file IDs + hints) under:
   - `__metadata__["openrouter_pipe"]["direct_uploads"]`
 

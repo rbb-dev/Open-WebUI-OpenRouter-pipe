@@ -1210,10 +1210,14 @@ class ToolExecutor:
 
     def _args_reference_call(self, args: Any, call_id: str) -> bool:
         """Check if args contain a reference to another call_id."""
-        if isinstance(args, str):
-            return call_id in args
-        if isinstance(args, dict):
-            return any(self._args_reference_call(value, call_id) for value in args.values())
-        if isinstance(args, list):
-            return any(self._args_reference_call(item, call_id) for item in args)
+        stack = [args]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, str):
+                if call_id in node:
+                    return True
+            elif isinstance(node, dict):
+                stack.extend(node.values())
+            elif isinstance(node, list):
+                stack.extend(node)
         return False

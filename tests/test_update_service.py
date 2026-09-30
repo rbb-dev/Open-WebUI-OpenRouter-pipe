@@ -1,4 +1,12 @@
-"""Tests for the pipe_dashboard self-update service (Update tab)."""
+"""Tests for the pipe_dashboard self-update service (Update tab).
+
+The unattended tick's gates can all be made to pass by making the tick stop
+running, and the master-switch gate does it literally: read the stored row alone
+and every test whose stored row lacks `ENABLE_PLUGIN_SYSTEM` reads as off, so
+`_auto_valves_row` and `_valves` carry the key. A suite that goes quiet is not a
+suite that passes, which is why the fixture edit ships with the gate and why one
+row drives the opposite direction.
+"""
 
 from __future__ import annotations
 
@@ -68,6 +76,7 @@ def _sha(data: bytes) -> str:
 
 def _valves(**over):
     base = {
+        "ENABLE_PLUGIN_SYSTEM": True,
         "PIPE_DASHBOARD_UPDATE_ENABLE": True,
         "PIPE_DASHBOARD_UPDATE_SNAPSHOT_KEEP": 3,
         "PIPE_DASHBOARD_UPDATE_REPO": "rbb-dev/Open-WebUI-OpenRouter-pipe",
@@ -1533,6 +1542,7 @@ async def test_snapshot_delete_holds_cross_worker_lease(svc, wired, monkeypatch)
 
 def _auto_valves_row(**over):
     row = {
+        "ENABLE_PLUGIN_SYSTEM": True,
         "PIPE_DASHBOARD_UPDATE_ENABLE": True,
         "PIPE_DASHBOARD_UPDATE_AUTO": True,
         "PIPE_DASHBOARD_UPDATE_AUTO_DELAY_HOURS": 0,

@@ -36,6 +36,23 @@ _VIDEO_CATALOG_FIXTURE = Path(__file__).parent / "fixtures" / "video_models_cata
 VIDEO_BY_ID = {item["id"]: item for item in json.loads(_VIDEO_CATALOG_FIXTURE.read_text())["data"]}
 
 
+def _publish_contracts(published: dict[str, Any]) -> None:
+    """Publish contracts bound to the identity this module's pipes run under.
+
+    The published contracts are stamped with the `(BASE_URL, fingerprint(API_KEY))` they
+    were read under and dropped when that pair changes, so seeding them without the stamp
+    would let the first catalog load drop them again. Every seed site here goes through
+    this rather than calling the setter directly.
+    """
+    from open_webui_openrouter_pipe.core.config import Valves
+    from open_webui_openrouter_pipe.models.registry import _contract_target
+
+    valves = Valves(API_KEY=EncryptedStr("test-api-key"))
+    valves.BASE_URL = BASE
+    OpenRouterModelRegistry.adopt_image_contract_target(_contract_target(valves))
+    OpenRouterModelRegistry.set_image_endpoints(published)
+
+
 def _image_records(model_id: str) -> list[dict[str, Any]]:
     name = model_id.replace("/", "_")
     path = Path(__file__).resolve().parent / "fixtures" / f"openrouter_image_endpoints_{name}.json"
@@ -152,7 +169,7 @@ def test_video_help_never_pays_the_intent_classifier(system_text, user_text, sho
 async def test_image_help_renders_the_panel_and_sends_no_request(
     system_text, user_text, submits
 ):
-    OpenRouterModelRegistry.set_image_endpoints({GEMINI: _image_records(GEMINI)})
+    _publish_contracts({GEMINI: _image_records(GEMINI)})
     pipe = Pipe()
     sent: list[dict[str, Any]] = []
     try:

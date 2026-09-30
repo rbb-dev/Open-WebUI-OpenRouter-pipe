@@ -197,8 +197,11 @@ builds — forks inherit the release workflow, so assets, digests, and the chang
   The leader applies a release once it is older than `PIPE_DASHBOARD_UPDATE_AUTO_DELAY_HOURS`
   (default 7 days — a bad release yanked within the window never reaches auto-updaters, and a fixed
   follow-up release supersedes it). The task runs headless (it keeps working while the dashboard
-  model is disabled, as long as `PIPE_DASHBOARD_UPDATE_ENABLE` is on), re-reads its valves from the
-  database each cycle, backs off on GitHub rate limits (honoring the reset header) and network
+  model is disabled, as long as `PIPE_DASHBOARD_UPDATE_ENABLE` and the plugin system master switch
+  `ENABLE_PLUGIN_SYSTEM` are both on), re-reads its valves from the
+  database each cycle — so turning either of those off, or the auto-update valve itself, stops the
+  *next* cycle rather than the current one, and turning the master switch back on resumes on the
+  cycle after that with no restart — backs off on GitHub rate limits (honoring the reset header) and network
   failures without ever losing an update, and pauses a release on that worker after a deterministic
   failure until a restart, a newer release, or a successful manual apply. The tab's Auto-update line
   shows this worker's role (leader/follower), successes, and pauses.

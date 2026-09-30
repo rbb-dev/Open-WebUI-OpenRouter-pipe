@@ -1,3 +1,12 @@
+"""The defaults that decide what a Fusion request may still carry on the wire.
+
+A gate that must hold on every path can always be made to pass by making the path stop running,
+and `has_active_fusion_entry` is such a gate: read it as truthiness and a fix that clears the
+orphan `tool_choice: "required"` in every case looks correct while deleting every forced Fusion
+turn, because the OpenRouter alias server-injects the Fusion tool. So the table below is an input
+table, not a truthiness table: the `enabled: 0` and `enabled: None` rows are the ones a bare `bool()`
+gets wrong, and the disabled rows behind another entry are the ones an index-zero lookup gets wrong.
+"""
 
 import pytest
 

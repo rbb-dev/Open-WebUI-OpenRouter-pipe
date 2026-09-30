@@ -322,6 +322,11 @@ def _fingerprint(api_key: str) -> str:
     return hashlib.sha256(api_key.encode()).hexdigest()[:32]
 
 
+def _contract_target(valves: Any) -> tuple[str, str]:
+    base_url = (getattr(valves, "BASE_URL", "") or "https://openrouter.ai/api/v1").rstrip("/")
+    return base_url, _fingerprint(str(getattr(valves, "API_KEY", "") or ""))
+
+
 _ZDR_CREDENTIAL_HISTORY = 4
 
 
@@ -683,7 +688,8 @@ class OpenRouterModelRegistry:
             )
 
             original_id = full_model.get("id") or norm_id
-            if is_direct_upload_blocklisted_for(original_id, full_model):
+            blocklisted = is_direct_upload_blocklisted_for(original_id, full_model)
+            if blocklisted:
                 features.discard("file_input")
             else:
                 features.add("file_input")
@@ -692,6 +698,7 @@ class OpenRouterModelRegistry:
                 architecture,
                 pricing,
             )
+            capabilities["file_upload"] = not blocklisted
 
             max_completion_tokens: int | None = None
             top_provider = full_model.get("top_provider")
@@ -1020,13 +1027,15 @@ class OpenRouterModelRegistry:
                 full.get("architecture") or {},
                 full.get("pricing") or {},
             )
-            if is_direct_upload_blocklisted_for(str(full.get("id") or ""), full):
+            blocklisted = is_direct_upload_blocklisted_for(str(full.get("id") or ""), full)
+            if blocklisted:
                 features.discard("file_input")
             else:
                 features.add("file_input")
             capabilities = cls._derive_capabilities(
                 full.get("architecture") or {}, full.get("pricing") or {}
             )
+            capabilities["file_upload"] = not blocklisted
             capabilities["video_generation"] = False
             restored = dict(merged)
             restored["features"] = features
@@ -1169,6 +1178,23 @@ class OpenRouterModelRegistry:
     _last_image_contract_attempt: float = 0.0
     _image_contract_retry_after: float = 0.0
     _image_contract_owed: frozenset[str] = frozenset()
+    _image_contract_target: ClassVar[tuple[str, str] | None] = None
+
+    @classmethod
+    def image_contract_target(cls) -> tuple[str, str] | None:
+        return cls._image_contract_target
+
+    @classmethod
+    def adopt_image_contract_target(cls, identity: tuple[str, str]) -> bool:
+        if cls._image_contract_target == identity:
+            return False
+        cls._image_contract_target = identity
+        cls._image_endpoints = {}
+        cls._image_endpoint_alias = {}
+        cls._image_endpoint_alias_of = None
+        cls.clear_image_contract_attempt()
+        cls._image_contract_retry_after = 0.0
+        return True
 
     @classmethod
     def last_image_contract_attempt(cls) -> float:

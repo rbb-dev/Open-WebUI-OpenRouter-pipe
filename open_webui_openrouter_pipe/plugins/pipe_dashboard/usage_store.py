@@ -794,6 +794,7 @@ class UsageStore:
                     "usage writer did not drain within %.1fs; %d rows may be lost",
                     timeout, self._queue.qsize(),
                 )
+                return
         self._thread = None
 
     def stop(self) -> Any:

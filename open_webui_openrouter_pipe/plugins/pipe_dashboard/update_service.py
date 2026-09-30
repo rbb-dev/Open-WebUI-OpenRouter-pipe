@@ -1412,6 +1412,21 @@ class UpdateService:
                     merged[key] = stored[key]
         return merged, stored_read_ok
 
+    async def _master_switch_on(self) -> bool:
+        try:
+            stored = await _await_if_needed(
+                self._functions().get_function_valves_by_id(self._pipe().id)
+            )
+        except Exception:
+            logger.warning(
+                "update: the stored valve read failed; skipping this unattended tick",
+                exc_info=True,
+            )
+            return False
+        if not isinstance(stored, dict):
+            return False
+        return bool(stored.get("ENABLE_PLUGIN_SYSTEM", False))
+
     @staticmethod
     async def _super_admin_id() -> str:
         try:
@@ -1452,6 +1467,8 @@ class UpdateService:
                     "unattended tick rather than applying an update the operator may "
                     "have disabled"
                 )
+                return interval
+            if not await self._master_switch_on():
                 return interval
             if not bool(valves.get("PIPE_DASHBOARD_UPDATE_ENABLE", True)):
                 return interval

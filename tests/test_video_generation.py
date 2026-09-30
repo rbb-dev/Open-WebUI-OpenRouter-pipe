@@ -546,6 +546,7 @@ def test_video_filter_deep_merges_provider_options_and_diverts_frames():
         VIDEO_PROVIDER_OPTIONS_JSON='{"google": {"parameters": {"enhancePrompt": true}}}',
     )
     body = {
+        "model": "google/veo-3.1",
         "files": [
             {"id": "first", "name": "first.png", "content_type": "image/png", "size": 10},
             {"id": "doc", "name": "doc.pdf", "content_type": "application/pdf", "size": 20},
@@ -582,6 +583,7 @@ def test_first_image_becomes_first_frame_and_second_becomes_last_frame():
     module = _load_filter_from_source(source, "video_gen_filter_veo_frameorder_two")
     user_valves = module.Filter.UserValves(VIDEO_FRAME_MODE="first_last")
     body = {
+        "model": "google/veo-3.1",
         "files": [
             {"id": "img-A", "name": "a.png", "content_type": "image/png", "size": 10},
             {"id": "img-B", "name": "b.png", "content_type": "image/png", "size": 20},
@@ -603,6 +605,7 @@ def test_three_images_keeps_first_and_last_only():
     module = _load_filter_from_source(source, "video_gen_filter_veo_frameorder_three")
     user_valves = module.Filter.UserValves(VIDEO_FRAME_MODE="first_last")
     body = {
+        "model": "google/veo-3.1",
         "files": [
             {"id": "img-A", "name": "a.png", "content_type": "image/png", "size": 10},
             {"id": "img-B", "name": "b.png", "content_type": "image/png", "size": 20},
@@ -623,7 +626,7 @@ def test_filter_reads_files_from_metadata_user_message_when_body_files_empty():
     source = render_video_filter_source(model_id="google/veo-3.1", video_model=VIDEO_BY_ID["google/veo-3.1"])
     module = _load_filter_from_source(source, "video_gen_filter_veo_owui_shape")
     user_valves = module.Filter.UserValves(VIDEO_FRAME_MODE="first_last")
-    body: dict[str, Any] = {"files": None, "messages": [{"role": "user", "content": "make a video"}]}
+    body: dict[str, Any] = {"model": "google/veo-3.1", "files": None, "messages": [{"role": "user", "content": "make a video"}]}
     metadata: dict[str, Any] = {
         "user_message": {
             "files": [
@@ -696,7 +699,7 @@ def _run_inlet_via_metadata(
     if hasattr(module.Filter.UserValves, "model_fields") and "VIDEO_FRAME_MODE" in module.Filter.UserValves.model_fields:
         valves_kwargs["VIDEO_FRAME_MODE"] = frame_mode
     user_valves = module.Filter.UserValves(**valves_kwargs)
-    body: dict[str, Any] = {"files": None}
+    body: dict[str, Any] = {"model": model_id, "files": None}
     metadata: dict[str, Any] = {"user_message": {"files": files}}
     module.Filter().inlet(body, __metadata__=metadata, __user__={"valves": user_valves}, __model__=model)
     return body, metadata
@@ -947,7 +950,7 @@ def test_a_retired_key_left_in_metadata_is_cleared_by_the_filter(stale_key):
         },
     }
     module.Filter().inlet(
-        {"files": None},
+        {"model": "alibaba/wan-2.7", "files": None},
         __metadata__=metadata,
         __user__={"valves": module.Filter.UserValves()},
     )
@@ -2317,7 +2320,7 @@ def test_video_filter_typed_valves_route_into_metadata_params():
         VIDEO_ENHANCE_PROMPT="on",
         VIDEO_SEED=42,
     )
-    body: dict[str, Any] = {"files": []}
+    body: dict[str, Any] = {"model": "google/veo-3.1", "files": []}
     metadata: dict[str, Any] = {}
     user_dict = {"valves": user_valves}
 
@@ -2337,7 +2340,7 @@ def test_video_filter_routes_cfg_scale_into_params_for_kling_v3(model_id: str):
     module = _load_filter_from_source(source, f"video_gen_filter_cfg_scale_{model_id.replace('/', '_').replace('.', '_').replace('-', '_')}")
 
     user_valves = module.Filter.UserValves(VIDEO_CFG_SCALE=0.6)
-    body: dict[str, Any] = {"files": []}
+    body: dict[str, Any] = {"model": model_id, "files": []}
     metadata: dict[str, Any] = {}
     module.Filter().inlet(body, __metadata__=metadata, __user__={"valves": user_valves})
 
@@ -2354,7 +2357,7 @@ def test_video_filter_drops_cfg_scale_when_zero_for_kling_v3(model_id: str):
     module = _load_filter_from_source(source, f"video_gen_filter_cfg_scale_zero_{model_id.replace('/', '_').replace('.', '_').replace('-', '_')}")
 
     user_valves = module.Filter.UserValves(VIDEO_CFG_SCALE=0.0)
-    body: dict[str, Any] = {"files": []}
+    body: dict[str, Any] = {"model": model_id, "files": []}
     metadata: dict[str, Any] = {}
     module.Filter().inlet(body, __metadata__=metadata, __user__={"valves": user_valves})
 
@@ -4335,7 +4338,7 @@ def test_a_published_setting_travels_and_a_broken_container_is_named():
 
     metadata: dict[str, Any] = {}
     module.Filter().inlet(
-        {"files": []},
+        {"model": "vendor/model", "files": []},
         __metadata__=metadata,
         __user__={
             "valves": module.Filter.UserValves(
@@ -4350,7 +4353,7 @@ def test_a_published_setting_travels_and_a_broken_container_is_named():
 
     with pytest.raises(Exception) as caught:
         module.Filter().inlet(
-            {"files": []},
+            {"model": "vendor/model", "files": []},
             __metadata__={},
             __user__={"valves": module.Filter.UserValves(VIDEO_VENDOR_OTHER="[{broken")},
         )
@@ -4878,7 +4881,7 @@ def test_a_consumed_reference_is_handed_back_only_when_owui_will_not_rag_it(
         source,
         f"video_filter_handback_{model_id.replace('/', '_').replace('.', '_').replace('-', '_')}",
     )
-    body: dict[str, Any] = {"files": None}
+    body: dict[str, Any] = {"model": model_id, "files": None}
     metadata: dict[str, Any] = {"user_message": {"files": [_file_item(file_id, "a.bin", content_type)]}}
 
     module.Filter().inlet(
@@ -4952,7 +4955,7 @@ async def test_an_undeclared_boolean_renders_a_control_and_reaches_the_payload(
     assert valve in source
 
     module = _load_filter_from_source(source, f"video_tristate_{field}_{supplied!r}")
-    body: dict[str, Any] = {"files": []}
+    body: dict[str, Any] = {"model": "minimax/hailuo-2.3", "files": []}
     metadata: dict[str, Any] = {}
     module.Filter().inlet(
         body,

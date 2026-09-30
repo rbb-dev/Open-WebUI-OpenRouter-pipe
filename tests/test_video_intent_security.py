@@ -309,8 +309,13 @@ class TestFfmpegArgvGuard:
 
 class TestDecompressionBomb:
     def test_make_thumbnail_rejects_oversized_input(self):
-        from open_webui_openrouter_pipe.media.thumbnail import make_thumbnail
-        big = b"x" * (51 * 1024 * 1024)
+        # The payload is derived from the ceiling rather than typed in, so this stays an
+        # exact one-past-the-boundary probe when the ceiling moves.
+        from open_webui_openrouter_pipe.media.thumbnail import (
+            _MAX_INPUT_BYTES,
+            make_thumbnail,
+        )
+        big = b"x" * (_MAX_INPUT_BYTES + 1)
         with pytest.raises(ValueError, match="too large"):
             make_thumbnail(big)
 

@@ -219,7 +219,7 @@ class TestInletBehavior:
         # rendered Pydantic model.
         user_valves_kwargs = dict(user_overrides)
         user_valves = filt.UserValves(**user_valves_kwargs)
-        body = {"prompt": "x"}
+        body = {"model": _BASE_VIDEO_MODEL["id"], "prompt": "x"}
         metadata = {}
         user_dict = {"valves": user_valves}
         return filt, filt.inlet(

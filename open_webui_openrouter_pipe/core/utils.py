@@ -91,7 +91,7 @@ def owui_call_status(result_status: str | None) -> str:
 _TEMPLATE_IF_TOKEN_RE = re.compile(r"\{\{\s*(#if\s+(\w+)|/if)\s*\}\}")
 _TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{(\w+)\}")
 _FENCE_RUN_RE = re.compile(r"(`{3,}|~{3,})")
-_FENCE_OWNED_KEYS = frozenset({"raw_body", "flagged_excerpt", "metadata_json", "provider_raw_json"})
+_FENCE_OWNED_KEYS = frozenset({"raw_body", "flagged_excerpt", "metadata_json", "provider_raw_json", "body_excerpt"})
 _MARKER_SUFFIX = "]: #"
 _CROCKFORD_SET = frozenset(CROCKFORD_ALPHABET)
 _PHASE_MARKER_RE = re.compile(r"^\[P:([a-z_]+)\]: #$")

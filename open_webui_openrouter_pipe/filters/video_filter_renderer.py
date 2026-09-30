@@ -496,6 +496,8 @@ class VideoFilterSpec:
     resolutions: tuple[str, ...]
     frame_types: tuple[str, ...]
     size_options: tuple[str, ...]
+    dotted_id: str = ""
+    variant_ids: tuple[str, ...] = ()
     upscale_bounds: tuple[float, float] | None = None
     creativity_modes: tuple[int, ...] = ()
     contract_read: bool = True
@@ -531,6 +533,19 @@ class VideoFilterSpec:
     @property
     def supports_audio_reference(self) -> bool:
         return "audio" in self.allowed_params
+
+
+def normalise_video_filter_model_id(raw: str) -> str:
+    return ".".join(
+        part.lstrip("~")
+        for part in str(raw or "").strip().replace("/", ".").casefold().split(".")
+    )
+
+
+def normalise_video_filter_variant_ids(variant_ids: Any) -> tuple[str, ...]:
+    if not variant_ids:
+        return ()
+    return tuple(sorted({normalise_video_filter_model_id(v) for v in variant_ids if v}))
 
 
 def sanitize_video_filter_id(model_id: str) -> str:
@@ -658,6 +673,7 @@ def build_video_filter_spec(
     model_id: str,
     video_model: dict[str, Any] | None,
     admin_valves: Any = None,
+    variant_ids: Any = None,
 ) -> VideoFilterSpec:
     model = video_model if isinstance(video_model, dict) else {}
     canonical_id = _clean_str(model.get("id")) or _clean_str(model_id)
@@ -703,6 +719,8 @@ def build_video_filter_spec(
         display_name=display_name,
         function_id=function_id,
         marker=f"{_OPENROUTER_VIDEO_GEN_FILTER_MARKER}:{function_id}",
+        dotted_id=normalise_video_filter_model_id(canonical_id),
+        variant_ids=normalise_video_filter_variant_ids(variant_ids),
         allowed_params=allowed_params,
         aspect_ratios=aspect_ratios,
         durations=durations,
@@ -729,10 +747,13 @@ def render_video_filter_source(
     video_model: dict[str, Any] | None,
     pipe_metadata_key: str = _PIPE_METADATA_KEY,
     admin_valves: Any = None,
+    variant_ids: Any = None,
 ) -> str:
     from open_webui_openrouter_pipe import __version__
 
-    spec = build_video_filter_spec(model_id, video_model, admin_valves=admin_valves)
+    spec = build_video_filter_spec(
+        model_id, video_model, admin_valves=admin_valves, variant_ids=variant_ids
+    )
     # Only the names that genuinely cannot be offered: one that is not a legal Python
     # identifier has no field to carry it. Everything else the model publishes is
     # rendered, typed where a purpose-built control exists and free text otherwise.
@@ -783,7 +804,24 @@ except Exception:
 OPENROUTER_PIPE_MARKER = {spec.marker!r}
 OPENROUTER_PIPE_VERSION = {__version__!r}
 VIDEO_MODEL_ID = {spec.model_id!r}
+VIDEO_FILTER_MODEL_DOTTED = {spec.dotted_id!r}
+VIDEO_FILTER_VARIANT_IDS = {spec.variant_ids!r}
 PIPE_METADATA_KEY = {pipe_metadata_key!r}
+
+
+def _matches_model(raw: str) -> bool:
+    if not isinstance(raw, str) or not raw:
+        return False
+    normalised = ".".join(
+        part.lstrip("~")
+        for part in raw.strip().replace("/", ".").casefold().split(".")
+    )
+    return normalised == VIDEO_FILTER_MODEL_DOTTED or normalised.endswith(
+        "." + VIDEO_FILTER_MODEL_DOTTED
+    ) or any(
+        normalised == variant or normalised.endswith("." + variant)
+        for variant in VIDEO_FILTER_VARIANT_IDS
+    )
 
 
 class VideoFilterInputError(ValueError):
@@ -956,6 +994,8 @@ class Filter:
         __model__: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not isinstance(body, dict):
+            return body
+        if not _matches_model(body.get("model")):
             return body
         if __metadata__ is not None and not isinstance(__metadata__, dict):
             return body
@@ -1588,9 +1628,14 @@ def _render_frame_block(spec: VideoFilterSpec) -> str:
     )
 
     return f'''        files = body.get("files")
+        _diverted = False
+        if isinstance(__metadata__, dict):
+            _pipe_meta = __metadata__.get("openrouter_pipe")
+            if isinstance(_pipe_meta, dict):
+                _diverted = bool(_pipe_meta.get("direct_uploads"))
         _body_files = files if isinstance(files, list) else []
         _extra: list[Any] = []
-        if isinstance(__metadata__, dict):
+        if not _diverted and isinstance(__metadata__, dict):
             _user_message = __metadata__.get("user_message")
             if isinstance(_user_message, dict):
                 _um_files = _user_message.get("files")

@@ -15,6 +15,7 @@ import types
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from open_webui.models import models as models_module
 
 pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
 

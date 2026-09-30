@@ -137,6 +137,15 @@ class UpstreamBodyUnreadable(RuntimeError):
             f"(Content-Type: {self.content_type}): {self.body_excerpt[:200]}"
         )
 
+    def summary(self) -> str:
+        return (
+            f"{self.endpoint} answered with a body that is not an OpenRouter response "
+            f"(Content-Type: {self.content_type})"
+        )
+
+    def body_excerpt_block(self) -> str:
+        return _fenced_block(self.body_excerpt[:200])
+
 
 class FileUnavailableError(RequiredInternalFileError, ValueError):
     pass
@@ -646,7 +655,7 @@ def _build_error_template_values(
 
 _CHANNEL_WITHHELD_TEMPLATE_KEYS = frozenset({
     "session_id", "user_id",
-    "flagged_excerpt", "raw_body", "metadata_json", "provider_raw_json",
+    "flagged_excerpt", "raw_body", "metadata_json", "provider_raw_json", "body_excerpt",
     "detail", "sanitized_detail", "reason", "openrouter_message", "upstream_message",
     "moderation_reasons",
 })

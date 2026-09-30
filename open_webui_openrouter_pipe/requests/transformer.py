@@ -122,6 +122,9 @@ _TOOL_OUTPUT_PRUNE_TAIL_CHARS = 128
 _PROSE_KEYS = frozenset({"text", "input_text", "output_text", "summary_text", "content"})
 _INTERNAL_FILE_PATH = "/api/v1/files/"
 
+_ARTIFACT_GROUP_CONCURRENCY = 8
+
+
 def _strip_reasoning_anchor_keys(item: dict[str, Any]) -> dict[str, Any]:
     """Return *item* without the internal anchor keys used only for replay
     ordering; they must never reach the provider on the reasoning block."""
@@ -1302,23 +1305,29 @@ async def transform_messages_to_input(
                 if segment.get("type") == "marker" and segment["marker"] not in group_markers:
                     group_markers.append(segment["marker"])
         async def _load_group(
-            load_group_id: str | None, load_group_markers: list[str]
+            gate: asyncio.Semaphore,
+            load_group_id: str | None,
+            load_group_markers: list[str],
         ) -> tuple[str | None, dict[str, dict]]:
-            try:
-                return load_group_id, await artifact_loader(
-                    chat_id, load_group_id, load_group_markers
-                )
-            except Exception:
-                logger.warning("Artifact loader failed for chat_id=%s message_id=%s", chat_id, load_group_id, exc_info=True)
-                return load_group_id, {}
+            async with gate:
+                try:
+                    return load_group_id, await artifact_loader(
+                        chat_id, load_group_id, load_group_markers
+                    )
+                except Exception:
+                    logger.warning("Artifact loader failed for chat_id=%s message_id=%s", chat_id, load_group_id, exc_info=True)
+                    return load_group_id, {}
 
-        pending = [
-            _load_group(group_id, group_markers)
+        pending_groups = [
+            (group_id, group_markers)
             for group_id, group_markers in wanted_by_group.items()
             if group_markers
         ]
-        if pending:
-            for group_id, loaded in await asyncio.gather(*pending):
+        if pending_groups:
+            gate = asyncio.Semaphore(_ARTIFACT_GROUP_CONCURRENCY)
+            for group_id, loaded in await asyncio.gather(
+                *(_load_group(gate, gid, markers) for gid, markers in pending_groups)
+            ):
                 artifact_groups[group_id] = loaded
 
     address_deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS

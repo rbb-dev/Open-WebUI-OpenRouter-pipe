@@ -38,6 +38,7 @@ from open_webui_openrouter_pipe.integrations.image_help import (
 from open_webui_openrouter_pipe.models.registry import (
     ModelFamily,
     OpenRouterModelRegistry,
+    _contract_target,
     sanitize_model_id,
 )
 
@@ -626,6 +627,11 @@ async def test_image_catalog_ttl_gate_skips_within_window():
     valves.BASE_URL = "https://openrouter.ai/api/v1"
     valves.HTTP_REFERER_OVERRIDE = ""
 
+    # The contracts this gate reads are bound to the identity they were read under, so
+    # a within-window skip needs that identity seeded -- an unstamped cache is stale by
+    # construction and the gate would be measuring the identity check instead.
+    OpenRouterModelRegistry._image_contract_target = _contract_target(valves)
+
     session = MagicMock()
     # Should return without instantiating client / attempting fetch
     await ensure_image_catalog_loaded(
@@ -679,6 +685,7 @@ async def test_a_request_that_skipped_contracts_does_not_suppress_the_next_sweep
     OpenRouterModelRegistry._last_image_attempt = 0.0
     OpenRouterModelRegistry._last_image_fetch = 0.0
     OpenRouterModelRegistry._last_image_contract_attempt = 0.0
+    OpenRouterModelRegistry._image_contract_target = _contract_target(valves)
 
     original = image_catalog.OpenRouterImageClient
     image_catalog.OpenRouterImageClient = _Client  # type: ignore[misc]
@@ -3558,6 +3565,7 @@ async def test_the_catalogue_ttl_still_applies_when_no_filter_consumes_contracts
     OpenRouterModelRegistry._last_image_attempt = 0.0
     OpenRouterModelRegistry._last_image_contract_attempt = 0.0
     OpenRouterModelRegistry._image_endpoints = {}
+    OpenRouterModelRegistry._image_contract_target = _contract_target(valves)
 
     original = image_catalog.OpenRouterImageClient
     image_catalog.OpenRouterImageClient = _Client  # type: ignore[misc]
@@ -4912,3 +4920,21 @@ _GEMINI_IMAGE = {
     "top_provider": {"context_length": 32768, "max_completion_tokens": 8192, "is_moderated": False},
 }
 _MODALITIES = [_GEMINI_IMAGE]
+
+
+
+
+def _publish_contracts(published: dict[str, Any]) -> Any:
+    """Publish contracts bound to the identity this module's pipe runs under.
+
+    The published contracts are stamped with the `(BASE_URL, fingerprint(API_KEY))` they
+    were read under, and dropped when that pair changes. Seeding them without the stamp
+    would leave the first catalog load seeing `previous is None` and dropping them again,
+    so every test here publishes through this helper rather than calling the setter.
+    """
+    from open_webui_openrouter_pipe.core.config import EncryptedStr, Valves
+
+    valves = Valves(API_KEY=EncryptedStr("test-api-key"))
+    valves.BASE_URL = "https://openrouter.ai/api/v1"
+    OpenRouterModelRegistry.adopt_image_contract_target(_contract_target(valves))
+    OpenRouterModelRegistry.set_image_endpoints(published, known_ids=set(published))

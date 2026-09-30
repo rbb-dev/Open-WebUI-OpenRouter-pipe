@@ -27,6 +27,7 @@ from ...core.config import (
 from ...core.costs import chat_usage_to_responses_usage
 from ...core.errors import (
     RequiredInternalFileError,
+    UpstreamBodyUnreadable,
     _build_openrouter_api_error,
 )
 from ...core.logging_system import SessionLogger
@@ -56,6 +57,7 @@ from ..transforms import (
     chat_payload_loses_fusion_entry,
 )
 from .responses_adapter import (
+    _BODY_EXCERPT_CHARS,
     _backlog_cause,
     _body_not_an_object,
     _count_failed_call,
@@ -386,6 +388,8 @@ class ChatCompletionsAdapter:
         received_any = False
         delivered_any = False
         saw_choice_chunk = False
+        saw_data_line = False
+        body_bytes_seen = False
 
         def _retry_streaming(retry_state) -> bool:
             exc = retry_state.outcome.exception() if retry_state.outcome else None
@@ -845,6 +849,8 @@ class ChatCompletionsAdapter:
                         images_emitted = False
                         received_any = False
                         saw_choice_chunk = False
+                        saw_data_line = False
+                        body_bytes_seen = False
                         cut_off = False
                         tool_calls_completed = False
                         truncating_reason = None
@@ -879,6 +885,7 @@ class ChatCompletionsAdapter:
 
                         buf = bytearray()
                         scanned = 0
+                        excerpt = bytearray()
                         event_data_parts: list[bytes] = []
                         done = False
 
@@ -904,7 +911,10 @@ class ChatCompletionsAdapter:
                             if not first_chunk_received:
                                 first_chunk_received = True
                                 timing_mark("chat_first_chunk")
+                            body_bytes_seen = True
                             buf.extend(chunk)
+                            if len(excerpt) < _BODY_EXCERPT_CHARS:
+                                excerpt.extend(chunk[: _BODY_EXCERPT_CHARS - len(excerpt)])
                             sse_lines, scanned = _split_sse_lines(buf, scanned)
                             for stripped in sse_lines:
 
@@ -925,6 +935,7 @@ class ChatCompletionsAdapter:
                                 if stripped.startswith(b":"):
                                     continue
                                 if stripped.startswith(b"data:"):
+                                    saw_data_line = True
                                     payload = bytes(stripped[5:].lstrip())
                                     if payload == _CHAT_SSE_DONE_SENTINEL:
                                         if event_data_parts:
@@ -942,13 +953,20 @@ class ChatCompletionsAdapter:
                             if done:
                                 break
                         if event_data_parts and not done:
+                            saw_data_line = True
                             data_blob = b"\n".join(event_data_parts).strip()
                             event_data_parts.clear()
                             if data_blob and data_blob != _CHAT_SSE_DONE_SENTINEL:
                                 for ev in _consume_blob(data_blob):
                                     yield ev
                         if not received_any:
-                            raise aiohttp.ClientPayloadError("OpenRouter closed the stream before sending anything")
+                            if saw_data_line or not body_bytes_seen:
+                                raise aiohttp.ClientPayloadError("OpenRouter closed the stream before sending anything")
+                            raise UpstreamBodyUnreadable(
+                                endpoint="/chat/completions",
+                                body_excerpt=excerpt.decode("utf-8", "replace"),
+                                content_type=resp.headers.get("Content-Type"),
+                            )
                         if not saw_choice_chunk:
                             raise aiohttp.ClientPayloadError("OpenRouter sent no choices on /chat/completions")
                         if not done and not tool_calls_completed:
