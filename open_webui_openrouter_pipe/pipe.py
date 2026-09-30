@@ -3701,6 +3701,7 @@ class Pipe:
                 api_key=api_key_value or "",
                 logger=self.logger,
                 cache_seconds=valves.MODEL_CATALOG_REFRESH_SECONDS,
+                with_modalities=False,
             )
             await ensure_image_catalog_loaded(
                 session,
@@ -4194,7 +4195,6 @@ class Pipe:
                 if batch_timeout
                 else "Tool batch timed out."
             )
-            context.timeout_error = context.timeout_error or message
             self.logger.warning("%s", message)
         for item, task, ask_user_window in zip(batch, tasks, ask_user_windows):
             if item.future.done():
@@ -4372,7 +4372,7 @@ class Pipe:
             {key: value for key, value in item.args.items() if key in declared} if isinstance(item.args, dict) else {}
         )
         carded = str(item.call.get("call_id") or item.call.get("id") or "").strip() in context.carded_calls
-        displayed_inline_by_a_card = tool_name == "display_file" and carded
+        displayed_inline_by_a_card = resolved_tool_name(item.call) == "display_file" and carded
         args_without_inline = (
             {key: value for key, value in call_args.items() if key != "inline"}
             if origin_name == "display_file" and call_args.get("inline") is True

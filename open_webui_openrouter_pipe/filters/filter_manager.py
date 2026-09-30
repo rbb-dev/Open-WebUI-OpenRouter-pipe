@@ -205,9 +205,11 @@ class _WriteOutcome:
         self.refused = False
 
 
-async def _write_function(Functions, function_id, updates, what, logger, raised=None, *, settle: bool = True) -> bool:
+async def _write_function(Functions, function_id, updates, what, logger, raised=None, *, settle: bool = True, landed_out: list | None = None) -> bool:
     try:
         landed = await Functions.update_function_by_id(function_id, updates)
+        if landed_out is not None:
+            landed_out.append(landed)
     except Exception as exc:  # noqa: BLE001 - a database driver's own error type is not enumerable here
         if raised is not None:
             raised.append(exc)
@@ -237,14 +239,11 @@ async def _settle_the_off_stamp(Functions, function_id, updates, landed, logger)
     _PIPE_OFF_LANDED_AT[str(function_id)] = landed_at
     if landed_at <= int(stamp):
         return
-    landed_active = getattr(landed, "is_active", None)
-    if not isinstance(landed_active, bool):
-        landed_active = updates.get("is_active")
+    settled: list = []
     await _write_function(
         Functions,
         function_id,
         {
-            "is_active": landed_active,
             "meta": {
                 **_stored_meta(landed),
                 _PIPE_OFF_STAMP_META_KEY: landed_at,
@@ -253,7 +252,10 @@ async def _settle_the_off_stamp(Functions, function_id, updates, landed, logger)
         f"settling the switch-off stamp on {function_id} to the second the write landed",
         logger,
         settle=False,
+        landed_out=settled,
     )
+    if settled and settled[0] is not None:
+        _PIPE_OFF_LANDED_AT[str(function_id)] = int(getattr(settled[0], "updated_at", 0) or 0)
 
 
 def a_filter_write_was_refused(family_id: str = "") -> bool:

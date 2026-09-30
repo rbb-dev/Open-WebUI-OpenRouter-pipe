@@ -431,28 +431,34 @@ async def _gate_inline_data_url(
             "oversized_inline",
             subject=loggable_link(url),
         )
-    split = split_base64_data_url("data:" + url[url.index(":") + 1:])
+    split = split_base64_data_url(url)
     assert split is not None
     body = "".join(split[1].split())
     if not body or not await _validate_inline_payload(body):
         return url, ImageRefusal(
             "not decodable as base64", "undecodable_inline", subject=loggable_link(url),
         )
-    head = split[0] + "," + body
+    head = "data:" + split[0].partition(":")[2]
     if not resolve_type:
-        return head, None
-    return _resolve_inline_type(split[0], body)
+        return head + "," + body, None
+    return _resolve_inline_type(head, body)
 
 
 async def _gate_inline_tool_pictures(
     pictures: list[str],
     max_inline_bytes: int,
+    *,
+    allow_insecure: Callable[[str], bool],
 ) -> tuple[list[str], list[tuple[str, str, str]]]:
     kept: list[str] = []
     refused: list[tuple[str, str, str]] = []
     for url in pictures:
         if not is_inline_data_url(url):
-            kept.append(url)
+            admitted, not_a_link = _tool_picture_gate(
+                [url], max_inline_bytes=max_inline_bytes, allow_insecure=allow_insecure,
+            )
+            kept.extend(admitted)
+            refused.extend(not_a_link)
             continue
         _gated, refusal = await _gate_inline_data_url(
             url, max_inline_bytes, resolve_type=True,
@@ -467,11 +473,15 @@ async def _gate_inline_tool_pictures(
 async def _gate_round_output_pictures(
     output: Any,
     max_inline_bytes: int,
+    *,
+    allow_insecure: Callable[[str], bool],
 ) -> tuple[Any, list[tuple[str, str, str]]]:
     if not is_picture_output(output):
         return output, []
     text, pictures = tool_output_text_and_pictures(output)
-    kept, refused = await _gate_inline_tool_pictures(pictures, max_inline_bytes)
+    kept, refused = await _gate_inline_tool_pictures(
+        pictures, max_inline_bytes, allow_insecure=allow_insecure,
+    )
     return picture_output(text, kept), refused
 
 
@@ -687,7 +697,7 @@ def _reinterleave_region(region: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _reinterleave_reasoning_by_anchor(
     items: list[dict[str, Any]],
-    gated_pictures: dict[Any, list[str]] | None = None,
+    gated_pictures: dict[Any, list[str]],
 ) -> list[dict[str, Any]]:
     """Re-interleave reasoning to its true generated position, scoped per assistant
     turn. Turns are delimited by user messages so a reasoning anchor only binds to
@@ -715,6 +725,11 @@ _TRANSPORT_ONLY_KEYS = (
     TOOL_ROUND_SKELETON_KEY,
 )
 _LIFTED_TEXT_IMAGE_PLACEHOLDER = "image"
+
+_MEDIA_BLOCK_TYPES = frozenset({
+    "image_url", "input_image", "image", "input_file", "file",
+    "input_audio", "audio", "video_url", "input_video", "video",
+})
 
 
 def _source_url_of(block: dict[str, Any]) -> str:
@@ -777,7 +792,7 @@ def _move_kept_outputs_after_their_calls(kept: list[Any]) -> list[Any]:
 
 def _one_copy_per_round(
     region: list[Any],
-    gated_pictures: dict[Any, list[str]] | None = None,
+    gated_pictures: dict[Any, list[str]],
 ) -> list[Any]:
     supplied = {
         it.get("call_id")
@@ -836,16 +851,8 @@ def _one_copy_per_round(
         if replayed_pictures:
             text, shown = tool_output_text_and_pictures(it["output"])
             it = {**it, "output": text}
-            if gated_pictures is not None:
-                kept_shown = gated_pictures.get(it.get("call_id"), [])
-                refused_pictures = refused_pictures or bool(shown) and not kept_shown
-            else:
-                kept_shown, refused_shown = _tool_picture_gate(shown)
-                for url, reason, cause in refused_shown:
-                    logger.warning(
-                        "Not replaying a stored tool's picture (%s): %s [cause=%s]",
-                        loggable_link(url), reason, cause,
-                    )
+            kept_shown = gated_pictures.get(it.get("call_id"), [])
+            refused_pictures = refused_pictures or bool(shown) and not kept_shown
             pictures.extend(kept_shown)
         kept.append(it)
         if isinstance(it, dict) and it.get("type") == "function_call_output":
@@ -890,8 +897,8 @@ def _handoff_back(messages: list[dict[str, Any]], position: int) -> bool:
 def _tool_picture_gate(
     pictures: list[str],
     *,
-    max_inline_bytes: int | None = None,
-    allow_insecure: Callable[[str], bool] | None = None,
+    max_inline_bytes: int,
+    allow_insecure: Callable[[str], bool],
 ) -> tuple[list[str], list[tuple[str, str, str]]]:
     kept: list[str] = []
     refused: list[tuple[str, str, str]] = []
@@ -899,7 +906,7 @@ def _tool_picture_gate(
         if (
             is_cleartext_http_url(url)
             and not names_an_owui_file_path(url)
-            and not (allow_insecure is not None and allow_insecure(url))
+            and not allow_insecure(url)
         ):
             refused.append((url, ("served over plain HTTP, which is blocked by security policy; "
                                   "set ALLOW_INSECURE_HTTP and list the host in "
@@ -914,7 +921,7 @@ def _tool_picture_gate(
                 refused.append((url, ("a data URL that is not base64-encoded, which OpenRouter "
                                       "does not accept"), "unencoded_inline"))
                 continue
-            if max_inline_bytes is not None and (len(split[1]) * 3) // 4 > max_inline_bytes:
+            if (len(split[1]) * 3) // 4 > max_inline_bytes:
                 refused.append((url, f"larger than the {max_inline_bytes}-byte inline limit",
                                 "oversized_inline"))
                 continue
@@ -926,7 +933,7 @@ async def _tool_picture_gate_with_address(
     pipe: Pipe,
     pictures: list[str],
     *,
-    max_inline_bytes: int | None = None,
+    max_inline_bytes: int,
 ) -> tuple[list[str], list[tuple[str, str, str]]]:
     kept, refused = _tool_picture_gate(
         pictures,
@@ -954,18 +961,13 @@ def _tool_picture_notice(refusals: list[tuple[str, str, str]]) -> str:
 
 
 def _tool_images_message(
-    pictures: list[str], *, max_inline_bytes: int | None = None,
-    allow_insecure: Callable[[str], bool] | None = None,
-    lead_in: bool = False,
+    pictures: list[str], *, lead_in: bool = False,
 ) -> dict[str, Any] | None:
-    kept, _refused = _tool_picture_gate(
-        pictures, max_inline_bytes=max_inline_bytes, allow_insecure=allow_insecure,
-    )
-    if not kept and not lead_in:
+    if not pictures and not lead_in:
         return None
     return {"type": "message", "role": "user", "content": [
         {"type": "input_text", "text": OPEN_WEBUI_TOOL_IMAGES_TEXT},
-        *({"type": "input_image", "image_url": url, "detail": "auto"} for url in kept),
+        *({"type": "input_image", "image_url": url, "detail": "auto"} for url in pictures),
     ]}
 
 
@@ -1107,15 +1109,11 @@ async def transform_messages_to_input(
         if _deferred_tool_pictures:
             admitted, gated_refusals = await _gate_inline_tool_pictures(
                 _deferred_tool_pictures, max_inline_bytes,
+                allow_insecure=pipe._multimodal_handler._is_insecure_http_allowed,
             )
             _deferred_tool_refusals.extend(gated_refusals)
             _deferred_tool_pictures.clear()
-            message = _tool_images_message(
-                admitted,
-                max_inline_bytes=max_inline_bytes,
-                allow_insecure=pipe._multimodal_handler._is_insecure_http_allowed,
-                lead_in=had_pictures,
-            )
+            message = _tool_images_message(admitted, lead_in=had_pictures)
             if message is not None:
                 openai_input.append(message)
         if _deferred_tool_refusals:
@@ -1513,7 +1511,13 @@ async def transform_messages_to_input(
                 if not isinstance(text_val, str):
                     text_val = content_blocks.get("content")
                 cleaned = _sanitize_free_text(text_val) if isinstance(text_val, str) else ""
-                content_blocks = [{"type": "text", "text": cleaned}] if cleaned else []
+                if content_blocks.get("type") in _MEDIA_BLOCK_TYPES:
+                    content_blocks = [
+                        *([{"type": "text", "text": cleaned}] if cleaned else []),
+                        content_blocks,
+                    ]
+                else:
+                    content_blocks = [{"type": "text", "text": cleaned}] if cleaned else []
             elif not isinstance(content_blocks, list):
                 pipe.logger.warning(
                     "Ignoring user message %s: content is %s, expected a string, list or dict",
@@ -2090,6 +2094,9 @@ async def transform_messages_to_input(
                 def _resolved_mime_hint(payload: dict[str, Any] | None = None) -> str | None:
                     candidates: list[Any] = []
                     if isinstance(payload, dict):
+                        head = payload.get("data")
+                        if isinstance(head, str) and is_inline_data_url(head.strip()):
+                            candidates.append(link_media_type(head.strip()))
                         candidates.extend(
                             [
                                 payload.get("mimeType"),
@@ -3056,7 +3063,10 @@ async def transform_messages_to_input(
         ):
             continue
         _replay_text, shown = tool_output_text_and_pictures(row["output"])
-        admitted, refused_shown = await _gate_inline_tool_pictures(shown, max_inline_bytes)
+        admitted, refused_shown = await _gate_inline_tool_pictures(
+            shown, max_inline_bytes,
+            allow_insecure=pipe._multimodal_handler._is_insecure_http_allowed,
+        )
         for url, reason, cause in refused_shown:
             logger.warning(
                 "Not replaying a stored tool's picture (%s): %s [cause=%s]",

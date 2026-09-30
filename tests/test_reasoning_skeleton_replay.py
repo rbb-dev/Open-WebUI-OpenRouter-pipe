@@ -34,6 +34,12 @@ from open_webui_openrouter_pipe.requests.sanitizer import _sanitize_request_inpu
 from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
 from tests.test_continue_stores_once import _open_webui_convert_output_to_messages
 
+_INLINE_CAP_BYTES = 50 * 1024 * 1024
+
+
+def _refuses_cleartext(_url: str) -> bool:
+    return False
+
 MODEL = "anthropic/claude-opus-4.8"
 RESULT_CANARY = "SECRET-TOOL-RESULT-7f3a"
 ARGUMENT_CANARY = "SECRET-ARGUMENT-19c2"

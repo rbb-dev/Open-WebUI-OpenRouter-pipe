@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import Counter
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from ..api.transforms import _filter_replayable_input_items
@@ -143,7 +144,8 @@ def _request_overhead_chars(body: Any) -> int:
 
 
 def _gate_tool_pictures(
-    item: dict[str, Any], logger: logging.Logger
+    item: dict[str, Any], logger: logging.Logger, *,
+    max_inline_bytes: int, allow_insecure: Callable[[str], bool],
 ) -> tuple[dict[str, Any], bool]:
     from .transformer import _tool_picture_gate
 
@@ -158,7 +160,9 @@ def _gate_tool_pictures(
         for part in parts
         if isinstance(part, dict) and part.get("type") == "input_image" and part.get("image_url")
     ]
-    kept, refused = _tool_picture_gate(urls)
+    kept, refused = _tool_picture_gate(
+        urls, max_inline_bytes=max_inline_bytes, allow_insecure=allow_insecure,
+    )
     if not refused:
         return item, False
     for url, reason, cause in refused:
@@ -223,7 +227,11 @@ def _sanitize_request_input(pipe: Pipe, body: ResponsesBody) -> BudgetOutcome | 
                 changed = True
             return minimal, changed
         if item_type == "function_call_output":
-            item, gated = _gate_tool_pictures(item, pipe.logger)
+            item, gated = _gate_tool_pictures(
+                item, pipe.logger,
+                max_inline_bytes=pipe.valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
+                allow_insecure=pipe._multimodal_handler._is_insecure_http_allowed,
+            )
             changed = gated
             call_id = item.get("call_id")
             if not (isinstance(call_id, str) and call_id.strip()):

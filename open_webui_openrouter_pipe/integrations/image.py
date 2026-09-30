@@ -16,7 +16,7 @@ from ..core.config import (
     _select_openrouter_http_referer,
 )
 from ..core.costs import maybe_dump_costs_snapshot
-from ..core.errors import OpenRouterAPIError
+from ..core.errors import OpenRouterAPIError, UpstreamBodyUnreadable
 from ..core.logging_system import SessionLogger
 from ..core.utils import clamp_text, summarise_names
 from ..core.warn_latch import warn_level
@@ -1153,7 +1153,7 @@ class ImageGenerationAdapter:
         outcome_sink: dict[str, Any] | None = None,
         breaker_key: str | None = None,
     ) -> str:
-        outcome: _Outcome = {"usage": None, "reported": False, "costed": False, "sent": False, "delivered": False, "degraded": False}
+        outcome: _Outcome = {"usage": None, "reported": False, "costed": False, "sent": False, "delivered": False, "degraded": False, "provider_document": True}
         try:
             content = await self._generate(
                 body=body,
@@ -1183,6 +1183,11 @@ class ImageGenerationAdapter:
                 normalized_model_id=normalized_model_id,
                 api_model_id=api_model_id,
             )
+        except UpstreamBodyUnreadable as exc:
+            outcome["provider_document"] = False
+            await self._close_status(event_emitter)
+            await self._settle(outcome, valves, user, metadata, user_obj, api_model_id)
+            content = await self._emit_failure(event_emitter, exc.evidence())
         except ImageGenerationError as exc:
             self._logger.warning("Image generation failed for %r: %s", api_model_id, exc)
             await self._close_status(event_emitter)
@@ -1207,7 +1212,7 @@ class ImageGenerationAdapter:
         failed = not outcome["delivered"] or bool(outcome["degraded"])
         if outcome_sink is not None:
             outcome_sink["error_occurred"] = failed
-        if outcome["sent"] and failed:
+        if outcome["sent"] and failed and outcome["provider_document"]:
             _record_failed_call(self._pipe, breaker_key)
 
     async def _settle(

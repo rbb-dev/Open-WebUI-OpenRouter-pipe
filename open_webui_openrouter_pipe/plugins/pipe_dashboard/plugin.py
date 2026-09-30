@@ -152,7 +152,7 @@ class PipeDashboardPlugin(PluginBase):
             ge=1,
             le=365,
             title="Usage record retention (days)",
-            description="How long collected usage records are kept before the purge task deletes them.",
+            description="How long collected usage records are kept before the purge task deletes them. Read from this saved setting on every pass, at the declared default when it cannot be read.",
         )),
         "PIPE_DASHBOARD_UPDATE_ENABLE": (bool, Field(
             default=True,
@@ -607,11 +607,39 @@ class PipeDashboardPlugin(PluginBase):
             return False
         return bool(row.get("PIPE_DASHBOARD_USAGE_COLLECT", False))
 
-    def _retention_days(self) -> int:
-        row = getattr(self, "_stored_usage_row", None)
-        if row is None:
+    async def _retention_days(self) -> int:
+        from .actions import _update_service_of
+
+        try:
+            get_pipe = getattr(self, "_get_pipe", None)
+            pipe = get_pipe() if get_pipe else None
+            if pipe is not None:
+                svc = _update_service_of(pipe)
+                if svc is not None:
+                    try:
+                        row, stored_read_ok = await svc._row_valves_checked()
+                        if not stored_read_ok:
+                            logger.warning(
+                                "pipe_dashboard: the persisted usage valves are unreadable; "
+                                "the usage purge is deleting at the declared default rather "
+                                "than the in-memory copy, which would let a failed read "
+                                "override an operator's setting"
+                            )
+                    except Exception:
+                        logger.warning(
+                            "pipe_dashboard: cannot read the persisted usage valves; the "
+                            "usage purge is deleting at the declared default rather than the "
+                            "in-memory copy, which would let a failed read override an "
+                            "operator's setting",
+                            exc_info=True,
+                        )
+                        row, stored_read_ok = {}, False
+                    if stored_read_ok:
+                        return int(row.get("PIPE_DASHBOARD_USAGE_RETENTION_DAYS", 30) or 30)
+                    return 30
+            return int(getattr(self.ctx.valves, "PIPE_DASHBOARD_USAGE_RETENTION_DAYS", 30))
+        except (AttributeError, TypeError, ValueError):
             return 30
-        return _as_int(row.get("PIPE_DASHBOARD_USAGE_RETENTION_DAYS"), 30)
 
     def _live_snapshot(self) -> tuple[list[dict[str, Any]], dict[str, float], int]:
         self._tracker.sweep()

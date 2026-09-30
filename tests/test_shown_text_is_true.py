@@ -31,6 +31,12 @@ from open_webui_openrouter_pipe.filters.image_filter_renderer import (
     render_image_model_filter_source,
 )
 
+_INLINE_CAP_BYTES = 50 * 1024 * 1024
+
+
+def _refuses_cleartext(_url: str) -> bool:
+    return False
+
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 DOCS = Path(__file__).resolve().parents[1] / "docs"
 
@@ -2604,7 +2610,7 @@ def _chat_completions_payload(*, auto_context_trimming: bool) -> dict:
     body = ResponsesBody(model="anthropic/claude-3", input=[], stream=True)
     apply_context_transforms(body, auto_context_trimming=auto_context_trimming)
     return _filter_openrouter_chat_request(
-        _responses_payload_to_chat_completions_payload(body.model_dump(exclude_none=True))
+        _responses_payload_to_chat_completions_payload(body.model_dump(exclude_none=True), max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
     )
 
 

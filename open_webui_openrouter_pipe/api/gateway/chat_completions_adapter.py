@@ -260,6 +260,8 @@ class ChatCompletionsAdapter:
             )
         chat_payload = _responses_payload_to_chat_completions_payload(
             responses_payload,
+            max_inline_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
+            allow_insecure=self._pipe._multimodal_handler._is_insecure_http_allowed,
         )
         chat_payload = _filter_openrouter_chat_request(chat_payload)
 
@@ -950,6 +952,10 @@ class ChatCompletionsAdapter:
                         if not saw_choice_chunk:
                             raise aiohttp.ClientPayloadError("OpenRouter sent no choices on /chat/completions")
                         if not done and not tool_calls_completed:
+                            if not delivered_any and not refusal_text_seen:
+                                raise aiohttp.ClientPayloadError(
+                                    "OpenRouter closed the stream before sending anything a reader could use"
+                                )
                             _record_failed_call(self._pipe, breaker_key)
                             cut_off = True
                         break
@@ -1084,6 +1090,8 @@ class ChatCompletionsAdapter:
             )
         chat_payload = _responses_payload_to_chat_completions_payload(
             responses_payload,
+            max_inline_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
+            allow_insecure=self._pipe._multimodal_handler._is_insecure_http_allowed,
         )
         chat_payload = _filter_openrouter_chat_request(chat_payload)
 

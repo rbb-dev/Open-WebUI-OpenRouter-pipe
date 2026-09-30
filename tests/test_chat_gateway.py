@@ -3699,6 +3699,12 @@ from open_webui_openrouter_pipe import (
     _responses_payload_to_chat_completions_payload,
 )
 
+_INLINE_CAP_BYTES = 50 * 1024 * 1024
+
+
+def _refuses_cleartext(_url: str) -> bool:
+    return False
+
 
 def test_responses_payload_to_chat_preserves_cache_control() -> None:
     payload = {
@@ -3719,7 +3725,7 @@ def test_responses_payload_to_chat_preserves_cache_control() -> None:
             }
         ],
     }
-    chat = _responses_payload_to_chat_completions_payload(payload)
+    chat = _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
     assert chat["model"] == payload["model"]
     assert chat["stream"] is True
     assert chat["messages"][0]["role"] == "system"
@@ -3739,7 +3745,7 @@ def test_responses_payload_to_chat_preserves_cache_control() -> None:
 
 def test_responses_payload_to_chat_rounds_top_k_for_chat_completions() -> None:
     payload = {"model": "openai/gpt-5", "stream": False, "input": [], "top_k": 2.5}
-    chat = _responses_payload_to_chat_completions_payload(payload)
+    chat = _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
     assert chat["top_k"] == 2
 
 
@@ -3782,7 +3788,7 @@ def test_responses_payload_to_chat_converts_tools_schema() -> None:
             }
         ],
     }
-    chat = _responses_payload_to_chat_completions_payload(payload)
+    chat = _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
     assert chat["tools"] == [
         {
             "type": "function",

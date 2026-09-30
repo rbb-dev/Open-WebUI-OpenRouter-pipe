@@ -1545,6 +1545,14 @@ def test_the_tools_a_request_carries_reach_the_budget_not_just_the_helper() -> N
     class _Pipe:
         logger = logging.getLogger("test")
 
+        class valves:  # type: ignore[no-redef]
+            BASE64_MAX_SIZE_MB = 50
+
+        class _multimodal_handler:  # type: ignore[no-redef]
+            @staticmethod
+            def _is_insecure_http_allowed(_url: str) -> bool:
+                return False
+
     floors = {}
     for label, tools in (("bare", None), ("with-tools", [dict(schema, name=f"t{i}") for i in range(30)])):
         payload: dict[str, Any] = {"model": "test/model", "input": list(conversation)}

@@ -9,6 +9,7 @@ Blocklists are derived from empirical testing against the OpenRouter API.
 """
 
 import re
+from typing import Any
 
 # =============================================================================
 # DIRECT UPLOAD BLOCKLIST
@@ -107,3 +108,11 @@ def is_direct_upload_blocklisted(model_id: str) -> bool:
         if not separator or not base:
             return False
         candidate = base
+
+
+def is_direct_upload_blocklisted_for(model_id: str, row: Any) -> bool:
+    if is_direct_upload_blocklisted(model_id):
+        return True
+    target = row.get("alias_target") if isinstance(row, dict) else None
+    slug = target.get("slug") if isinstance(target, dict) else None
+    return isinstance(slug, str) and bool(slug.strip()) and is_direct_upload_blocklisted(slug.strip())

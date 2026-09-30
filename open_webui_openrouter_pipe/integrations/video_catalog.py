@@ -51,6 +51,7 @@ async def ensure_video_catalog_loaded(
     api_key: str,
     logger: Any,
     cache_seconds: int,
+    with_modalities: bool = True,
 ) -> None:
     """Fetch video models and register them into the shared model registry."""
     if getattr(valves, "ENABLE_VIDEO_GENERATION", False):
@@ -98,11 +99,27 @@ async def ensure_video_catalog_loaded(
             logger.warning("Video catalog fetch returned 0 models; video models retired.")
             return
 
-        await _attach_declared_input_modalities(client, models, logger)
+        if with_modalities:
+            await _attach_declared_input_modalities(client, models, logger)
+        else:
+            _carry_declared_input_modalities(models)
 
         OpenRouterModelRegistry.register_video_models(models)
         OpenRouterModelRegistry.record_video_attempt()
         logger.info("Registered %d OpenRouter video model(s) into the catalog.", len(models))
+
+
+def _carry_declared_input_modalities(models: list[dict[str, Any]]) -> None:
+    for item in models:
+        if not isinstance(item, dict) or item.get("input_modalities"):
+            continue
+        model_id = str(item.get("id") or "").strip()
+        if not model_id:
+            continue
+        previous = OpenRouterModelRegistry.spec(model_id).get("video_model") or {}
+        carried = previous.get("input_modalities") if isinstance(previous, dict) else None
+        if isinstance(carried, list) and carried:
+            item["input_modalities"] = list(carried)
 
 
 async def _attach_declared_input_modalities(

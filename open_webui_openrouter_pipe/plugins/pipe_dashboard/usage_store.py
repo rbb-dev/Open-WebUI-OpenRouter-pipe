@@ -12,13 +12,14 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import inspect
 import logging
 import os
 import queue
 import random
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ...core.utils import _stable_crockford_id
@@ -147,7 +148,7 @@ class UsageStore:
         self._effective_widths: dict[str, int | None] = dict(self._declared_lengths)
         self._width_warned: set[str] = set()
         self._purge_task: asyncio.Task | None = None
-        self._retention_days_fn: Callable[[], int] | None = None
+        self._retention_days_fn: Callable[[], int | Awaitable[int]] | None = None
 
     @property
     def enabled(self) -> bool:
@@ -570,7 +571,9 @@ class UsageStore:
                 )
         return True
 
-    def start_purge_task(self, retention_days_fn: Callable[[], int]) -> None:
+    def start_purge_task(
+        self, retention_days_fn: Callable[[], int | Awaitable[int]]
+    ) -> None:
         """Start the jittered retention purge loop on the running loop."""
         self._retention_days_fn = retention_days_fn
         task = self._purge_task
@@ -596,25 +599,51 @@ class UsageStore:
         store = self._store
         if store is None or self._model is None:
             return
-        cutoff = self._purge_cutoff()
+        days = await self._resolve_retention_days()
+        cutoff = self._purge_cutoff(days)
         executor = getattr(store, "_db_executor", None)
         if executor is None:
             return
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(executor, self._purge_sync, cutoff)
 
-    def _purge_cutoff(self) -> datetime.datetime:
-        days = 30
+    async def _resolve_retention_days(self) -> int:
         fn = self._retention_days_fn
-        if fn is not None:
-            try:
-                days = int(fn())
-            except Exception:
-                logger.warning(
-                    "usage store: retention-days valve is unreadable; falling back to %d days",
-                    days,
-                    exc_info=True,
-                )
+        if fn is None:
+            return 30
+        try:
+            resolved = fn()
+            if inspect.isawaitable(resolved):
+                resolved = await resolved
+            return int(resolved)
+        except Exception:
+            logger.warning(
+                "usage store: the retention-days provider is unreadable; falling back to "
+                "%d days",
+                30,
+                exc_info=True,
+            )
+            return 30
+
+    def _purge_cutoff(self, days: int | None = None) -> datetime.datetime:
+        if days is None:
+            days = 30
+            fn = self._retention_days_fn
+            if fn is not None:
+                try:
+                    value = fn()
+                    if not isinstance(value, int):
+                        raise TypeError(
+                            f"the retention provider answered {type(value).__name__}, not an int"
+                        )
+                    days = value
+                except Exception:
+                    logger.warning(
+                        "usage store: retention-days valve is unreadable; falling back to "
+                        "%d days",
+                        days,
+                        exc_info=True,
+                    )
         days = max(1, days)
         return usage_ts_from_epoch(time.time() - days * 86400.0)
 

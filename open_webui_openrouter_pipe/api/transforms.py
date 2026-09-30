@@ -867,6 +867,24 @@ def _replay_block_refusal(block: Any) -> str | None:
     return None
 
 
+def responses_refusal_text(item: Any) -> str | None:
+    if not isinstance(item, dict):
+        return None
+    own = item.get("refusal")
+    if isinstance(own, str) and own.strip():
+        return own.strip()
+    content = item.get("content")
+    if not isinstance(content, list):
+        return None
+    for part in content:
+        if not isinstance(part, dict) or part.get("type") != "refusal":
+            continue
+        text = part.get("refusal")
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+    return None
+
+
 def _replay_blocks_or_note(
     blocks: list[Any],
     siblings: list[Any] | None = None,
@@ -899,6 +917,8 @@ def _replay_blocks_or_note(
 def _responses_input_to_chat_messages(
     input_value: Any,
     *,
+    max_inline_bytes: int,
+    allow_insecure: Callable[[str], bool],
     allow_unknown_fields: bool = False,
 ) -> list[dict[str, Any]]:
     """Convert Responses API input array -> Chat Completions messages array.
@@ -928,7 +948,9 @@ def _responses_input_to_chat_messages(
 
         if not tool_pictures:
             return
-        kept, refused = _tool_picture_gate(tool_pictures)
+        kept, refused = _tool_picture_gate(
+            tool_pictures, max_inline_bytes=max_inline_bytes, allow_insecure=allow_insecure,
+        )
         for url, reason, cause in refused:
             logger.warning(
                 "Not forwarding a tool's picture (%s): %s [cause=%s]",
@@ -1371,6 +1393,9 @@ def chat_payload_loses_fusion_entry(model_id: Any, plugins: Any) -> bool:
 
 def _responses_payload_to_chat_completions_payload(
     responses_payload: dict[str, Any],
+    *,
+    max_inline_bytes: int,
+    allow_insecure: Callable[[str], bool],
 ) -> dict[str, Any]:
     """Convert a Responses API request payload into a Chat Completions payload."""
     if not isinstance(responses_payload, dict):
@@ -1489,7 +1514,11 @@ def _responses_payload_to_chat_completions_payload(
             and not has_active_fusion_entry(chat_payload.get("plugins")):
         chat_payload.pop("tool_choice", None)
 
-    chat_payload["messages"] = _responses_input_to_chat_messages(responses_payload.get("input"))
+    chat_payload["messages"] = _responses_input_to_chat_messages(
+        responses_payload.get("input"),
+        max_inline_bytes=max_inline_bytes,
+        allow_insecure=allow_insecure,
+    )
 
     instructions = responses_payload.get("instructions")
     if isinstance(instructions, str):

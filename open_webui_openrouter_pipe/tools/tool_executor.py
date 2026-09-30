@@ -23,7 +23,11 @@ from typing import TYPE_CHECKING, Any
 
 from ..core.config import entry_data_url
 from ..core.timing_logger import timed, timing_mark
-from ..core.url_scheme import loggable_link, split_base64_data_url
+from ..core.url_scheme import (
+    base64_data_url_payload_len,
+    loggable_link,
+    split_base64_data_url,
+)
 from ..core.utils import (
     TOOL_CALL_STATUSES,
     parse_tool_arguments,
@@ -233,7 +237,6 @@ class _ToolExecutionContext:
     tool_breaker: CircuitBreaker | None = None
     tool_call_budget: int | None = None
     workers: list[asyncio.Task] = field(default_factory=list)
-    timeout_error: str | None = None
     on_complete: Callable[[dict, dict], Awaitable[None]] | None = None
     carded_calls: set[str] = field(default_factory=set)
     terminal_files_inline: bool = False
@@ -323,15 +326,19 @@ async def _decode_data_entry(payload: str) -> bytes:
     return bytes(raw)
 
 
-def _entry_mime_type(url: str) -> str:
-    parsed = split_base64_data_url(url) if url else None
-    header = parsed[0] if parsed is not None else ""
+def _mime_type_from_header(header: str) -> str:
     mime_type = header.partition(";")[0].strip().removeprefix("data:").strip()
     return mime_type or "application/octet-stream"
 
 
-def _entry_file_kind(entry: Any) -> str:
-    extension = _DATA_ENTRY_EXTENSIONS.get(_entry_mime_type(entry_data_url(entry)), ".bin")
+def _entry_mime_type(url: str) -> str:
+    comma = url.find(",")
+    header = url[:comma] if comma != -1 else ""
+    return _mime_type_from_header(header)
+
+
+def _entry_file_kind(url: str) -> str:
+    extension = _DATA_ENTRY_EXTENSIONS.get(_entry_mime_type(url), ".bin")
     return extension.lstrip(".") or "binary"
 
 
@@ -614,6 +621,7 @@ class ToolExecutor:
         _on_complete = context.on_complete
         ask_user_refusal = self._ask_user_refusal(calls, tools)
         owned_by_open_webui = self._open_webui_owned_names(context, tools)
+        breaker_skips: list[tuple[str, str | None]] = []
 
         async def _append_and_notify(index: int, call: dict, result: dict) -> None:
             slots[index] = result
@@ -666,7 +674,7 @@ class ToolExecutor:
             if breaker is not None and not breaker.tool_allows(
                 context.user_id, tool_type, tool_name
             ):
-                await self._notify_tool_breaker(context, tool_type, call.get("name"))
+                breaker_skips.append((tool_type, call.get("name")))
                 await _append_and_notify(index, call, self._build_tool_output(
                     call,
                     f"Tool '{call.get('name')}' skipped due to repeated failures.",
@@ -726,6 +734,13 @@ class ToolExecutor:
             pending.append((index, queued, self._ask_user_window(tool_cfg, args)))
 
         self._ensure_tool_workers(context)
+        if breaker_skips:
+            try:
+                async with asyncio.timeout_at(started_at + context.batch_timeout) if context.batch_timeout else contextlib.nullcontext():
+                    await self._notify_tool_breaker_skips(context, breaker_skips)
+            except TimeoutError:
+                pass
+
         pre_enqueue_at = loop.time()
         enqueue_allowance = context.batch_timeout
         for _index, _queued, window in pending:
@@ -752,9 +767,6 @@ class ToolExecutor:
                     status="failed",
                 ))
         if unqueued:
-            context.timeout_error = context.timeout_error or (
-                "tool workers were still busy when the round ran out of time to queue its calls"
-            )
             self.logger.warning("Tool queue wait: %d call(s) were never started", len(unqueued))
 
         allowance = _idle_allowance(context, pending)
@@ -822,8 +834,6 @@ class ToolExecutor:
                         else "Tool was not started: it was still waiting for a tool worker or a free slot."
                     )
                     self.logger.warning("Tool never started: %s", message)
-                if context and not context.timeout_error:
-                    context.timeout_error = message
                 result = self._build_tool_output(call, message, status="failed")
             if _on_complete and pending_index not in notified:
                 with contextlib.suppress(Exception):
@@ -934,6 +944,19 @@ class ToolExecutor:
             self.logger.debug("Direct tool server registry build failed", exc_info=True)
             return {}
 
+    async def _notify_tool_breaker_skips(
+        self,
+        context: _ToolExecutionContext,
+        skips: list[tuple[str, str | None]],
+    ) -> None:
+        told: set[tuple[str, str | None]] = set()
+        for tool_type, tool_name in skips:
+            key = (tool_type, tool_name)
+            if key in told:
+                continue
+            told.add(key)
+            await self._notify_tool_breaker(context, tool_type, tool_name)
+
     async def _notify_tool_breaker(
         self,
         context: _ToolExecutionContext,
@@ -1014,14 +1037,14 @@ class ToolExecutor:
             if isinstance(entry, dict) and entry.get("type") == "image" and isinstance(url, str) and url.startswith("data:"):
                 candidates.append(await self._stored_picture_safe(url, context))
                 continue
-            if isinstance(entry, dict) and entry_data_url(entry):
-                filed = await self._stored_data_entry_safe(entry, context)
+            if isinstance(entry, dict) and (data_url := entry_data_url(entry)):
+                filed = await self._stored_data_entry_safe(entry, context, data_url)
                 if isinstance(filed, str):
                     candidates.append(filed)
                 elif filed is not None:
                     shown.append(filed)
                 else:
-                    unfiled = unfiled or _entry_file_kind(entry)
+                    unfiled = unfiled or _entry_file_kind(data_url)
                 continue
             shown.append(entry)
             if isinstance(entry, dict) and entry.get("type") == "image" and isinstance(url, str) and url:
@@ -1053,21 +1076,23 @@ class ToolExecutor:
         )
 
     async def _stored_data_entry_safe(
-        self, entry: dict[str, Any], context: _ToolExecutionContext
+        self, entry: dict[str, Any], context: _ToolExecutionContext, url: str
     ) -> dict[str, Any] | None:
-        url = entry_data_url(entry)
         if not url:
             return None
         metadata = context.metadata or {}
         if is_temporary_chat(metadata.get("chat_id")):
             return None
+        payload_len = base64_data_url_payload_len(url)
+        if payload_len is None:
+            return None
+        if not self._pipe._file_gateway.validate_base64_length(payload_len):
+            return None
         parsed = split_base64_data_url(url)
         if parsed is None:
             return None
         _header, payload = parsed
-        mime_type = _entry_mime_type(url)
-        if not self._pipe._file_gateway.validate_base64_size(payload):
-            return None
+        mime_type = _mime_type_from_header(_header)
         try:
             raw = await _decode_data_entry(payload)
         except (binascii.Error, ValueError):

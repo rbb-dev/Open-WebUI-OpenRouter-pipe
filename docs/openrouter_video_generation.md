@@ -1181,9 +1181,9 @@ default applies; the second gets no control.
 | `VIDEO_NEGATIVE_PROMPT` | `str` | `""` | passthrough `negative_prompt` (or `negativePrompt` on Veo) | `"negative_prompt"` or `"negativePrompt"` in `allowed_passthrough_parameters` | 8 of 29 |
 | `VIDEO_GENERATE_AUDIO` | `Literal["model_default", "on", "off"]` | `"model_default"` | top-level `generate_audio` (boolean) | not published as `false` | 22 of 29 |
 | `VIDEO_SEED` | `int` (`ge=0`) | `0` | top-level `seed` | not published as `false` | 19 of 29 |
-| `VIDEO_AUDIO_URL` | `str` | `""` | passthrough `audio` (URL) | `"audio"` allowed, **and** `audio` withheld only while the model publishes an `input_modalities` list that omits it. A model whose sweep has not been read publishes no such list and is offered every reference control, so the draw set depends on sweep state and reopens on every sweep timeout | none with the recorded sweep; Wan 2.6 and 2.7 draw it while the sweep is unread |
-| `VIDEO_REFERENCE_VIDEO_URL` | `str` | `""` | passthrough `video` | `"video"` allowed, **and** `video` withheld only while the model publishes an `input_modalities` list that omits it — sweep-state dependent as above | none with the recorded sweep; Wan 2.7 draws it while the sweep is unread |
-| `VIDEO_REFERENCE_VIDEOS_JSON` | `str` (JSON array) | `""` | passthrough `videos` | `"videos"` allowed, **and** `video` withheld only while the model publishes an `input_modalities` list that omits it — sweep-state dependent as above | none with the recorded sweep; Wan 2.7 draws it while the sweep is unread |
+| `VIDEO_AUDIO_URL` | `str` | `""` | passthrough `audio` (URL) | `"audio"` allowed, **and** `audio` withheld only while the model publishes an `input_modalities` list that omits it. A model whose sweep has not been read publishes no such list and is offered every reference control, so the draw set depends on sweep state and reopens on every sweep timeout; a chat turn no longer creates that state, since a request-path refresh carries the previous declarations forward | none with the recorded sweep; Wan 2.6 and 2.7 draw it while the sweep is unread |
+| `VIDEO_REFERENCE_VIDEO_URL` | `str` | `""` | passthrough `video` | `"video"` allowed, **and** `video` withheld only while the model publishes an `input_modalities` list that omits it — sweep-state dependent as above, and a chat no longer creates the unread state | none with the recorded sweep; Wan 2.7 draws it while the sweep is unread |
+| `VIDEO_REFERENCE_VIDEOS_JSON` | `str` (JSON array) | `""` | passthrough `videos` | `"videos"` allowed, **and** `video` withheld only while the model publishes an `input_modalities` list that omits it — sweep-state dependent as above, and a chat no longer creates the unread state | none with the recorded sweep; Wan 2.7 draws it while the sweep is unread |
 | `VIDEO_REFERENCE_IMAGES_JSON` | `str` (JSON array) | `""` | passthrough `images` | `"images"` in `allowed_passthrough_parameters` | Wan 2.7 |
 | `VIDEO_LAST_IMAGE_URL` | `str` | `""` | passthrough `last_image` | `"last_image"` in `allowed_passthrough_parameters` | Wan 2.7 |
 | `VIDEO_CREATIVITY` | `Literal['', '0', '1']` | `""` | top-level `creativity` | `creativity` published as a list | FLUX Video Upscale |
@@ -2366,7 +2366,14 @@ Key files:
   modality sweep at 45s, so the number of video models never becomes the
   time the picker takes to appear; a model whose read did not finish in
   time is published without its input kinds for that pass, and is offered
-  every reference control until a later one succeeds. The retry clock is
+  every reference control until a later one succeeds. The request path
+  runs no per-model reads at all: a chat turn refreshes the video *list*
+  once per TTL window and never the modality sweep behind it, and a
+  request-path refresh carries each model's previous input kinds forward
+  onto the freshly fetched rows rather than clearing them — so the
+  published-without-its-input-kinds state above is now reached only by a
+  read that timed out, and never merely because a chat happened. The
+  retry clock is
   stamped once an attempt completes — a failed or empty fetch, or a
   successful registration — but not while the modality sweep is still
   running, so a fetch cancelled mid-sweep neither loses the video models

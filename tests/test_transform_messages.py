@@ -22,7 +22,7 @@ def _assistant_message_with_markers(*markers: str) -> str:
     return "\n".join(parts) + "\n"
 
 
-def _run_transform(messages, artifacts):
+def _run_transform(messages, artifacts, *, model_id="model-1", valves=None):
     pipe = Pipe()
 
     async def loader(chat_id, message_id, ulids):
@@ -33,9 +33,9 @@ def _run_transform(messages, artifacts):
             return await transform_messages_to_input(pipe,
                 messages,
                 chat_id="chat-1",
-                openwebui_model_id="model-1",
+                openwebui_model_id=model_id,
                 artifact_loader=loader,
-            valves=pipe.valves,
+            valves=valves if valves is not None else pipe.valves,
             )
         finally:
             await pipe.close()

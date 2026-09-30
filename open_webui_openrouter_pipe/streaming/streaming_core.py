@@ -44,6 +44,7 @@ from ..api.transforms import (
     _parse_url_citation_annotations,
     _strip_disable_model_settings_params,
     _unhandled_citation_types,
+    responses_refusal_text,
 )
 
 # Import config classes
@@ -499,6 +500,7 @@ class StreamingHandler:
         if emitter_supplied is None:
             emitter_supplied = event_emitter is not None
         continuation_newline_pending = bool(body._continues_after_marker)
+        refusal_pending: list[str] = []
         continues_after_text = not continuation_newline_pending and bool((CONTINUED_REPLY.get() or "").strip())
         if event_emitter is None:
             event_emitter = _wrap_event_emitter(None)
@@ -2187,6 +2189,60 @@ class StreamingHandler:
                                     retry_barrier_crossed = True
                         continue
 
+                    if etype in ("response.refusal.delta", "response.refusal.done"):
+                        note_model_activity()
+                        if reasoning_display:
+                            _close_open_reasoning_windows()
+                            for reasoning_key in list(reasoning_display):
+                                await _emit_reasoning_item(reasoning_key, assistant_message)
+                        if etype == "response.refusal.delta":
+                            piece = event.get("delta") or ""
+                            if isinstance(piece, str) and piece:
+                                refusal_pending.append(piece)
+                            continue
+                        whole = event.get("refusal") or event.get("delta") or ""
+                        if not isinstance(whole, str) or not whole:
+                            whole = "".join(refusal_pending)
+                        refusal_pending.clear()
+                        normalized_refusal = (
+                            _normalize_surrogate_chunk(whole, "assistant") if whole else ""
+                        )
+                        if normalized_refusal:
+                            note_generation_activity()
+                            if (
+                                not provider_status_seen
+                                and not responding_status_sent
+                                and not reasoning_stream_active
+                                and event_emitter
+                                and not fusion_armed
+                            ):
+                                provider_status_seen = True
+                                responding_status_sent = True
+                                await event_emitter(
+                                    {
+                                        "type": "status",
+                                        "data": {"description": "Responding to the user…"},
+                                    }
+                                )
+                            if assistant_message:
+                                normalized_refusal = (
+                                    _continuation_lead(assistant_message) or "\n\n"
+                                ) + normalized_refusal
+                            assistant_message += normalized_refusal
+                            if not fusion_armed:
+                                await _open_message()
+                                await event_emitter(
+                                    {
+                                        "type": "chat:message:delta",
+                                        "data": {
+                                            "content": normalized_refusal,
+                                        },
+                                    }
+                                )
+                                if body.stream:
+                                    retry_barrier_crossed = True
+                        continue
+
                     if etype == "response.content_part.done":
                         part = event.get("part") if isinstance(event, dict) else None
                         if isinstance(part, dict) and part.get("type") == "output_text":
@@ -2439,6 +2495,50 @@ class StreamingHandler:
                                     if content_part.get("type") != "output_text":
                                         continue
                                     await _emit_annotation_citations(content_part.get("annotations"))
+                            whole_refusal = responses_refusal_text(item)
+                            buffered = "".join(piece for piece in refusal_pending if piece)
+                            refusal_pending.clear()
+                            if whole_refusal and whole_refusal not in assistant_message:
+                                buffered = whole_refusal if not buffered else buffered
+                            if buffered and buffered not in assistant_message:
+                                note_model_activity()
+                                if reasoning_display:
+                                    _close_open_reasoning_windows()
+                                    for reasoning_key in list(reasoning_display):
+                                        await _emit_reasoning_item(reasoning_key, assistant_message)
+                                published = _normalize_surrogate_chunk(buffered, "assistant")
+                                if published:
+                                    note_generation_activity()
+                                    if (
+                                        not provider_status_seen
+                                        and not responding_status_sent
+                                        and not reasoning_stream_active
+                                        and event_emitter
+                                        and not fusion_armed
+                                    ):
+                                        provider_status_seen = True
+                                        responding_status_sent = True
+                                        await event_emitter(
+                                            {
+                                                "type": "status",
+                                                "data": {"description": "Responding to the user…"},
+                                            }
+                                        )
+                                    if assistant_message:
+                                        published = (
+                                            _continuation_lead(assistant_message) or "\n\n"
+                                        ) + published
+                                    assistant_message += published
+                                    if not fusion_armed:
+                                        await _open_message()
+                                        await event_emitter(
+                                            {
+                                                "type": "chat:message:delta",
+                                                "data": {"content": published},
+                                            }
+                                        )
+                                        if body.stream:
+                                            retry_barrier_crossed = True
                             await _emit_annotation_citations(item.get("annotations"))
                             phase_marker = _phase_marker_for_output_item(item)
                             if not api_hold_key:
@@ -3809,6 +3909,9 @@ class StreamingHandler:
                             gated_output, round_refused = await _gate_round_output_pictures(
                                 round_output.get("output"),
                                 self._pipe.valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
+                                allow_insecure=(
+                                    self._pipe._multimodal_handler._is_insecure_http_allowed
+                                ),
                             )
                             if round_refused:
                                 budgeted_outputs[position] = {**round_output, "output": gated_output}

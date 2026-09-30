@@ -404,6 +404,8 @@ _LEGACY_RECORD_KEYS = {"web_tools_attached_id": "web_tools_filter_id"}
 
 _SYNC_RETRY_FLOOR_SECONDS = 60.0
 
+_ICON_SWEEP_BUDGET_SECONDS = 45
+
 
 def _web_tools_owned(
     pipe_meta: dict,
@@ -1578,17 +1580,31 @@ class ModelCatalogManager:
 
         semaphore = asyncio.Semaphore(10)
         results: dict[str, str] = {}
+        completed: set[str] = set()
 
         async def _fetch_maker_profile_image(maker_id: str) -> None:
             async with semaphore:
                 image_url = await self._pipe._multimodal_handler._fetch_maker_profile_image_url(maker_id)
-                if image_url:
-                    results[maker_id] = image_url
+            if image_url:
+                results[maker_id] = image_url
+            completed.add(maker_id)
 
-        await asyncio.gather(
-            *(_fetch_maker_profile_image(maker_id) for maker_id in unique),
-            return_exceptions=True,
-        )
+        try:
+            async with asyncio.timeout(_ICON_SWEEP_BUDGET_SECONDS):
+                await asyncio.gather(
+                    *(_fetch_maker_profile_image(maker_id) for maker_id in unique),
+                    return_exceptions=True,
+                )
+        except TimeoutError:
+            abandoned = frozenset(m for m in unique if m not in completed)
+            self.logger.warning(
+                "The maker-profile sweep ran past %ds with %d of %d maker(s) still "
+                "unfinished; those keep whatever icon they already had and the next pass "
+                "retries.",
+                _ICON_SWEEP_BUDGET_SECONDS,
+                len(abandoned),
+                len(unique),
+            )
         return results
 
     @timed
@@ -1756,17 +1772,31 @@ class ModelCatalogManager:
                 url_to_data: dict[str, str] = {}
                 if unique_urls:
                     fetch_semaphore = asyncio.Semaphore(10)
+                    completed_urls: set[str] = set()
 
                     async def _fetch_image_data_url(url: str) -> None:
                         async with fetch_semaphore:
                             data_url = await self._pipe._multimodal_handler._fetch_image_as_data_url(url)
-                            if data_url:
-                                url_to_data[url] = data_url
+                        if data_url:
+                            url_to_data[url] = data_url
+                        completed_urls.add(url)
 
-                    await asyncio.gather(
-                        *(_fetch_image_data_url(url) for url in unique_urls),
-                        return_exceptions=True,
-                    )
+                    try:
+                        async with asyncio.timeout(_ICON_SWEEP_BUDGET_SECONDS):
+                            await asyncio.gather(
+                                *(_fetch_image_data_url(url) for url in unique_urls),
+                                return_exceptions=True,
+                            )
+                    except TimeoutError:
+                        abandoned_urls = frozenset(u for u in unique_urls if u not in completed_urls)
+                        self.logger.warning(
+                            "The icon sweep ran past %ds with %d of %d read(s) still "
+                            "unfinished; those keep whatever icon they already had and the "
+                            "next pass retries.",
+                            _ICON_SWEEP_BUDGET_SECONDS,
+                            len(abandoned_urls),
+                            len(unique_urls),
+                        )
 
                 icon_data_mapping = {
                     slug: data_url

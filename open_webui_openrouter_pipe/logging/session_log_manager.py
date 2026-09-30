@@ -1331,8 +1331,10 @@ class SessionLogManager:
         request_id = _preferred_request_id(segments)
         resolved_status = ""
         resolved_reason = ""
+        saw_terminal_segment = False
         for seg in segments:
             if seg.get("type") == "session_log_segment_terminal":
+                saw_terminal_segment = True
                 raw_status = seg.get("status")
                 if isinstance(raw_status, str) and raw_status.strip():
                     resolved_status = raw_status.strip()
@@ -1369,6 +1371,7 @@ class SessionLogManager:
                     log_events=events,
                     meta_message_id=meta_message_id,
                     meta_task=meta_task,
+                    terminal=saw_terminal_segment,
                     status=resolved_status,
                     reason=resolved_reason,
                 )

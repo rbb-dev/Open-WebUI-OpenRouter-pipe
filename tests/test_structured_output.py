@@ -6,6 +6,12 @@ from open_webui_openrouter_pipe import (
     _responses_payload_to_chat_completions_payload,
 )
 
+_INLINE_CAP_BYTES = 50 * 1024 * 1024
+
+
+def _refuses_cleartext(_url: str) -> bool:
+    return False
+
 
 def test_filter_openrouter_request_translates_response_format_to_text_format() -> None:
     payload = {
@@ -63,7 +69,7 @@ def test_responses_payload_to_chat_maps_text_format_to_response_format() -> None
         ],
         "text": {"format": {"type": "json_object"}},
     }
-    chat = _responses_payload_to_chat_completions_payload(payload)
+    chat = _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
     assert chat["response_format"] == {"type": "json_object"}
 
 
@@ -87,6 +93,6 @@ def test_responses_payload_to_chat_prefers_response_format_over_text_format() ->
             }
         },
     }
-    chat = _responses_payload_to_chat_completions_payload(payload)
+    chat = _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
     assert chat["response_format"] == {"type": "json_object"}
 

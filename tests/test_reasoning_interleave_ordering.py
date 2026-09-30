@@ -38,6 +38,12 @@ from open_webui_openrouter_pipe.requests.transformer import (
     transform_messages_to_input,
 )
 
+_INLINE_CAP_BYTES = 50 * 1024 * 1024
+
+
+def _refuses_cleartext(_url: str) -> bool:
+    return False
+
 
 # --------------------------------------------------------------------------- #
 # Helpers

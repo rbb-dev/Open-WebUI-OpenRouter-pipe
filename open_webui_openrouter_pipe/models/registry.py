@@ -34,7 +34,7 @@ from ..core.config import (
     openrouter_attribution_headers,
 )
 from ..core.timing_logger import timed
-from .blocklists import is_direct_upload_blocklisted
+from .blocklists import is_direct_upload_blocklisted_for
 
 # Model Helper Functions
 
@@ -683,7 +683,7 @@ class OpenRouterModelRegistry:
             )
 
             original_id = full_model.get("id") or norm_id
-            if is_direct_upload_blocklisted(original_id):
+            if is_direct_upload_blocklisted_for(original_id, full_model):
                 features.discard("file_input")
             else:
                 features.add("file_input")
@@ -1020,7 +1020,7 @@ class OpenRouterModelRegistry:
                 full.get("architecture") or {},
                 full.get("pricing") or {},
             )
-            if is_direct_upload_blocklisted(str(full.get("id") or "")):
+            if is_direct_upload_blocklisted_for(str(full.get("id") or ""), full):
                 features.discard("file_input")
             else:
                 features.add("file_input")
@@ -1065,7 +1065,7 @@ class OpenRouterModelRegistry:
 
             supported_frames = item.get("supported_frame_images")
             accepts_frame_images = isinstance(supported_frames, list) and bool(supported_frames)
-            accepts_uploads = accepts_frame_images and not is_direct_upload_blocklisted(original_id)
+            accepts_uploads = accepts_frame_images and not is_direct_upload_blocklisted_for(original_id, item)
             allowed_params = item.get("allowed_passthrough_parameters")
             allowed_set = {
                 param
@@ -1380,7 +1380,7 @@ class OpenRouterModelRegistry:
             } if isinstance(allowed_params, list) else set()
             pricing = item.get("pricing") if isinstance(item.get("pricing"), dict) else {}
 
-            upload_blocked = is_direct_upload_blocklisted(original_id)
+            upload_blocked = is_direct_upload_blocklisted_for(original_id, item)
 
             features: set[str] = {"image_output", "image_gen_tool"}
             if accepts_image_input and not upload_blocked:

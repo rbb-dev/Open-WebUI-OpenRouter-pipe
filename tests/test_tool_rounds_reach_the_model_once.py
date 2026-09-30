@@ -102,6 +102,12 @@ from typing import cast  # noqa: E402
 
 from open_webui_openrouter_pipe import Pipe, ResponsesBody  # noqa: E402
 
+_INLINE_CAP_BYTES = 50 * 1024 * 1024
+
+
+def _refuses_cleartext(_url: str) -> bool:
+    return False
+
 _FULL_OUTPUT_CODE: list[Any] = []
 
 

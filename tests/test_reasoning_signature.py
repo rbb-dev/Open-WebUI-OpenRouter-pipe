@@ -27,6 +27,12 @@ from open_webui_openrouter_pipe.requests.sanitizer import (
     _strip_unreplayable_anthropic_reasoning,
 )
 
+_INLINE_CAP_BYTES = 50 * 1024 * 1024
+
+
+def _refuses_cleartext(_url: str) -> bool:
+    return False
+
 
 def _sse(obj: dict[str, Any]) -> str:
     return f"data: {json.dumps(obj)}\n\n"
@@ -206,7 +212,7 @@ async def test_fragmented_reasoning_round_trips_as_one_signed_block_on_chat(pipe
             {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "again"}]},
         ],
     }
-    chat = _responses_payload_to_chat_completions_payload(payload)
+    chat = _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
     assistant_msgs = [m for m in chat["messages"] if m.get("role") == "assistant"]
     assert len(assistant_msgs) == 1, f"expected one replayed assistant message: {chat['messages']}"
     replayed = assistant_msgs[0].get("reasoning_details")

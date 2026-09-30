@@ -18,6 +18,7 @@ from ..api.transforms import (
     _parse_url_citation_annotations,
     _unhandled_citation_types,
     chat_payload_loses_fusion_entry,
+    responses_refusal_text,
 )
 from ..core.timing_logger import timed
 from ..storage.persistence import generate_item_id
@@ -140,13 +141,24 @@ class NonStreamingAdapter:
                     if not isinstance(item, dict):
                         continue
                     if item.get("type") == "message" and item.get("role") == "assistant":
+                        text_parts: list[str] = []
                         content = item.get("content")
                         if isinstance(content, list):
                             for block in content:
                                 if isinstance(block, dict) and block.get("type") == "output_text":
                                     text_val = block.get("text")
                                     if isinstance(text_val, str) and text_val:
-                                        yield {"type": "response.output_text.delta", "delta": text_val}
+                                        text_parts.append(text_val)
+                        refusal_text = responses_refusal_text(item)
+                        if task_request and refusal_text:
+                            raise TaskProviderRefusal("task_model_refusal")
+                        if refusal_text:
+                            text_parts.append(refusal_text)
+                        if text_parts:
+                            yield {
+                                "type": "response.output_text.delta",
+                                "delta": "\n\n".join(text_parts),
+                            }
                         yield {"type": "response.output_item.done", "item": item}
                         continue
                     item_type = item.get("type")

@@ -358,29 +358,6 @@ async def test_execute_function_calls_with_context_idle_timeout():
         await pipe.close()
 
 
-@pytest.mark.asyncio
-async def test_execute_function_calls_with_context_timeout_error_no_raise():
-    """Test that a pre-set context.timeout_error does not cause a raise."""
-    pipe = Pipe()
-    try:
-        pipe.valves.API_KEY = EncryptedStr("test-key")
-
-        loop = asyncio.get_running_loop()
-        context = create_tool_context(loop)
-        # Pre-set a timeout error
-        context.timeout_error = "Pre-existing timeout error"
-        token = pipe._TOOL_CONTEXT.set(context)
-
-        try:
-            tools = {}
-            calls = []
-
-            outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
-            assert outputs == []
-        finally:
-            pipe._TOOL_CONTEXT.reset(token)
-    finally:
-        await pipe.close()
 
 
 @pytest.mark.asyncio
@@ -438,25 +415,6 @@ async def test_idle_timeout_returns_failed_output_and_continues():
             for worker in context.workers:
                 worker.cancel()
             await asyncio.gather(*context.workers, return_exceptions=True)
-    finally:
-        await pipe.close()
-
-
-@pytest.mark.asyncio
-async def test_context_timeout_error_does_not_raise():
-    """Pre-set context.timeout_error no longer triggers a raise — just returns normally."""
-    pipe = Pipe()
-    try:
-        pipe.valves.API_KEY = EncryptedStr("test-key")
-        loop = asyncio.get_running_loop()
-        context = create_tool_context(loop)
-        context.timeout_error = "batch timeout triggered externally"
-        token = pipe._TOOL_CONTEXT.set(context)
-        try:
-            outputs = await pipe._ensure_tool_executor()._execute_function_calls([], {})
-            assert outputs == []
-        finally:
-            pipe._TOOL_CONTEXT.reset(token)
     finally:
         await pipe.close()
 
@@ -2996,17 +2954,16 @@ class TestToolWorkerLoop:
         await put_task
 
         assert worker.batches == [["call-1"]]
-        assert context.timeout_error is None
 
     @pytest.mark.asyncio
     async def test_a_batch_interrupted_by_shutdown_tells_its_unfinished_calls_why(self) -> None:
         """A batch cut by shutdown tells its unfinished calls why, in the same words for all of them.
 
-        The row that used to be parametrised with a `context.timeout_error` already set is retired.
-        That field is request-scoped and describes whichever batch wrote it, so handing it to a
-        call that never ran that tool told the model about a limit that never touched it. The
-        wording for a batch cut by its own deadline is unchanged and still delivered by
-        `_execute_tool_batch`; what retired is only the claim that shutdown reuses it.
+        The field that used to be parametrised here is gone from the package: it was request-scoped
+        and described whichever batch wrote it, so handing it to a call that never ran that tool
+        told the model about a limit that never touched it. The wording for a batch cut by its own
+        deadline is unchanged and still delivered by `_execute_tool_batch`; what retired is only the
+        claim that shutdown reused a shared account.
         """
         worker = _DummyWorker()
         worker.execution_delay = 0.5
@@ -3015,7 +2972,6 @@ class TestToolWorkerLoop:
         calls = [_make_queued(loop, "call-1", "tool_a"), _make_queued(loop, "call-2", "tool_a")]
         await queue.put(calls)
         context = _make_context(queue)
-        context.timeout_error = None
 
         task = asyncio.create_task(worker._tool_worker_loop(context))
         await asyncio.sleep(0.05)
@@ -3072,43 +3028,6 @@ class TestToolWorkerLoop:
 
         assert calls[0].future.result() == {"ok": True}
         assert calls[1].future.result() == {"call_id": "call-2", "status": "cancelled", "message": "Tool execution cancelled"}
-
-    @pytest.mark.asyncio
-    async def test_idle_timeout_preserves_first_error(self) -> None:
-        """A result wait cut by the idle limit does not overwrite an earlier timeout_error."""
-        pipe = Pipe()
-        try:
-            loop = asyncio.get_running_loop()
-            context = create_tool_context(loop, idle_timeout=0.01)
-            context.timeout_error = "First error"
-            token = pipe._TOOL_CONTEXT.set(context)
-            try:
-                async def my_tool(**_kwargs):
-                    await asyncio.sleep(30)
-                    return "result"
-
-                tools = {
-                    "my_tool": {
-                        "type": "function",
-                        "spec": {"name": "my_tool", "parameters": {"type": "object", "properties": {}}},
-                        "callable": my_tool,
-                    }
-                }
-                calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": "{}"}]
-                executor = pipe._ensure_tool_executor()
-                context.workers.append(asyncio.create_task(executor._tool_worker_loop(context)))
-                outputs = await executor._execute_function_calls(calls, tools)
-            finally:
-                pipe._TOOL_CONTEXT.reset(token)
-                for worker in context.workers:
-                    worker.cancel()
-                await asyncio.gather(*context.workers, return_exceptions=True)
-        finally:
-            await pipe.close()
-
-        assert "timed out" in outputs[0]["output"].lower()
-        assert context.timeout_error == "First error"
-
 
 # which calls share a batch
 

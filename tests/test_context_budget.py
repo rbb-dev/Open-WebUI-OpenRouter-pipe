@@ -2443,6 +2443,14 @@ def test_the_reply_allowance_on_the_body_reaches_the_budget(
     class _Pipe:
         logger = logging.getLogger("test")
 
+        class valves:  # type: ignore[no-redef]
+            BASE64_MAX_SIZE_MB = 50
+
+        class _multimodal_handler:  # type: ignore[no-redef]
+            @staticmethod
+            def _is_insecure_http_allowed(_url: str) -> bool:
+                return False
+
     outcome = _sanitize_request_input(cast(Any, _Pipe()), body)
 
     assert outcome is not None

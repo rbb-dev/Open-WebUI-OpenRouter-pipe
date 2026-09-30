@@ -92,12 +92,19 @@ def _entry(name: str, callable_: Any, *, origin: str | None = None, **extra: Any
 
 
 async def _drive(pipe, monkeypatch, *, exposed: str, entry: dict[str, Any], args: dict[str, Any],
-                 metadata: dict[str, Any] | None = None, valves=None, card_carries_the_result: bool = False):
+                 metadata: dict[str, Any] | None = None, valves=None, card_carries_the_result: bool = False,
+                 spelled: str | None = None):
     """One tool call through the real job. `card_carries_the_result` says the streaming loop published this call's card
-    in this round, as it records for each call a card will hold (cards on, a streamed turn, not a Fusion member)."""
+    in this round, as it records for each call a card will hold (cards on, a streamed turn, not a Fusion member).
+
+    `spelled` is the name the MODEL wrote, and it defaults to the name the registry is keyed by. Letting the two differ
+    is the only way to reach a padded spelling on the real path: the registry keys tools by the advertised (trimmed)
+    name and the lookup strips, so `"display_file "` and `"display_file"` name the same tool and reach the same code
+    with different `call["name"]` text. Nothing else in production may see the difference -- a padded spelling is the
+    model's own text, and Open WebUI's loop keeps it."""
     from open_webui_openrouter_pipe import _PipeJob
 
-    calls = [{"type": "function_call", "call_id": "c1", "name": exposed, "arguments": json.dumps(args)}]
+    calls = [{"type": "function_call", "call_id": "c1", "name": spelled or exposed, "arguments": json.dumps(args)}]
     emitted: list[dict[str, Any]] = []
 
     async def emitter(event):

@@ -17,7 +17,7 @@ from ..core.config import (
     _apply_owui_forward_user_headers,
 )
 from ..core.costs import chat_usage_to_responses_usage
-from ..core.errors import _build_openrouter_api_error
+from ..core.errors import UpstreamBodyUnreadable, _build_openrouter_api_error
 from ..core.utils import (
     _DEFAULT_VALVES,
     IMAGE_NO_IMAGES_REASON,
@@ -58,6 +58,41 @@ def _over_ceiling_reason(what: str, max_decoded_bytes: int) -> str:
         f"{what} pushed this reply past the {max_decoded_bytes // (1024 * 1024)} MB "
         "BASE64_MAX_SIZE_MB ceiling for one generated-image reply"
     )
+
+
+_IMAGE_BODY_EXCERPT_CHARS = 200
+
+
+def _image_body_not_an_object(resp: Any, payload: Any) -> UpstreamBodyUnreadable:
+    return UpstreamBodyUnreadable(
+        endpoint="/images",
+        body_excerpt=repr(payload)[:_IMAGE_BODY_EXCERPT_CHARS],
+        content_type=getattr(resp, "content_type", None),
+    )
+
+
+async def _decode_image_json_body(resp: Any, logger: Any) -> Any:
+    try:
+        return await resp.json()
+    except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError):
+        raise
+    except Exception:
+        logger.debug(
+            "OpenRouter image response was not decodable JSON; falling back to text",
+            exc_info=True,
+        )
+        text = ""
+        try:
+            text = await resp.text()
+            return json.loads(text)
+        except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError):
+            raise
+        except Exception as exc:
+            raise UpstreamBodyUnreadable(
+                endpoint="/images",
+                body_excerpt=text[:_IMAGE_BODY_EXCERPT_CHARS],
+                content_type=getattr(resp, "content_type", None),
+            ) from exc
 
 
 class _ProgressCallbackFailed(BaseException):
@@ -331,10 +366,10 @@ class OpenRouterImageClient:
                         )
                     data = {"data": state["data"], "usage": state["usage"]}
             else:
-                data = await resp.json()
+                data = await _decode_image_json_body(resp, self._logger)
         _debug_print_response(data, logger=self._logger)
         if not isinstance(data, dict):
-            raise ImageGenerationError("OpenRouter image generation returned an invalid response.")
+            raise _image_body_not_an_object(resp, data)
 
         billed = chat_usage_to_responses_usage(data.get("usage"))
 

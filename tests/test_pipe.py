@@ -8526,7 +8526,6 @@ class TestToolWorkerIntegration:
             await asyncio.wait_for(worker, timeout=1.0)
 
             assert still_waiting
-            assert context.timeout_error is None
         finally:
             await pipe.close()
 

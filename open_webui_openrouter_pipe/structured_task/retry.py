@@ -77,6 +77,9 @@ def _response_text(response: Any) -> str:
             for item in output:
                 if not isinstance(item, dict) or item.get("type") != "message":
                     continue
+                own = item.get("refusal")
+                if isinstance(own, str) and own.strip():
+                    return own
                 for part in item.get("content") or []:
                     if isinstance(part, dict) and part.get("type") == "refusal":
                         part_refusal = part.get("refusal")
@@ -88,6 +91,14 @@ def _response_text(response: Any) -> str:
         if not isinstance(choices, list) or not choices:
             return _no_choices_reason(response)
     return ""
+
+
+def _repair_would_starve(
+    slice_s: float, *, index: int, candidate_count: int, timeout_s: float
+) -> bool:
+    if index < candidate_count - 1:
+        return slice_s < max(_MIN_CANDIDATE_SLICE_S, timeout_s * _MIN_CANDIDATE_SHARE)
+    return slice_s <= _MIN_CANDIDATE_SLICE_S
 
 
 def _no_choices_reason(response: Any) -> str:
@@ -203,10 +214,15 @@ async def call_with_candidates(
                 reserved = (len(candidates) - index - 1) * max(
                     _MIN_CANDIDATE_SLICE_S, timeout_s * _MIN_CANDIDATE_SHARE
                 )
-                params = await asyncio.wait_for(
-                    _attempt(request),
-                    timeout=max(remaining - reserved, _MIN_CANDIDATE_SLICE_S),
-                )
+                _slice = max(remaining - reserved, _MIN_CANDIDATE_SLICE_S)
+                if attempt > 1 and _repair_would_starve(
+                    _slice,
+                    index=index,
+                    candidate_count=len(candidates),
+                    timeout_s=timeout_s,
+                ):
+                    break
+                params = await asyncio.wait_for(_attempt(request), timeout=_slice)
                 if outcome is not None:
                     outcome["index"] = index
                     outcome["model_id"] = model_id

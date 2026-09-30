@@ -46,6 +46,12 @@ from open_webui_openrouter_pipe.requests.transformer import (
     _TOOL_OUTPUT_PRUNE_TAIL_CHARS,
 )
 
+_INLINE_CAP_BYTES = 50 * 1024 * 1024
+
+
+def _refuses_cleartext(_url: str) -> bool:
+    return False
+
 
 def _only_block(result: list[dict[str, Any]]) -> dict[str, Any]:
     """The single content block of a one-block turn, whichever type it turned out to be.

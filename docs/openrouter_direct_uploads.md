@@ -98,7 +98,7 @@ The blocklist (`open_webui_openrouter_pipe/models/blocklists.py`) includes:
 - Models that claim they cannot process files
 - Models with broken/empty responses when given files
 
-One entry therefore covers the model under every spelling OpenRouter publishes it as: a routing suffix (`:nitro`, `:floor`, `:exacto`, `:online`), a catalog suffix (`:free`, `:batch`, `:thinking`, `:extended`), any combination of them, and a dated `-YYYY-MM-DD` snapshot. A `:free` twin of a blocklisted model is the same model, so it loses its Direct Uploads switch too.
+One entry therefore covers the model under every spelling OpenRouter publishes it as: a routing suffix (`:nitro`, `:floor`, `:exacto`, `:online`), a catalog suffix (`:free`, `:batch`, `:thinking`, `:extended`), any combination of them, and a dated `-YYYY-MM-DD` snapshot. A `:free` twin of a blocklisted model is the same model, so it loses its Direct Uploads switch too. A `~…-latest` **alias row** counts as another spelling: an alias resolves through its `alias_target` to the model it names, and a blocklisted model withholds Direct Uploads from that alias too. (Every other capability of the alias row is still answered from the alias row itself — see [Zero Data Retention](openrouter_zdr.md), which draws the same one hop for the same reason.) No shipped catalogue publishes such an alias today; the hop is here so the blocklist is exhaustive over spellings rather than over today's snapshot.
 
 ### Audio and video input
 

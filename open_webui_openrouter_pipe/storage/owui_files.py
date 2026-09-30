@@ -831,7 +831,13 @@ class OwuiFileGateway:
         if not b64_data:
             return True
 
-        estimated_size_bytes = _estimate_base64_bytes(b64_data)
+        return self.validate_base64_length(len(b64_data))
+
+    def validate_base64_length(self, char_count: int) -> bool:
+        if not char_count:
+            return True
+
+        estimated_size_bytes = (char_count * 3) / 4
         max_size_bytes = self.valves.BASE64_MAX_SIZE_MB * 1024 * 1024
 
         if estimated_size_bytes > max_size_bytes:
