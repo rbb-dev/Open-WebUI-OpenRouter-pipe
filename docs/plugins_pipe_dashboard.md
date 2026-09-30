@@ -92,7 +92,7 @@ Select a range: 1h, 6h, 24h, 7d, or 30d. Ranges longer than the retention window
 
 **Invoice note.** Task models configured outside this pipe never reach it, so they are absent from these totals. Expect a small gap against the OpenRouter invoice when such task models are in use.
 
-A request that is still running and producing liveness signals when the two-hour sweep passes is recorded by whoever really ends it, so its status, duration and token counts are the real ones. Streaming requests refresh the liveness stamp on every chunk. A non-streaming request that runs a tool call, or whose provider call retries, refreshes it too and is likewise spared: the sweep abandons a non-streaming request only when it has produced no liveness signal at all in two hours. A non-streaming request with no tool activity and no retry is still abandoned as a failure after two hours — that case is not covered here.
+A request that is still running and producing liveness signals when the two-hour sweep passes is recorded by whoever really ends it, so its status, duration and token counts are the real ones. Streaming requests refresh the liveness stamp on every chunk. A non-streaming request that runs a tool call, or whose provider call retries, refreshes it too and is likewise spared: the sweep abandons a non-streaming request only when it has produced no liveness signal at all in two hours. A non-streaming request with no tool activity and no retry is still abandoned as a failure after two hours — that case is not covered here. The sweep runs on a timer of its own, so this happens whether or not the dashboard is open.
 
 The Usage tables sort on any column and have a filter box.
 

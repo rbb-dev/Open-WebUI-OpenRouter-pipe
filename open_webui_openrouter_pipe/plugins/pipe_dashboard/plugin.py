@@ -32,7 +32,7 @@ from .http_routes import (
     register_action_route,
     set_pipe_getter,
 )
-from .session_tracker import SessionTracker
+from .session_tracker import _ST_SWEEP_INTERVAL, SessionTracker
 from .update_service import DEFAULT_REPO
 from .usage_store import UsageStore
 
@@ -142,7 +142,9 @@ class PipeDashboardPlugin(PluginBase):
             description=(
                 "Persist one record per completed request (user, model, tokens, tools, cost) "
                 "to a dedicated dashboard_ table so the dashboard's Usage tab can show usage over time. "
-                "Off by default; records are purged after the configured retention."
+                "Off by default; records are purged after the configured retention. "
+                "A request that never reaches a terminal state is recorded as `failed` after two hours "
+                "of silence, and that happens on a timer rather than when someone is looking."
             ),
         )),
         "PIPE_DASHBOARD_USAGE_RETENTION_DAYS": (int, Field(
@@ -213,6 +215,7 @@ class PipeDashboardPlugin(PluginBase):
         super().__init__()
         self._publisher_task: asyncio.Task[None] | None = None
         self._auto_update_task: asyncio.Task[None] | None = None
+        self._sweep_task: asyncio.Task[None] | None = None
         self.update_service: Any = None
         self._stored_usage_row: dict[str, Any] | None = None
         self._usage_store = UsageStore()
@@ -238,6 +241,7 @@ class PipeDashboardPlugin(PluginBase):
         # Start the per-worker stats publisher background task.
         # The publisher is idle until a dashboard joins the viewers room.
         self._maybe_start_publisher(get_pipe)
+        self._maybe_start_sweep()
         self._maybe_start_auto_update()
 
     def _maybe_start_auto_update(self) -> None:
@@ -253,6 +257,31 @@ class PipeDashboardPlugin(PluginBase):
             self._auto_update_task = loop.create_task(
                 self.update_service.run_auto_loop(), name="openrouter-update-auto"
             )
+
+    def _maybe_start_sweep(self) -> None:
+        valves = getattr(getattr(self, "ctx", None), "valves", None)
+        if not _dashboard_observability_needed(valves):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.debug("No event loop — abandon-sweep task deferred")
+            return
+        if self._sweep_task is None or self._sweep_task.done():
+            self._sweep_task = loop.create_task(self._sweep_loop(), name="openrouter-dashboard-sweep")
+
+    async def _sweep_loop(self) -> None:
+        while True:
+            try:
+                await asyncio.sleep(_ST_SWEEP_INTERVAL)
+                try:
+                    self._stored_usage_row = await self._read_stored_usage_row()
+                except Exception:
+                    logger.debug("usage valve read failed; this sweep records without it", exc_info=True)
+                    self._stored_usage_row = None
+                self._tracker.sweep()
+            except asyncio.CancelledError:
+                return
 
     def _maybe_start_publisher(self, get_pipe: Any) -> None:
         """Start the stats publisher if an event loop is available."""
@@ -614,6 +643,10 @@ class PipeDashboardPlugin(PluginBase):
         if auto_task is not None and not auto_task.done():
             auto_task.cancel()
             pending.append(auto_task)
+        sweep_task = self._sweep_task
+        if sweep_task is not None and not sweep_task.done():
+            sweep_task.cancel()
+            pending.append(sweep_task)
         writer_running = getattr(self._usage_store, "writer_alive", False)
         joined_inline = False
         try:

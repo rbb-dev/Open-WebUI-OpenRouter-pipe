@@ -160,8 +160,8 @@ async def _image_size_notice(monkeypatch, size, ratio, *, image_generation_on=Tr
             return "drawn"
 
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
-        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
-        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock(return_value=None)
         pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(
             return_value={}
         )
@@ -265,8 +265,8 @@ async def _drive_request(
             events.append(event)
 
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
-        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
-        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock(return_value=None)
         pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(
             return_value={}
         )

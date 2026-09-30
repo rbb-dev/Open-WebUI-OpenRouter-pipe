@@ -53,6 +53,7 @@ from ..transforms import (
     _parse_url_citation_annotations,
     _responses_payload_to_chat_completions_payload,
     _unhandled_citation_types,
+    chat_payload_loses_fusion_entry,
 )
 from .responses_adapter import (
     _backlog_cause,
@@ -76,6 +77,8 @@ _CHAT_SSE_DONE_SENTINEL = b"[DONE]"
 _ARGUMENTS_VALUE_TERMINATORS = frozenset('}]"0123456789eElL')
 _DISC_PREFIX = "pos:"
 _warned_chat_chunk_parse: dict[str, float] = {}
+
+_TERMINAL_FINISH_REASONS = frozenset({"tool_calls", "stop", "length", "content_filter", "error"})
 
 
 def _refusal_split(answer: str, refusal: str) -> tuple[str | None, str]:
@@ -807,12 +810,7 @@ class ChatCompletionsAdapter:
                         }
 
             finish_reason = choice0.get("finish_reason") if isinstance(choice0, dict) else None
-            if isinstance(finish_reason, str) and finish_reason in {
-                "tool_calls",
-                "stop",
-                "length",
-                "content_filter",
-            }:
+            if isinstance(finish_reason, str) and finish_reason in _TERMINAL_FINISH_REASONS:
                 tool_calls_completed = True
                 if finish_reason == "length":
                     truncating_reason = "max_output_tokens"
@@ -1285,6 +1283,9 @@ class ChatCompletionsAdapter:
             if (
                 effective_valves.AUTO_FALLBACK_CHAT_COMPLETIONS
                 and not (endpoint_forced and forced_selected_endpoint == "responses")
+                and not chat_payload_loses_fusion_entry(
+                    model_id, responses_request_body.get("plugins")
+                )
                 and self._pipe._streaming_handler._looks_like_responses_unsupported(exc)
             ):
                 if responses_emitted_user_visible:

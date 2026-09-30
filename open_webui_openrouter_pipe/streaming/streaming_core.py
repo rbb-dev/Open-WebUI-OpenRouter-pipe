@@ -187,6 +187,13 @@ def _is_no_usable_member_event(event_source: Any, etype: Any, event: Any) -> boo
     return bool(event.get("no_usable_member"))
 
 
+def _member_notice_text(event: Any) -> str:
+    raw = event.get("data")
+    data = raw if isinstance(raw, dict) else {}
+    text = data.get("content")
+    return text if isinstance(text, str) and text else ""
+
+
 # Imports from storage.persistence
 from ..storage.multimodal import (
     _SNIFF_PREFIX_BYTES,
@@ -263,8 +270,8 @@ except Exception:
 _monotonic = time.monotonic
 
 
-def _reply_budget_key(chat_id: Any, message_id: Any) -> tuple[Any, Any]:
-    return ("" if is_temporary_chat(chat_id) else chat_id, message_id)
+def _reply_key(user_id: Any, chat_id: Any, message_id: Any) -> tuple[Any, Any, Any]:
+    return (user_id, "" if is_temporary_chat(chat_id) else chat_id, message_id)
 
 
 def _citation_host(url: str) -> str:
@@ -496,6 +503,20 @@ class StreamingHandler:
         if event_emitter is None:
             event_emitter = _wrap_event_emitter(None)
 
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        _loop_pipe_meta = metadata.get(_PIPE_METADATA_KEY)
+        fusion_inner_call = bool(isinstance(_loop_pipe_meta, dict) and _loop_pipe_meta.get("fusion_inner"))
+
+        async def _emit_budget_notice(text: str) -> None:
+            if fusion_inner_call and event_emitter is not None:
+                await event_emitter({"type": "pipe:member.notice", "data": {"content": text}})
+                return
+            await self._pipe._event_emitter_handler._emit_notification(
+                event_emitter, text, level="warning"
+            )
+
         async def _report_omissions(outcome: Any, opening: str) -> None:
             if outcome is None or not outcome.omitted_call_ids:
                 return
@@ -510,9 +531,7 @@ class StreamingHandler:
             names = omitted_tool_names(
                 type(outcome)(frozenset(fresh), False, 0, 0), body.input
             )
-            await self._pipe._event_emitter_handler._emit_notification(
-                event_emitter, f"{opening} {', '.join(names)}.", level="warning"
-            )
+            await _emit_budget_notice(f"{opening} {', '.join(names)}.")
 
         async def _warn_if_futile(outcome: Any) -> None:
             if outcome is None or not outcome.futile:
@@ -520,18 +539,9 @@ class StreamingHandler:
             if body.budget_futility_notified:
                 return
             body.budget_futility_notified = True
-            await self._pipe._event_emitter_handler._emit_notification(
-                event_emitter,
-                build_futility_notice(outcome),
-                level="warning",
-            )
+            await _emit_budget_notice(build_futility_notice(outcome))
 
-        if not isinstance(metadata, dict):
-            metadata = {}
-
-        _loop_pipe_meta = metadata.get(_PIPE_METADATA_KEY)
-        fusion_inner_call = bool(isinstance(_loop_pipe_meta, dict) and _loop_pipe_meta.get("fusion_inner"))
-        breaker_key_value = user_id or None
+        breaker_key_value = None if fusion_inner_call else (user_id or None)
 
         owui_tool_passthrough = open_webui_runs_the_calls(valves, metadata, stream=bool(body.stream))
         persist_tools_enabled = valves.PERSIST_TOOL_RESULTS
@@ -649,7 +659,7 @@ class StreamingHandler:
         unhandled_citation_notified = False
         chat_id = metadata.get("chat_id")
         message_id = metadata.get("message_id")
-        reply_key = _reply_budget_key(chat_id, message_id)
+        reply_key = _reply_key(user_id, chat_id, message_id)
         offered_function_names = {
             str(t.get("name"))
             for t in (body.tools or [])
@@ -2083,6 +2093,12 @@ class StreamingHandler:
                             if _synth is not None:
                                 await _emit_fusion_event(_synth)
                             await _emit_fusion_sources(event["item"].get("sources"))
+                        continue
+
+                    if etype == "pipe:member.notice" and event_source is not None:
+                        await self._pipe._event_emitter_handler._emit_notification(
+                            event_emitter, _member_notice_text(event), level="warning"
+                        )
                         continue
 
                     if _is_no_usable_member_event(event_source, etype, event):

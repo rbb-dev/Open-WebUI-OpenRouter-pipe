@@ -38,12 +38,34 @@ breaker and returns whatever its cache already held, so the turn succeeds while 
 afterwards is not a database failure and is not counted against the breaker: the read has already been answered, nothing
 is lost, and the refill's own failure is logged instead. It emits a warning notification
 of its own, through the same seam the breaker's notice uses, saying that earlier tool results could not be loaded and
-that the model did not receive them. It names no cause — the store cannot tell a database blip from a decryption failure
+that the model did not receive them. Only a failure of the *read* does that: a fault in the replay-cache refill that
+follows a successful read returns the rows anyway, clears the breaker window, and is logged as a cache fault instead —
+nothing was lost, so there is nothing to announce. It names no cause — the store cannot tell a database blip from a decryption failure
 — and it promises no retry. It is kept apart from the two budget notices on purpose: a budget that trimmed successfully
 and a read that failed are different conditions, and one turn can hit both, so folding the wordings together would have
 each of them announce the other's condition. A marker that simply resolves to nothing stays log-only, because a
 legitimately consumed row is indistinguishable from a lost one at that layer; see
 [History Reconstruction & Context](history_reconstruction_and_context.md).
+
+A read that fails outright is not the only short read. A row the current `ARTIFACT_ENCRYPTION_KEY` cannot
+open is skipped while the rest of the batch is returned, so the turn replays a hole in the stored round and
+the model is handed a call with no result. That gets its own notice, worded for what the store actually
+knows: how many rows were unreadable and which artifact kinds they were, with no id and no content, because
+an id is a handle on a turn. It is measured from the set of rows the cipher rejected rather than from a
+`requested − returned` diff — a row deleted outright is missing for a reason that is not a fault, and
+counting it would report every retention sweep as a loss. The round is not repaired: the transformer drops
+a half-round rather than handing the model a fabricated "could not be read" result.
+
+The write side of the same table has its own notice, in its own words. When
+`ARTIFACT_ENCRYPTION_KEY` cannot be read under the current `WEBUI_SECRET_KEY` the store
+refuses the write rather than store the item in the clear, and the turn that offered the
+row carries a warning naming the key and the secret, saying the items will be missing from
+later turns and that re-entering the key resumes storing them. It is the one write notice
+that names a cause, and it has to: the store knows exactly why, and the repair is a valve
+the person can edit. It is kept apart from both the database-failure notice and the read
+notice above, because all three cost the same thing — a round the model does not get — and
+only one of them is fixed by re-entering a key. It fires once per blocked episode rather
+than once per turn, and re-arms when the key becomes readable again.
 
 ### Where a card lands: saved chat or channel
 
@@ -54,7 +76,13 @@ property of the conversation, not of the frame:
 
 - **Saved chat.** The card travels as a `chat:message` snapshot and the turn's closing
   `chat:completion` carries no content. The stored message is the answer plus the card, in
-  that order.
+  that order. On a **continuing** turn it is the other way round: the card travels as
+  `chat:message:error`, the closing frame carries no content on any leg, and the bubble
+  keeps the prefix the turn was continuing. `chat:message` assigns `message.content`
+  absolutely on the browser, so publishing the snapshot there would replace the whole
+  stored reply with the card; the error frame goes to the error area under the message and
+  leaves the content alone. The stored record is unaffected either way — it is the answer
+  plus the card, in that order.
 - **Channel.** The channel's emitter is a different function from the socket emitter, and it
   honours a different set of types. It has no `chat:message` branch at all, so on a channel
   the card is written by a `chat:message:error` frame — which Open WebUI prefixes with

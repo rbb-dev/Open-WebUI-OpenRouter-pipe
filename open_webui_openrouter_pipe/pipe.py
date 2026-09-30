@@ -604,7 +604,7 @@ class Pipe:
         self._close_lock: threading.Lock = threading.Lock()
         self._close_done: concurrent.futures.Future | None = None
         self._active_pipes_calls: int = 0
-        self._hand_back_counts: Counter[tuple[Any, Any]] = Counter()
+        self._hand_back_counts: Counter[tuple[Any, Any, Any]] = Counter()
         self._hand_back_seen: dict[Any, float] = {}
         self._hand_back_swept_at: float = 0.0
         self._HAND_BACK_MAX_KEYS = 64

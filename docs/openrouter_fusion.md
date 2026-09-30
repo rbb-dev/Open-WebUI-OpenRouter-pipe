@@ -63,16 +63,20 @@ model is a different surface and stays optional by design. Exceptions, in the pi
 
 - housekeeping/task requests (title, tags, follow-up generation) get neither the entry nor the
   forcing — a chat title must not bill a full deliberation panel;
-- with `ENABLE_OPENROUTER_FUSION` off, nothing is injected or forced — the master switch genuinely
-  turns Fusion off;
-- a caller-supplied Fusion entry (including `{"id": "fusion", "enabled": false}`) and a
-  caller-supplied `tool_choice` are always left untouched, so an explicit opt-out disables
-  deliberation for that request.
+- with `ENABLE_OPENROUTER_FUSION` off, nothing is injected or forced, and an activating
+  `{"id": "fusion"}` entry the request already carries is removed before anything is sent — on any
+  model and on either engine — so the master switch genuinely turns Fusion off;
+- while Fusion is enabled, a caller-supplied Fusion entry (including
+  `{"id": "fusion", "enabled": false}`) and a caller-supplied `tool_choice` are always left
+  untouched, so an explicit opt-out disables deliberation for that request.
 
 If a `/responses` request falls back to `/chat/completions`, the pipe strips the Fusion plugin entry:
 Fusion on that endpoint returns a flattened text transcript with no structured events, so the fallback
-answers as a normal completion instead of billing an unrenderable deliberation. A fusion request that
-streams no deliberation events despite an active Fusion entry logs a warning naming the model — the
+answers as a normal completion instead of billing an unrenderable deliberation. That is also why a request
+carrying a **live** Fusion entry is not retried at all when `/responses` fails: the chat payload would
+lose its panel, so the retry would be a different request, and the provider's error is shown instead.
+An entry with `enabled: false`, and a Fusion entry on a non-Fusion model, are still retried. A fusion request
+that streams no deliberation events despite an active Fusion entry logs a warning naming the model — the
 tripwire for the next time OpenRouter's beta behavior shifts. The fallback path is not exempt from it:
 the warning still fires there, and names the `/chat/completions` retry as the cause, so a panel that
 never opened because the endpoint switched is on the record rather than passing for a Fusion model
@@ -132,7 +136,7 @@ controls, and final answer look identical on both.
 | Panel tools | OpenRouter web search + fetch only | The full Open WebUI tool surface, run inside the pipe in either outer mode: knowledge bases, tool servers, and the `openrouter:*` server tools. A member's `openrouter:*` tools come from the admin's `ENABLE_*` valves **and** the Web Tools filter's stored per-user toggles for the chatting user, so a per-chat toggle set on *another* chat governs the panel; a valve that is off sends no such tool. Image generation reaches every member and the synthesis call, cost-attributed like any other tool. **Known coupling, not a guarantee:** `collect_installed_web_tools_config` with a stored `{"WEB_SEARCH": false}` still returns a different tool set, so this row changes when the code half lands **Which row a member reads:** that is the row under the id `openrouter_web_tools`, so the one the first copy to install a Web Tools filter put there rather than whichever copy wrote it last; a second copy whose `ENABLE_*` valves differ installs its own row under a suffixed id, and this read does not follow it. Under `ask` approval a member is offered none of Open WebUI's tools |
 | Per-model dials | OpenRouter's own settings | Every pipe dial per member: ZDR/provider routing, reasoning effort, max output tokens, identity headers |
 | Cost attribution | One OpenRouter charge | Every inner call is cost-attributed to the user like a normal chat; the run's footer shows the aggregated total |
-| Failure behaviour | A dropped stream loses the whole run | One failed member degrades that card — a member that exhausts its own chat retries is a failed member, like any other failure — and the judge works from the survivors; a member refused before its request was sent reports a short reason naming the control that refused it (Zero Data Retention routing, that OpenRouter's Zero Data Retention endpoint list could not be read, Direct Uploads injection, an endpoint override conflict, or the operator's model restrictions), never a copy of the rendered error card behind it, so nothing that card happened to quote reaches the panel, the judge or the synthesiser; the run completes. A synthesis member that dies mid-stream is the same shape on the answer stage: its partial is kept (the user watched it stream in, and it is not retried) and a marker naming the final-answer failure is appended and streamed. That marker is **part of the stored reply**, not a transient toast — it is in every `response.output_text.delta`, in the string the turn returns, and in the assistant message Open WebUI persists. When *every* member fails the run still returns a well-formed answer — on a **Direct Connection** too, which gets the answer text and the error archive row but no panel, no `fusion:event` stream and no embed — and the session-log archive records that turn as an error. On *any* total panel failure the outer archive row reads the fixed string `Every Fusion panel member failed; this run has no deliberated answer.` — the provider status is on the inner per-member rows only only when no member answered at all |
+| Failure behaviour | A dropped stream loses the whole run | One failed member degrades that card — a member that exhausts its own chat retries is a failed member, like any other failure — and the judge works from the survivors; a member refused before its request was sent reports a short reason naming the control that refused it (Zero Data Retention routing, that OpenRouter's Zero Data Retention endpoint list could not be read, Direct Uploads injection, an endpoint override conflict, or the operator's model restrictions), never a copy of the rendered error card behind it, so nothing that card happened to quote reaches the panel, the judge or the synthesiser; the run completes. A synthesis member that dies mid-stream is the same shape on the answer stage: its partial is kept (the user watched it stream in, and it is not retried) and a marker naming the final-answer failure is appended and streamed. That marker is **part of the stored reply**, not a transient toast — it is in every `response.output_text.delta`, in the string the turn returns, and in the assistant message Open WebUI persists. A member whose context budget trimmed or dropped history, or whose reasoning dial could not be honoured, tells the person **once for the whole run**, naming the member — that is the row that answers "why did that panelist ignore my chat". When *every* member fails the run still returns a well-formed answer — on a **Direct Connection** too, which gets the answer text and the error archive row but no panel, no `fusion:event` stream and no embed — and the session-log archive records that turn as an error. On *any* total panel failure the outer archive row reads the fixed string `Every Fusion panel member failed; this run has no deliberated answer.` — the provider status is on the inner per-member rows only only when no member answered at all |
 | Tool budget (`max_tool_calls`) | Caps web search/fetch steps; unset means OpenRouter's own default of `4` | Hard per-model cap on individual tool invocations, plus a bound on tool rounds; unset means this pipe's own default of `8` |
 
 Behaviour shared by both engines:
@@ -155,7 +159,10 @@ is sent to that stage verbatim, whitespace and all. The judge runs at temperatur
 strict five-key JSON analysis; if it fails validation twice the run degrades to
 no-analysis mode (panel answers stay usable, synthesis proceeds from the raw drafts).
 The final answer is written by the preset's judge model from the panel drafts plus the
-analysis. Preset rosters are engine constants: `general-high` = the self-updating
+analysis. The synthesis material — the panel drafts and the analysis as one block — sits
+in the body as a **second leading `system` block**, after that stage's own prompt and
+before the conversation, so it reads as reference data ahead of the exchange it describes
+and the user's question stays last. Preset rosters are engine constants: `general-high` = the self-updating
 `~…-latest` frontier trio judged by an Opus-class model; `general-budget` = a faster
 trio with the same judge; `general-fast` = that same faster trio with a Sonnet-class judge.
 Note: `FORCE_*` provider-glob valves match model IDs literally, so tilde aliases only
@@ -175,7 +182,9 @@ pattern does not cover a `~`-pinned alias, so `MODEL_ID=openai/*` publishes none
 three `general-high` members named above and every panel member fails. To remove one, exclude
 it as `!~openai/*`; to admit one, include it as `~openai/*` or `~*`.
 
-On the internal engine, every panel, judge and final-answer call is made as the chatting user's own call. Each one that fails at OpenRouter therefore counts toward that user's request breaker; when the run ends, the count, including that run's own failures, is cleared if the run finishes and any panel model answered, and kept if none did or the user stopped the run. The breaker never cuts off a run already under way; only the user's next request can be refused. Within each run, all of its models share one count per tool: once a tool fails `BREAKER_MAX_FAILURES` times in a row, it is skipped from then on, even after a quiet spell, unless a call to it that was already running succeeds. The user's own tool breaker for normal chats is left untouched. See [Concurrency Controls & Resilience](concurrency_controls_and_resilience.md).
+On the internal engine, every panel, judge and final-answer call is made as the chatting user's own call. A run counts toward that user's request breaker once, not once per call: it spends one failure when no panel model answered, and none at all when one did, however wide the panel is or however many of its calls failed. When the run ends, the count, including that run's own failure, is cleared if the run finishes and any panel model answered, and kept if none did or the user stopped the run. The breaker never cuts off a run already under way; only the user's next request can be refused. Within each run, all of its models share one count per tool: once a tool fails `BREAKER_MAX_FAILURES` times in a row, it is skipped from then on, even after a quiet spell, unless a call to it that was already running succeeds. The user's own tool breaker for normal chats is left untouched. See [Concurrency Controls & Resilience](concurrency_controls_and_resilience.md).
+
+A notice a member computes — a context-budget warning, or a reasoning dial that could not be honoured — reaches the person once for the run, deduped by text: the first member to raise a given wording raises it, and later members repeating it add nothing. Two members with different context limits produce two different notices and both are said; two that hit the same limit produce one, because a panel that all trimmed must not produce a toast per member. Nothing else a member emits is forwarded — its error card, its tool labels and its image notes stay inside the run.
 
 ## Enablement — pipe valves (admin)
 
@@ -185,7 +194,7 @@ wiring. They are documented alongside the other pipe valves in
 
 | Valve | Default | Effect |
 |-------|---------|--------|
-| `ENABLE_OPENROUTER_FUSION` | `True` | Master switch; installs the filter, auto-wires it to the fusion models only, and gates the pipe's activation injection. `False` deactivates the installed filter on the next `pipes()` call and stops injecting the Fusion plugin entry — Fusion is then fully off. Setting it back to `True` re-activates the filter the pipe itself switched off, on the next `pipes()` call and whether or not `AUTO_INSTALL_FUSION_FILTER` is on — including an install-by-hand copy, which nothing else brings back. A filter an admin switched off by hand — after the pipe had switched it off — stays off. |
+| `ENABLE_OPENROUTER_FUSION` | `True` | Master switch; installs the filter, auto-wires it to the fusion models only, and gates the pipe's activation injection. `False` deactivates the installed filter on the next `pipes()` call, stops injecting the Fusion plugin entry, and removes an activating `{"id": "fusion"}` entry the request already carried, on any model and either engine — Fusion is then fully off for the first time. Setting it back to `True` re-activates the filter the pipe itself switched off, on the next `pipes()` call and whether or not `AUTO_INSTALL_FUSION_FILTER` is on — including an install-by-hand copy, which nothing else brings back. A filter an admin switched off by hand — after the pipe had switched it off — stays off. |
 | `AUTO_INSTALL_FUSION_FILTER` | `True` | Install/update the filter function in OWUI. |
 | `AUTO_ATTACH_FUSION_FILTER` | `True` | Attach the filter to the fusion models **only** (never other models) — including their `:tag` variant and `@preset/…` rows. |
 | `AUTO_DEFAULT_FUSION_FILTER` | `True` | Pre-enable the filter per chat on the fusion models (does not force Fusion to run). |

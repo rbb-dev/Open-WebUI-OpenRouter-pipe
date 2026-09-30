@@ -362,6 +362,16 @@ def _fusion_plugin_injection(
     return [*items, {"id": "fusion"}]
 
 
+def _fusion_plugin_stripped(plugins: Any, *, fusion_enabled: bool) -> list[Any] | None:
+    if fusion_enabled:
+        return None
+    items = plugins if isinstance(plugins, list) else []
+    kept = [p for p in items if not (isinstance(p, dict) and p.get("id") == "fusion")]
+    if len(kept) != len(items):
+        return kept
+    return None
+
+
 _PER_MODEL_WARN_WINDOW = 300
 
 _warned_chat_provider_keys: OrderedDict[str, None] = OrderedDict()
@@ -1280,6 +1290,16 @@ class RequestOrchestrator:
             if default_max:
                 responses_body.max_output_tokens = default_max
 
+        async def _member_notice_or_outer(
+            emitter: Any, text: str, *, member: bool = False
+        ) -> None:
+            if member and emitter is not None:
+                await emitter({"type": "pipe:member.notice", "data": {"content": text}})
+                return
+            await self._pipe._event_emitter_handler._emit_notification(
+                emitter, text, level="warning"
+            )
+
         budget_outcome = _sanitize_request_input(self._pipe, responses_body)
         if (
             budget_outcome is not None
@@ -1288,10 +1308,10 @@ class RequestOrchestrator:
             and not responses_body.budget_futility_notified
         ):
             responses_body.budget_futility_notified = True
-            await self._pipe._event_emitter_handler._emit_notification(
+            await _member_notice_or_outer(
                 __event_emitter__,
                 build_futility_notice(budget_outcome),
-                level="warning",
+                member=fusion_inner,
             )
         if budget_outcome is not None and not use_task_model_adapter:
             fresh = {
@@ -1304,10 +1324,10 @@ class RequestOrchestrator:
                 names = omitted_tool_names(
                     type(budget_outcome)(frozenset(fresh), False, 0, 0), responses_body.input
                 )
-                await self._pipe._event_emitter_handler._emit_notification(
+                await _member_notice_or_outer(
                     __event_emitter__,
                     f"{_REPLAY_DROPPED_OPENING} {', '.join(names)}.",
-                    level="warning",
+                    member=fusion_inner,
                 )
         reasoning = self._pipe._ensure_reasoning_config_manager()
         refused = reasoning._apply_reasoning_preferences(responses_body, valves)
@@ -1316,10 +1336,11 @@ class RequestOrchestrator:
         if not use_task_model_adapter:
             reasoning._apply_anthropic_verbosity(responses_body, valves)
         if refused and __event_emitter__:
-            await self._pipe._event_emitter_handler._emit_status(
-                __event_emitter__,
-                f"Reasoning could not be turned off for '{refused}' - that model always thinks.",
-            )
+            refusal = f"Reasoning could not be turned off for '{refused}' - that model always thinks."
+            if fusion_inner:
+                await _member_notice_or_outer(__event_emitter__, refusal, member=True)
+            else:
+                await self._pipe._event_emitter_handler._emit_status(__event_emitter__, refusal)
         apply_context_transforms(responses_body, auto_context_trimming=valves.AUTO_CONTEXT_TRIMMING)
 
         if (not use_task_model_adapter) and isinstance(__metadata__, dict):
@@ -1497,6 +1518,11 @@ class RequestOrchestrator:
             selected_endpoint = "responses"
         if selected_endpoint == "responses":
             _rewrite_video_blocks_for_responses(responses_body.input)
+        stripped_plugins = _fusion_plugin_stripped(
+            responses_body.plugins, fusion_enabled=fusion_live
+        )
+        if stripped_plugins is not None:
+            responses_body.plugins = stripped_plugins or None
         injected_plugins = _fusion_plugin_injection(
             responses_body.model,
             responses_body.plugins,
@@ -1629,7 +1655,7 @@ class RequestOrchestrator:
                 normalized_model_id=normalized_model_id,
                 api_model_id=api_model_id,
                 outcome_sink=outcome_sink,
-                breaker_key=user_id or None,
+                breaker_key=None if fusion_inner else (user_id or None),
             )
 
         if "image_output" in video_features and not use_task_model_adapter:
@@ -1688,7 +1714,7 @@ class RequestOrchestrator:
                     normalized_model_id=normalized_model_id,
                     api_model_id=api_model_id,
                     outcome_sink=outcome_sink,
-                    breaker_key=user_id or None,
+                    breaker_key=None if fusion_inner else (user_id or None),
                 )
 
             api_model_id = OpenRouterModelRegistry.api_model_id(normalized_model_id) or normalized_model_id

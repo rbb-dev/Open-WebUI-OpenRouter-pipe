@@ -4,6 +4,7 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import contextvars
 import functools
 import io
 import logging
@@ -32,6 +33,7 @@ from ..core.utils import (
     _csv_set,
     _find_first_kind_marker_body,
     _iter_kind_marker_spans,
+    _safe_marker_body,
     _serialize_kind_marker,
     summarise_names,
 )
@@ -1237,6 +1239,7 @@ class VideoGenerationAdapter:
                 breaker_key=breaker_key,
             ),
             name=f"openrouter-video-{job_id}",
+            context=contextvars.Context(),
         )
         task.add_done_callback(self._consume_background_exception)
         return task
@@ -3621,17 +3624,19 @@ class VideoGenerationAdapter:
         if missing > 0:
             shortfall = _shortfall_note(missing, attempted, fetched)
         return (
-            f"{_serialize_kind_marker(self.JOB_MARKER_KIND, job_id)}\n"
-            f"{_serialize_kind_marker(self.MODEL_MARKER_KIND, model_id)}\n\n"
+            f"{_serialize_kind_marker(self.JOB_MARKER_KIND, _safe_marker_body(job_id))}\n"
+            f"{_serialize_kind_marker(self.MODEL_MARKER_KIND, _safe_marker_body(model_id))}\n\n"
             f"{clips}{shortfall}"
         )
 
     def _build_failure_content(self, *, job_id: str, model_id: str, reason: str) -> str:
         markers = ""
         if job_id:
-            markers += f"{_serialize_kind_marker(self.JOB_MARKER_KIND, job_id)}\n"
+            markers += f"{_serialize_kind_marker(self.JOB_MARKER_KIND, _safe_marker_body(job_id))}\n"
         if model_id:
-            markers += f"{_serialize_kind_marker(self.MODEL_MARKER_KIND, model_id)}\n"
+            markers += (
+                f"{_serialize_kind_marker(self.MODEL_MARKER_KIND, _safe_marker_body(model_id))}\n"
+            )
         if markers:
             markers += "\n"
         return f"{markers}### Video generation failed\n\n{reason}"
@@ -3640,8 +3645,8 @@ class VideoGenerationAdapter:
         self, *, job_id: str, model_id: str, note: str = "Video generation is running..."
     ) -> str:
         return (
-            f"{_serialize_kind_marker(self.JOB_MARKER_KIND, job_id)}\n"
-            f"{_serialize_kind_marker(self.MODEL_MARKER_KIND, model_id)}\n\n"
+            f"{_serialize_kind_marker(self.JOB_MARKER_KIND, _safe_marker_body(job_id))}\n"
+            f"{_serialize_kind_marker(self.MODEL_MARKER_KIND, _safe_marker_body(model_id))}\n\n"
             f"{note}"
         )
 

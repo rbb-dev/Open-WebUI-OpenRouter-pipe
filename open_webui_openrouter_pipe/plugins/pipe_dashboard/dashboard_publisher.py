@@ -362,7 +362,13 @@ def aggregate_worker_payloads(payloads: list[dict[str, Any]]) -> dict[str, Any]:
             for cid, c in tc.items():
                 task_costs[cid] = task_costs.get(cid, 0.0) + (c or 0.0)
     sessions_live = _fold_task_costs(sessions_live, task_costs)
-    sessions_live.sort(key=lambda row: (1 if row.get("done") else 0, -(row.get("started") or 0.0)))
+    sessions_live.sort(
+        key=lambda row: (
+            1 if row.get("done") else 0,
+            0 if row.get("task_cost") else 1,
+            -(row.get("started") or 0.0),
+        )
+    )
     sessions_live = sessions_live[:_PD_SESSIONS_CAP]
 
     now = time.time()
@@ -411,9 +417,10 @@ async def _read_redis_workers(client: Any, namespace: str) -> list[dict[str, Any
     """
     pattern = f"{namespace}:dashboard:worker:*"
     try:
-        keys = []
+        keys: list[Any] = []
         async for key in client.scan_iter(match=pattern, count=50):
-            keys.append(key)
+            if key not in keys:
+                keys.append(key)
         if not keys:
             return []
         values = await client.mget(*keys)
@@ -546,6 +553,7 @@ async def _build_emit_payload(
             "health": _worker_health(pipe),
         }]
 
+    payload["pid"] = pid
     payload["worker_count"] = worker_count
 
     now = time.monotonic()

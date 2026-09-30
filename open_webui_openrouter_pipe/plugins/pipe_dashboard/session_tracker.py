@@ -28,9 +28,18 @@ _ST_ACTIVE_CAP = 30
 _ST_RECENT_CAP = 300
 _ST_RECENT_MAX_AGE_S = 10800.0
 _ST_ABANDON_S = 7200.0
+_ST_SWEEP_INTERVAL = 300
 _ST_STREAM_STAMP_COALESCE_S = 5.0
 
 _ST_STATUS_MAP = {"ok": "completed", "failed": "failed", "cancelled": "cancelled"}
+
+_ST_TOOL_COUNT_FIELD = {
+    "completed": "tools_ok",
+    "ok": "tools_ok",
+    "failed": "tools_failed",
+    "skipped": "tools_skipped",
+    "cancelled": "tools_skipped",
+}
 
 
 def _tool_counts(entry: dict[str, Any]) -> dict[str, int]:
@@ -194,12 +203,9 @@ class SessionTracker:
             if entry is None:
                 return
             entry["seen"] = time.time()
-            if status == "failed":
-                entry["tools_failed"] += 1
-            elif status == "skipped":
-                entry["tools_skipped"] += 1
-            else:
-                entry["tools_ok"] += 1
+            field = _ST_TOOL_COUNT_FIELD.get(status)
+            if field is not None:
+                entry[field] += 1
             entry["current_tool"] = None
             if entry["status"] == "tool":
                 entry["status"] = "streaming"

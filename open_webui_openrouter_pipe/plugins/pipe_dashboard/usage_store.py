@@ -38,6 +38,8 @@ _US_PURGE_JITTER_S = 60.0
 _US_LOCK_STALE_S = 600.0
 _US_DROP_WARN_EVERY = 50
 _US_RECONCILE_RETRY_S = 300.0
+_US_POLL_INTERVAL_S = 0.5
+_US_PERSIST_WARN_COOLDOWN_S = 300.0
 
 USAGE_ROW_FIELDS = (
     "ts",
@@ -140,6 +142,7 @@ class UsageStore:
         self._stop_event = threading.Event()
         self._dropped = 0
         self._persist_failed = 0
+        self._warned: dict[str, float] = {}
         self._declared_lengths = _declared_lengths()
         self._effective_widths: dict[str, int | None] = dict(self._declared_lengths)
         self._width_warned: set[str] = set()
@@ -465,7 +468,7 @@ class UsageStore:
     def _writer_pass(self) -> bool:
         batch: list[dict[str, Any]] = []
         try:
-            item = self._queue.get(timeout=0.5)
+            item = self._queue.get(timeout=_US_POLL_INTERVAL_S)
             if item is not None:
                 batch.append(item)
         except queue.Empty:
@@ -477,21 +480,26 @@ class UsageStore:
                     batch.append(extra)
         except queue.Empty:
             pass
+        failed = False
         if batch:
-            self._write_batch(batch)
+            failed = not self._write_batch(batch)
+        if failed:
+            time.sleep(_US_POLL_INTERVAL_S)
         if self._stop_event.is_set() and self._queue.qsize() == 0:
             self._release_held()
             return False
         return True
 
-    def _write_batch(self, batch: list[dict[str, Any]]) -> None:
+    def _write_batch(self, batch: list[dict[str, Any]]) -> bool:
         held, self._held = self._held, []
         combined = held + batch
         if len(combined) > _US_BATCH_MAX:
             self._dropped += len(combined) - _US_BATCH_MAX
             combined = combined[-_US_BATCH_MAX:]
-        if not self._write_now(combined):
-            self._held = combined
+        if self._write_now(combined):
+            return True
+        self._held = combined
+        return False
 
     def _release_held(self) -> None:
         held, self._held = self._held, []
@@ -510,7 +518,11 @@ class UsageStore:
         try:
             return self._persist_sync(rows)
         except Exception:
-            logger.debug("usage batch persist failed", exc_info=True)
+            logger.log(
+                warn_level(self._warned, "persist", cooldown_s=_US_PERSIST_WARN_COOLDOWN_S),
+                "usage batch persist failed; %d row(s) held for retry, not written (%d dropped so far)",
+                len(rows), self._dropped, exc_info=True,
+            )
             return False
 
     def _persist_sync(self, rows: list[dict[str, Any]]) -> bool:

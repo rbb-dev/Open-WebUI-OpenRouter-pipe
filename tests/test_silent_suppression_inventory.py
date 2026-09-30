@@ -71,6 +71,15 @@ _EXPECTED: dict[str, int] = {
     # its own logging failed, and it runs before any pipe module exists.
     "../scripts/anyio_1111_workaround.py": 1,
     "core/logging_system.py": 3,
+    # 1st: the drain cap in `_drop_member_log_buffer`, which waits for the pipe's own log
+    # worker to turn a member's queued records into buffers before the member's key is
+    # dropped. A wedged or absent worker must not hang a member's teardown, and the pop
+    # runs on timeout anyway -- a straggler record is reaped by `cleanup()`'s one-hour age
+    # window, which is today's behaviour for that record. It also swallows
+    # `CancelledError` because the caller's own task may be cancelled while it waits, and
+    # a release that must happen on every path cannot raise out of the cancellation that
+    # is already unwinding the turn.
+    "requests/fusion_engine.py": 1,
     # 7th: the cost snapshot, now one guarded helper reached from all three exits. A job
     # OpenRouter has already billed for is recorded whatever the pipe does with the
     # bytes, and a storage error while recording it must not replace the failure the
@@ -95,7 +104,15 @@ _EXPECTED: dict[str, int] = {
     # (hoisted into the shared `_archive_publish_changed_file` helper), so the count was 20.
     # B312-2 then deleted the whole `enqueue_archive` method, which carried the
     # `contextlib.suppress(Exception)` around its `_dirs.add(base_dir)`, so the count is 19.
-    "logging/session_log_manager.py": 19,
+    # B421 added `_cleanup_stale_segments`, which reaps the staged segment rows the
+    # artifact sweep is now scoped away from. Its suppression wraps the same
+    # `_delete_artifacts_sync` call the lock reaper above it already suppresses for the
+    # same question -- could this row be removed -- and with the same reasoning: the ids
+    # have already been selected, the delete is best-effort, and a delete that raises
+    # leaves rows that the next pass, on its own interval, selects again. Suppressing it
+    # does not hide a consequence the caller would otherwise report, because this pass
+    # reports nothing about a successful reap either. The count is 20.
+    "logging/session_log_manager.py": 20,
     # 3rd: the generic ffmpeg arm, which now stops the child it started before it
     # reports a transport fault. The suppression is load-bearing and is not a test
     # guard: PIL's `UnidentifiedImageError` subclasses `OSError`, so the common

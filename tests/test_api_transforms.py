@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from copy import deepcopy
 from typing import Any
 from unittest.mock import MagicMock, AsyncMock
 
@@ -17,6 +18,16 @@ from pydantic import ValidationError
 from aioresponses import aioresponses, CallbackResult
 
 from open_webui_openrouter_pipe import Pipe
+from open_webui_openrouter_pipe.core.config import (
+    CROCKFORD_ALPHABET,
+    OPENAI_EMPTY_USER_TURN_FALLBACK,
+    ULID_LENGTH,
+)
+from open_webui_openrouter_pipe.core.utils import (
+    _serialize_kind_marker,
+    _serialize_marker,
+    _serialize_phase_marker,
+)
 from open_webui_openrouter_pipe.api.transforms import (
     CompletionsBody,
     ResponsesBody,
@@ -50,6 +61,10 @@ def _sse(obj: dict[str, Any]) -> str:
     return f"data: {json.dumps(obj)}\n\n"
 
 
+# The three hidden-marker families, built with the pipe's own serialisers. Never hand-typed:
+# `_extract_marker_ulid` is Crockford-strict about a 20-character body, so a hand-typed marker
+# is silently not a marker and a test written that way passes for the wrong reason.
+_MARKER_ULID = (CROCKFORD_ALPHABET * 2)[:ULID_LENGTH]
 # ============================================================================
 # _filter_openrouter_request Tests
 # ============================================================================
@@ -194,6 +209,49 @@ class TestFilterOpenrouterRequest:
         result = _filter_openrouter_request(payload)
         assert "text" not in result
 
+    # --- the caller's `text` mapping must survive the call unchanged ---------------
+    #
+    # `candidate = dict(payload)` is a shallow copy, so the one nested object it aliases
+    # is the caller's own `text`. `_normalise_openrouter_responses_text_format` then writes
+    # through that alias in place, so the caller's dict gains a `format` key, or **loses**
+    # an unparseable one, without ever being asked. Both production call sites pass
+    # `dict(responses_request_body)`, and the outer `dict()` copies the top level only, so
+    # it does not launder the alias; the same body filtered twice hands the caller one
+    # object shared with two different returned payloads.
+    #
+    # Deliberately one level deep: the `schema` nested inside a `json_schema` format stays
+    # shared, because the normaliser never writes below `text` and builds that object fresh.
+    # The property is about the caller's dict, not the wire -- the returned payload is
+    # unchanged by this fix, which is why the two wire-shape controls below sit here.
+
+    _COPY_ARMS = [
+        pytest.param(
+            {"text": {"verbosity": "low"}, "response_format": {"type": "json_object"}},
+            id="migrates-response-format-onto-the-callers-text",
+        ),
+        pytest.param(
+            {"text": {"verbosity": "low", "format": {"type": "nonsense"}}},
+            id="deletes-an-unparseable-format-from-the-callers-text",
+        ),
+        pytest.param(
+            {"text": {"verbosity": "low",
+                      "format": {"type": "json_schema", "json_schema": {"name": "s"}}}},
+            id="deletes-a-chat-shaped-nested-format-from-the-callers-text",
+        ),
+        pytest.param(
+            {"text": {"verbosity": "low"}, "verbosity": "high",
+             "response_format": {"type": "json_object"}},
+            id="folds-a-toplevel-verbosity-into-the-callers-text",
+        ),
+        pytest.param(
+            {"text": {"verbosity": "low"}},
+            id="leaves-an-already-normal-text-alone",
+        ),
+        pytest.param(
+            {"text": "oops", "response_format": {"type": "json_object"}},
+            id="leaves-a-non-dict-text-alone",
+        ),
+    ]
 
 # ============================================================================
 # _filter_openrouter_chat_request Tests
@@ -1323,6 +1381,25 @@ class TestResponsesInputToChatMessages:
             }
         ]
 
+    # --- a text block that is nothing but marker lines carries nothing ----------------
+    #
+    # The test above names the contract this converter has to hold and does not hold it: its
+    # only arm mixes prose with a marker, so the block is usable and the marker is dropped
+    # from it. When the marker is the *whole* block, `_replay_block_is_usable` still called the
+    # block usable -- it judged `text.strip()`, and a marker line is a non-empty string -- so
+    # `_replay_blocks_or_note` saw something worth sending, took the `originals` escape and
+    # returned the caller's raw `/responses`-shaped block. The pipe's own transport markers
+    # went back out on the wire, in a block type the chat leg does not accept.
+    #
+    # Markers are built with the serialisers, never hand-typed: `_extract_marker_ulid` is
+    # Crockford-strict about a 20-character body, so a hand-typed marker is silently not a
+    # marker and a test written that way passes for the wrong reason.
+
+    def _marker_only_turn(self, blocks: list[dict[str, Any]], role: str = "user"):
+        return _responses_input_to_chat_messages(
+            [{"type": "message", "role": role, "content": blocks}],
+        )
+
     def test_message_with_annotations(self):
         """Test message annotations are preserved."""
         input_value = [
@@ -1505,10 +1582,18 @@ class TestResponsesInputToChatMessages:
         assert content[0]["file"]["file_data"] == "http://example.com/file.txt"
 
     def test_empty_content_blocks(self):
-        """Test message with empty content blocks list."""
+        """A contentless message item keeps the caller's own empty block list.
+
+        B378's operator decision 1(b): the normaliser preserves the caller's spelling
+        rather than rewriting a contentless item to `""`, so `/v1/responses` and
+        `/v1/chat/completions` answer the same turn the same way. Which line the provider
+        ends up with is the transformer's, and
+        `tests/test_a_turn_that_carries_nothing_ships_nothing_void.py` pins that for all
+        four routes.
+        """
         input_value = [{"type": "message", "role": "user", "content": []}]
         result = _responses_input_to_chat_messages(input_value)
-        assert result[0]["content"] == ""
+        assert result[0]["content"] == []
 
     def test_function_call_output_non_string_output(self):
         """Test function_call_output with non-string output is JSON-serialized."""
@@ -3330,3 +3415,10 @@ class TestApplyProviderRoutingParamsToPayload:
         }
         _apply_provider_routing_params_to_payload(payload)
         assert payload["provider"] == {"only": ["openai"]}
+
+
+def _responses_body(text: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "model": "openai/gpt-4o", "input": "hi", "stream": False,
+        "text": text, "response_format": {"type": "json_object"},
+    }

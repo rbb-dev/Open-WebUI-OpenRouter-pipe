@@ -359,3 +359,37 @@ class _FakeClock:
 
     def advance(self, seconds: float) -> None:
         self.now += seconds
+
+
+# ── The writer's failure path ──
+#
+# A batch the writer could not write is HELD, not destroyed: `_write_batch` keeps it
+# in `self._held` and the next pass combines it with the rows that arrive since. So a
+# row the store rejected once lands on the retry, and `dropped` only moves when the
+# held buffer is forced to shed rows (`_US_BATCH_MAX`) or when the writer gives up at
+# shutdown. What was missing is the *report*: a failed pass logged at DEBUG and
+# nothing else, so a three-hour outage produced no WARNING and the operator's only
+# signal was the count of rows the hold could not carry. The latch and the pause are
+# the two halves of that: the first so an outage is one line rather than one per
+# batch, the second so the hold is not re-attempted at full speed on the writer
+# thread.
+
+
+def _failing_persist(usage: UsageStore, fail_first: int | None = None) -> dict[str, int]:
+    """Make the store's DB boundary raise, and count the passes that hit it.
+
+    `fail_first=None` fails every pass; a number fails that many and then delegates to
+    the real write, so a recovered pass lands the rows it was handed. The count is
+    what makes the passes checkable exactly.
+    """
+    real = usage._persist_sync
+    attempts = {"n": 0}
+
+    def boom(rows: list[dict[str, Any]]) -> bool:
+        attempts["n"] += 1
+        if fail_first is None or attempts["n"] <= fail_first:
+            raise RuntimeError("the database is on fire")
+        return real(rows)
+
+    usage._persist_sync = boom  # type: ignore[method-assign]
+    return attempts

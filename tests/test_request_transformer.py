@@ -4803,6 +4803,23 @@ class TestImageReuseRegister:
             f"attached', so an older picture was substituted: {self._blocks(result)}"
         )
 
+    @staticmethod
+    def _void_pool_chat(earlier_blocks: list[dict], *, turn1_url: str = "https://e.test/A.png",
+                        text_only_turn: str = "remind me"):
+        """Turn one carries a picture, an earlier turn carries `earlier_blocks`, the last
+        user turn carries nothing at all so the reuse arm is the only thing that can
+        answer it. The two arms of the pair differ by `earlier_blocks` alone."""
+        return [
+            {"role": "user", "content": [
+                {"type": "text", "text": "look"},
+                {"type": "image_url", "image_url": {"url": turn1_url}},
+            ]},
+            {"role": "assistant", "content": "sure"},
+            {"role": "user", "content": [{"type": "text", "text": "and now"}, *earlier_blocks]},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": text_only_turn},
+        ]
+
     @pytest.mark.parametrize(
         ("declared", "magic", "expected"),
         [

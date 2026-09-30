@@ -41,7 +41,11 @@ from ..core.config import (
     _PROVIDER_SLUG_PATTERN,
     OPENAI_EMPTY_USER_TURN_FALLBACK,
 )
-from ..core.fusion_defaults import _REQUIRED_TOOL_CHOICE, has_active_fusion_entry
+from ..core.fusion_defaults import (
+    _REQUIRED_TOOL_CHOICE,
+    find_fusion_entry,
+    has_active_fusion_entry,
+)
 from ..core.image_detail import image_detail_or_auto
 from ..core.timing_logger import timed
 from ..core.url_scheme import loggable_link
@@ -827,7 +831,10 @@ def _replay_block_is_usable(block: Any) -> bool:
         return True
     btype = block.get("type")
     if btype in {"text", "input_text", "output_text"}:
-        return isinstance(block.get("text"), str) and bool(block["text"].strip())
+        text = block.get("text")
+        if not isinstance(text, str):
+            return False
+        return bool(strip_hidden_marker_lines(text).strip())
     if btype in {"file", "input_file"}:
         payload = block.get("file")
         if isinstance(payload, dict):
@@ -1036,8 +1043,6 @@ def _responses_input_to_chat_messages(
                         "role": role,
                         "content": strip_hidden_marker_lines(raw_content),
                     }
-                    if role == "user" and not msg["content"].strip():
-                        msg["content"] = OPENAI_EMPTY_USER_TURN_FALLBACK
                     if msg_annotations:
                         msg["annotations"] = msg_annotations
                     if msg_reasoning_details:
@@ -1135,7 +1140,7 @@ def _responses_input_to_chat_messages(
                     continue
 
                 if not blocks_out:
-                    msg: dict[str, Any] = {"role": role, "content": ""}
+                    msg: dict[str, Any] = {"role": role, "content": []}
                     if msg_annotations:
                         msg["annotations"] = msg_annotations
                     if msg_reasoning_details:
@@ -1158,8 +1163,6 @@ def _responses_input_to_chat_messages(
 
             if isinstance(raw_content, str):
                 msg["content"] = strip_hidden_marker_lines(raw_content)
-                if role == "user" and not msg["content"].strip():
-                    msg["content"] = OPENAI_EMPTY_USER_TURN_FALLBACK
                 _attach_reasoning_details(msg)
                 messages.append(msg)
                 continue
@@ -1261,7 +1264,7 @@ def _responses_input_to_chat_messages(
             if isinstance(raw_content, list) and raw_content:
                 blocks_out = _replay_blocks_or_note(blocks_out, raw_content, role=role)
 
-            msg["content"] = blocks_out if blocks_out else ""
+            msg["content"] = blocks_out
             _attach_reasoning_details(msg)
             messages.append(msg)
             continue
@@ -1357,6 +1360,13 @@ def _coerce_openrouter_int(value: Any) -> int | None:
         except ValueError:
             return None
     return None
+
+
+def chat_payload_loses_fusion_entry(model_id: Any, plugins: Any) -> bool:
+    if not is_fusion_model(str(model_id or "")):
+        return False
+    entry = find_fusion_entry(plugins)
+    return isinstance(entry, dict) and entry.get("enabled") is not False
 
 
 def _responses_payload_to_chat_completions_payload(
@@ -1949,6 +1959,9 @@ def _apply_identifier_valves_to_payload(
 def _filter_openrouter_request(payload: dict[str, Any]) -> dict[str, Any]:
     """Drop any keys not documented for the OpenRouter Responses API."""
     candidate = dict(payload or {})
+    existing_text = candidate.get("text")
+    if isinstance(existing_text, dict):
+        candidate["text"] = dict(existing_text)
     _normalise_openrouter_responses_text_format(candidate)
     verbosity = candidate.get("verbosity")
     if isinstance(verbosity, str) and verbosity.strip():

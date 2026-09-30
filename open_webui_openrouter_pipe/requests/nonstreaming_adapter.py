@@ -17,6 +17,7 @@ from ..api.transforms import (
     _filter_openrouter_request,
     _parse_url_citation_annotations,
     _unhandled_citation_types,
+    chat_payload_loses_fusion_entry,
 )
 from ..core.timing_logger import timed
 from ..storage.persistence import generate_item_id
@@ -403,6 +404,12 @@ class NonStreamingAdapter:
                 and (
                     task_request
                     or not (endpoint_forced and forced_selected_endpoint == "responses")
+                )
+                and not (
+                    chat_payload_loses_fusion_entry(
+                        model_id, responses_request_body.get("plugins")
+                    )
+                    and not task_request
                 )
                 and self._pipe._streaming_handler._looks_like_responses_unsupported(exc)
             ):

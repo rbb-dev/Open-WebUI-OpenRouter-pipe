@@ -27,6 +27,7 @@ from ..storage.owui_files import is_channel_chat
 from .config import OWUI_CHAT_ID
 from .errors import _resolve_error_model_context, is_sign_in_failure
 from .utils import (
+    CONTINUED_REPLY,
     _data_url_log_subject,
     _pretty_json,
     _resolve_retry_after_seconds,
@@ -475,8 +476,10 @@ class ErrorFormatter:
                     },
                 }
             )
-            await event_emitter({"type": "chat:message", "data": {"content": shown}})
-            if on_channel:
+            continuing = CONTINUED_REPLY.get() is not None
+            if not continuing:
+                await event_emitter({"type": "chat:message", "data": {"content": shown}})
+            if on_channel or continuing:
                 await event_emitter({
                     "type": "chat:message:error",
                     "data": {"error": {"content": shown}, "done": True},

@@ -1613,14 +1613,21 @@ async def _streamed_turn(pipe, model: str) -> str:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("threshold", [2, 3])
 async def test_a_fusion_turn_whose_whole_panel_failed_counts_toward_the_users_refusal(monkeypatch, threshold):
+    """A run in which no panel model answered spends one request failure, and the next turn is refused.
+
+    `threshold - 1` ordinary failed turns come first, so the run's own single charge is the
+    difference between the next turn being served and being refused: drop it and the count is
+    one short at both arms, and the test fails on the refusal rather than on a count.
+    """
     pipe = Pipe()
     _reach_fusion(monkeypatch, pipe)
     replies: list[str] = []
     try:
         with aioresponses() as mock_http:
             mock_http.post(_RESPONSES_URL, repeat=True, **_FAILED_UPSTREAM)
-            _saved_breaker_settings(pipe, threshold)
-            replies.append(await _streamed_turn(pipe, "m1"))
+            for _ in range(threshold - 1):
+                _saved_breaker_settings(pipe, threshold)
+                replies.append(await _streamed_turn(pipe, "m1"))
             _saved_breaker_settings(pipe, threshold)
             replies.append(await _streamed_turn(pipe, "openrouter.fusion"))
             posts_before_the_next_request = _posts(mock_http)
@@ -1630,9 +1637,11 @@ async def test_a_fusion_turn_whose_whole_panel_failed_counts_toward_the_users_re
     finally:
         await pipe.close()
 
-    assert "Every panel member failed" in replies[1], replies[1][-600:]
-    assert posts == posts_before_the_next_request, replies[2]
-    assert "Temporarily disabled due to repeated errors" in replies[2], replies[2]
+    fusion_reply = replies[threshold - 1]
+    refused = replies[threshold]
+    assert "Every panel member failed" in fusion_reply, fusion_reply[-600:]
+    assert posts == posts_before_the_next_request, refused
+    assert "Temporarily disabled due to repeated errors" in refused, refused
 
 
 @pytest.mark.asyncio

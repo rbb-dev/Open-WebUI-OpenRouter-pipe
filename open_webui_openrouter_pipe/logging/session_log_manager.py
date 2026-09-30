@@ -933,6 +933,9 @@ class SessionLogManager:
                 _truncate_latch(getattr(self, _latch_name), _MAX_DRAIN_LATCH_KEYS)
 
         self._cleanup_stale_locks(model, session_factory, lock_stale_seconds)
+        self._cleanup_stale_segments(
+            model, session_factory, int(self.valves.SESSION_LOG_RETENTION_DAYS)
+        )
 
         backed_off = self._backoff_exclusion(lock_stale_seconds)
 
@@ -1034,6 +1037,35 @@ class SessionLogManager:
         return turns
 
     @timed
+    def _cleanup_stale_segments(
+        self,
+        model: Any,
+        session_factory: Any,
+        retention_days: int,
+    ) -> None:
+        cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=float(retention_days))
+        ids: list[str] = []
+        try:
+            with _db_session(session_factory) as session:
+                rows = (
+                    session.query(model.id)  # type: ignore[attr-defined]
+                    .filter(  # type: ignore[attr-defined]
+                        model.item_type.in_(["session_log_segment", "session_log_segment_terminal"])
+                    )
+                    .filter(model.created_at < cutoff)  # type: ignore[attr-defined]
+                    .limit(500)
+                    .all()
+                )
+                ids = [row[0] for row in rows if row and isinstance(row[0], str)]
+        except Exception as exc:
+            self.logger.debug(
+                "Stale segment cleanup skipped — %s: %s", type(exc).__name__, exc, exc_info=True
+            )
+            return
+        if ids and self._artifact_store:
+            with contextlib.suppress(Exception):
+                self._artifact_store._delete_artifacts_sync(ids)
+
     def _cleanup_stale_locks(
         self,
         model: Any,
@@ -1344,7 +1376,7 @@ class SessionLogManager:
         except Exception:
             self.logger.warning(
                 "Could not capture stranded session log turn chat_id=%s message_id=%s; "
-                "its staged segments stay in the database until artifact retention reaps them.",
+                "its staged segments stay in the database until session log retention reaps them.",
                 chat_id,
                 message_id,
                 exc_info=True,
@@ -1369,7 +1401,7 @@ class SessionLogManager:
                     cooldown_s=3600.0,
                 ),
                 "Could not capture stranded session log turn chat_id=%s message_id=%s; "
-                "its staged segments stay in the database until artifact retention reaps them.",
+                "its staged segments stay in the database until session log retention reaps them.",
                 chat_id,
                 message_id,
             )

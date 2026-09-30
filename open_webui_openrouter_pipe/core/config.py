@@ -1058,9 +1058,11 @@ class Valves(BaseModel):
             "skipped for a model pinned by FORCE_RESPONSES_MODELS to /responses, and its error "
             "surfaces; a model that merely sits on the responses default is still retried. Housekeeping "
             "task requests — chat titles, summaries, tags — are exempt and still fall back, so a pinned "
-            "model never turns a title into an error string. A Fusion "
-            "model is not skipped: it is answered as a normal completion, without its Fusion panel, "
-            "and a warning names the model and the fallback."
+            "model never turns a title into an error string. It is also skipped for a Fusion turn whose "
+            "panel the /chat/completions payload would lose - the plugin entry cannot travel there, so the "
+            "retry would answer a different request as a plain completion with no panel - and that turn's "
+            "error surfaces instead; a Fusion turn whose entry is disabled, and a Fusion entry on a "
+            "non-Fusion model, still retry."
         ),
     )
     API_KEY: EncryptedStr = Field(
@@ -1511,7 +1513,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "until the reply's hand-back budget of `MAX_FUNCTION_CALL_LOOPS` turns is spent; after that the pipe runs the "
             "remaining round itself with the tools it advertised. A round of browser-run tools and Open WebUI's own "
             "builtins is handed back whatever that budget says, because Open WebUI is what runs those, and its own "
-            "iteration bound ends such a reply. "
+            "iteration bound ends such a reply. That budget is one user's spend against one reply - two users naming "
+            "the same chat and message are charged to two budgets and neither spends the other's - and it is charged "
+            "in a Temporary Chat too, where only the reply's own budget is held and its chat id is not. "
             "the pipe runs a non-streamed reply's calls and a Fusion panel model's calls in either mode. A tool the "
             "request itself declared with nothing behind it goes back to its sender instead. With 'ask' tool approval, "
             "a streamed saved chat hands every call to Open WebUI in both modes. With legacy function calling, no "
@@ -1546,11 +1550,11 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     )
     ARTIFACT_ENCRYPTION_KEY: EncryptedStr = Field(
         default_factory=_default_artifact_encryption_key,
-        description="Use at least 16 chars. Encrypt reasoning tokens (and optionally all persisted artifacts). Changing the key creates a new table; prior artifacts become inaccessible. Clearing it stops artifact encryption and returns the setting to its default, which is empty. Both the artifact table and the usage-history table are named from a hash of this key, so new writes after a clear go to a fresh, unencrypted pair of tables and everything already saved under the previous key is stranded there, unread. A value that cannot be read under the current WEBUI_SECRET_KEY cannot be used either, whether it was stored under a key that no longer decrypts or is a damaged row: the pipe refuses to write artifacts while the key is unreadable rather than storing them in the clear, and the key must be re-entered here before writes resume. A passphrase typed here that begins with encrypted: and continues with an all-base64 character body is read as a damaged stored value and refused the same way, so enter it without the prefix. The cipher is rebuilt against the current key on every call, so a rotation never leaves the store using a retired one; a write already inside that cipher build when the change lands is still written under the previous key, cannot be read afterwards, and is dropped with a warning naming its artifact kind.",
+        description="Use at least 16 chars. Encrypt reasoning tokens (and optionally all persisted artifacts). Changing the key creates a new table; prior artifacts become inaccessible. Clearing it stops artifact encryption and returns the setting to its default, which is empty. Both the artifact table and the usage-history table are named from a hash of this key, so new writes after a clear go to a fresh, unencrypted pair of tables and everything already saved under the previous key is stranded there, unread. A value that cannot be read under the current WEBUI_SECRET_KEY cannot be used either, whether it was stored under a key that no longer decrypts or is a damaged row: the pipe refuses to write artifacts while the key is unreadable rather than storing them in the clear, and the person in the chat is told once, on the turn it happens, that the items will be missing from later turns; the key must be re-entered here before writes resume. A passphrase typed here that begins with encrypted: and continues with an all-base64 character body is read as a damaged stored value and refused the same way, so enter it without the prefix. The cipher is rebuilt against the current key on every call, so a rotation never leaves the store using a retired one; a write already inside that cipher build when the change lands is still written under the previous key, cannot be read afterwards, and is dropped with a warning naming its artifact kind.",
     )
     ENCRYPT_ALL: bool = Field(
         default=True,
-        description="Encrypt every persisted artifact when ARTIFACT_ENCRYPTION_KEY is set. When False, only reasoning tokens are encrypted. This decides what is written; a row already stored encrypted stays encrypted, and the replay cache keeps it encrypted, whatever this is set to. If ARTIFACT_ENCRYPTION_KEY is set but cannot be decrypted after a WEBUI_SECRET_KEY rotation, the pipe stops writing artifacts rather than storing them in the clear.",
+        description="Encrypt every persisted artifact when ARTIFACT_ENCRYPTION_KEY is set. When False, only reasoning tokens are encrypted. This decides what is written; a row already stored encrypted stays encrypted, and the replay cache keeps it encrypted, whatever this is set to. If ARTIFACT_ENCRYPTION_KEY is set but cannot be decrypted after a WEBUI_SECRET_KEY rotation, the pipe stops writing artifacts rather than storing them in the clear, and the person in the chat is told once, on the turn it happens, that the items will be missing from later turns.",
     )
     ENABLE_LZ4_COMPRESSION: bool = Field(
         default=True,
@@ -1684,7 +1688,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=90,
         ge=1,
         description=(
-            "Retention window for stored session log archives. Cleanup deletes zip files older than this many days."
+            "Retention window for stored session log archives and for their staging rows. Cleanup deletes zip files older than this many days, and reaps the staged session-log segment rows in the artifact table that are older than this many days, measured from when they were written."
             " The sweep reads this valve on every pass, so a changed window applies from the next cleanup"
             " with no restart and no new turn."
         ),
@@ -2046,7 +2050,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         ge=1,
         le=50,
         description=(
-            "Number of failures one user may accumulate before their requests are refused, a failing tool is skipped, or their database reads and writes are skipped; raise it for fewer trips in noisy environments. A request failure is a failed chat call to OpenRouter (an error reply; a connection that cannot be opened, drops or times out; an error reported inside a response; or a stream that stops before its final event). A request counts once however many attempts it took: a 429, a 5xx, a 408 that names the provider-timeout kind, or that failure reported inside a response before anything has been shown is retried first, up to TRANSIENT_RETRY_MAX_ATTEMPTS extra tries, and the request is a single failure whichever attempt gave up on it. A body carrying a content decision is the exception and is never retried, whatever status it arrived on. A generation on a picture-only image model or a video model that fails after it was sent to OpenRouter is also a request failure, counted once. Request and database failures count within BREAKER_WINDOW_SECONDS. Raising or lowering the setting mid-session re-reads the failures already recorded: it does not discard them, and a lowered setting applies from the next request without evicting anything. Request failures clear when a request ends without an error (for a picture-only image model or a video model, only once its result is delivered whole; a stream that breaks after the finished image arrived is a delivered result and a failed call, counted once and clearing nothing, and for an internal Fusion run, only if a panel model answered); a request the user stops clears no request failures. Housekeeping tasks such as title generation neither count nor clear; Open WebUI's merge-responses task counts but never clears. Database failures also clear when a database operation succeeds. The request breaker never refuses a request whose last message is a tool result, or is Open WebUI's own message that comes right after a tool result and hands the model a tool's images; a question or picture the user sends is refused like any other request. Each tool counts its failures in a row: errors it raises, per-call timeouts, running calls cut off by TOOL_BATCH_TIMEOUT_SECONDS, and calls whose tool server cannot be reached or answers with an HTTP error status; an ask_user timeout and a call to an MCP tool whose session has closed do not count. The count belongs to the tool the call resolved to, so a name the model padded with surrounding whitespace is the same tool and spends the same budget. A SystemExit, KeyboardInterrupt or GeneratorExit from a tool is shown as failed but is not a failure of that tool: it signals the process rather than the tool, and it never adds to the count or clears it. An error the tool reports in a result it returns normally is shown as failed but neither adds to the count nor clears it, whether the judgement is made by Open WebUI's own classifier or by the pipe's copy of it."
+            "Number of failures one user may accumulate before their requests are refused, a failing tool is skipped, or their database reads and writes are skipped; raise it for fewer trips in noisy environments. A request failure is a failed chat call to OpenRouter (an error reply; a connection that cannot be opened, drops or times out; an error reported inside a response; or a stream that stops before its final event). A request counts once however many attempts it took: a 429, a 5xx, a 408 that names the provider-timeout kind, or that failure reported inside a response before anything has been shown is retried first, up to TRANSIENT_RETRY_MAX_ATTEMPTS extra tries, and the request is a single failure whichever attempt gave up on it. A body carrying a content decision is the exception and is never retried, whatever status it arrived on. An internal Fusion run is one such request: its panel, judge and final-answer calls each spend nothing, and the run spends one failure of its own when no panel model answered, whatever the panel's size and however many of those calls failed. A generation on a picture-only image model or a video model that fails after it was sent to OpenRouter is also a request failure, counted once. Request and database failures count within BREAKER_WINDOW_SECONDS. Raising or lowering the setting mid-session re-reads the failures already recorded: it does not discard them, and a lowered setting applies from the next request without evicting anything. Request failures clear when a request ends without an error (for a picture-only image model or a video model, only once its result is delivered whole; a stream that breaks after the finished image arrived is a delivered result and a failed call, counted once and clearing nothing, and for an internal Fusion run, only if a panel model answered); a request the user stops clears no request failures. Housekeeping tasks such as title generation neither count nor clear; Open WebUI's merge-responses task counts but never clears. Database failures also clear when a database operation succeeds. A fault in the artifact cache refill after a successful read is neither counted nor reported as a lost round: the rows are returned, the window still clears, and a WARNING names the cache rather than the database. The request breaker never refuses a request whose last message is a tool result, or is Open WebUI's own message that comes right after a tool result and hands the model a tool's images; a question or picture the user sends is refused like any other request. Each tool counts its failures in a row: errors it raises, per-call timeouts, running calls cut off by TOOL_BATCH_TIMEOUT_SECONDS, and calls whose tool server cannot be reached or answers with an HTTP error status; an ask_user timeout and a call to an MCP tool whose session has closed do not count. The count belongs to the tool the call resolved to, so a name the model padded with surrounding whitespace is the same tool and spends the same budget. A SystemExit, KeyboardInterrupt or GeneratorExit from a tool is shown as failed but is not a failure of that tool: it signals the process rather than the tool, and it never adds to the count or clears it. An error the tool reports in a result it returns normally is shown as failed but neither adds to the count nor clears it, whether the judgement is made by Open WebUI's own classifier or by the pipe's copy of it."
         ),
     )
     BREAKER_WINDOW_SECONDS: int = Field(
@@ -2137,7 +2141,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=90,
         ge=1,
         le=365,
-        description="Days an artifact is kept before cleanup. Its stored timestamp is refreshed on every read of the artifact that goes through the database store — whether that read is served from the database or from the cache — so retention runs from last access, not creation. Reads that never reach the database store do not refresh it, either because the database breaker is open or because the artifact store failed to initialise. The cache only serves reads on a deployment with the Redis artifact cache enabled. The sweep also removes the Redis cache entries of the rows it deletes, so a purged artifact is not replayed from the cache either. Rows a temporary chat left behind are deleted at the next cleanup, whatever their age. The sweep covers the pipe's own artifacts only, not files the pipe put in Open WebUI's storage.",
+        description="Days an artifact is kept before cleanup. Its stored timestamp is refreshed on every read of the artifact that goes through the database store — whether that read is served from the database or from the cache — so retention runs from last access, not creation. Reads that never reach the database store do not refresh it, either because the database breaker is open or because the artifact store failed to initialise. The cache only serves reads on a deployment with the Redis artifact cache enabled. The sweep also removes the Redis cache entries of the rows it deletes, so a purged artifact is not replayed from the cache either. Rows a temporary chat left behind are deleted at the next cleanup, whatever their age. The sweep covers the pipe's own artifacts only: it does not touch the pipe's bookkeeping rows in the same table — the staged session-log segments and the coordination locks — and those are removed by their owners instead, staged segments on SESSION_LOG_RETENTION_DAYS and locks by a stale-lock rule. The sweep also does not cover files the pipe put in Open WebUI's storage.",
     )
     ARTIFACT_CLEANUP_INTERVAL_HOURS: float = Field(
         default=1.0,
@@ -2427,7 +2431,10 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         description=(
             "Master switch for OpenRouter Fusion support. When enabled, the pipe installs the 'OpenRouter Fusion' filter and attaches it to the fusion models automatically."
             + _PIPE_OFF_COMES_BACK
-            + " Turning it off deactivates the installed filter on the next model-list refresh;"
+            + " Turning it off deactivates the installed filter on the next model-list refresh,"
+            + " and a `{\"id\": \"fusion\"}` plugin entry the request already carries is removed"
+            + " before anything is sent - on any model and either engine - so an entry a filter"
+            + " row, a saved chat or a direct API caller brought along cannot deliberate;"
             + " turning it back on re-activates the one the pipe itself switched off, whether or not"
             + " AUTO_INSTALL_FUSION_FILTER is on."
         ),
@@ -2966,7 +2973,9 @@ class UserValves(BaseModel):
             "budget of `MAX_FUNCTION_CALL_LOOPS` turns is spent; after that the pipe runs the remaining round itself "
             "with the tools it advertised. A round of browser-run tools and Open WebUI's own builtins is handed back "
             "whatever that budget says, because Open WebUI is what runs those, and its own iteration bound ends such a "
-            "reply."
+            "reply. That budget is one user's spend against one reply - two users naming the same chat and message are "
+            "charged to two budgets - and it is charged in a Temporary Chat too, where only the reply's own budget is "
+            "held and its chat id is not."
         ),
     )
     SHOW_TOOL_CARDS: bool = Field(

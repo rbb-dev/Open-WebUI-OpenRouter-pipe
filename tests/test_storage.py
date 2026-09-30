@@ -36,6 +36,18 @@ from open_webui_openrouter_pipe.storage.persistence import (
 )
 
 
+class _In:
+    """A stand-in for SQLAlchemy's ``col.in_(...)``, which ``~`` negates into ``NOT IN``."""
+
+    def __init__(self, name: str, values: list[Any], negated: bool = False) -> None:
+        self.name = name
+        self.values = values
+        self.negated = negated
+
+    def __invert__(self) -> "_In":
+        return _In(self.name, self.values, not self.negated)
+
+
 class _Field:
     def __init__(self, name: str) -> None:
         self.name = name
@@ -47,7 +59,7 @@ class _Field:
         return ("lt", self.name, other)
 
     def in_(self, values):
-        return ("in", self.name, list(values))
+        return _In(self.name, list(values))
 
     def startswith(self, prefix):
         return ("startswith", self.name, prefix)
@@ -77,7 +89,10 @@ class _FakeQuery:
         self._filters.append(condition)
         return self
 
-    def _match(self, row: _FakeModel, condition: tuple[str, str, Any]) -> bool:
+    def _match(self, row: _FakeModel, condition: Any) -> bool:
+        if isinstance(condition, _In):
+            current = getattr(row, condition.name, None)
+            return current in condition.values if not condition.negated else current not in condition.values
         op, name, value = condition
         current = getattr(row, name, None)
         if op == "eq":
@@ -2124,6 +2139,18 @@ from open_webui_openrouter_pipe.storage import persistence as persistence_mod
 from open_webui_openrouter_pipe.storage.persistence import generate_item_id
 
 
+class _In:
+    """A stand-in for SQLAlchemy's ``col.in_(...)``, which ``~`` negates into ``NOT IN``."""
+
+    def __init__(self, name: str, values: list[Any], negated: bool = False) -> None:
+        self.name = name
+        self.values = values
+        self.negated = negated
+
+    def __invert__(self) -> "_In":
+        return _In(self.name, self.values, not self.negated)
+
+
 class _Field:
     def __init__(self, name: str) -> None:
         self.name = name
@@ -2135,7 +2162,7 @@ class _Field:
         return ("lt", self.name, other)
 
     def in_(self, values):
-        return ("in", self.name, list(values))
+        return _In(self.name, list(values))
 
     def startswith(self, prefix):
         return ("startswith", self.name, prefix)
@@ -2216,7 +2243,10 @@ class _FakeQuery:
     def distinct(self):
         return self
 
-    def _match(self, row: _FakeModel, condition: tuple[str, str, Any]) -> bool:
+    def _match(self, row: _FakeModel, condition: Any) -> bool:
+        if isinstance(condition, _In):
+            current = getattr(row, condition.name, None)
+            return current in condition.values if not condition.negated else current not in condition.values
         op, name, value = condition
         current = getattr(row, name, None)
         if op == "eq":

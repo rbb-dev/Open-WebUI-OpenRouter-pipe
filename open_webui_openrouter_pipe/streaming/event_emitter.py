@@ -19,6 +19,7 @@ from ..core.config import OWUI_CHAT_ID
 from ..core.errors import _inline_span, channel_safe_values
 from ..core.logging_system import SessionLogger
 from ..core.utils import (
+    CONTINUED_REPLY,
     _render_error_template,
     citation_access_stamp,
     join_answer_and_card,
@@ -251,17 +252,14 @@ class EventEmitterHandler:
                         },
                     })
                 on_channel = is_channel_chat(OWUI_CHAT_ID.get())
+                continuing = CONTINUED_REPLY.get() is not None
                 completion: dict[str, Any] = {
                     "error": {"message": error_message},
                     "done": done,
                 }
-                if on_channel:
-                    await event_emitter({"type": "chat:message", "data": {"content": shown}})
-                    await event_emitter({
-                        "type": "chat:message:error",
-                        "data": {"error": {"content": shown}, "done": True},
-                    })
-                if shown:
+                if on_channel or continuing:
+                    await self._publish_card(event_emitter, shown, on_channel, continuing)
+                if shown and (on_channel or not continuing):
                     completion["content"] = shown
                 await event_emitter({"type": "chat:completion", "data": completion})
             except Exception:
@@ -334,6 +332,7 @@ class EventEmitterHandler:
         )
 
         on_channel = is_channel_chat(OWUI_CHAT_ID.get())
+        continuing = CONTINUED_REPLY.get() is not None
         render_variables = channel_safe_values(enriched_variables) if on_channel else enriched_variables
         try:
             markdown = _render_error_template(template, render_variables)
@@ -361,17 +360,9 @@ class EventEmitterHandler:
                 "type": "status",
                 "data": {"description": "The request could not be completed. See details below.", "done": True},
             })
-            await event_emitter({
-                "type": "chat:message",
-                "data": {"content": shown}
-            })
+            await self._publish_card(event_emitter, shown, on_channel, continuing)
             completion: dict[str, Any] = {"done": True}
-            if on_channel:
-                await event_emitter({
-                    "type": "chat:message:error",
-                    "data": {"error": {"content": shown}, "done": True},
-                })
-            if shown:
+            if shown and (on_channel or not continuing):
                 completion["content"] = shown
             await event_emitter({
                 "type": "chat:completion",
@@ -381,6 +372,24 @@ class EventEmitterHandler:
             self.logger.exception("[%s] Failed to emit error message", error_id)
 
         return shown
+
+
+    async def _publish_card(
+        self,
+        event_emitter: EventEmitter,
+        shown: str,
+        on_channel: bool,
+        continuing: bool,
+    ) -> None:
+        if on_channel:
+            await event_emitter({"type": "chat:message", "data": {"content": shown}})
+        if on_channel or continuing:
+            await event_emitter({
+                "type": "chat:message:error",
+                "data": {"error": {"content": shown}, "done": True},
+            })
+        if not on_channel and not continuing:
+            await event_emitter({"type": "chat:message", "data": {"content": shown}})
 
 
     def _create_error_context(self) -> tuple[str, dict[str, Any]]:

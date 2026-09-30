@@ -148,6 +148,13 @@ _CANCEL_REQUEUE_POLL_SECONDS = 0.05
 _CANCEL_REQUEUE_POLL_ATTEMPTS = 40
 
 _UNREADABLE_ARTIFACT_TABLE_KEY = "\x00artifact-key-unreadable"
+
+_PIPE_OWNED_ROW_TYPES = frozenset({
+    "session_log_segment",
+    "session_log_segment_terminal",
+    "session_log_lock",
+    "dashboard_purge_lock",
+})
 _STORED_VALVE_UNREADABLE_MEMO_MAX = 32
 
 _RETENTION_CACHE_PURGE_BATCH = 500
@@ -571,6 +578,7 @@ class ArtifactStore:
         from open_webui_openrouter_pipe.core.config import EncryptedStr
 
         self._artifact_key_warning_emitted = False
+        self._write_refusal_notified = False
         self._artifact_key_unreadable = False
         self._table_key = ""
         self._stored_valve_unreadable_memo: dict[tuple[str, str, str], bool] = {}
@@ -630,6 +638,7 @@ class ArtifactStore:
         unreadable = self._stored_key_is_unreadable(stored)
         if unreadable != self._artifact_key_unreadable:
             self._artifact_key_warning_emitted = False
+            self._write_refusal_notified = False
         self._artifact_key_unreadable = unreadable
         self._table_key = _UNREADABLE_ARTIFACT_TABLE_KEY if unreadable else self._encryption_key
 
@@ -647,6 +656,31 @@ class ArtifactStore:
             )
             self._artifact_key_warning_emitted = True
         return True
+
+    async def _note_artifact_write_refused(self, rows: list[dict[str, Any]]) -> None:
+        context = self._TOOL_CONTEXT.get() if self._TOOL_CONTEXT else None
+        emitter = context.event_emitter if context else None
+        if emitter is None or not self._emit_notification:
+            self.logger.debug(
+                "Artifact write refused with no live turn to report it on (%d row(s)).",
+                len(rows),
+            )
+            return
+        if self._write_refusal_notified:
+            self.logger.debug(
+                "Artifact write refused again (%d row(s) still dropped this episode).",
+                len(rows),
+            )
+            return
+        self._write_refusal_notified = True
+        await self._emit_notification(
+            emitter,
+            "Some stored items for this conversation were not saved: ARTIFACT_ENCRYPTION_KEY "
+            "cannot be decrypted with the current WEBUI_SECRET_KEY, so the pipe refused to "
+            "write them rather than store them in the clear. They will be missing from later "
+            "turns. Re-enter ARTIFACT_ENCRYPTION_KEY to resume storing them.",
+            level="warning",
+        )
 
     def _initialize_circuit_breakers(self):
         """Initialize circuit breaker tracking."""
@@ -1758,10 +1792,10 @@ class ArtifactStore:
 
         from open_webui_openrouter_pipe.core.logging_system import SessionLogger
 
+        context = self._TOOL_CONTEXT.get() if self._TOOL_CONTEXT else None
         user_id = SessionLogger.user_id.get() or ""
         if not self._db_breaker_allows(user_id):
             self.logger.warning("DB writes disabled for user_id=%s due to repeated failures", user_id)
-            context = self._TOOL_CONTEXT.get() if self._TOOL_CONTEXT else None
             if self._emit_notification:
                 await self._emit_notification(
                     context.event_emitter if context else None,
@@ -1774,6 +1808,7 @@ class ArtifactStore:
             row.setdefault("id", generate_item_id())
 
         if self._artifact_writes_blocked(rows):
+            await self._note_artifact_write_refused(rows)
             return []
 
         try:
@@ -1790,7 +1825,6 @@ class ArtifactStore:
                 len(rows),
                 sorted({str(r.get("item_type")) for r in rows if isinstance(r, dict)}),
             )
-            context = self._TOOL_CONTEXT.get() if self._TOOL_CONTEXT else None
             if self._emit_notification:
                 await self._emit_notification(
                     context.event_emitter if context else None,
@@ -1823,16 +1857,61 @@ class ArtifactStore:
         )
         return present
 
+    async def _partition_retired_key_rows(self, rows: list[dict[str, Any]]) -> list[bool]:
+        if not rows:
+            return []
+        partition = await asyncio.to_thread(
+            functools.partial(self._rows_readable_under_current_key, rows)
+        )
+        discarded = [row for row, readable in zip(rows, partition) if not readable]
+        if discarded:
+            self.logger.warning(
+                "Discarded %d artifact(s) sealed under a retired ARTIFACT_ENCRYPTION_KEY "
+                "rather than writing them into this key's table, where they could never "
+                "be read (item_types=%s). Markers referencing them are permanently "
+                "dangling.",
+                len(discarded),
+                sorted({str(row.get("item_type", "unknown")) for row in discarded}),
+            )
+            await self._invalidate_discarded_cache_keys(discarded)
+        return list(partition)
+
+    async def _invalidate_discarded_cache_keys(self, discarded: list[dict[str, Any]]) -> None:
+        keys = [
+            key
+            for key in (
+                self._redis_cache_key(row.get("chat_id"), row.get("id"))
+                for row in discarded
+            )
+            if key
+        ]
+        if not keys or not self._redis_client:
+            return
+        try:
+            await _await_if_needed(self._redis_client.delete(*keys))
+        except Exception as exc:
+            self.logger.warning(
+                "Redis cache invalidation of discarded artifacts failed (best-effort): %s",
+                exc, exc_info=True,
+            )
+
     async def _db_persist_direct(self, rows: list[dict[str, Any]], user_id: str = "") -> list[str]:
         if not rows:
             return []
         if self._artifact_writes_blocked(rows):
+            await self._note_artifact_write_refused(rows)
             return []
         if not self._db_executor or not self._item_model or not self._session_factory:
             raise ArtifactStoreUnavailable(
                 f"artifact store is not configured (table={self._artifact_table_name!r}); "
                 f"{len(rows)} row(s) were not written"
             )
+
+        partition = await self._partition_retired_key_rows(rows)
+        if not all(partition):
+            rows = [row for row, readable in zip(rows, partition) if readable]
+            if not rows:
+                return []
 
         retryer = AsyncRetrying(
             stop=stop_after_attempt(3),
@@ -1911,6 +1990,7 @@ class ArtifactStore:
         message_id: str | None,
         item_ids: list[str],
         sealed: set[str] | None = None,
+        unreadable: dict[str, str] | None = None,
     ) -> dict[str, dict]:
         """Synchronously fetch persisted artifacts for ``chat_id``."""
         if not item_ids or not self._item_model or not self._session_factory:
@@ -1976,6 +2056,8 @@ class ArtifactStore:
                         "Failed to decrypt artifact %s (item_type=%s): %s",
                         row.id, getattr(row, "item_type", "unknown"), exc, exc_info=True,
                     )
+                    if unreadable is not None:
+                        unreadable[row.id] = str(getattr(row, "item_type", "unknown"))
                     continue
                 if sealed is not None:
                     sealed.add(row.id)
@@ -2007,6 +2089,7 @@ class ArtifactStore:
             cache_hit_ids = []
             missing_ids = item_ids
 
+        unreadable: dict[str, str] = {}
         if not missing_ids:
             await self._touch_cached(chat_id, message_id, list(cached))
             return cached
@@ -2030,7 +2113,9 @@ class ArtifactStore:
 
         try:
             sealed: set[str] = set()
-            fetched = await self._db_fetch_direct(chat_id, message_id, missing_ids, sealed)
+            fetched = await self._db_fetch_direct(
+                chat_id, message_id, missing_ids, sealed, unreadable
+            )
         except Exception as exc:
             self._record_db_failure(user_id)
             self.logger.warning("Artifact fetch failed: %s", exc, exc_info=True)
@@ -2067,10 +2152,31 @@ class ArtifactStore:
                     await self._redis_cache_rows(cache_rows, chat_id=chat_id)
                 except Exception as exc:
                     self.logger.warning(
-                        "Artifact cache refill failed (best-effort): %s", exc, exc_info=True
+                        "Artifact read succeeded but the replay cache write failed (%d row(s)); "
+                        "the rows are returned anyway and this is not charged to the database "
+                        "breaker: %s", len(fetched), exc, exc_info=True,
                     )
+        if unreadable:
+            await self._note_unreadable_rows(unreadable)
         await self._touch_cached(chat_id, message_id, cache_hit_ids)
         return cached
+
+    async def _note_unreadable_rows(self, unreadable: dict[str, str]) -> None:
+        context = self._TOOL_CONTEXT.get() if self._TOOL_CONTEXT else None
+        if self._emit_notification:
+            kinds = sorted(set(unreadable.values()))
+            try:
+                await self._emit_notification(
+                    context.event_emitter if context else None,
+                    f"{len(unreadable)} stored item(s) for this conversation could not be read "
+                    f"and are missing from this turn (kinds: {', '.join(kinds)}); the rest of the "
+                    "stored round was replayed normally.",
+                    level="warning",
+                )
+            except Exception:
+                self.logger.debug(
+                    "Unreadable artifact rows notice could not be delivered", exc_info=True
+                )
 
     @timed
     async def _db_fetch_direct(
@@ -2079,6 +2185,7 @@ class ArtifactStore:
         message_id: str | None,
         item_ids: list[str],
         sealed: set[str] | None = None,
+        unreadable: dict[str, str] | None = None,
     ) -> dict[str, dict]:
         retryer = AsyncRetrying(
             stop=stop_after_attempt(3),
@@ -2089,7 +2196,9 @@ class ArtifactStore:
         loop = asyncio.get_running_loop()
         async for attempt in retryer:
             with attempt:
-                fetch_call = functools.partial(self._db_fetch_sync, chat_id, message_id, item_ids, sealed)
+                fetch_call = functools.partial(
+                    self._db_fetch_sync, chat_id, message_id, item_ids, sealed, unreadable
+                )
                 return await loop.run_in_executor(self._db_executor, fetch_call)
         return {}
 
@@ -2280,6 +2389,22 @@ class ArtifactStore:
                 self._flush_blocked_cycles,
             )
 
+    def _note_flush_blocked_on_key(self) -> None:
+        self._flush_blocked_cycles += 1
+        if self._flush_blocked_cycles == 1:
+            self.logger.error(
+                "Artifact flush blocked: ARTIFACT_ENCRYPTION_KEY cannot be decrypted with the "
+                "current WEBUI_SECRET_KEY, so sealed artifacts stay in the Redis pending queue "
+                "(key=%s) instead of being written. The queue is not draining and will not "
+                "drain until the key is re-entered. Nothing is discarded.",
+                self._redis_pending_key,
+            )
+        else:
+            self.logger.debug(
+                "Artifact flush still blocked (%d consecutive cycles); pending queue untouched.",
+                self._flush_blocked_cycles,
+            )
+
     def _note_flush_ready(self) -> None:
         if self._flush_blocked_cycles:
             self.logger.info(
@@ -2318,8 +2443,7 @@ class ArtifactStore:
                 self._note_flush_blocked()
                 return
             if self._artifact_key_unreadable:
-                self._artifact_writes_blocked([])
-                self._note_flush_blocked()
+                self._note_flush_blocked_on_key()
                 return
             self._note_flush_ready()
 
@@ -2360,47 +2484,15 @@ class ArtifactStore:
                 if not entries_by_row:
                     return
 
-                partition = await asyncio.to_thread(
-                    functools.partial(
-                        self._rows_readable_under_current_key,
-                        [row for _entry, row in entries_by_row],
-                    )
+                partition = await self._partition_retired_key_rows(
+                    [row for _entry, row in entries_by_row]
                 )
-                discarded = [
-                    row
-                    for (_entry, row), readable in zip(entries_by_row, partition)
-                    if not readable
-                ]
-                if discarded:
+                if not all(partition):
                     entries_by_row = [
                         (entry, row)
                         for (entry, row), readable in zip(entries_by_row, partition)
                         if readable
                     ]
-                    self.logger.warning(
-                        "Discarded %d artifact(s) sealed under a retired ARTIFACT_ENCRYPTION_KEY "
-                        "rather than writing them into this key's table, where they could never "
-                        "be read (item_types=%s). Markers referencing them are permanently "
-                        "dangling.",
-                        len(discarded),
-                        sorted({str(row.get("item_type", "unknown")) for row in discarded}),
-                    )
-                    keys = [
-                        key
-                        for key in (
-                            self._redis_cache_key(row.get("chat_id"), row.get("id"))
-                            for row in discarded
-                        )
-                        if key
-                    ]
-                    if keys and self._redis_client:
-                        try:
-                            await _await_if_needed(self._redis_client.delete(*keys))
-                        except Exception as exc:
-                            self.logger.warning(
-                                "Redis cache invalidation of discarded artifacts failed (best-effort): %s",
-                                exc, exc_info=True,
-                            )
                     if not entries_by_row:
                         self.logger.debug(
                             "✅ Successfully flushed 0 artifacts to DB; every entry in this "
@@ -2838,6 +2930,14 @@ class ArtifactStore:
             functools.partial(self._cleanup_sync, cutoff),
         )
 
+    @staticmethod
+    def _artifact_retention_filter(model: Any, cutoff: datetime.datetime) -> Any:
+        return model.created_at < cutoff
+
+    @staticmethod
+    def _artifact_retention_exclude(model: Any) -> Any:
+        return ~model.item_type.in_(_PIPE_OWNED_ROW_TYPES)
+
     def _expired_cache_key_batch(
         self, cutoff: datetime.datetime, after_id: str | None, limit: int
     ) -> list[tuple[str, str]]:
@@ -2886,7 +2986,8 @@ class ArtifactStore:
     ) -> tuple[Any, Any]:
         row = (
             session.query(func.min(model.id), func.max(model.id))
-            .filter(model.created_at < cutoff)
+            .filter(self._artifact_retention_filter(model, cutoff))
+            .filter(self._artifact_retention_exclude(model))
             .one()
         )
         return (None, None) if row is None else (row[0], row[1])
@@ -2899,7 +3000,8 @@ class ArtifactStore:
             ulid_lo, ulid_hi = self._expired_row_id_bounds(session, self._item_model, cutoff)
             deleted = (
                 session.query(self._item_model)
-                .filter(self._item_model.created_at < cutoff)
+                .filter(self._artifact_retention_filter(self._item_model, cutoff))
+                .filter(self._artifact_retention_exclude(self._item_model))
                 .delete(synchronize_session=False)
             )
             left_by_temporary_chats = sum(

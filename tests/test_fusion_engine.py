@@ -589,9 +589,10 @@ class TestInnerMessageCopies:
             pass
         synth_messages = seen[-1]
         assert synth_messages is not None
-        assert synth_messages[0] is not inv.messages[0]
-        assert synth_messages[0]["content"] is content_blocks
-        assert synth_messages[-1]["role"] == "system"
+        assert synth_messages[0]["role"] == "system"
+        assert synth_messages[1] is not inv.messages[0]
+        assert synth_messages[1]["content"] is content_blocks
+        assert synth_messages[-1]["role"] == "user"
 
 
 class TestRunInternalFusion:
@@ -669,11 +670,23 @@ class TestRunInternalFusion:
         `str(call["messages"])` would repr-escape the newlines, and every offset in the
         strings below is computed against the real ones -- a test written against the repr
         passes on a correctly built prompt and fails on a broken one, backwards.
+
+        The judge's blocks are in its single user turn and the synthesis drafts are in the
+        material block, which leads the body as a second `system` message, so the text is
+        joined across the whole message list rather than read off its last entry: a helper
+        pinned to the last message silently stopped finding the drafts when the material
+        moved to the front.
         """
-        content = call["messages"][-1]["content"]
-        if isinstance(content, str):
-            return content
-        return "".join(part["text"] for part in content)
+        parts: list[str] = []
+        for message in call["messages"]:
+            content = message.get("content")
+            if isinstance(content, str):
+                parts.append(content)
+            elif isinstance(content, list):
+                parts.extend(
+                    part["text"] for part in content if isinstance(part, dict) and "text" in part
+                )
+        return "\n".join(parts)
 
     @staticmethod
     def _blocks(prompt, label, *, before_analysis=False):
@@ -1169,3 +1182,6 @@ async def test_no_model_in_a_fusion_turn_is_offered_or_runs_open_webuis_ask_user
         assert _OPEN_WEBUI_ASK_USER not in offered, offered
         assert "Look it up" in offered, offered
         assert ("A tool server's own ask_user" in offered) is renamed, offered
+
+
+_MARKER_ULID = "01ARZ3NDEKTSV4RRFFQ6"

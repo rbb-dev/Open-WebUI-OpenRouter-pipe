@@ -1905,6 +1905,13 @@ sent, as before. The strip is a *line* filter, so a marker-shaped line a
 user typed on a line of its own is removed in any of the three families,
 while the same text inline is preserved.
 
+A marker body may not contain a square bracket. The label ends at the
+first `]`, so a `]` in the body would close it early, and an unescaped `[`
+inside it makes the line an ordinary paragraph — the `openrouter:v1:`
+namespace and the model's own prompt text would then appear as literal
+text at the top of the reply. The pipe replaces a bracket in a body with a
+space before the line is written, and refuses outright to serialize one.
+
 The `<video>` tag with the URL on its own line is the only format that
 marked.js tokenises as a single CommonMark "type 7 HTML block". Without
 the blank lines and the URL on a separate line, marked merges adjacent

@@ -295,42 +295,28 @@ def _ffmpeg_binary(cancel: threading.Event | None = None) -> str | None:
         return None
 
 
-def _ffmpeg_video_stream_duration(path: Path, binary: str) -> float | None:
-    def _run(level: str | None) -> str | None:
-        level_arg = ["-loglevel", level] if level is not None else []
-        try:
-            proc = subprocess.run(
-                [binary, "-hide_banner", "-nostats", "-protocol_whitelist", "file",
-                 *level_arg, "-i", str(path)],
-                capture_output=True, text=True, errors="replace",
-                timeout=_PROBE_TIMEOUT_S, check=False,
+def _matroska_track_seconds(stderr: str) -> float | None:
+    values: list[float] = []
+    in_video = False
+    for line in stderr.splitlines():
+        if "Stream #" in line:
+            in_video = (
+                _VIDEO_HEAD.search(line) is not None
+                and _PICTURE_CODEC.search(line) is None
             )
-        except (OSError, subprocess.SubprocessError):
-            return None
-        return proc.stderr or ""
+        elif in_video and "Metadata:" not in line:
+            found = _MATROSKA_DURATION.search(line)
+            if found is not None:
+                hours, minutes, seconds = found.groups()
+                value = int(hours) * 3600.0 + int(minutes) * 60.0 + float(seconds)
+                if value > 0:
+                    values.append(value)
+    if values:
+        return max(values)
+    return None
 
-    stderr = _run(None)
-    if stderr is not None:
-        values: list[float] = []
-        in_video = False
-        for line in stderr.splitlines():
-            if "Stream #" in line:
-                in_video = (
-                    _VIDEO_HEAD.search(line) is not None
-                    and _PICTURE_CODEC.search(line) is None
-                )
-            elif in_video and "Metadata:" not in line:
-                found = _MATROSKA_DURATION.search(line)
-                if found is not None:
-                    hours, minutes, seconds = found.groups()
-                    value = int(hours) * 3600.0 + int(minutes) * 60.0 + float(seconds)
-                    if value > 0:
-                        values.append(value)
-        if values:
-            return max(values)
-    stderr = _run("debug")
-    if stderr is None:
-        return None
+
+def _mov_stream_seconds(stderr: str) -> float | None:
     found_values: list[float] = []
     for line in stderr.splitlines():
         if "Stream #" not in line or not _VIDEO_HEAD.search(line):
@@ -352,6 +338,20 @@ def _ffmpeg_video_stream_duration(path: Path, binary: str) -> float | None:
     if found_values:
         return max(found_values)
     return None
+
+
+def _ffmpeg_video_stream_duration(path: Path, binary: str) -> float | None:
+    try:
+        proc = subprocess.run(
+            [binary, "-hide_banner", "-nostats", "-protocol_whitelist", "file",
+             "-loglevel", "debug", "-i", str(path)],
+            capture_output=True, text=True, errors="replace",
+            timeout=_PROBE_TIMEOUT_S, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    stderr = proc.stderr or ""
+    return _matroska_track_seconds(stderr) or _mov_stream_seconds(stderr)
 
 
 def _last_time_seconds(stderr: str) -> float | None:
@@ -575,7 +575,8 @@ def _normalise_frame_sync(
 
 
 def _extract_frame_imageio_sync(
-    path: Path, *, frame_index: int, cancel: threading.Event | None = None
+    path: Path, *, frame_index: int, cancel: threading.Event | None = None,
+    declared_size: tuple[int, int] | None = None,
 ) -> tuple[bytes, int, int]:
     """Extract a single frame at the given index via imageio. Returns
     (png_bytes, width, height). Raises FrameExtractionError on failure or
@@ -584,7 +585,7 @@ def _extract_frame_imageio_sync(
         raise FrameExtractionError(_ABANDONED)
     _refuse_unsafe_input(path)
     try:
-        declared = _declared_size(path)
+        declared = declared_size if declared_size is not None else _declared_size(path)
         if _cancelled(cancel):
             raise FrameExtractionError(_ABANDONED)
         if declared is not None and _over_pixel_cap(*declared):
@@ -752,11 +753,13 @@ def _give_up_note(damage_seen: bool) -> str:
 async def _imageio_last_resort(
     path: Path, *, requested_ts: float | None,
     downgrade_note: str, logger: logging.Logger, max_frame_bytes: int = 0,
+    declared_size: tuple[int, int] | None = None,
     damage_seen: bool = False,
 ) -> ExtractedFrame:
     png_bytes, w, h = await _abandonable(
         _extract_frame_imageio_sync, path, frame_index=0,
         deadline=_IMAGEIO_TIMEOUT_S, label="imageio",
+        declared_size=declared_size,
     )
     if not downgrade_note:
         downgrade_note = _give_up_note(damage_seen)
@@ -957,6 +960,10 @@ async def _extract_frame_with_budget(
                 return await _imageio_last_resort(
                     path, requested_ts=requested_ts, downgrade_note=downgrade_note,
                     logger=logger, max_frame_bytes=max_frame_bytes,
+                    declared_size=(
+                        (probed_meta.width, probed_meta.height)
+                        if probed_meta is not None else None
+                    ),
                     damage_seen=bool(direct_saw_damage and direct_saw_damage[0]),
                 )
             if use_end_seek or target == "first_frame" or (
@@ -1021,6 +1028,10 @@ async def _extract_frame_with_budget(
                 png_bytes, w, h = await _abandonable(
                     _extract_frame_imageio_sync, path, frame_index=0,
                     deadline=_IMAGEIO_TIMEOUT_S, label="imageio",
+                    declared_size=(
+                        (probed_meta.width, probed_meta.height)
+                        if probed_meta is not None else None
+                    ),
                 )
                 _check_frame_bytes(png_bytes, max_frame_bytes)
                 actual_ts = 0.0

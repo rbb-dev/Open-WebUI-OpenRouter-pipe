@@ -113,7 +113,7 @@ See also: [Task Models & Housekeeping](task_models_and_housekeeping.md).
 ### 4.1 Multimodal gating (vision and attachments)
 
 The pipe uses catalog-derived capabilities to decide whether to forward image inputs:
-- If the selected model is not vision-capable, user image attachments are skipped and a status message is emitted so users understand why attachments were ignored.
+- If the selected model is not vision-capable, user image attachments are skipped and a status message is emitted so users understand why attachments were ignored. The status is emitted once per request, on the request's latest user turn, and it names the pictures the gate left out on *any* turn of the request - the turn that carried them and the turns before it. An operator should not expect one status per picture: the count is the number, so a chat with three skipped pictures reports one status saying three.
 
 Details are in: [Multimodal Intake Pipeline](multimodal_ingestion_pipeline.md).
 

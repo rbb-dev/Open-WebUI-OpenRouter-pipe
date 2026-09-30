@@ -1438,7 +1438,7 @@ _KIND_MARKER_RE = re.compile(
 )
 _KIND_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 _KIND_FORBIDDEN_BODY_CHARS = (
-    "\n", "\r", "]", "\x1c", "\x1d", "\x1e", "\x85", " ", " ",
+    "\n", "\r", "[", "]", "\x1c", "\x1d", "\x1e", "\x85", " ", " ",
 )
 
 

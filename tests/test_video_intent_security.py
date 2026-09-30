@@ -56,15 +56,15 @@ class TestMarkerInjectionGuard:
             _serialize_kind_marker("0bad", "x")  # starts with digit
 
     def test_safe_marker_body_strips_forbidden(self):
-        result = _safe_marker_body("hello\nworld]: #attack")
+        result = _safe_marker_body("hello\nworld]: #attack [logo")
         assert "\n" not in result
         assert "]" not in result
+        assert "[" not in result
 
     def test_safe_marker_body_returns_underscore_for_empty(self):
         assert _safe_marker_body("") == "_"
         assert _safe_marker_body("   ") == "_"
         assert _safe_marker_body(None) == "_"  # type: ignore[arg-type]
-
 
 # -----------------------------------------------------------------------------
 # B.5 prompt-injection bypass via Unicode lookalikes

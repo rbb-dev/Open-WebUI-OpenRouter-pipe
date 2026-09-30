@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import json
 import logging
@@ -55,6 +56,17 @@ def _member_refused_before_send() -> str:
     return "the model declined to answer"
 
 
+_LOG_DRAIN_TIMEOUT_SECONDS = 1.0
+
+
+async def _drop_member_log_buffer(rid: str) -> None:
+    queue = SessionLogger.log_queue
+    if queue is not None:
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            await asyncio.wait_for(queue.join(), _LOG_DRAIN_TIMEOUT_SECONDS)
+    SessionLogger.release(rid)
+
+
 def _inner_metadata(metadata: Any) -> dict[str, Any]:
     base = dict(metadata) if isinstance(metadata, dict) else {}
     outer_chat_id = base.get("chat_id")
@@ -75,6 +87,7 @@ class FusionMemberResult(NamedTuple):
     failed: bool
     fail_reason: str | None
     sources: tuple[dict[str, str], ...] = ()
+    notices: tuple[str, ...] = ()
 
 
 class FusionCollector:
@@ -83,6 +96,7 @@ class FusionCollector:
         self.live_queue = live_queue
         self.usage: dict[str, Any] | None = None
         self.sources: list[dict[str, str]] = []
+        self.notices: list[str] = []
 
     async def __call__(self, event: Any) -> None:
         if not isinstance(event, dict):
@@ -112,6 +126,10 @@ class FusionCollector:
                         "url": url.strip(),
                         "title": title.strip() if isinstance(title, str) and title.strip() else url.strip(),
                     })
+        elif etype == "pipe:member.notice":
+            text = data.get("content")
+            if isinstance(text, str) and text:
+                self.notices.append(text)
 
 
 _UNSET: Any = object()
@@ -200,7 +218,8 @@ async def run_fusion_member(
         "chat_id": (invocation.metadata or {}).get("chat_id"),
         _PIPE_METADATA_KEY: copy.deepcopy(pipe_meta),
     }
-    request_token = SessionLogger.request_id.set(f"fusion-inner-{uuid.uuid4().hex[:12]}")
+    inner_rid = f"fusion-inner-{uuid.uuid4().hex[:12]}"
+    request_token = SessionLogger.request_id.set(inner_rid)
     continued_token = CONTINUED_REPLY.set(None)
     outer_ctx = pipe._TOOL_CONTEXT.get()
     ctx = None
@@ -288,6 +307,7 @@ async def run_fusion_member(
                 fail_reason=narrowed if isinstance(narrowed, str) and narrowed
                 else _member_refused_before_send(),
                 sources=tuple(collector.sources),
+                notices=tuple(collector.notices),
             )
         empty_result = not content.strip() or content == NO_CONTENT_AFTER_TOOLS_FALLBACK
         failed = bool(sink.get("error_occurred")) or empty_result
@@ -298,6 +318,7 @@ async def run_fusion_member(
             model=model, content=content, usage=collector.usage,
             failed=failed, fail_reason=reason if isinstance(reason, str) else None,
             sources=tuple(collector.sources),
+            notices=tuple(collector.notices),
         )
     except asyncio.CancelledError:
         raise
@@ -307,6 +328,7 @@ async def run_fusion_member(
             model=model, content="", usage=collector.usage,
             failed=True, fail_reason=_member_failure_reason(exc),
             sources=tuple(collector.sources),
+            notices=tuple(collector.notices),
         )
     finally:
         _drop_backlog_latch(SessionLogger.request_id.get() or "")
@@ -318,6 +340,7 @@ async def run_fusion_member(
             for worker in ctx.workers:
                 worker.cancel()
             await asyncio.gather(*ctx.workers, return_exceptions=True)
+        await asyncio.shield(_drop_member_log_buffer(inner_rid))
 
 
 def build_inner_valves(valves: Any, *, max_tool_calls: int) -> Any:
@@ -545,6 +568,19 @@ async def run_internal_fusion(
     total_usage: dict[str, Any] = {}
     live_queue: asyncio.Queue = asyncio.Queue()
     member_tasks: list[asyncio.Task] = []
+    seen_notices: set[str] = set()
+
+    def _fresh_notices(model: str, res: FusionMemberResult) -> list[dict[str, Any]]:
+        fresh: list[dict[str, Any]] = []
+        for notice in res.notices:
+            if notice in seen_notices:
+                continue
+            seen_notices.add(notice)
+            fresh.append({
+                "type": "pipe:member.notice",
+                "data": {"content": f"{model} (panel member): {notice}"},
+            })
+        return fresh
 
     async def _member_wrapper(member_model: str) -> None:
         try:
@@ -599,6 +635,8 @@ async def run_internal_fusion(
                 results[member_model] = payload
                 if payload.usage:
                     total_usage = merge_usage_stats(total_usage, payload.usage)
+                for notice in _fresh_notices(member_model, payload):
+                    yield notice
                 content = degrade_note(payload) if payload.failed else payload.content
                 yield {"type": "response.fusion_call.panel.completed", "output_index": 0,
                        "item_id": item_id, "model": member_model, "content": content}
@@ -606,6 +644,8 @@ async def run_internal_fusion(
         ordered = [results[m] for m in dict.fromkeys(plan.panel_models) if m in results]
         usable = [r for r in ordered if not r.failed]
         invocation.no_usable_member = not usable
+        if not usable:
+            pipe._circuit_breaker.record_failure(invocation.user_id)
         analysis: dict[str, Any] | None = None
         question = latest_user_text(invocation.messages)
 
@@ -652,6 +692,8 @@ async def run_internal_fusion(
                            "model": plan.judge_model, "delta": payload}
                 elif kind == "member_done":
                     judge_res = payload
+            for notice in _fresh_notices(plan.judge_model, judge_res):
+                yield notice
             if judge_res.usage:
                 total_usage = merge_usage_stats(total_usage, judge_res.usage)
             analysis = parse_analysis(judge_res.content) if not judge_res.failed else None
@@ -676,6 +718,8 @@ async def run_internal_fusion(
                                "model": plan.judge_model, "delta": payload}
                     elif kind == "member_done":
                         repair_res = payload
+                for notice in _fresh_notices(plan.judge_model, repair_res):
+                    yield notice
                 if repair_res.usage:
                     total_usage = merge_usage_stats(total_usage, repair_res.usage)
                 analysis = parse_analysis(repair_res.content) if not repair_res.failed else None
@@ -710,8 +754,10 @@ async def run_internal_fusion(
                    "text": failure_answer, "no_usable_member": True}
         else:
             material = build_synthesis_material(ordered, analysis)
-            synth_messages = [dict(m) for m in invocation.messages]
-            synth_messages.append({"role": "system", "content": material})
+            synth_messages = [
+                {"role": "system", "content": material},
+                *[dict(m) for m in invocation.messages],
+            ]
             yield {"type": "response.fusion_call.synthesis.in_progress",
                    "output_index": 0, "item_id": item_id, "model": plan.synthesis_model}
             synth_queue: asyncio.Queue = asyncio.Queue()
@@ -761,6 +807,8 @@ async def run_internal_fusion(
                            "model": plan.synthesis_model, "delta": payload}
                 elif kind == "member_done":
                     synth_result = payload
+            for notice in _fresh_notices(plan.synthesis_model, synth_result):
+                yield notice
             if synth_result.usage:
                 total_usage = merge_usage_stats(total_usage, synth_result.usage)
             if not synth_result.failed and synth_result.content:

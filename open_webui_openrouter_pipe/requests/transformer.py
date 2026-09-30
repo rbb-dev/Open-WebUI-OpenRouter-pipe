@@ -114,6 +114,7 @@ if TYPE_CHECKING:
     from ..pipe import Pipe
 
 # Tool output pruning constants
+_REPLAYABLE_TOOL_ARTIFACTS = frozenset({"function_call", "function_call_output"})
 _TOOL_OUTPUT_PRUNE_MIN_LENGTH = 800
 _TOOL_OUTPUT_PRUNE_HEAD_CHARS = 256
 _TOOL_OUTPUT_PRUNE_TAIL_CHARS = 128
@@ -171,6 +172,38 @@ def _round_keeps_its_ask_user_answer(
     if key in recorded_rounds:
         return False
     return name in ask_user_names
+
+
+def _orphaned_round_markers(
+    segments: list[dict[str, Any]], artifacts: dict[str, Any]
+) -> tuple[set[str], set[str]]:
+    calls_by_id: dict[str, list[str]] = {}
+    outputs_by_id: dict[str, list[str]] = {}
+    for segment in segments:
+        if segment.get("type") != "marker":
+            continue
+        marker = str(segment.get("marker") or "")
+        if not marker:
+            continue
+        item = artifacts.get(marker)
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "").lower()
+        if item_type not in _REPLAYABLE_TOOL_ARTIFACTS:
+            continue
+        call_id = str(item.get("call_id") or "")
+        if not call_id:
+            continue
+        bucket = calls_by_id if item_type == "function_call" else outputs_by_id
+        bucket.setdefault(call_id, []).append(marker)
+
+    orphaned_calls: set[str] = set()
+    orphaned_outputs: set[str] = set()
+    for call_id, calls in calls_by_id.items():
+        orphaned_calls.update(calls[len(outputs_by_id.get(call_id) or []):])
+    for call_id, outputs in outputs_by_id.items():
+        orphaned_outputs.update(outputs[len(calls_by_id.get(call_id) or []):])
+    return orphaned_calls, orphaned_outputs
 
 
 def _replay_round_name(item_type: str, name: str, call_id: Any, pending: dict[str, list[str]]) -> str:
@@ -1331,6 +1364,7 @@ async def transform_messages_to_input(
     recorded_ask_user_rounds = frozenset(recorded_rounds)
 
     missing_artifact_markers: list[str] = []
+    deferred_vision_skips = 0
     for idx, msg in enumerate(messages):
         raw_role = msg.get("role")
         role = (raw_role or "").lower()
@@ -2466,7 +2500,7 @@ async def transform_messages_to_input(
                 is_image_block = block_type in {"image_url", "input_image", "image"}
 
                 if is_image_block:
-                    if not (latest_user_message or tool_images):
+                    if not (latest_user_message or tool_images) and _unconverted_block_reason(block) is None:
                         reusable_image_blocks.append(block)
                     if not include_user_images:
                         if latest_user_message and not vision_supported and not vision_warning_sent:
@@ -2479,6 +2513,8 @@ async def transform_messages_to_input(
                             refused_images.append(vision_refusal)
                             carded_refusals.append(vision_refusal)
                             vision_warning_sent = True
+                        elif not (latest_user_message or tool_images) and not vision_supported and image_limit > 0:
+                            deferred_vision_skips += 1
                         continue
                     if not tool_images and user_images_used >= image_limit:
                         dropped_images += 1
@@ -2652,6 +2688,12 @@ async def transform_messages_to_input(
                 last_image_turn = msg_turn_index
 
             image_notices: list[str] = []
+            if latest_user_message and deferred_vision_skips:
+                image_notices.append(
+                    f"left out {deferred_vision_skips} from earlier turns "
+                    "(this model does not accept image inputs)"
+                )
+                deferred_vision_skips = 0
             unreported_images = [r for r in refused_images if r not in carded_refusals]
             if unreported_images:
                 image_notices.append(
@@ -2785,6 +2827,8 @@ async def transform_messages_to_input(
             replayable: dict[str, dict[str, Any]] = {}
             orphaned_call_ids: set[str] = set()
             orphaned_output_ids: set[str] = set()
+            orphaned_call_markers: set[str] = set()
+            orphaned_output_markers: set[str] = set()
             if artifact_loader and chat_id and openwebui_model_id and markers:
                 batch = artifact_groups.get(msg_id) or {}
                 db_artifacts = {marker: batch[marker] for marker in markers if marker in batch}
@@ -2797,6 +2841,10 @@ async def transform_messages_to_input(
                     orphaned_call_ids,
                     orphaned_output_ids,
                 ) = _classify_function_call_artifacts(replayable)
+                (
+                    orphaned_call_markers,
+                    orphaned_output_markers,
+                ) = _orphaned_round_markers(segments, replayable)
                 if orphaned_call_ids:
                     logger.debug(
                         "Dropping %d persisted function_call artifact(s) missing outputs (chat_id=%s message_id=%s call_ids=%s)",
@@ -2840,7 +2888,7 @@ async def transform_messages_to_input(
                             continue
                         if (
                             item_type == "function_call"
-                            and item.get("call_id") in orphaned_call_ids
+                            and segment["marker"] in orphaned_call_markers
                         ):
                             logger.debug(
                                 "Skipping orphaned function_call artifact (call_id=%s chat_id=%s message_id=%s)",
@@ -2851,7 +2899,7 @@ async def transform_messages_to_input(
                             continue
                         if (
                             item_type == "function_call_output"
-                            and item.get("call_id") in orphaned_output_ids
+                            and segment["marker"] in orphaned_output_markers
                         ):
                             logger.debug(
                                 "Skipping orphaned function_call_output artifact (call_id=%s chat_id=%s message_id=%s)",

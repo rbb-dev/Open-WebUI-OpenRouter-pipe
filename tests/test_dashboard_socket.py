@@ -176,8 +176,14 @@ _REAL_SLEEP = asyncio.sleep
 _PID = os.getpid()
 _FOREIGN_PIDS = (_PID + 1_000_003, _PID + 1_000_033)
 _FOREIGN_PIDS_C = (_PID + 2_000_003, _PID + 2_000_033)
+# Below the local pid on purpose. `workers` is sorted ascending, so a remote that
+# sorts below is `workers[0]`: "the first worker the scan returned" and "the worker
+# holding the viewer's socket" are then different numbers, which is the only shape
+# in which a build that answers with the former is caught.
+_FOREIGN_PIDS_BELOW = (_PID - 3_000_017, _PID - 3_000_029)
 _A, _B = _FOREIGN_PIDS
 _C, _D = _FOREIGN_PIDS_C
+_E, _F = _FOREIGN_PIDS_BELOW
 
 
 def _install_socket_stub(monkeypatch, **attrs):
