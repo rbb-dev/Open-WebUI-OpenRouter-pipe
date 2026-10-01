@@ -250,8 +250,13 @@ class Filter:
         user_valves = None
         if isinstance(__user__, dict):
             user_valves = __user__.get("valves")
-        if not isinstance(user_valves, self.UserValves):
+        if not isinstance(user_valves, BaseModel) or user_valves.__class__.__module__ != self.UserValves.__module__:
             user_valves = self.UserValves()
+        elif not isinstance(user_valves, self.UserValves):
+            try:
+                user_valves = self.UserValves.model_validate(user_valves.model_dump(exclude_unset=True))
+            except Exception:  # noqa: BLE001 - values that fail to validate fall back to defaults
+                user_valves = self.UserValves()
 
         prev_st = (__metadata__.get("openrouter_pipe") or {}).get("server_tools") if isinstance(__metadata__, dict) else None
         server_tools: dict[str, Any] = dict(prev_st) if isinstance(prev_st, dict) else {}

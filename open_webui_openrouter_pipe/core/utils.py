@@ -1077,7 +1077,10 @@ _BARE_BASE64_KEYS = frozenset({
     "input_audio", "audio",
 })
 
-_MEDIA_URL_KEYS = frozenset({"image_url", "file_url", "video_url", "url", "file_data", "content_url"})
+_MEDIA_URL_KEYS = frozenset({
+    "image_url", "file_url", "video_url", "url", "file_data", "content_url",
+    "audio", "last_image", "video", "videos", "images",
+})
 
 
 def _payload_key(key: str) -> str:

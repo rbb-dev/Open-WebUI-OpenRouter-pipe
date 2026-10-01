@@ -18,6 +18,10 @@ class VideoGenerationStalled(VideoGenerationError):
     pass
 
 
+class VideoStatusUnavailable(VideoGenerationStalled):
+    pass
+
+
 @dataclass(slots=True)
 class VideoGenerationResult:
 

@@ -169,7 +169,13 @@ class Filter:
 
         user_valves = __user__.get("valves") if isinstance(__user__, dict) else None
         if not isinstance(user_valves, self.UserValves):
-            user_valves = self.UserValves()
+            if isinstance(user_valves, BaseModel) and user_valves.__class__.__module__ == self.UserValves.__module__:
+                try:
+                    user_valves = self.UserValves.model_validate(user_valves.model_dump(exclude_unset=True))
+                except Exception:  # noqa: BLE001 - values that fail to validate fall back to defaults
+                    user_valves = self.UserValves()
+            else:
+                user_valves = self.UserValves()
 
         params: dict[str, Any] = {"model": (self.valves.IMAGE_GENERATION_MODEL or "").strip() or 'openai/gpt-5-image-mini'}
         if self.valves.IMAGE_GENERATION_MODERATION != 'auto':

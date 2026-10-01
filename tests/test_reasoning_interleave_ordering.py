@@ -20,6 +20,8 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
+
 from open_webui_openrouter_pipe import (
     Pipe,
     _responses_payload_to_chat_completions_payload,

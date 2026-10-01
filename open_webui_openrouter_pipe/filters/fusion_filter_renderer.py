@@ -216,8 +216,10 @@ __KEEP_WHAT_STILL_FITS__
             if isinstance(raw, self.UserValves):
                 return raw
             if isinstance(raw, BaseModel):
+                if raw.__class__.__module__ != self.UserValves.__module__:
+                    return self.UserValves()
                 try:
-                    return self.UserValves(**raw.model_dump())
+                    return self.UserValves(**raw.model_dump(exclude_unset=True))
                 except Exception:
                     return self.UserValves()
             if isinstance(raw, dict):

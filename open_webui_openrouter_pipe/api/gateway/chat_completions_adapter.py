@@ -263,10 +263,11 @@ class ChatCompletionsAdapter:
                 max_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
                 user=user,
             )
-        chat_payload = _responses_payload_to_chat_completions_payload(
+        chat_payload = await _responses_payload_to_chat_completions_payload(
             responses_payload,
             max_inline_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
             allow_insecure=self._pipe._multimodal_handler._is_insecure_http_allowed,
+            pipe=self._pipe,
         )
         chat_payload = _filter_openrouter_chat_request(chat_payload)
 
@@ -1115,10 +1116,11 @@ class ChatCompletionsAdapter:
                 max_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
                 user=user,
             )
-        chat_payload = _responses_payload_to_chat_completions_payload(
+        chat_payload = await _responses_payload_to_chat_completions_payload(
             responses_payload,
             max_inline_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
             allow_insecure=self._pipe._multimodal_handler._is_insecure_http_allowed,
+            pipe=self._pipe,
         )
         chat_payload = _filter_openrouter_chat_request(chat_payload)
 

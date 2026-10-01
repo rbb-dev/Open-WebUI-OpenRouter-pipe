@@ -2227,13 +2227,21 @@ async def test_commit_meta_merge_refusal_is_tolerated(svc, wired):
 
 @pytest.mark.asyncio
 async def test_commit_rev_guard_trips_before_loader(svc, wired, monkeypatch):
-    orig = svc.snapshot_current
+    """A revision that moves after the caller's last guard is refused before the loader.
 
-    async def _snap_and_bump(actor, owner):
+    The bump rides `_shielded_commit`, the seam between `apply`'s own `_rev_guard` and
+    `_commit`'s first one. It used to ride `snapshot_current`, which no longer runs
+    there: the snapshot now lands inside `_commit`, after the guard that refuses, so
+    the loader runs before the snapshot in the ordinary path and this guard still
+    fires before the loader in this one.
+    """
+    orig = svc._shielded_commit
+
+    async def _commit_and_bump(*args, **kwargs):
         wired.functions.row.updated_at += 7
-        return await orig(actor, owner)
+        return await orig(*args, **kwargs)
 
-    monkeypatch.setattr(svc, "snapshot_current", _snap_and_bump)
+    monkeypatch.setattr(svc, "_shielded_commit", _commit_and_bump)
     rev = wired.functions.row.updated_at
     with pytest.raises(us.UpdateError) as exc:
         await svc.apply({"rev": rev}, actor="admin", actor_id="u1", request=_request())

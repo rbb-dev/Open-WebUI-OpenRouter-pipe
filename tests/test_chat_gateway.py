@@ -3716,7 +3716,8 @@ def _refuses_cleartext(_url: str) -> bool:
     return False
 
 
-def test_responses_payload_to_chat_preserves_cache_control() -> None:
+@pytest.mark.asyncio
+async def test_responses_payload_to_chat_preserves_cache_control() -> None:
     payload = {
         "model": "anthropic/claude-sonnet-4.5",
         "stream": True,
@@ -3735,7 +3736,7 @@ def test_responses_payload_to_chat_preserves_cache_control() -> None:
             }
         ],
     }
-    chat = _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+    chat = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
     assert chat["model"] == payload["model"]
     assert chat["stream"] is True
     assert chat["messages"][0]["role"] == "system"
@@ -3753,9 +3754,10 @@ def test_responses_payload_to_chat_preserves_cache_control() -> None:
     assert cached["cache_control"] == {"type": "ephemeral"}
 
 
-def test_responses_payload_to_chat_rounds_top_k_for_chat_completions() -> None:
+@pytest.mark.asyncio
+async def test_responses_payload_to_chat_rounds_top_k_for_chat_completions() -> None:
     payload = {"model": "openai/gpt-5", "stream": False, "input": [], "top_k": 2.5}
-    chat = _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+    chat = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
     assert chat["top_k"] == 2
 
 
@@ -3784,7 +3786,8 @@ def test_force_responses_models_overrides_force_chat_models(pipe_instance) -> No
     assert pipe._streaming_handler._select_llm_endpoint("anthropic.claude-sonnet-4.5", valves=valves) == "responses"
 
 
-def test_responses_payload_to_chat_converts_tools_schema() -> None:
+@pytest.mark.asyncio
+async def test_responses_payload_to_chat_converts_tools_schema() -> None:
     payload = {
         "model": "openai/gpt-5",
         "stream": True,
@@ -3798,7 +3801,7 @@ def test_responses_payload_to_chat_converts_tools_schema() -> None:
             }
         ],
     }
-    chat = _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+    chat = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
     assert chat["tools"] == [
         {
             "type": "function",

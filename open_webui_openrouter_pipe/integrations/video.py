@@ -113,6 +113,7 @@ from .video_types import (
     VideoGenerationError,
     VideoGenerationStalled,
     VideoLifecycleResult,
+    VideoStatusUnavailable,
 )
 
 _warned_provider_slug_guess: set[str] = set()
@@ -511,6 +512,12 @@ _VIDEO_CAN_BE_PICKED_BACK_UP = (
     "starts a fresh job under a new message instead."
 )
 
+_VIDEO_POLL_ERRORS_SPENT = (
+    "OpenRouter's status endpoint did not answer this video's job {errors} times in "
+    "a row, so this message stopped waiting for it. The job was not cancelled and is "
+    "still billed."
+)
+
 _VIDEO_IS_STILL_RUNNING_STATUS = "Video generation is still running at OpenRouter."
 
 _VIDEO_GENERATION_FAILED_STATUS = "No video was produced."
@@ -650,8 +657,7 @@ def _refuse_frame_over_byte_budget(
 ) -> None:
     logger.log(
         warn_level(
-            _warned_frame_not_materialised,
-            f"byte_budget:{entry.source_index}",
+            _warned_frame_not_materialised, "byte_budget",
         ),
         "frame over the byte budget for entry %s: %s",
         entry.source_index, exc,
@@ -672,8 +678,7 @@ def _refuse_frame_for_mime(
 ) -> None:
     logger.log(
         warn_level(
-            _warned_frame_not_materialised,
-            f"frame_mime:{entry.source_index}",
+            _warned_frame_not_materialised, "frame_mime",
         ),
         "no allowed frame image format for entry %s",
         entry.source_index,
@@ -1624,7 +1629,9 @@ class VideoGenerationAdapter:
             )
             raise
         except VideoGenerationStalled as exc:
-            self.logger.warning("Video job %s outlasted its status window: %s", job_id, exc)
+            self.logger.warning("Video job %s stopped being watched: %s", job_id, exc)
+            if isinstance(exc, VideoStatusUnavailable):
+                _record_failed_call(self._pipe, breaker_key)
             elapsed = max(0.0, time.monotonic() - started_at)
             note = str(exc)
             if is_linkable_chat(chat_id):
@@ -1822,10 +1829,12 @@ class VideoGenerationAdapter:
                 payload = await client.status(job_id, polling_url=polling_url)
                 consecutive_errors = 0
                 polling_url = _clean_str(payload.get("polling_url"))
-            except Exception:
+            except Exception as exc:
                 consecutive_errors += 1
                 if consecutive_errors >= int(valves.VIDEO_STATUS_POLL_MAX_ERRORS):
-                    raise
+                    raise VideoStatusUnavailable(
+                        _VIDEO_POLL_ERRORS_SPENT.format(errors=consecutive_errors)
+                    ) from exc
                 await asyncio.sleep(min(interval, max_interval))
                 interval = min(max_interval, interval * backoff)
                 continue
@@ -3582,8 +3591,7 @@ class VideoGenerationAdapter:
                         else:
                             self.logger.log(
                                 warn_level(
-                                    _warned_frame_not_materialised,
-                                    f"extract_failed:{entry.source_index}",
+                                    _warned_frame_not_materialised, "extract_failed",
                                 ),
                                 "frame extraction failed for entry %s: %s",
                                 entry.source_index, exc,

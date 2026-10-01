@@ -1616,6 +1616,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "fixed rather than set here - and this is a pool of its own, so the total memory ceiling is twice one pool. "
             "A temporary chat never opens this bucket, a Fusion inner call never does either, and a call that sends "
             "`parent_id: null` is given a real chat id by Open WebUI, so that shape is not covered here. "
+            "Its records have no message id to be stored under, so none of them is persisted either, and the skip is "
+            "announced once per request - at warning level for the first record and at debug level for the rest - "
+            "rather than once per record. "
             "No marker line is ever added to the caller's response, so a program's bytes in and bytes out are "
             "unchanged."
         ),
@@ -2419,6 +2422,8 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "state is the other half of the same switch and moves on its own: with this "
             "valve off as well, a row the pipe switched off is switched back on as soon "
             "as any web tool is on again, whether the pipe installed that row or you did."
+            " A filter the pipe cannot read is reported as unrepaired, and the pass is "
+            "retried once per five-minute window until the row is updated or removed."
             + _PIPE_OFF_COMES_BACK
         ),
     )
@@ -2557,6 +2562,8 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "Automatically install/update the OpenRouter Fusion filter function in Open WebUI."
             + _PIPE_OFF_COMES_BACK
             + _ADMIN_OFF_STAYS_OFF
+            + " Its fixes live in the stored row rather than in the pipe, so an installed"
+            " deployment receives them only while this valve is on."
         ),
     )
     AUTO_ATTACH_FUSION_FILTER: bool = Field(
@@ -2619,8 +2626,10 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "How long a video generation job may go without a word from OpenRouter before "
             "this stops watching it. The clock restarts every time a status check comes "
             "back saying the job is still running, so a slow render is never cut off for "
-            "taking a long time \u2014 only one that has gone quiet is. When it does run "
-            "out the chat keeps the job's card and says the render is still going at "
+            "taking a long time \u2014 only one that has gone quiet is. This is one of two "
+            "limits that do the same thing: a run of unanswered status checks stops the "
+            "watching too, without cancelling the job. When either one runs out the chat "
+            "keeps the job's card and says the render is still going at "
             "OpenRouter: nothing is cancelled and OpenRouter still bills the job, and the "
             "person can press Continue Response on that message to pick it back up. The "
             "wait is never allowed to be shorter than a single status check can take, so "
@@ -2633,7 +2642,15 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=5,
         ge=1,
         le=25,
-        description="Maximum consecutive video status polling errors before the job is marked failed in the chat.",
+        description=(
+            "How many status checks in a row may come back as an error before this stops "
+            "watching the job. A status endpoint that is not answering says nothing about "
+            "the job itself, so the card is kept as still running and resumable rather "
+            "than written off as a failure: nothing is cancelled, the render is still "
+            "going at OpenRouter, and the person can press Continue Response on that "
+            "message to pick it back up. A later check that reports the job as failed or "
+            "expired ends it for real, as it would have anyway."
+        ),
     )
     SEND_MEDIA_VIA_FILE_HOST: bool = Field(
         default=False,
@@ -2876,8 +2893,8 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "the first frame is substituted there whatever this setting says, and the "
             "disclosure names it. "
             "A request that names a first or last frame directly gets that frame - "
-            "except on a damaged clip whose length the host cannot measure, where no "
-            "end-seek hop reads a frame at all and the file's first frame is "
+            "except on a clip, damaged or not, whose length the host cannot measure, "
+            "where no end-seek hop reads a frame at all and the file's first frame is "
             "substituted for the one asked for, which the disclosure footer says. "
             "'last' matches 'continue this scene' intent. On a model that accepts only a "
             "first frame, a moment the earlier video has is sent as asked and nothing is "

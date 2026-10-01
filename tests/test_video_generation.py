@@ -55,6 +55,7 @@ from open_webui_openrouter_pipe.integrations.video_types import (
     VideoGenerationError,
     VideoGenerationStalled,
     VideoLifecycleResult,
+    VideoStatusUnavailable,
 )
 from open_webui_openrouter_pipe.models.registry import ModelFamily, OpenRouterModelRegistry
 from open_webui_openrouter_pipe.storage.video_persistence import VideoPersistence
@@ -7397,11 +7398,15 @@ async def test_consecutive_poll_errors_still_give_up_at_the_configured_maximum(
             attempts.append(len(attempts))
             raise OSError("connection reset")
 
-    with pytest.raises(OSError):
+    with pytest.raises(VideoStatusUnavailable) as spent:
         await adapter._poll_until_terminal(
             cast(Any, BrokenClient()), "job-1", pipe.valves, None
         )
 
+    assert isinstance(spent.value.__cause__, OSError), (
+        f"the raise carried {spent.value.__cause__!r} as its cause; the connection "
+        f"fault that spent the budget has to survive for the operator's log"
+    )
     assert len(attempts) == budget
 
 

@@ -2078,6 +2078,14 @@ This handles:
   result populates the active-task registry. When the user returns and
   the chat re-fires `pipe()`, the resume path sees the in-flight or
   completed bg task and delivers the result.
+- **A burst of status-poll errors** — `VIDEO_STATUS_POLL_MAX_ERRORS`
+  consecutive failures ends the watching, not the job. An endpoint that
+  is not answering says nothing about the render, so the persisted card
+  is the still-running one: the marker stays and the resume offer is made
+  wherever the marker can be stored. The user's circuit breaker is still
+  charged once, because the endpoint that would have answered this job is
+  the thing that did not, and a burst is one failed call like any other. A
+  later poll that reports `failed` or `expired` still ends the job for real.
 
 What does NOT survive:
 
@@ -2192,7 +2200,7 @@ Functions → OpenRouter pipe → Valves; the per-model filter ones live on each
 | `VIDEO_POLL_BACKOFF_FACTOR` | `1.2` | 1.0–4.0 | Multiplier applied to the interval after each non-terminal poll. |
 | `VIDEO_POLL_INTERVAL_MAX_SECONDS` | `20.0` | 1.0–120.0 | Cap on the polling interval after backoff. |
 | `VIDEO_MAX_POLL_TIME_SECONDS` | `1800` | 30–7200 | Max time a job may go silent — reset by every status check that reports the job still running. On expiry the card is persisted as still running, not failed. Floored at `VIDEO_POLL_INTERVAL_MAX_SECONDS` + the HTTP read timeout. |
-| `VIDEO_STATUS_POLL_MAX_ERRORS` | `5` | 1–25 | Tolerable consecutive transient poll errors before failing. |
+| `VIDEO_STATUS_POLL_MAX_ERRORS` | `5` | 1–25 | Tolerable consecutive status-poll errors before the pipe stops polling; the job is not failed. |
 | `REMOTE_VIDEO_MAX_SIZE_MB` | `500` | 1–2048 | Max downloaded video size; oversized aborts streaming. Bounds the generated video only, never an attachment. |
 | `VIDEO_DOWNLOAD_CHUNK_SIZE` | `1048576` | 65536–8388608 | Chunk size in bytes for streaming download. |
 | `MAX_CONCURRENT_VIDEO_GENS` | `2` | 1–100 | Global concurrency cap per pipe process. Applies on the next generation, with no restart; a lower value binds from that moment and jobs already running finish first. |

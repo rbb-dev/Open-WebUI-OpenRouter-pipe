@@ -990,13 +990,27 @@ async def _tool_picture_address_gate(
 
 
 async def _tool_picture_gate_with_address(
-    pipe: Pipe,
+    pipe: Pipe | None,
     pictures: list[str],
     *,
     max_inline_bytes: int,
     seen: dict[str, bool | None] | None = None,
     deadline: float | None = None,
 ) -> tuple[list[str], list[tuple[str, str, str]]]:
+    if pipe is None:
+        kept, refused = _tool_picture_gate(
+            pictures,
+            max_inline_bytes=max_inline_bytes,
+            allow_insecure=lambda _url: True,
+        )
+        return [
+            url for url in kept
+            if not (is_http_or_https_url(url) and not names_an_owui_file_path(url))
+        ], refused + [
+            (url, "could not be fetched, so it was not sent", "remote_unfetched")
+            for url in kept
+            if is_http_or_https_url(url) and not names_an_owui_file_path(url)
+        ]
     kept, refused = _tool_picture_gate(
         pictures,
         max_inline_bytes=max_inline_bytes,
@@ -1025,6 +1039,13 @@ def _tool_images_message(
         {"type": "input_text", "text": OPEN_WEBUI_TOOL_IMAGES_TEXT},
         *({"type": "input_image", "image_url": url, "detail": "auto"} for url in pictures),
     ]}
+
+
+_TEMPORARY_CHAT_LOG_SUBJECT = "<temporary chat>"
+
+
+def _chat_log_subject(chat_id: Any) -> Any:
+    return _TEMPORARY_CHAT_LOG_SUBJECT if is_temporary_chat(chat_id) else chat_id
 
 
 def _memo_owner_key(user_obj: Any | None) -> str | None:
@@ -1399,7 +1420,7 @@ async def transform_messages_to_input(
                             chat_id, load_group_id, load_group_markers
                         )
                     except Exception:
-                        logger.warning("Artifact loader failed for chat_id=%s message_id=%s", chat_id, load_group_id, exc_info=True)
+                        logger.warning("Artifact loader failed for chat_id=%s message_id=%s", _chat_log_subject(chat_id), load_group_id, exc_info=True)
                         return load_group_id, {}
 
             pending_groups = [
@@ -2993,7 +3014,7 @@ async def transform_messages_to_input(
                         logger.debug(
                             "Dropping %d persisted function_call artifact(s) missing outputs (chat_id=%s message_id=%s call_ids=%s)",
                             len(orphaned_call_ids),
-                            chat_id,
+                            _chat_log_subject(chat_id),
                             msg_id,
                             sorted(orphaned_call_ids),
                         )
@@ -3001,7 +3022,7 @@ async def transform_messages_to_input(
                         logger.warning(
                             "Dropping %d persisted function_call_output artifact(s) missing calls (chat_id=%s message_id=%s call_ids=%s)",
                             len(orphaned_output_ids),
-                            chat_id,
+                            _chat_log_subject(chat_id),
                             msg_id,
                             sorted(orphaned_output_ids),
                         )
@@ -3037,7 +3058,7 @@ async def transform_messages_to_input(
                                 logger.debug(
                                     "Skipping orphaned function_call artifact (call_id=%s chat_id=%s message_id=%s)",
                                     item.get("call_id"),
-                                    chat_id,
+                                    _chat_log_subject(chat_id),
                                     msg_id,
                                 )
                                 continue
@@ -3048,7 +3069,7 @@ async def transform_messages_to_input(
                                 logger.debug(
                                     "Skipping orphaned function_call_output artifact (call_id=%s chat_id=%s message_id=%s)",
                                     item.get("call_id"),
-                                    chat_id,
+                                    _chat_log_subject(chat_id),
                                     msg_id,
                                 )
                                 continue
@@ -3158,7 +3179,7 @@ async def transform_messages_to_input(
                 "Missing %d artifact(s) across %d marker reference(s) for chat_id=%s: %s",
                 len(distinct_missing),
                 len(missing_artifact_markers),
-                chat_id,
+                _chat_log_subject(chat_id),
                 distinct_missing,
             )
 

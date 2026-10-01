@@ -322,13 +322,18 @@ def _offered_web_tools(content: str) -> frozenset[str] | None:
         if isinstance(node, ast.ClassDef) and node.name == "Filter":
             for inner in node.body:
                 if isinstance(inner, ast.ClassDef) and inner.name == "UserValves":
-                    return frozenset(
-                        stmt.target.id
+                    declared = [
+                        (stmt.target.id, stmt.annotation)
                         for stmt in inner.body
                         if isinstance(stmt, ast.AnnAssign)
                         and isinstance(stmt.target, ast.Name)
-                        and stmt.target.id in toggles
-                    )
+                    ]
+                    if any(
+                        isinstance(annotation, ast.Name) and annotation.id == "bool" and name not in toggles
+                        for name, annotation in declared
+                    ):
+                        return None
+                    return frozenset(name for name, _ in declared if name in toggles)
     return None
 
 _PROVIDER_ROUTING_OWNER_PREFIX = "OWUI_PIPE_OWNER"
@@ -1487,8 +1492,13 @@ class FilterManager:
         template += '        user_valves = None\n'
         template += '        if isinstance(__user__, dict):\n'
         template += '            user_valves = __user__.get("valves")\n'
-        template += '        if not isinstance(user_valves, self.UserValves):\n'
+        template += '        if not isinstance(user_valves, BaseModel) or user_valves.__class__.__module__ != self.UserValves.__module__:\n'
         template += '            user_valves = self.UserValves()\n'
+        template += '        elif not isinstance(user_valves, self.UserValves):\n'
+        template += '            try:\n'
+        template += '                user_valves = self.UserValves.model_validate(user_valves.model_dump(exclude_unset=True))\n'
+        template += '            except Exception:  # noqa: BLE001 - values that fail to validate fall back to defaults\n'
+        template += '                user_valves = self.UserValves()\n'
         template += '\n'
         template += '        prev_st = (__metadata__.get("__PIPE_META_KEY__") or {}).get("server_tools") if isinstance(__metadata__, dict) else None\n'
         template += '        server_tools: dict[str, Any] = dict(prev_st) if isinstance(prev_st, dict) else {}\n'
@@ -1752,6 +1762,7 @@ class FilterManager:
                     ", ".join(sorted(switched_off)),
                     _no_search_suffix(switched_off),
                 )
+                complete = False
                 continue
             dropped = offered & switched_off
             if not dropped:
@@ -1868,11 +1879,11 @@ class FilterManager:
                 found = rows.all_rows
             else:
                 found = await Functions.get_functions_by_type("filter", active_only=False)
-        except Exception:
+        except Exception as exc:
             self.logger.warning(
                 "Could not list the installed %s filters", log_label, exc_info=True
             )
-            return
+            raise _FilterEnumerationUnavailable(str(exc)) from exc
         retired_valves = {
             family_marker: valve
             for valve, family_marker in _AUTO_INSTALL_FAMILY_MARKERS

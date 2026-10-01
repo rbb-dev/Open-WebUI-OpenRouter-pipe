@@ -7,7 +7,6 @@ import sys
 from types import ModuleType
 
 import pytest
-from pydantic import BaseModel
 
 from open_webui_openrouter_pipe.filters.fusion_filter_renderer import (
     FUSION_FILTER_FUNCTION_ID,
@@ -24,20 +23,31 @@ OWUI_FULL = "open_webui_openrouter_pipe.openrouter.fusion"  # real runtime body[
 OWUI_SHORT = "openrouter.openrouter.fusion"                # pipe-prefix == "openrouter"
 
 
-def _load(module_name: str = "fusion_filter_rendered") -> ModuleType:
-    """Load the rendered filter as a real module — the way OWUI installs it — so
-    pydantic can resolve the Literal forward refs (mirrors
-    tests/test_image_generation.py:_load_filter_from_source)."""
+def _exec_as(source: str, module_name: str) -> ModuleType:
+    """Execute ``source`` into a module named ``module_name``, the way OWUI installs a row.
+
+    ``open_webui/utils/plugin.py`` execs a filter function's stored source into a module
+    called ``function_{function_id}``, and re-execs a *new* module object under that same
+    name when the stored content changed.  A stand-in class defined in this test file
+    carries this file's name instead, which is neither this row's nor any other row's."""
     if "open_webui.env" not in sys.modules:
         env_mock = ModuleType("open_webui.env")
         env_mock.SRC_LOG_LEVELS = {}  # type: ignore[attr-defined]
         sys.modules["open_webui.env"] = env_mock
-    src = render_openrouter_fusion_filter_source(marker=MARKER)
-    ast.parse(src)  # rendered source must be valid Python
     module = ModuleType(module_name)
     module.__file__ = f"<{module_name}_rendered>"
     sys.modules[module_name] = module
-    exec(compile(src, f"<{module_name}>", "exec"), module.__dict__)  # noqa: S102 - testing generated source
+    exec(compile(source, f"<{module_name}>", "exec"), module.__dict__)  # noqa: S102 - testing generated source
+    return module
+
+
+def _load(module_name: str = "fusion_filter_rendered") -> ModuleType:
+    """Load the rendered filter as a real module — the way OWUI installs it — so
+    pydantic can resolve the Literal forward refs (mirrors
+    tests/test_image_generation.py:_load_filter_from_source)."""
+    src = render_openrouter_fusion_filter_source(marker=MARKER)
+    ast.parse(src)  # rendered source must be valid Python
+    module = _exec_as(src, module_name)
     module.Filter.UserValves.model_rebuild()
     module.Filter.Valves.model_rebuild()
     return module

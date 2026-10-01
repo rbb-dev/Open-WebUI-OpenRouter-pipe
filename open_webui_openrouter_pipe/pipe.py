@@ -1863,6 +1863,8 @@ class Pipe:
                     exc,
                     exc_info=True,
                 )
+                if _is_install_enumeration_failure(exc):
+                    raise
         try:
             if not await self._ensure_filter_manager().repair_web_tools_filters():
                 ok = False

@@ -341,14 +341,15 @@ still offers the tool, and its inlet still suppresses Open WebUI's own search, s
 nothing. The pipe repairs the rows:
 
 - **Which filters are affected:** every Web Tools filter this pipe maintains -- one it installed, or one carrying no install record -- whatever its id and whether it is on or off, whether auto-install is on or off.
-- **What "offers" means:** the per-chat switches the filter's `UserValves` declares, read from its code without running it.
+- **What "offers" means:** the per-chat switches the filter's `UserValves` declares, read from its code without running it. A row declaring a per-user switch whose name is outside the pipe's current table is read as unreadable rather than as offering nothing.
 - **What is written:** the code is replaced with the pipe's current version offering the tools it still offers. Its
   name, settings and on/off state are kept; a filter never gains a tool it did not offer, so while
   `AUTO_INSTALL_WEB_TOOLS_FILTER` is off, switching a tool back on does not add it back. With it on — the default — the
   next model-list refresh rewrites the row this pipe maintains from the current valve set, so the tool comes back
   there; another copy the repair touched keeps it out until an admin switches it on in the Functions list. Hand
   edits in the code are lost and a warning names the row and the tools removed.
-- **A filter the pipe cannot read** (its code does not parse, or has no `Filter.UserValves`) is left exactly as it is
+- **A filter the pipe cannot read** (its code does not parse, has no `Filter.UserValves`, or declares a per-user switch this
+  version does not publish -- a row whose `WEB_SEARCH` was renamed to something else by a later version) is left exactly as it is
   and named in a warning; repeats for the same row and set of switched-off tools log below WARNING.
 - **With every web tool off,** every Web Tools filter this pipe maintains is switched off, and the default the pipe seeded is removed from every model it seeded it on.
 - **When it happens:** at the next model-list refresh, or in the background after a message that still asks for a

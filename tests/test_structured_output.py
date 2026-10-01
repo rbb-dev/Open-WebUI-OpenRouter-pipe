@@ -1,6 +1,8 @@
 # pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 from __future__ import annotations
 
+import pytest
+
 from open_webui_openrouter_pipe import (
     _filter_openrouter_request,
     _responses_payload_to_chat_completions_payload,
@@ -56,7 +58,8 @@ def test_filter_openrouter_request_drops_invalid_text_format() -> None:
     assert "text" not in filtered
 
 
-def test_responses_payload_to_chat_maps_text_format_to_response_format() -> None:
+@pytest.mark.asyncio
+async def test_responses_payload_to_chat_maps_text_format_to_response_format() -> None:
     payload = {
         "model": "openai/gpt-5",
         "stream": False,
@@ -69,11 +72,12 @@ def test_responses_payload_to_chat_maps_text_format_to_response_format() -> None
         ],
         "text": {"format": {"type": "json_object"}},
     }
-    chat = _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+    chat = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
     assert chat["response_format"] == {"type": "json_object"}
 
 
-def test_responses_payload_to_chat_prefers_response_format_over_text_format() -> None:
+@pytest.mark.asyncio
+async def test_responses_payload_to_chat_prefers_response_format_over_text_format() -> None:
     payload = {
         "model": "openai/gpt-5",
         "stream": False,
@@ -93,6 +97,6 @@ def test_responses_payload_to_chat_prefers_response_format_over_text_format() ->
             }
         },
     }
-    chat = _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+    chat = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
     assert chat["response_format"] == {"type": "json_object"}
 

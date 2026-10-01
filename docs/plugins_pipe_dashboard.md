@@ -157,8 +157,9 @@ builds — forks inherit the release workflow, so assets, digests, and the chang
   instead. Releases older than 2.7.0 — the first release carrying this tab — are refused outright:
   installing one would remove the updater itself. Applying downloads the asset (8 MiB cap), verifies its
   sha256 against the release digest, checks the frontmatter (id, newer version, required Open WebUI
-  version), snapshots the current code, exec-validates the new bundle through Open WebUI's own
-  loader, and only then writes the function row — and verifies the database accepted the write,
+  version), exec-validates the new bundle through Open WebUI's own loader, checks that the function's
+  revision has not moved while it was loading, snapshots the current code, and only then writes the
+  function row — and verifies the database accepted the write,
   failing the update loudly instead of reporting a success that did not persist. A load failure
   surfaces the real error in the tab and the pipe keeps serving the old code, and it leaves the pipe's
   on/off switch exactly as you had it — so a pipe you had already switched off in Workspace > Functions
@@ -183,8 +184,10 @@ builds — forks inherit the release workflow, so assets, digests, and the chang
   Files storage with their metadata (version, checksum, date, actor) on the file record itself —
   nothing about them lives in the function entry, so editing or re-pasting the function in the
   admin panel can never erase the rollback list. A restore re-validates the snapshot against its
-  pinned sha256 before loading it, and snapshots the current code first, so restores are themselves
-  undoable. Delete double-checks the snapshot is still the one shown in the list before removing
+  pinned sha256 before loading it, and once the revision check has passed it snapshots the current
+  code, so restores are themselves undoable; a restore refused for a concurrent edit takes no
+  snapshot at all, so the list is left exactly as it was and no older rollback point is rotated
+  out. Delete double-checks the snapshot is still the one shown in the list before removing
   it and refuses with a refresh prompt if it changed. Snapshot records are owned by the primary
   admin account and are ordinary Open WebUI file records under the hood (there is no general file
   browser in the Open WebUI UI, so they stay out of the way, but they are listable through the

@@ -26,7 +26,7 @@ import aiohttp
 
 from ..core.logging_system import SessionLogger
 from ..core.timing_logger import timed
-from ..core.url_scheme import url_scheme
+from ..core.url_scheme import is_inline_data_url, url_scheme
 from ..core.warn_latch import warn_level
 
 try:
@@ -1275,7 +1275,7 @@ class ModelCatalogManager:
                     icon_url = f"https:{icon_url}"
                 elif icon_url.startswith("/"):
                     icon_url = f"{_OPENROUTER_SITE_URL}{icon_url}"
-                elif not icon_url.startswith(("http://", "https://", "data:image")):
+                elif not (icon_url.startswith(("http://", "https://")) or is_inline_data_url(icon_url)):
                     icon_url = f"{_OPENROUTER_SITE_URL}/{icon_url.lstrip('/')}"
 
             elif provider_hint_url:

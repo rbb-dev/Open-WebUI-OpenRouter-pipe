@@ -61,6 +61,7 @@ from ..core.errors import (
 from ..core.timing_logger import timed
 from ..core.url_scheme import (
     is_http_or_https_url,
+    is_inline_data_url,
     loggable_link,
     split_base64_data_url,
     url_scheme,
@@ -1830,7 +1831,7 @@ class MultimodalHandler:
         url = (url or "").strip()
         if not url:
             return None
-        if url.startswith("data:image"):
+        if is_inline_data_url(url):
             return await self._inline_icon_as_data_url(url)
         if url.startswith("//"):
             url = f"https:{url}"

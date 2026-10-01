@@ -963,12 +963,13 @@ def _replay_blocks_or_note(
     return note
 
 
-def _responses_input_to_chat_messages(
+async def _responses_input_to_chat_messages(
     input_value: Any,
     *,
     max_inline_bytes: int,
     allow_insecure: Callable[[str], bool],
     allow_unknown_fields: bool = False,
+    pipe: Pipe | None = None,
 ) -> list[dict[str, Any]]:
     """Convert Responses API input array -> Chat Completions messages array.
 
@@ -992,13 +993,18 @@ def _responses_input_to_chat_messages(
     tool_pictures: list[str] = []
     pending_reasoning_details: list[Any] = []
 
-    def _hand_over_tool_pictures() -> None:
-        from ..requests.transformer import _tool_picture_gate
+    async def _hand_over_tool_pictures() -> None:
+        from ..requests.transformer import _tool_picture_gate_with_address
 
         if not tool_pictures:
             return
-        kept, refused = _tool_picture_gate(
-            tool_pictures, max_inline_bytes=max_inline_bytes, allow_insecure=allow_insecure,
+        if pipe is None:
+            logger.warning(
+                "A tool's picture reached the chat-completions handover with no pipe, so the "
+                "address the provider would reach could not be checked; every http(s) one is refused"
+            )
+        kept, refused = await _tool_picture_gate_with_address(
+            pipe, tool_pictures, max_inline_bytes=max_inline_bytes,
         )
         for url, reason, cause in refused:
             logger.warning(
@@ -1048,7 +1054,7 @@ def _responses_input_to_chat_messages(
             continue
         itype = item.get("type")
         if itype != "function_call_output":
-            _hand_over_tool_pictures()
+            await _hand_over_tool_pictures()
 
         if opens_a_turn(input_value, index):
             _flush_pending_reasoning()
@@ -1410,7 +1416,7 @@ def _responses_input_to_chat_messages(
             continue
 
 
-    _hand_over_tool_pictures()
+    await _hand_over_tool_pictures()
     _flush_pending_reasoning()
     return messages
 
@@ -1444,11 +1450,12 @@ def chat_payload_loses_fusion_entry(model_id: Any, plugins: Any) -> bool:
     return isinstance(entry, dict) and entry.get("enabled") is not False
 
 
-def _responses_payload_to_chat_completions_payload(
+async def _responses_payload_to_chat_completions_payload(
     responses_payload: dict[str, Any],
     *,
     max_inline_bytes: int,
     allow_insecure: Callable[[str], bool],
+    pipe: Pipe | None = None,
 ) -> dict[str, Any]:
     """Convert a Responses API request payload into a Chat Completions payload."""
     if not isinstance(responses_payload, dict):
@@ -1567,10 +1574,11 @@ def _responses_payload_to_chat_completions_payload(
             and not has_active_fusion_entry(chat_payload.get("plugins")):
         chat_payload.pop("tool_choice", None)
 
-    chat_payload["messages"] = _responses_input_to_chat_messages(
+    chat_payload["messages"] = await _responses_input_to_chat_messages(
         responses_payload.get("input"),
         max_inline_bytes=max_inline_bytes,
         allow_insecure=allow_insecure,
+        pipe=pipe,
     )
 
     instructions = responses_payload.get("instructions")

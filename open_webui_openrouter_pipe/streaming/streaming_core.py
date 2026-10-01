@@ -203,7 +203,11 @@ from ..storage.multimodal import (
     resolve_download_type,
 )
 from ..storage.owui_files import is_channel_chat, is_linkable_chat, is_temporary_chat
-from ..storage.persistence import generate_item_id, normalize_persisted_item
+from ..storage.persistence import (
+    _UNCLAIMED_LATCH,
+    generate_item_id,
+    normalize_persisted_item,
+)
 from ..tools.citation_harvester import (
     BUILTIN_CITATION_TOOLS,
     UNCITED_TOOLS,
@@ -691,6 +695,7 @@ class StreamingHandler:
             for t in (body.tools or [])
             if isinstance(t, dict) and t.get("type") == "function"
         }
+        unclaimed_token: Any = None
         try:
             may_hand_back = owui_tool_passthrough or bool(offered_function_names - set(tool_registry))
             holds_the_reply = bool(
@@ -700,6 +705,9 @@ class StreamingHandler:
             if holds_the_reply:
                 self._pipe._artifact_store._reply_memory.open(chat_id, message_id)
             api_hold_key = ""
+            unclaimed_token = _UNCLAIMED_LATCH.set(
+                set() if (chat_id and not message_id and not fusion_inner_call) else None
+            )
             if (
                 not chat_id
                 and not is_temporary_chat(chat_id)
@@ -4188,6 +4196,8 @@ class StreamingHandler:
                 assistant_message = reported
 
         finally:
+            if unclaimed_token is not None:
+                _UNCLAIMED_LATCH.reset(unclaimed_token)
             if event_iter is not None:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await asyncio.shield(_aclose_quietly(event_iter))

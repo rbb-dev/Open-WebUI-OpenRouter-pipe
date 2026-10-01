@@ -1026,6 +1026,7 @@ class UpdateService:
         instance, frontmatter, final, restore = await self._reload_via_loader(content)
         try:
             await self._rev_guard(rev)
+            await self.snapshot_current(actor, await self._snapshot_owner(actor, actor_user))
             pipe_id = self._pipe().id
             functions = self._functions()
             written = await functions.update_function_by_id(pipe_id, {"content": final})
@@ -1231,8 +1232,6 @@ class UpdateService:
                 from_version = str(snap["installed"]["version"])
                 content = await self.fetch_and_validate(asset, require_newer=True)
                 rev = await self._rev_guard(rev)
-                owner = actor_id if actor == "auto" else await self._super_admin_id()
-                await self.snapshot_current(actor, owner)
                 handoff, xlock = xlock, None
                 result = await self._shielded_commit(
                     content, rev, request, actor, from_version, xlock=handoff,
@@ -1280,8 +1279,6 @@ class UpdateService:
                     raise UpdateError("validation_failed", "snapshot is not valid UTF-8") from exc
                 await self._validate_content(content, require_newer=False)
                 from_version = self._installed_version(row)
-                owner = actor_id if actor == "auto" else await self._super_admin_id()
-                await self.snapshot_current(actor, owner)
                 handoff, xlock = xlock, None
                 result = await self._shielded_commit(
                     content, rev, request, actor, from_version, xlock=handoff,
@@ -1453,6 +1450,11 @@ class UpdateService:
                 "update: super-admin lookup failed; snapshot owner defaults to system", exc_info=True
             )
             return "system"
+
+    async def _snapshot_owner(self, actor: str, actor_user: Any = None) -> str:
+        if actor == "auto":
+            return str(getattr(actor_user, "id", "") or "") or await self._super_admin_id()
+        return await self._super_admin_id()
 
     def _next_backoff(self, exc: UpdateError | None = None) -> float:
         import random

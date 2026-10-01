@@ -2598,7 +2598,7 @@ def test_no_error_card_names_a_control_that_does_not_exist():
 # ---------------------------------------------------------------------------
 
 
-def _chat_completions_payload(*, auto_context_trimming: bool) -> dict:
+async def _chat_completions_payload(*, auto_context_trimming: bool) -> dict:
     """Send one request all the way to the body the chat-completions leg posts."""
     from open_webui_openrouter_pipe.api.transforms import (
         ResponsesBody,
@@ -2610,12 +2610,13 @@ def _chat_completions_payload(*, auto_context_trimming: bool) -> dict:
     body = ResponsesBody(model="anthropic/claude-3", input=[], stream=True)
     apply_context_transforms(body, auto_context_trimming=auto_context_trimming)
     return _filter_openrouter_chat_request(
-        _responses_payload_to_chat_completions_payload(body.model_dump(exclude_none=True), max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        await _responses_payload_to_chat_completions_payload(body.model_dump(exclude_none=True), max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
     )
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("auto_context_trimming", [True, False])
-def test_the_trimming_instruction_survives_the_trip_to_chat_completions(auto_context_trimming):
+async def test_the_trimming_instruction_survives_the_trip_to_chat_completions(auto_context_trimming):
     """The setting is not endpoint-specific, and the Config tab used to say it was.
 
     The instruction is a plugin entry on the request body, and the chat-completions
@@ -2629,7 +2630,9 @@ def test_the_trimming_instruction_survives_the_trip_to_chat_completions(auto_con
     Parametrised both ways: a payload that always carries the plugin, and one that never
     does, each fail one arm.
     """
-    plugins = _chat_completions_payload(auto_context_trimming=auto_context_trimming).get("plugins") or []
+    plugins = (await _chat_completions_payload(
+        auto_context_trimming=auto_context_trimming,
+    )).get("plugins") or []
     carried = any(
         isinstance(entry, dict) and entry.get("id") == "context-compression" for entry in plugins
     )

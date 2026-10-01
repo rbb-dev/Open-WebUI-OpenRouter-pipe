@@ -90,6 +90,10 @@ from ..core.config import (
 
 # Persistence Constants
 
+_UNCLAIMED_LATCH: ContextVar[set[str] | None] = ContextVar(
+    "unclaimed_missing_message_id", default=None
+)
+
 # Payload compression flags
 _PAYLOAD_FLAG_PLAIN = 0
 _PAYLOAD_FLAG_LZ4 = 1
@@ -1590,7 +1594,12 @@ class ArtifactStore:
             if not self._item_model:
                 return None
             if not message_id:
-                self.logger.warning("Skipping artifact persistence for chat_id=%s: missing message_id.", chat_id)
+                latch = _UNCLAIMED_LATCH.get()
+                self.logger.log(
+                    warn_level(latch, str(chat_id)) if latch is not None else logging.WARNING,
+                    "Skipping artifact persistence for chat_id=%s: missing message_id.",
+                    chat_id,
+                )
                 return None
         if not isinstance(payload, dict):
             return None
