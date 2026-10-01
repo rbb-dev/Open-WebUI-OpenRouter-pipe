@@ -209,7 +209,8 @@ database; the request ends and it is gone, and no marker line is added to the ca
 records last for the request, not the conversation. A temporary chat
 keeps nothing, so with tool cards off its rounds reach no later request. (In Open-WebUI tool mode the rounds of a
 temporary chat's reply are held in memory until that reply ends or the provider refuses a call-back the pipe was waiting for, so Open WebUI's calls back after each round of tool
-calls still hand them to the model; see [Persistence](persistence_encryption_and_storage.md).) The calls are written when
+calls still hand them to the model. A reply dropped under the pool's byte ceiling is reported as holding none of the rows it was
+offered in that flush, so no marker is written for a round that is no longer in memory and that round is not replayed; see [Persistence](persistence_encryption_and_storage.md).) The calls are written when
 the round starts and each result when its call returns, and the round comes back to the model in call order on that turn. So in a streamed
 reply, Stop keeps a round's calls before the first one still running. A call refused before it ran is answered as soon as it
 is refused, and on the turn it is answered it is handed to the model in the order the round asked for it, because its

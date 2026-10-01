@@ -1695,7 +1695,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         description=(
             "When True, save the full log of each request to encrypted zip files on disk. "
             "Archives capture the full OpenRouter request/response (prompts, model output, tool calls, provider errors) plus request identifiers — treat as sensitive conversation data at rest. "
-            "One zip is written per message turn, plus one for each housekeeping task Open WebUI dispatches on that turn, named <message_id>.<task>.zip. Open WebUI defines nine task types in its TASKS enum plus three more named inline (context_compaction, memory_review, context_summary), and the pipe dispatches a thirteenth of its own, video_intent_v1, so a turn that triggers all of them is dispatched thirteen times, which is up to fourteen archives if every qualifier resolved: its own, plus one per qualifier that does. On Open WebUI 0.11.4 twelve of those thirteen resolve to a message id, so a turn that triggers every one of them writes twelve <message_id>.<task>.zip task archives: thirteen files in all, beside its own <message_id>.zip. context_summary is the one that does not resolve - Open WebUI dispatches it from its realtime voice session, which carries no message id - so it contributes no task archive of its own, and a task invocation that resolves to no message id is skipped whether or not Archive API calls is on. An internal-Fusion turn writes its inner calls on top of that count, each in the request-keyed api/ tree rather than beside the turn's own archives. "
+            "One zip is written per message turn, plus one for each housekeeping task Open WebUI dispatches on that turn, named <message_id>.<task>.zip — a message id too long for that key keeps its stem and gains a short digest of the exact id rather than being cut, so two ids cannot share one file, and an archive written for such an id by an earlier release is renamed. Open WebUI defines nine task types in its TASKS enum plus three more named inline (context_compaction, memory_review, context_summary), and the pipe dispatches a thirteenth of its own, video_intent_v1, so a turn that triggers all of them is dispatched thirteen times, which is up to fourteen archives if every qualifier resolved: its own, plus one per qualifier that does. On Open WebUI 0.11.4 twelve of those thirteen resolve to a message id, so a turn that triggers every one of them writes twelve <message_id>.<task>.zip task archives: thirteen files in all, beside its own <message_id>.zip. context_summary is the one that does not resolve - Open WebUI dispatches it from its realtime voice session, which carries no message id - so it contributes no task archive of its own, and a task invocation that resolves to no message id is skipped whether or not Archive API calls is on. An internal-Fusion turn writes its inner calls on top of that count, each in the request-keyed api/ tree rather than beside the turn's own archives. "
             "Persistence needs a user_id and a request_id; with it on, a call that carries no usable chat_id or message_id is archived under "
             "`api/api-<request_id>.zip` (see SESSION_LOG_ARCHIVE_API_CALLS), and every temporary chat is still dropped; that drop is logged as a warning on each of the two archive paths (segment persist, bundle assembly) and again after a five-minute cooldown, once per person on the one path that runs and once per worker process on bundle assembly, which is called without a user. Only the segment-persist path runs for a request today, so that is the one that warns. "
             "A Fusion panel member is the other shape that carries no message id: it has none of its own, but `run_fusion_member` restores the outer turn's chat_id onto it, so its traffic takes the request surrogate and is written as `api/api-<request_id>.zip` while Archive API calls is on, and skipped when it is off - one file per inner call, so an N-model panel turn writes N+2 of them (the members, the judge and the synthesis), or N+3 with the judge's second pass, on top of the turn's own archives. "
@@ -1733,7 +1733,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "about the user is never written under either name. "
             "Surrounding whitespace is ignored, and a value that is blank once trimmed counts as unset. "
             "A path component holding a character outside [0-9A-Za-z._-], or long enough to be cut, keeps its sanitized stem "
-            "and gains a short digest of the exact id, so two ids that would otherwise land on the same name cannot; the exact ids stay in "
+            "and gains a short digest of the exact id, so two ids that would otherwise land on the same name cannot; the composed "
+            "<message_id>.<task> key obeys the same rule one stage earlier, so a message id too long for that key keeps its stem and gains the "
+            "same short digest rather than being cut, and two such ids cannot share a task archive. The exact ids stay in "
             "the archive's meta.json under ids, and a turn with no usable user id gets a directory of its own rather than a shared user/."
         ),
     )
@@ -1792,7 +1794,11 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=20000,
         ge=100,
         le=200000,
-        description="Maximum number of log records held in memory per request (older entries are dropped).",
+        description=(
+            "Maximum number of log records held in memory per request (older entries are dropped). "
+            "This counts records, not bytes: a record's own size is bounded separately, so a large "
+            "tool result is truncated to a fixed number of characters with the cut named in the record."
+        ),
     )
     SESSION_LOG_FORMAT: Literal["jsonl", "text", "both"] = Field(
         default="jsonl",
@@ -1862,8 +1868,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         description=(
             "When True, record how long each internal step of a request takes. "
             "Writes to TIMING_LOG_FILE path directly (not session archives); the per-request "
-            "in-memory copy of those events is released when the request's job completes, so "
-            "only the file output persists. "
+            "in-memory copy of those events is released when the request ends - by its own "
+            "job completing, by its being refused before it enqueues, or by its being "
+            "discarded without running - so only the file output persists. "
             "Useful for performance profiling and debugging latency issues."
         ),
     )
@@ -1945,6 +1952,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "Maximum number of per-request items buffered for the Open WebUI layer that streams the reply to the browser. "
             "The cap bounds incremental items: the item that reports a turn's failure and the item that ends the turn are put past it on a ceiling of their own, "
             "except on a turn the person stopped, where that record is put without waiting and a full buffer drops it. "
+            "A third item is put past it too, and never went near the queue at all: the answer a job returns without having streamed, which the generator hands to the reader directly. "
             "0=unbounded (default behavior). A dropped item is re-sent by the next whole-message frame rather than lost."
         ),
     )
@@ -1957,6 +1965,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "A dropped item is not recorded as sent, so the next snapshot re-derives the text this one would have carried. "
             "This wait covers incremental items only: the item that reports a turn's failure and the item that ends the turn are put past that valve on a ceiling of their own, which 0 does not remove, "
             "except on a turn the person stopped, where that record is put without waiting at all and a full buffer drops it. "
+            "A third item is put past it too, and never went near the queue at all: the answer a job returns without having streamed, which the generator hands to the reader directly. "
             "0 disables the timeout (not recommended; a stalled browser can hold up the pipe indefinitely)."
         ),
     )
@@ -2707,8 +2716,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "words to give, and one that could not be rendered, so an empty notice below "
             "stops the upload too. Switch it off if "
             "you have told your users another way. Either way the finished message keeps a "
-            "written record of what was uploaded and where; only this advance warning is "
-            "optional."
+            "written record of what was uploaded and where, and where a host's answer left "
+            "it possible that it stored the file anyway, that record says the file may have "
+            "been uploaded rather than that it was; only this advance warning is optional."
         ),
     )
     FILE_HOST_NOTICE: str = Field(

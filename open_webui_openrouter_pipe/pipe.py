@@ -198,7 +198,11 @@ from .storage.owui_files import (
     is_channel_chat,
 )
 from .storage.persistence import ArtifactStore
-from .streaming.event_emitter import EventEmitter, EventEmitterHandler
+from .streaming.event_emitter import (
+    EventEmitter,
+    EventEmitterHandler,
+    openai_chat_chunk_message_template,
+)
 from .streaming.streaming_core import StreamingHandler, _wrap_event_emitter
 from .tools.tool_executor import (
     _OWUI_PRE_DISPATCH_ERROR_PREFIXES,
@@ -277,6 +281,73 @@ def _wake_refused_stream(job: _PipeJob) -> None:
         )
     with contextlib.suppress(Exception):
         stream_queue.put_nowait(None)
+
+
+_ANSWER_EVENT_TYPES = ("chat:message", "chat:message:delta", "chat:completion")
+
+
+def _frame_carries_an_answer(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if isinstance(item.get("choices"), list):
+        return True
+    item_type = item.get("type")
+    if isinstance(item_type, str) and item_type.startswith("response."):
+        return True
+    event = item.get("event")
+    if isinstance(event, dict) and event.get("type") in _ANSWER_EVENT_TYPES:
+        data = event.get("data")
+        return isinstance(data, dict) and isinstance(data.get("content"), str)
+    return False
+
+
+def _answer_chunk_from_parked_dict(
+    parked: dict[str, Any], model_id: str
+) -> dict[str, Any] | None:
+    text = ""
+    choices = parked.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        message = choices[0].get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = "".join(
+                part["text"]
+                for part in content
+                if isinstance(part, dict) and isinstance(part.get("text"), str)
+            )
+    if not text:
+        output = parked.get("output")
+        if isinstance(output, list):
+            pieces: list[str] = []
+            for item in output:
+                if not isinstance(item, dict) or not isinstance(item.get("content"), list):
+                    continue
+                pieces.extend(
+                    part["text"]
+                    for part in item["content"]
+                    if isinstance(part, dict) and isinstance(part.get("text"), str)
+                )
+            text = "".join(pieces)
+    if not text:
+        return None
+    return openai_chat_chunk_message_template(model_id, text)
+
+
+def _hand_over_parked_result(
+    future: asyncio.Future[Any], carried: bool, model_id: str
+) -> Any:
+    if carried or not future.done() or future.cancelled():
+        return None
+    if future.exception() is not None:
+        return None
+    handed = future.result()
+    if isinstance(handed, str):
+        return handed or None
+    if isinstance(handed, dict):
+        return _answer_chunk_from_parked_dict(handed, model_id)
+    return None
 
 
 _LIFECYCLE_REGISTRY_KEY = "_openrouter_pipe_lifecycle"
@@ -890,7 +961,7 @@ class Pipe:
     @timed
     def _maybe_start_log_worker(self) -> None:
         """Ensure the async logging queue + worker are started."""
-        if getattr(self, "_closed", False):
+        if getattr(self, "_closed", False) or getattr(self, "_draining", False):
             return
         try:
             loop = asyncio.get_running_loop()
@@ -2327,6 +2398,7 @@ class Pipe:
 
         if wants_stream and stream_queue is not None:
             _NO_FRAME = object()
+            _model_id = str(job.body.get("model") or "pipe")
 
             async def _next_stream_item() -> Any:
                 getter = asyncio.ensure_future(stream_queue.get())
@@ -2341,6 +2413,7 @@ class Pipe:
             @timed
             async def _stream() -> AsyncGenerator[dict[str, Any] | str, None]:
                 reported = False
+                carried = False
                 try:
                     while True:
                         if future.done() and stream_queue.empty():
@@ -2355,15 +2428,25 @@ class Pipe:
                                         },
                                         "done": True,
                                     }
+                                else:
+                                    frame = _hand_over_parked_result(future, carried, _model_id)
+                                    if frame is not None:
+                                        yield frame
                             break
                         item = await _next_stream_item()
                         if item is _NO_FRAME:
                             continue
                         stream_queue.task_done()
                         if item is None:
+                            if not reported:
+                                frame = _hand_over_parked_result(future, carried, _model_id)
+                                if frame is not None:
+                                    yield frame
                             break
                         if isinstance(item, dict) and "error" in item:
                             reported = True
+                        if _frame_carries_an_answer(item):
+                            carried = True
                         yield item
                 finally:
                     if not future.done():
@@ -2372,6 +2455,8 @@ class Pipe:
                         future.exception()
                     if job.admission_refused and future.cancelled():
                         await self._refuse_at_admission(job, wants_stream=wants_stream)
+                    with contextlib.suppress(Exception):
+                        clear_timing_events(job.request_id)
                     SessionLogger.cleanup()
 
             return _stream()
@@ -2692,6 +2777,8 @@ class Pipe:
                     abandoned.future.set_exception(
                         RuntimeError("Request queue was replaced before this request ran.")
                     )
+            with contextlib.suppress(Exception):
+                clear_timing_events(abandoned.request_id)
             state = getattr(abandoned, "counter_state", None)
             if state is not None and state.get("owned"):
                 Pipe._release_stream_counter(abandoned.pipe, state)

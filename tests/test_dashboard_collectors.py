@@ -48,6 +48,7 @@ def _mock_registry(**attrs):
     reg._last_video_fetch = attrs.pop("video_fetch", 0.0)
     reg._last_image_fetch = attrs.pop("image_fetch", 0.0)
     reg._last_video_attempt = attrs.pop("video_attempt", 0.0)
+    reg._last_video_modality_attempt = attrs.pop("video_modality_attempt", 0.0)
     reg._last_image_attempt = attrs.pop("image_attempt", 0.0)
     for key, value in attrs.items():
         setattr(reg, key, value)

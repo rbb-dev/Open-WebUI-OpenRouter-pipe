@@ -281,45 +281,106 @@ def strip_intent_blocks(content: str) -> str:
 
 
 def count_prior_clarifications(messages: list[dict[str, Any]]) -> int:
-    if not isinstance(messages, list):
-        return 0
-    end = len(messages)
-    if end > 0 and isinstance(messages[-1], dict) and messages[-1].get("role") == "user":
-        end -= 1
-    count = 0
-    for idx in range(end - 1, -1, -1):
-        msg = messages[idx]
-        if not isinstance(msg, dict):
-            continue
-        role = msg.get("role")
-        if role != "assistant":
-            continue
-        content = msg.get("content") or ""
-        if isinstance(content, list):
-            text_parts: list[str] = []
-            for part in content:
-                if isinstance(part, dict) and part.get("type") == "text":
-                    text_parts.append(str(part.get("text") or ""))
-            content = "\n".join(text_parts)
-        if not isinstance(content, str):
-            continue
-        is_clarify = any(
-            True for _ in _iter_kind_marker_spans(content, kind=INTENT_CLARIFICATION)
-        )
-        if is_clarify:
-            count += 1
-    return count
+    return _scan_messages(messages)[2]
 
-
-
-# -----------------------------------------------------------------------------
-# Conversation + attachments collection
-# -----------------------------------------------------------------------------
 
 _VIDEO_TAG_RE = re.compile(r"<video[^>]*>([\s\S]*?)</video>", re.IGNORECASE)
 
 
 _FILE_URL_SHAPE_RE = re.compile(r"^/api/v1/files/[A-Za-z0-9_-]{1,128}(/content)?/?$")
+
+
+def _prior_videos_in(cleaned: str, message_index: int, start: int) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    videojob_spans = _iter_kind_marker_spans(cleaned, kind=VIDEO_JOB_MARKER)
+    videomodel_spans = _iter_kind_marker_spans(cleaned, kind=VIDEO_MODEL_MARKER)
+    for video_match in _VIDEO_TAG_RE.finditer(cleaned):
+        file_url = video_match.group(1).strip()
+        if not file_url or not _FILE_URL_SHAPE_RE.match(file_url):
+            continue
+        video_start = video_match.start()
+        job_id = ""
+        for span in videojob_spans:
+            if span["start"] < video_start:
+                job_id = str(span.get("body") or "")
+        model_id = ""
+        for span in videomodel_spans:
+            if span["start"] < video_start:
+                model_id = str(span.get("body") or "")
+        results.append({
+            "index": start + len(results),
+            "message_index": message_index,
+            "file_url": file_url,
+            "job_id": job_id,
+            "model_id_if_known": model_id,
+        })
+    return results
+
+
+def _scan_messages(messages: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+    if not isinstance(messages, list):
+        return [], [], 0
+    end = len(messages)
+    if end > 0 and isinstance(messages[-1], dict) and messages[-1].get("role") == "user":
+        end -= 1
+    conversation: list[dict[str, Any]] = []
+    prior_videos: list[dict[str, Any]] = []
+    clarifications = 0
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role", "user")
+        content = message.get("content")
+        raw = ""
+        attached = 0
+        if isinstance(content, str):
+            raw = content
+        elif isinstance(content, list):
+            text_parts: list[str] = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
+                    text_parts.append(str(part.get("text") or ""))
+                elif part.get("type") in ("image_url", "input_image"):
+                    attached += 1
+            raw = "\n".join(text_parts)
+        cleaned = strip_intent_blocks(raw)
+        text = neutralise_control_tokens(cleaned)
+        conversation.append({
+            "message_index": index,
+            "role": role,
+            "text": text[:2000],
+            "has_video_marker": bool(_VIDEO_TAG_RE.search(text)) if role == "assistant" else False,
+            "attached_image_count": attached,
+        })
+        if index < end and message.get("role") == "assistant" and any(
+            True for _ in _iter_kind_marker_spans(raw, kind=INTENT_CLARIFICATION)
+        ):
+            clarifications += 1
+        if message.get("role") == "assistant" and isinstance(content, str) and content:
+            prior_videos.extend(_prior_videos_in(cleaned, index, len(prior_videos)))
+    return conversation, prior_videos, clarifications
+
+
+def _window_conversation(
+    out: list[dict[str, Any]], truncated: list[bool] | None
+) -> list[dict[str, Any]]:
+    tail = out[-_MAX_CONVERSATION_ROWS:]
+    if truncated is not None:
+        truncated.append(len(tail) < len(out))
+    return tail
+
+
+def _window_prior_videos(
+    results: list[dict[str, Any]], truncated: list[bool] | None
+) -> list[dict[str, Any]]:
+    tail = results[-_MAX_PRIOR_VIDEOS:]
+    for position, row in enumerate(tail):
+        row["index"] = position
+    if truncated is not None:
+        truncated.append(len(tail) < len(results))
+    return tail
 
 
 def collect_prior_videos_from_messages(
@@ -336,44 +397,7 @@ def collect_prior_videos_from_messages(
     so multi-video assistant turns are correctly enumerated (F9).
     Validates each file_url against the OWUI shape regex (S11).
     """
-    if not isinstance(messages, list):
-        return []
-    results: list[dict[str, Any]] = []
-    for message_index, message in enumerate(messages):
-        if not isinstance(message, dict) or message.get("role") != "assistant":
-            continue
-        content = message.get("content") or ""
-        if not isinstance(content, str) or not content:
-            continue
-        cleaned = strip_intent_blocks(content)
-        videojob_spans = _iter_kind_marker_spans(cleaned, kind=VIDEO_JOB_MARKER)
-        videomodel_spans = _iter_kind_marker_spans(cleaned, kind=VIDEO_MODEL_MARKER)
-        for video_match in _VIDEO_TAG_RE.finditer(cleaned):
-            file_url = video_match.group(1).strip()
-            if not file_url or not _FILE_URL_SHAPE_RE.match(file_url):
-                continue
-            video_start = video_match.start()
-            job_id = ""
-            for span in videojob_spans:
-                if span["start"] < video_start:
-                    job_id = str(span.get("body") or "")
-            model_id = ""
-            for span in videomodel_spans:
-                if span["start"] < video_start:
-                    model_id = str(span.get("body") or "")
-            results.append({
-                "index": len(results),
-                "message_index": message_index,
-                "file_url": file_url,
-                "job_id": job_id,
-                "model_id_if_known": model_id,
-            })
-    tail = results[-_MAX_PRIOR_VIDEOS:]
-    for position, row in enumerate(tail):
-        row["index"] = position
-    if truncated is not None:
-        truncated.append(len(tail) < len(results))
-    return tail
+    return _window_prior_videos(_scan_messages(messages)[1], truncated)
 
 
 _ATTACHMENT_SOURCES = (
@@ -896,15 +920,13 @@ async def resolve_intent(
         messages = body.get("messages") if isinstance(body, dict) else None
         if not isinstance(messages, list):
             return fallback
-        conversation = _build_conversation(messages, truncated=conversation_window)
-        prior_videos = collect_prior_videos_from_messages(
-            messages, truncated=prior_videos_window
-        )
+        _conversation, _prior_videos, prior_clar = _scan_messages(messages)
+        conversation = _window_conversation(_conversation, conversation_window)
+        prior_videos = _window_prior_videos(_prior_videos, prior_videos_window)
         attachments = collect_attachments_from_video_meta(video_meta)
         explicit_frame_images_present = bool(
             isinstance(video_meta, dict) and video_meta.get("frame_images")
         )
-        prior_clar = count_prior_clarifications(messages)
         max_clar_raw = resolve_intent_user_setting(
             metadata, "max_clarifications",
             valves, "VIDEO_INTENT_MAX_CLARIFICATIONS", 1,
@@ -1043,39 +1065,7 @@ def _build_conversation(
     {message_index, role, text, has_video_marker, attached_image_count}.
     Does NOT include image data — markers/counts only.
     """
-    out: list[dict[str, Any]] = []
-    for i, msg in enumerate(messages):
-        if not isinstance(msg, dict):
-            continue
-        role = msg.get("role", "user")
-        content = msg.get("content")
-        text = ""
-        attached = 0
-        if isinstance(content, str):
-            text = strip_intent_blocks(content)
-        elif isinstance(content, list):
-            text_parts: list[str] = []
-            for part in content:
-                if not isinstance(part, dict):
-                    continue
-                if part.get("type") == "text":
-                    text_parts.append(str(part.get("text") or ""))
-                elif part.get("type") in ("image_url", "input_image"):
-                    attached += 1
-            text = strip_intent_blocks("\n".join(text_parts))
-        text = neutralise_control_tokens(text)
-        has_video = bool(_VIDEO_TAG_RE.search(text)) if role == "assistant" else False
-        out.append({
-            "message_index": i,
-            "role": role,
-            "text": text[:2000],
-            "has_video_marker": has_video,
-            "attached_image_count": attached,
-        })
-    tail = out[-_MAX_CONVERSATION_ROWS:]
-    if truncated is not None:
-        truncated.append(len(tail) < len(out))
-    return tail
+    return _window_conversation(_scan_messages(messages)[0], truncated)
 
 
 def _make_default_invoke(

@@ -462,7 +462,7 @@ class ReplyMemory:
 
     def _hold(self, sized: list[tuple[dict[str, Any], Any, int]]) -> list[str]:
         self._expire()
-        held: list[str] = []
+        placed: list[tuple[tuple[Any, Any, Any], str]] = []
         dropped = 0
         oversized = 0
         for row, payload, payload_bytes in sized:
@@ -489,7 +489,7 @@ class ReplyMemory:
             self._replies[key] = (self._clock(), kept, size - replaced + charged)
             self._replies.move_to_end(key)
             self._total_bytes += charged - replaced
-            held.append(item_id)
+            placed.append((key, item_id))
         offered_keys = {self._key(row.get("chat_id"), row.get("message_id")) for row, _payload, _size in sized}
         for key in offered_keys:
             if key in self._replies and self._replies[key][2] > self._max_bytes:
@@ -511,14 +511,12 @@ class ReplyMemory:
                 "rounds and thinking for the rest of the stream",
                 self._max_bytes, dropped, "y" if dropped == 1 else "ies", oversized,
             )
-        kept_ids = {
-            item_id
-            for entry in (self._replies.get(key) for key in offered_keys)
-            if entry is not None
-            for item_id in entry[1]
-        }
         self._arm()
-        return [item_id for item_id in held if item_id in kept_ids]
+        return [
+            item_id
+            for key, item_id in placed
+            if key in self._replies and item_id in self._replies[key][1]
+        ]
 
     def read(self, chat_id: Any, message_id: Any, item_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
         with self._lock:

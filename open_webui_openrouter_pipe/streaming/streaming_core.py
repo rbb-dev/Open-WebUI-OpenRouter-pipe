@@ -340,8 +340,16 @@ def _read_arguments_as_open_webui_reads_them(item: dict[str, Any]) -> str:
     return arguments.strip() or "{}"
 
 
+_TOOL_RESULT_LOG_MAX_CHARS = 16_384
+
+
 def _tool_result_for_log(output: dict[str, Any]) -> str:
-    return wrap_code_block(_data_url_log_subject(tool_output_text_and_pictures(output.get("output"))[0]))
+    text = tool_output_text_and_pictures(output.get("output"))[0]
+    limit = _TOOL_RESULT_LOG_MAX_CHARS
+    if len(text) > limit:
+        omitted = len(text) - limit
+        text = f"{text[:limit]}\n...(truncated: {omitted:,} characters omitted)..."
+    return wrap_code_block(_data_url_log_subject(text))
 
 
 def _stored_citation_identity(entry: Any) -> str:

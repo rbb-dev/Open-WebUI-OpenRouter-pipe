@@ -240,7 +240,16 @@ _EXPECTED: dict[str, int] = {
     # round has already reported the call to the model, so a retrieval failure has nothing
     # left to affect and must not raise out of a done callback, where asyncio would only
     # log it.
-    "pipe.py": 40,
+    # 41st and 42nd: the two release sites for a discarded request's timing profile, one
+    # in `_stream`'s own `finally` and one beside the counter release in
+    # `_abandon_request_queue`. Both run on a path that is already leaving -- a stream
+    # being closed and a queue being retired -- and a failure in either costs a bounded
+    # profiler slot that `MAX_TIMING_REQUESTS` evicts anyway. Letting it out would replace
+    # the turn's own result, or the drain's delivery of the refusal that settled the
+    # discarded job, with a profiler bookkeeping error; `_stream`'s also swallows
+    # `CancelledError` for the same reason its neighbours do, since a turn being torn
+    # down must not raise out of its own teardown.
+    "pipe.py": 42,
     "storage/persistence.py": 3,
     # 1st: the caller-supplied fallback in `_emit_templated_error_event`. It is reached only because the
     # admin's own template already failed to render, and the generic card below it is the answer if the

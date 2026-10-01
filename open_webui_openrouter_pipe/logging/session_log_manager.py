@@ -380,6 +380,15 @@ def _preferred_request_id(segments: list[dict[str, Any]]) -> str:
 
 _MAX_KEY_CHARS = 64
 _MIN_HEAD_CHARS = 16
+_HEAD_DIGEST_CHARS = 10
+
+
+def _bounded_head(resolved: str, budget: int) -> str:
+    if len(resolved) <= budget:
+        return resolved
+    from ..core.utils import _stable_crockford_id
+    keep = max(0, budget - _HEAD_DIGEST_CHARS - 1)
+    return f"{resolved[:keep]}-{_stable_crockford_id(resolved, length=_HEAD_DIGEST_CHARS)}"
 
 
 def resolve_message_id(metadata: Any) -> str:
@@ -395,7 +404,7 @@ def resolve_message_id(metadata: Any) -> str:
         qualifier = str(task)
         if len(qualifier) > _MAX_KEY_CHARS - _MIN_HEAD_CHARS - 1:
             qualifier = qualifier[: _MAX_KEY_CHARS - _MIN_HEAD_CHARS - 1]
-        return f"{resolved[: _MAX_KEY_CHARS - len(qualifier) - 1]}.{qualifier}"
+        return f"{_bounded_head(resolved, _MAX_KEY_CHARS - len(qualifier) - 1)}.{qualifier}"
     except Exception:
         logger.debug("resolve_message_id failed to parse metadata", exc_info=True)
     return ""
@@ -689,8 +698,8 @@ class SessionLogManager:
             self._queue = queue.Queue(maxsize=500)
         writer_live = bool(self._worker_thread and self._worker_thread.is_alive())
         cleanup_live = bool(self._cleanup_thread and self._cleanup_thread.is_alive())
-        both_live_on_a_stop = bool(
-            self._stop_event is not None and self._stop_event.is_set() and writer_live and cleanup_live
+        cleanup_on_a_set_event = bool(
+            self._stop_event is not None and self._stop_event.is_set() and cleanup_live
         )
         if self._stop_event is None or self._stop_event.is_set():
             self._stop_event = threading.Event()
@@ -704,7 +713,7 @@ class SessionLogManager:
                 daemon=True,
             )
             self._worker_thread.start()
-        if not cleanup_live or both_live_on_a_stop:
+        if not cleanup_live or cleanup_on_a_set_event:
             self._cleanup_thread = threading.Thread(
                 target=_cleanup_loop,
                 args=(mgr_ref, self._stop_event),
@@ -1839,6 +1848,8 @@ class SessionLogManager:
                 try:
                     existing_meta, existing_raw = self.read_archive(out_path, settings)
                     existing_events = existing_raw
+                    existing_count = len(existing_events)
+                    db_count = len(merged_events)
                     if existing_events:
                         existing_events = [evt for evt in existing_events if not _is_incomplete_marker(evt)]
                         if existing_events:
@@ -1847,9 +1858,11 @@ class SessionLogManager:
                             merged_events.sort(key=_event_ts)
                         if self.logger.isEnabledFor(logging.DEBUG):
                             self.logger.debug(
-                                "Merged %d existing archive events with %d DB events (chat_id=%s message_id=%s)",
-                                len(existing_events),
-                                len(merged_events) - len(existing_events),
+                                "Merged %d existing archive events with %d DB events "
+                                "(%d written; chat_id=%s message_id=%s)",
+                                existing_count,
+                                db_count,
+                                len(merged_events),
                                 chat_id,
                                 message_id,
                             )

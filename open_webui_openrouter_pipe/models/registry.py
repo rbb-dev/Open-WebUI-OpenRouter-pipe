@@ -958,6 +958,7 @@ class OpenRouterModelRegistry:
 
     _last_video_fetch: float = 0.0
     _last_video_attempt: float = 0.0
+    _last_video_modality_attempt: float = 0.0
     _video_catalog_norms: frozenset[str] = frozenset()
 
     @classmethod
@@ -990,6 +991,18 @@ class OpenRouterModelRegistry:
     @classmethod
     def reset_video_attempt(cls) -> None:
         cls._last_video_attempt = 0.0
+
+    @classmethod
+    def last_video_modality_attempt(cls) -> float:
+        return cls._last_video_modality_attempt
+
+    @classmethod
+    def record_video_modality_attempt(cls) -> None:
+        cls._last_video_modality_attempt = time.time()
+
+    @classmethod
+    def reset_video_modality_attempt(cls) -> None:
+        cls._last_video_modality_attempt = 0.0
 
     @classmethod
     def reset_video_fetch_timestamp(cls) -> None:

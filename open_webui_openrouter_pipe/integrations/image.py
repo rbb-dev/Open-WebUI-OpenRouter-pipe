@@ -262,6 +262,8 @@ class ImageGenerationAdapter:
         if kind == "enum":
             allowed = descriptor.get("values")
             if isinstance(allowed, list) and value not in allowed:
+                if not allowed:
+                    return None, "it publishes no output sizes"
                 return None, f"accepts {', '.join(str(item) for item in allowed)}"
             return value, ""
         if kind == "range":

@@ -748,12 +748,14 @@ def render_video_filter_source(
     pipe_metadata_key: str = _PIPE_METADATA_KEY,
     admin_valves: Any = None,
     variant_ids: Any = None,
+    spec: VideoFilterSpec | None = None,
 ) -> str:
     from open_webui_openrouter_pipe import __version__
 
-    spec = build_video_filter_spec(
-        model_id, video_model, admin_valves=admin_valves, variant_ids=variant_ids
-    )
+    if spec is None:
+        spec = build_video_filter_spec(
+            model_id, video_model, admin_valves=admin_valves, variant_ids=variant_ids
+        )
     # Only the names that genuinely cannot be offered: one that is not a legal Python
     # identifier has no field to carry it. Everything else the model publishes is
     # rendered, typed where a purpose-built control exists and free text otherwise.
@@ -1361,6 +1363,13 @@ def _purpose_built_published_names(spec: VideoFilterSpec) -> frozenset[str]:
     )
 
 
+@lru_cache(maxsize=256)
+def _purpose_built_field_names_cached(spec: VideoFilterSpec) -> frozenset[str]:
+    return frozenset(
+        _VIDEO_FIELD_DEF_RE.findall("\n".join(_render_purpose_built_fields_cached(spec)))
+    )
+
+
 def _purpose_built_field_names(spec: VideoFilterSpec) -> frozenset[str]:
     """The field names the purpose-built controls actually emit for this model.
 
@@ -1368,9 +1377,7 @@ def _purpose_built_field_names(spec: VideoFilterSpec) -> frozenset[str]:
     later cannot be shadowed by a free-text field of the same name without anyone
     noticing.
     """
-    return frozenset(
-        _VIDEO_FIELD_DEF_RE.findall("\n".join(_render_purpose_built_fields(spec)))
-    )
+    return _purpose_built_field_names_cached(spec)
 
 
 def _render_user_valves_fields(spec: VideoFilterSpec) -> str:

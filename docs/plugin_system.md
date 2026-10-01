@@ -1221,7 +1221,7 @@ spec = OpenRouterModelRegistry.spec("gpt-4o")    # Model capabilities
 
 ## Streaming Compatibility
 
-When a plugin intercepts a request via `on_request`, the pipe may be in streaming mode (`body["stream"] == True`). In streaming mode, `pipe()` returns an async generator that reads from a `stream_queue`. Plugin responses are complete dicts on `job.future`, which the generator never reads.
+When a plugin intercepts a request via `on_request`, the pipe may be in streaming mode (`body["stream"] == True`). In streaming mode, `pipe()` returns an async generator that reads from a `stream_queue`. A plugin response is a complete dict on `job.future`. The generator reads it once the queue is done: it extracts the content it can and emits it, and whatever is left — a shape the extractor cannot read, or a response it did not see at all — is handed to the reader as a `delta.content` chunk before the stream ends, so the residual case is delivered rather than dropped.
 
 The pipe automatically handles this: when `on_request` returns a non-`None` result and the request is streaming, the content is emitted via a `chat:message:delta` event to the stream emitter:
 

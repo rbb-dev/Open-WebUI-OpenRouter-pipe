@@ -121,6 +121,8 @@ _warned_reference_scope_entry: set[str] = set()
 
 _MAX_PASSTHROUGH_URLS = 16
 
+_MAX_PROBE_ATTEMPTS_PER_FILE = 2
+
 _OPTIONS_HOP_DEPTH = 3
 
 _MAX_VIDEO_OUTPUTS = 16
@@ -526,6 +528,11 @@ _FILE_HOST_RECORD = (
     "{it}, {retention}.\n"
 )
 
+_FILE_HOST_MAYBE_RECORD = (
+    "> **Your {kind} may have been uploaded to {host}.** Nobody has the link, but the "
+    "host may still be holding a copy, and {retention}.\n"
+)
+
 RELAY_BLOCK_START = "relay_block_start"
 
 RELAY_BLOCK_END = "relay_block_end"
@@ -771,6 +778,7 @@ class VideoGenerationAdapter:
         withheld_record_written = False
         withheld: list[tuple[str, str]] = []
         relayed_families: set[tuple[str, str]] = set()
+        maybe_stored_families: set[tuple[str, str]] = set()
         bg_task: asyncio.Task[VideoLifecycleResult] | None = None
 
         try:
@@ -1059,12 +1067,13 @@ class VideoGenerationAdapter:
                 input_references = await self._encode_input_references(
                     video_meta, valves, withheld=withheld, user_obj=user_obj or user,
                     video_model=video_model, relayed=relayed_families,
+                    maybe_stored=maybe_stored_families,
                     companions=bool(frame_images), event_emitter=event_emitter,
                     vetted=vetted_addresses, spent=image_bytes,
                 )
             finally:
                 disclosure_block = self._with_the_file_host_record(
-                    disclosure_block, valves, relayed_families
+                    disclosure_block, valves, relayed_families, maybe_stored_families
                 )
             if not prompt.strip():
                 content = self._build_failure_content(
@@ -2440,6 +2449,7 @@ class VideoGenerationAdapter:
         user_obj: Any = None,
         video_model: Any = None,
         relayed: set[tuple[str, str]] | None = None,
+        maybe_stored: set[tuple[str, str]] | None = None,
         companions: bool = False,
         event_emitter: Any = None,
         vetted: dict[str, bool | None] | None = None,
@@ -2639,6 +2649,7 @@ class VideoGenerationAdapter:
                         ),
                         session=relay_session,
                         event_emitter=event_emitter,
+                        stored=maybe_stored,
                     )
                     attachments_left -= 1
                     encoded.append({"type": entry.kind, entry.kind: {"url": link}})
@@ -2785,6 +2796,18 @@ class VideoGenerationAdapter:
         deleted = "are deleted" if plural else "is deleted"
         return f"and {deleted} again {spans.get(span, span)} later"
 
+    @staticmethod
+    def _maybe_retention_words(*, plural: bool = False) -> str:
+        if plural:
+            return (
+                "they may stay there for good, because an upload this pipe never got an "
+                "answer for carries no account and nothing here can take them down again"
+            )
+        return (
+            "it may stay there for good, because an upload this pipe never got an answer "
+            "for carries no account and nothing here can take it down again"
+        )
+
     @classmethod
     def _file_host_notice(cls, valves: Any, relayed: set[tuple[str, str]]) -> str:
         try:
@@ -2814,16 +2837,25 @@ class VideoGenerationAdapter:
 
     @classmethod
     def _with_the_file_host_record(
-        cls, block: str, valves: Any, relayed: set[tuple[str, str]]
+        cls,
+        block: str,
+        valves: Any,
+        relayed: set[tuple[str, str]],
+        maybe_stored: set[tuple[str, str]] | None = None,
     ) -> str:
-        record = cls._file_host_record(valves, relayed)
+        record = cls._file_host_record(valves, relayed, maybe_stored)
         if not record:
             return block
         return f"{block}{record}" if block else record
 
     @classmethod
-    def _file_host_record(cls, valves: Any, relayed: set[tuple[str, str]]) -> str:
-        if not relayed:
+    def _file_host_record(
+        cls,
+        valves: Any,
+        relayed: set[tuple[str, str]],
+        maybe_stored: set[tuple[str, str]] | None = None,
+    ) -> str:
+        if not relayed and not maybe_stored:
             return ""
         said = "".join(
             _FILE_HOST_RECORD.format(
@@ -2836,6 +2868,17 @@ class VideoGenerationAdapter:
                 ),
             )
             for host, pairs in cls._relay_groups(relayed)
+        )
+        said += "".join(
+            _FILE_HOST_MAYBE_RECORD.format(
+                kind=cls._relay_kinds_spoken(pairs),
+                host=host,
+                retention=cls._maybe_retention_words(
+                    plural=len(cls._relay_kinds_named(pairs)) > 1
+                ),
+            )
+            for host, pairs in cls._relay_groups(maybe_stored or set())
+            if not (pairs & relayed)
         )
         return (
             f"{_serialize_kind_marker(RELAY_BLOCK_START, '1')}\n"
@@ -2926,6 +2969,7 @@ class VideoGenerationAdapter:
         self, valves: Any, payload: str | bytes, *, filename: str, mime: str,
         family: str, deadline: float, session: aiohttp.ClientSession | None = None,
         event_emitter: Any = None,
+        stored: set[tuple[str, str]] | None = None,
     ) -> tuple[str, str]:
         if isinstance(payload, (bytes, bytearray)):
             blob = bytes(payload)
@@ -2970,6 +3014,8 @@ class VideoGenerationAdapter:
                         family, host, exc,
                     )
                     if getattr(exc, "may_have_stored_it", True):
+                        if stored is not None:
+                            stored.add((family, host))
                         failures.append(
                             _A_COPY_MAY_ALREADY_BE_THERE.format(
                                 host=host,
@@ -3297,6 +3343,7 @@ class VideoGenerationAdapter:
         materialised: dict[str, Path] = {}
         probed: dict[str, VideoMetadata] = {}
         probe_failed: set[str] = set()
+        probe_attempts: dict[str, int] = {}
         try:
             for position, entry in enumerate(intent.frame_plan):
                 if entry.source == "uploaded_attachment":
@@ -3354,12 +3401,21 @@ class VideoGenerationAdapter:
                             "first" if first_only else reused_frame_index
                         )
                         if target != "first_frame" and file_id not in probed:
-                            try:
-                                probed[file_id] = await probe_video(tmp_path)
-                            except FrameExtractionError:
+                            if (
+                                probe_attempts.get(file_id, 0)
+                                >= _MAX_PROBE_ATTEMPTS_PER_FILE
+                            ):
                                 probe_failed.add(file_id)
                             else:
-                                probe_failed.discard(file_id)
+                                probe_attempts[file_id] = (
+                                    probe_attempts.get(file_id, 0) + 1
+                                )
+                                try:
+                                    probed[file_id] = await probe_video(tmp_path)
+                                except FrameExtractionError:
+                                    probe_failed.add(file_id)
+                                else:
+                                    probe_failed.discard(file_id)
 
                         frame = await extract_frame(
                             tmp_path, target=target, timestamp_seconds=ts,

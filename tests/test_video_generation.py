@@ -2987,6 +2987,7 @@ async def test_ensure_video_catalog_loaded_respects_ttl_within_window():
     from open_webui_openrouter_pipe.integrations.video_catalog import ensure_video_catalog_loaded
 
     OpenRouterModelRegistry._last_video_attempt = time.time()
+    OpenRouterModelRegistry._last_video_modality_attempt = time.time()
     before_fetch = OpenRouterModelRegistry._last_video_fetch
 
     await ensure_video_catalog_loaded(
@@ -3005,6 +3006,7 @@ async def test_ensure_video_catalog_loaded_refetches_after_ttl_expires(monkeypat
     from open_webui_openrouter_pipe.integrations import video_catalog as _vc
 
     OpenRouterModelRegistry._last_video_attempt = time.time() - 3601
+    OpenRouterModelRegistry._last_video_modality_attempt = time.time() - 3601
 
     list_models_called = False
 
@@ -3036,6 +3038,7 @@ async def test_ensure_video_catalog_loaded_empty_result_engages_attempt_ttl_with
 
     OpenRouterModelRegistry._last_video_fetch = 100.0
     OpenRouterModelRegistry._last_video_attempt = 0.0
+    OpenRouterModelRegistry._last_video_modality_attempt = 0.0
 
     class _StubClient:
         def __init__(self, *args, **kwargs):
@@ -3069,6 +3072,7 @@ async def test_ensure_video_catalog_loaded_network_failure_engages_attempt_ttl(m
 
     OpenRouterModelRegistry._last_video_fetch = 100.0
     OpenRouterModelRegistry._last_video_attempt = 0.0
+    OpenRouterModelRegistry._last_video_modality_attempt = 0.0
 
     class _RaisingClient:
         def __init__(self, *args, **kwargs):
@@ -3101,6 +3105,7 @@ async def test_ensure_video_catalog_loaded_propagates_cancelled_error_without_bu
     from open_webui_openrouter_pipe.integrations import video_catalog as _vc
 
     OpenRouterModelRegistry._last_video_attempt = 0.0
+    OpenRouterModelRegistry._last_video_modality_attempt = 0.0
 
     class _CancellingClient:
         def __init__(self, *args, **kwargs):

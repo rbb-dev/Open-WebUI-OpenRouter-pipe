@@ -64,6 +64,8 @@ def _current_reconcile_lock() -> asyncio.Lock:
 
 def set_pipe_getter(get_pipe: Any) -> None:
     global _routes_get_pipe, _teardown_epoch
+    if _routes_get_pipe is get_pipe:
+        return
     _routes_get_pipe = get_pipe
     _teardown_epoch += 1
 

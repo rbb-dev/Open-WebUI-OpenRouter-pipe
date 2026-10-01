@@ -421,6 +421,7 @@ async def test_the_catalog_loader_puts_the_declared_kinds_where_the_gates_read_t
     monkeypatch.setattr(OpenRouterModelRegistry, "_id_map", {})
     monkeypatch.setattr(OpenRouterModelRegistry, "_models", [])
     monkeypatch.setattr(OpenRouterModelRegistry, "_last_video_attempt", 0.0)
+    monkeypatch.setattr(OpenRouterModelRegistry, "_last_video_modality_attempt", 0.0)
 
     await video_catalog.ensure_video_catalog_loaded(
         MagicMock(),
@@ -720,7 +721,7 @@ def _adapter_with_files(records, reads, uploads):
 
     async def _relay(
         self, valves, b64, *, filename, mime, family, deadline, session=None,
-        event_emitter=None,
+        event_emitter=None, stored=None,
     ):
         uploads.append((filename, mime, family))
         return f"https://files.example/{family}.bin", "litterbox"

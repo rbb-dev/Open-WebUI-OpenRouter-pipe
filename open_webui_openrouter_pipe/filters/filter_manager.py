@@ -349,6 +349,14 @@ def _row_owner(row: Any) -> str:
         start = idx + 1
 
 
+def _routing_display_names(model_info: dict[str, Any]) -> tuple[str, dict[str, str]]:
+    raw_prov_names = model_info.get("provider_names", {})
+    prov_names: dict[str, str] = raw_prov_names if isinstance(raw_prov_names, dict) else {}
+    raw_short_name = model_info.get("short_name", "")
+    short_name: str = raw_short_name if isinstance(raw_short_name, str) else ""
+    return short_name, prov_names
+
+
 def _is_pipe_video_filter_row(content: Any, row_id: Any) -> bool:
     if not isinstance(content, str) or not isinstance(row_id, str) or not row_id:
         return False
@@ -357,18 +365,50 @@ def _is_pipe_video_filter_row(content: Any, row_id: Any) -> bool:
     return _OPENROUTER_VIDEO_GEN_FILTER_MARKER in content
 
 
+_IMAGE_FILTER_MODEL_ID_TOKEN = "IMAGE_FILTER_MODEL_ID"
+_IMAGE_FILTER_LINE_BREAKS = "\n\r\v\f\x1c\x1d\x1e\x85  "
+
+
+def _line_break_before(content: str, at: int) -> int:
+    start = 0
+    for char in _IMAGE_FILTER_LINE_BREAKS:
+        found = content.rfind(char, 0, at)
+        if found >= 0:
+            start = max(start, found + 1)
+    return start
+
+
+def _line_break_after(content: str, at: int) -> int:
+    end = len(content)
+    for char in _IMAGE_FILTER_LINE_BREAKS:
+        found = content.find(char, at)
+        if found >= 0:
+            end = min(end, found)
+    return end
+
+
 def _stored_image_model_id(content: str) -> str | None:
     import ast
 
-    for line in (content or "").splitlines():
-        name, sep, rhs = line.partition("=")
-        if sep and name.strip() == "IMAGE_FILTER_MODEL_ID":
-            try:
-                value = ast.literal_eval(rhs.strip())
-            except (ValueError, SyntaxError):
-                return None
-            return value if isinstance(value, str) else None
-    return None
+    if not content:
+        return None
+    start = 0
+    while True:
+        idx = content.find(_IMAGE_FILTER_MODEL_ID_TOKEN, start)
+        if idx < 0:
+            return None
+        start = idx + 1
+        if content[_line_break_before(content, idx) : idx].strip():
+            continue
+        rest = content[idx : _line_break_after(content, idx)]
+        name, sep, rhs = rest.partition("=")
+        if not sep or name.strip() != _IMAGE_FILTER_MODEL_ID_TOKEN:
+            continue
+        try:
+            value = ast.literal_eval(rhs.strip())
+        except (ValueError, SyntaxError):
+            return None
+        return value if isinstance(value, str) else None
 
 
 def _row_is_off_identity(content: str, row_id: str) -> bool:
@@ -2072,6 +2112,7 @@ class FilterManager:
         model_id: str = "openrouter/video",
         video_model: dict[str, Any] | None = None,
         variant_ids: Any = None,
+        spec: Any = None,
     ) -> str:
         from .video_filter_renderer import render_video_filter_source
 
@@ -2081,6 +2122,7 @@ class FilterManager:
             pipe_metadata_key=_PIPE_METADATA_KEY,
             admin_valves=self.valves,
             variant_ids=variant_ids,
+            spec=spec,
         )
 
     @timed
@@ -2196,7 +2238,9 @@ class FilterManager:
     ) -> tuple[str | None, bool]:
         from .video_filter_renderer import build_video_filter_spec
 
-        spec = build_video_filter_spec(model_id, video_model, variant_ids=variant_ids)
+        spec = build_video_filter_spec(
+            model_id, video_model, admin_valves=self.valves, variant_ids=variant_ids
+        )
         if not spec.contract_read:
             self.logger.info(
                 "Catalogue entry for %s publishes no video contract, so no OpenRouter Video "
@@ -2218,6 +2262,7 @@ class FilterManager:
             model_id=model_id,
             video_model=video_model,
             variant_ids=variant_ids,
+            spec=spec,
         ).strip() + "\n"
         function_id, _outcome = await self._ensure_filter_installed(
             desired_source=desired_source,
@@ -3172,10 +3217,11 @@ __KEEP_WHAT_STILL_FITS__
         provider_map: dict[str, dict[str, list[str]]],
         model_visibility: dict[str, str],
         pipe_identifier: str,
-    ) -> tuple[set[str], set[str], set[str]]:
+    ) -> tuple[set[str], set[str], set[str], dict[str, str]]:
         content_drifted: set[str] = set()
         deliverable_off: set[str] = set()
         global_rows: set[str] = set()
+        desired_sources: dict[str, str] = {}
         for slug in all_models:
             existing = existing_filters.get(slug)
             if existing is None or slug in undeliverable_slugs:
@@ -3190,10 +3236,7 @@ __KEEP_WHAT_STILL_FITS__
             transport = self.model_transport(slug)
             if not self._routing_controls(transport) or not model_info.get("providers"):
                 continue
-            raw_prov_names = model_info.get("provider_names", {})
-            prov_names: dict[str, str] = raw_prov_names if isinstance(raw_prov_names, dict) else {}
-            raw_short_name = model_info.get("short_name", "")
-            short_name: str = raw_short_name if isinstance(raw_short_name, str) else ""
+            short_name, prov_names = _routing_display_names(model_info)
             desired_source = self._render_provider_routing_filter_source(
                 slug,
                 list(model_info.get("providers") or []),
@@ -3204,9 +3247,10 @@ __KEEP_WHAT_STILL_FITS__
                 transport=transport,
                 owner=pipe_identifier,
             ).strip() + "\n"
+            desired_sources[slug] = desired_source
             if desired_source != _stored_source(existing):
                 content_drifted.add(slug)
-        return content_drifted, deliverable_off, global_rows
+        return content_drifted, deliverable_off, global_rows, desired_sources
 
     @staticmethod
     def model_transport(model_slug: str) -> str:
@@ -3902,8 +3946,9 @@ class Filter:
         content_drifted: set[str] = set()
         deliverable_off: set[str] = set()
         global_rows: set[str] = set()
+        drift_sources: dict[str, str] = {}
         if hash_unchanged:
-            content_drifted, deliverable_off, global_rows = self._routing_drift(
+            content_drifted, deliverable_off, global_rows, drift_sources = self._routing_drift(
                 all_models,
                 existing_filters,
                 undeliverable_slugs,
@@ -3955,10 +4000,7 @@ class Filter:
             model_info = provider_map.get(slug, {})
             providers = model_info.get("providers", [])
             quantizations = model_info.get("quantizations", [])
-            raw_short_name = model_info.get("short_name", "")
-            short_name: str = raw_short_name if isinstance(raw_short_name, str) else ""
-            raw_prov_names = model_info.get("provider_names", {})
-            prov_names: dict[str, str] = raw_prov_names if isinstance(raw_prov_names, dict) else {}
+            short_name, prov_names = _routing_display_names(model_info)
 
             if not providers:
                 if slug in not_fetched:
@@ -3989,7 +4031,7 @@ class Filter:
             safe_id = self.sanitize_model_for_filter_id(slug)
             filter_id = f"{_PROVIDER_ROUTING_FILTER_ID_PREFIX}{safe_id}"
 
-            desired_source = self._render_provider_routing_filter_source(
+            desired_source = drift_sources.get(slug) or self._render_provider_routing_filter_source(
                 slug, providers, quantizations, visibility,
                 short_name=short_name,
                 provider_names=prov_names,

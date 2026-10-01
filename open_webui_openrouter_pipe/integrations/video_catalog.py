@@ -62,6 +62,21 @@ def _set_video_sweep_in_flight(running: asyncio.AbstractEventLoop, value: bool) 
             _video_sweeps_in_flight.pop(running, None)
 
 
+def _video_catalog_stale(
+    cache_seconds: int, wants_modalities: bool,
+) -> tuple[bool, bool]:
+    now = time.time()
+    last_attempt = OpenRouterModelRegistry.last_video_attempt()
+    stale_list = not last_attempt or (now - last_attempt) >= cache_seconds
+    if not wants_modalities:
+        return stale_list, False
+    last_modalities = OpenRouterModelRegistry.last_video_modality_attempt()
+    stale_modalities = (
+        not last_modalities or (now - last_modalities) >= cache_seconds
+    )
+    return stale_list, stale_modalities
+
+
 async def ensure_video_catalog_loaded(
     session: aiohttp.ClientSession,
     *,
@@ -74,8 +89,10 @@ async def ensure_video_catalog_loaded(
 ) -> None:
     """Fetch video models and register them into the shared model registry."""
     if getattr(valves, "ENABLE_VIDEO_GENERATION", False):
-        last_attempt = OpenRouterModelRegistry.last_video_attempt()
-        if last_attempt and (time.time() - last_attempt) < cache_seconds:
+        stale_list, stale_modalities = _video_catalog_stale(
+            cache_seconds, with_modalities
+        )
+        if not stale_list and not stale_modalities:
             return
         if not wait_for_in_flight and _video_sweep_in_flight():
             logger.debug(
@@ -90,13 +107,16 @@ async def ensure_video_catalog_loaded(
                 OpenRouterModelRegistry.register_video_models([])
                 OpenRouterModelRegistry.reset_video_fetch_timestamp()
                 OpenRouterModelRegistry.reset_video_attempt()
+                OpenRouterModelRegistry.reset_video_modality_attempt()
                 logger.info("Video catalog cleared: ENABLE_VIDEO_GENERATION is False.")
             else:
                 logger.debug("Video catalog skipped: ENABLE_VIDEO_GENERATION is False.")
             return
 
-        last_attempt = OpenRouterModelRegistry.last_video_attempt()
-        if last_attempt and (time.time() - last_attempt) < cache_seconds:
+        stale_list, stale_modalities = _video_catalog_stale(
+            cache_seconds, with_modalities
+        )
+        if not stale_list and not stale_modalities:
             return
         if not wait_for_in_flight and _video_sweep_in_flight():
             logger.debug(
@@ -114,6 +134,11 @@ async def ensure_video_catalog_loaded(
                 api_key=api_key,
                 logger=logger,
             )
+
+            if stale_modalities and not stale_list:
+                await _sweep_declared_input_modalities(client, logger)
+                OpenRouterModelRegistry.record_video_modality_attempt()
+                return
 
             try:
                 models = await client.list_models()
@@ -146,11 +171,46 @@ async def ensure_video_catalog_loaded(
 
             OpenRouterModelRegistry.register_video_models(models)
             OpenRouterModelRegistry.record_video_attempt()
+            if with_modalities:
+                OpenRouterModelRegistry.record_video_modality_attempt()
             logger.info(
                 "Registered %d OpenRouter video model(s) into the catalog.", len(models)
             )
         finally:
             _set_video_sweep_in_flight(asyncio.get_running_loop(), False)
+
+
+async def _sweep_declared_input_modalities(
+    client: OpenRouterVideoClient, logger: Any,
+) -> None:
+    ids = sorted(OpenRouterModelRegistry._video_catalog_norms)
+    if not ids:
+        return
+    known = 0
+    for norm_id in ids:
+        spec = OpenRouterModelRegistry.spec(norm_id)
+        video_model = spec.get("video_model")
+        if not isinstance(video_model, dict):
+            continue
+        wire_id = str(video_model.get("id") or "").strip()
+        if not wire_id:
+            continue
+        try:
+            found = await client.model_modalities(wire_id)
+        except (TimeoutError, aiohttp.ClientError, OSError):
+            continue
+        if not found:
+            continue
+        video_model["input_modalities"] = list(found)
+        known += 1
+    if known < len(ids):
+        logger.log(
+            warn_level(_warned_video_catalog, "modalities"),
+            "Read the accepted input kinds for %d of %d video model(s); the rest are offered "
+            "every reference control until it can be read again.",
+            known,
+            len(ids),
+        )
 
 
 def _carry_declared_input_modalities(models: list[dict[str, Any]]) -> None:

@@ -829,15 +829,10 @@ async def _extract_frame_ffmpeg(
                 )
             except TimeoutError:
                 await _stop_child(proc, stderr_task)
-                if remaining is not None and rung_timeout < _FFMPEG_TIMEOUT_S:
-                    last_no_frame = FrameExtractionError(
-                        f"end-seek ladder spent its {_END_SEEK_BUDGET_SECONDS}s budget",
-                        no_frame=True,
-                    )
-                    break
-                raise FrameExtractionError(
-                    f"ffmpeg timed out after {rung_timeout}s",
-                ) from None
+                last_no_frame = _rung_deadline_error(
+                    rung_timeout, remaining is not None and rung_timeout < _FFMPEG_TIMEOUT_S
+                )
+                break
             except FrameExtractionError:
                 await _stop_child(proc, stderr_task)
                 raise
@@ -889,6 +884,20 @@ async def _extract_frame_ffmpeg(
     if last_no_frame is not None:
         raise last_no_frame
     raise FrameExtractionError("ffmpeg extract failed: no seek attempted")
+
+
+def _rung_deadline_error(
+    rung_timeout: float, clamp_bit: bool,
+) -> FrameExtractionError:
+    if clamp_bit:
+        return FrameExtractionError(
+            f"end-seek ladder spent its {_END_SEEK_BUDGET_SECONDS}s budget",
+            no_frame=True,
+        )
+    return FrameExtractionError(
+        f"ffmpeg timed out after {rung_timeout}s",
+        no_frame=True,
+    )
 
 
 def _ladder_note(damage_seen: bool) -> str:

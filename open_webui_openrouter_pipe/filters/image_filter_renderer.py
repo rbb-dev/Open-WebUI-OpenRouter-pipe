@@ -282,6 +282,8 @@ def _shared_passthrough(records: list[dict]) -> tuple[str, ...]:
 
 _SIZE_TIER_SOURCES: tuple[str, ...] = ("size", TIER_EQUIVALENT["size"])
 
+_DRAWN_TIER_SOURCE = TIER_EQUIVALENT["size"]
+
 _SIZE_TIERS: tuple[str, ...] = SCHEMA_ENUMS[TIER_EQUIVALENT["size"]]
 
 
@@ -309,6 +311,7 @@ def _publishes_size_descriptor(records: list[dict]) -> bool:
         if any(isinstance(declared.get(name), dict) for name in _SIZE_TIER_SOURCES):
             return True
     return False
+
 
 
 def _acceptable_passthrough(names: tuple[str, ...], taken: set[str]) -> tuple[str, ...]:
@@ -511,14 +514,14 @@ _SIZE_PIXELS_WIN = (
 )
 
 _SIZE_PIXELS_WIN_WITH_TIERS = (
-    "Exact pixels settle the picture on their own, so Resolution is not sent alongside "
+    "Exact pixels settle the picture on their own, so {tier_control} is not sent alongside "
     "them, and nor is Aspect ratio unless it is the shape you typed. A toast says so at "
     "the time, which Open WebUI does not keep with the message: it is gone once the page "
     "reloads."
 )
 
 _SIZE_PIXELS_WIN_WITH_TIERS_NO_RATIO = (
-    "Exact pixels settle the picture on their own, so Resolution is not sent alongside "
+    "Exact pixels settle the picture on their own, so {tier_control} is not sent alongside "
     "them. A toast says so at the time, which Open WebUI does not keep with the message: "
     "it is gone once the page reloads."
 )
@@ -566,6 +569,13 @@ def tier_state(spec: ImageModelFilterSpec) -> str:
     return drawn
 
 
+def _drawn_tier_source(spec: ImageModelFilterSpec) -> str:
+    return next(
+        (source for source, _values in spec.enums if source in _SIZE_TIER_SOURCES),
+        _DRAWN_TIER_SOURCE,
+    )
+
+
 def image_knob_text(name: str, spec: ImageModelFilterSpec) -> tuple[str, str]:
     """The title and the meaning of one control, as this model's own contract makes it.
     """
@@ -583,6 +593,10 @@ def image_knob_text(name: str, spec: ImageModelFilterSpec) -> tuple[str, str]:
     ratio = renders_control(spec, "aspect_ratio")
     tier = _SIZE_MEANING[(tier_state(spec), ratio)][0]
     pixels = _SIZE_MEANING[(drawn_tier_state(spec), ratio)][1]
+    if "{tier_control}" in pixels:
+        pixels = pixels.format(
+            tier_control=IMAGE_KNOB_TITLES[_drawn_tier_source(spec)][0]
+        )
     return title, f"{_SIZE_OPENING} {tier} {pixels}"
 
 
