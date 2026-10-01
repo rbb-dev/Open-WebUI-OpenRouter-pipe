@@ -184,7 +184,6 @@ async def run_fusion_member(
     system_prompt: str,
     max_tool_calls: int,
     live_queue: asyncio.Queue | None,
-    bypass_restrictions: bool,
     server_tools_config: tuple[dict[str, Any], list[dict[str, Any]]] | None = None,
     temperature: float | None = None,
     response_format: dict[str, Any] | None = None,
@@ -602,7 +601,6 @@ async def run_internal_fusion(
                 system_prompt=panel_prompt,
                 max_tool_calls=plan.max_tool_calls,
                 live_queue=live_queue,
-                bypass_restrictions=plan.panel_from_preset,
                 server_tools_config=web_tools_config,
             )
         except asyncio.CancelledError:
@@ -674,7 +672,6 @@ async def run_internal_fusion(
                         system_prompt=judge_prompt,
                         max_tool_calls=plan.max_tool_calls,
                         live_queue=judge_queue,
-                        bypass_restrictions=plan.judge_from_preset,
                         server_tools_config=web_tools_config,
                         temperature=0.0,
                         response_format=build_analysis_response_format(plan.judge_model),
@@ -782,7 +779,6 @@ async def run_internal_fusion(
                         system_prompt=synthesis_prompt,
                         max_tool_calls=plan.max_tool_calls,
                         live_queue=synth_queue,
-                        bypass_restrictions=plan.judge_from_preset,
                         server_tools_config=web_tools_config,
                     )
                 except asyncio.CancelledError:

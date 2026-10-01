@@ -137,6 +137,7 @@ from ..requests.sanitizer import (
 from ..requests.transformer import (
     _gate_round_output_pictures,
     _tool_picture_notice,
+    _tool_picture_verdicts_for_input,
 )
 
 _OWUI_ORIGIN_SOURCES = frozenset({"owui_registry_tools", "owui_request_tools"})
@@ -199,6 +200,7 @@ from ..storage.multimodal import (
     _decode_base64_in_quanta,
     _sniff_evidence,
     canonical_image_mime,
+    head_is_not_a_picture,
     image_extension_for_mime,
     resolve_download_type,
 )
@@ -886,9 +888,16 @@ class StreamingHandler:
                 )
 
             def _resolved_stored_mime(declared: str | None, decoded: bytes) -> str | None:
-                resolved = resolve_download_type(
-                    declared, _sniff_evidence(decoded[:_SNIFF_PREFIX_BYTES])
-                )
+                head = decoded[:_SNIFF_PREFIX_BYTES]
+                evidence = _sniff_evidence(head)
+                if evidence is None and head_is_not_a_picture(head):
+                    self.logger.debug(
+                        "Not materialising an image entry: its head is one repeated byte, "
+                        "which is not a container whatever it declares (%r).",
+                        declared,
+                    )
+                    return None
+                resolved = resolve_download_type(declared, evidence)
                 mime_type = canonical_image_mime(resolved)
                 if mime_type is None:
                     self.logger.debug(
@@ -2055,7 +2064,12 @@ class StreamingHandler:
                     event_iter = event_source
                 else:
                     if not input_is_sanitized:
-                        _replay_budget = _sanitize_request_input(self._pipe, body)
+                        _replay_budget = _sanitize_request_input(
+                            self._pipe, body,
+                            verdicts=await _tool_picture_verdicts_for_input(
+                                self._pipe, body.input,
+                            ),
+                        )
                         await _warn_if_futile(_replay_budget)
                         await _report_omissions(_replay_budget, _REPLAY_DROPPED_OPENING)
                         input_is_sanitized = True
@@ -3589,7 +3603,12 @@ class StreamingHandler:
                             len(call_items),
                         )
                     if not input_is_sanitized:
-                        _replay_budget = _sanitize_request_input(self._pipe, body)
+                        _replay_budget = _sanitize_request_input(
+                            self._pipe, body,
+                            verdicts=await _tool_picture_verdicts_for_input(
+                                self._pipe, body.input,
+                            ),
+                        )
                         await _warn_if_futile(_replay_budget)
                         await _report_omissions(_replay_budget, _REPLAY_DROPPED_OPENING)
                         input_is_sanitized = True
@@ -4069,6 +4088,7 @@ class StreamingHandler:
                             if not isinstance(round_output, dict):
                                 continue
                             gated_output, round_refused = await _gate_round_output_pictures(
+                                self._pipe,
                                 round_output.get("output"),
                                 self._pipe.valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
                                 allow_insecure=(
@@ -4089,7 +4109,12 @@ class StreamingHandler:
                             )
                         body.input.extend(budgeted_outputs)
                         input_is_sanitized = False
-                        shipped_budget = _sanitize_request_input(self._pipe, body)
+                        shipped_budget = _sanitize_request_input(
+                            self._pipe, body,
+                            verdicts=await _tool_picture_verdicts_for_input(
+                                self._pipe, body.input,
+                            ),
+                        )
                         await _warn_if_futile(shipped_budget)
                         await _report_omissions(shipped_budget, _REPLAY_DROPPED_OPENING)
                         input_is_sanitized = True

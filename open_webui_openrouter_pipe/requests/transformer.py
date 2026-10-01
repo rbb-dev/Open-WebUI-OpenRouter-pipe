@@ -34,6 +34,7 @@ from ..core.context_budget import inline_payload_bytes
 from ..core.errors import RequiredInternalFileError, StatusMessages
 from ..core.image_detail import image_detail_or_auto
 from ..core.url_scheme import (
+    base64_data_url_payload_chars,
     base64_data_url_payload_len,
     first_n_non_whitespace,
     is_absolute_url,
@@ -453,11 +454,13 @@ async def _gate_inline_data_url(
             subject=loggable_link(url),
         )
     if (payload_chars * 3) // 4 > max_inline_bytes:
-        return url, ImageRefusal(
-            f"larger than the {max_inline_bytes}-byte inline limit",
-            "oversized_inline",
-            subject=loggable_link(url),
-        )
+        folded = base64_data_url_payload_chars(url)
+        if folded is None or (folded * 3) // 4 > max_inline_bytes:
+            return url, ImageRefusal(
+                f"larger than the {max_inline_bytes}-byte inline limit",
+                "oversized_inline",
+                subject=loggable_link(url),
+            )
     split = split_base64_data_url(url)
     assert split is not None
     body = "".join(split[1].split())
@@ -502,7 +505,26 @@ async def _gate_inline_tool_pictures(
     return kept, refused
 
 
+async def _gated_tool_pictures_with_address(
+    pipe: Pipe,
+    pictures: list[str],
+    *,
+    max_inline_bytes: int,
+    allow_insecure: Callable[[str], bool],
+    seen: dict[str, bool | None] | None = None,
+    deadline: float | None = None,
+) -> tuple[list[str], list[tuple[str, str, str]]]:
+    typed, refused = await _gate_inline_tool_pictures(
+        pictures, max_inline_bytes, allow_insecure=allow_insecure,
+    )
+    admitted, unfetchable = await _tool_picture_address_gate(
+        pipe, typed, seen=seen, deadline=deadline,
+    )
+    return admitted, [*refused, *unfetchable]
+
+
 async def _gate_round_output_pictures(
+    pipe: Pipe,
     output: Any,
     max_inline_bytes: int,
     *,
@@ -511,8 +533,8 @@ async def _gate_round_output_pictures(
     if not is_picture_output(output):
         return output, []
     text, pictures = tool_output_text_and_pictures(output)
-    kept, refused = await _gate_inline_tool_pictures(
-        pictures, max_inline_bytes, allow_insecure=allow_insecure,
+    kept, refused = await _gated_tool_pictures_with_address(
+        pipe, pictures, max_inline_bytes=max_inline_bytes, allow_insecure=allow_insecure,
     )
     return picture_output(text, kept), refused
 
@@ -958,9 +980,11 @@ def _tool_picture_gate(
                                       "does not accept"), "unencoded_inline"))
                 continue
             if (payload_len * 3) // 4 > max_inline_bytes:
-                refused.append((url, f"larger than the {max_inline_bytes}-byte inline limit",
-                                "oversized_inline"))
-                continue
+                folded = base64_data_url_payload_chars(url)
+                if folded is None or (folded * 3) // 4 > max_inline_bytes:
+                    refused.append((url, f"larger than the {max_inline_bytes}-byte inline limit",
+                                    "oversized_inline"))
+                    continue
         kept.append(url)
     return kept, refused
 
@@ -996,6 +1020,46 @@ async def _tool_picture_address_gate(
             continue
         admitted.append(url)
     return admitted, refused
+
+
+def _tool_picture_verdict_gate(
+    kept: list[str], verdicts: dict[str, bool | None] | None
+) -> tuple[list[str], list[tuple[str, str, str]]]:
+    admitted: list[str] = []
+    refused: list[tuple[str, str, str]] = []
+    for url in kept:
+        if url_scheme(url) != "https" or names_an_owui_file_path(url):
+            admitted.append(url)
+            continue
+        if verdicts is not None and verdicts.get(url) is True:
+            admitted.append(url)
+            continue
+        refused.append((url, "could not be fetched, so it was not sent", "remote_unfetched"))
+    return admitted, refused
+
+
+async def _tool_picture_verdicts_for_input(
+    pipe: Pipe,
+    input_items: Any,
+    *,
+    seen: dict[str, bool | None] | None = None,
+    deadline: float | None = None,
+) -> dict[str, bool | None]:
+    verdicts = {} if seen is None else seen
+    if not isinstance(input_items, list):
+        return verdicts
+    pictures: list[str] = []
+    for row in input_items:
+        if not (isinstance(row, dict) and row.get("type") == "function_call_output"):
+            continue
+        output = row.get("output")
+        if not is_picture_output(output):
+            continue
+        _text, urls = tool_output_text_and_pictures(output)
+        pictures.extend(urls)
+    if pictures:
+        await _tool_picture_address_gate(pipe, pictures, seen=verdicts, deadline=deadline)
+    return verdicts
 
 
 async def _tool_picture_gate_with_address(
@@ -3225,14 +3289,11 @@ async def transform_messages_to_input(
             ):
                 continue
             _replay_text, shown = tool_output_text_and_pictures(row["output"])
-            _typed, refused_shown = await _gate_inline_tool_pictures(
-                shown, max_inline_bytes,
+            admitted, refused_shown = await _gated_tool_pictures_with_address(
+                pipe, shown, max_inline_bytes=max_inline_bytes,
                 allow_insecure=pipe._multimodal_handler._is_insecure_http_allowed,
+                seen=address_verdicts, deadline=address_deadline,
             )
-            admitted, unfetchable = await _tool_picture_address_gate(
-                pipe, _typed, seen=address_verdicts, deadline=address_deadline,
-            )
-            refused_shown = list(refused_shown) + list(unfetchable)
             for url, reason, cause in refused_shown:
                 logger.warning(
                     "Not replaying a stored tool's picture (%s): %s [cause=%s]",

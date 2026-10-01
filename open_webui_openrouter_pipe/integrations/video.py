@@ -3197,6 +3197,10 @@ class VideoGenerationAdapter:
         charge_chat = cap_chat > 0 and bool(chat_id)
         tally_key = _hash_chat_id(chat_id) if charge_chat else ""
         if charge_chat and self._intent_call_counts_per_chat.get(tally_key, 0) >= cap_chat:
+            self._log_intent_cap(
+                "VIDEO_INTENT_MAX_TURNS_PER_CHAT", cap_chat, valves,
+                detail=f"chat_hash={tally_key}",
+            )
             return False
         charge_day = cap_day > 0 and bool(user_id)
         day = ""
@@ -3204,6 +3208,10 @@ class VideoGenerationAdapter:
             from datetime import datetime
             day = datetime.now(tz=UTC).strftime("%Y-%m-%d")
             if self._intent_call_counts_per_user_day.get((user_id, day), 0) >= cap_day:
+                self._log_intent_cap(
+                    "VIDEO_INTENT_MAX_TURNS_PER_USER_DAY", cap_day, valves,
+                    detail=f"day={day}",
+                )
                 return False
         if charge_chat:
             per_chat = self._intent_call_counts_per_chat
@@ -3216,6 +3224,20 @@ class VideoGenerationAdapter:
                 self._intent_call_counts_per_user_day.get((user_id, day), 0) + 1
             )
         return True
+
+    def _log_intent_cap(
+        self, valve: str, cap: int, valves: Any, *, detail: str
+    ) -> None:
+        if bool(getattr(valves, "VIDEO_INTENT_LOG_DECISIONS", False)):
+            self.logger.info(
+                "video_intent cost guard: classifier not run, %s reached (cap=%s, %s)",
+                valve, cap, detail,
+            )
+        else:
+            self.logger.debug(
+                "video_intent cost guard: classifier not run, %s reached (cap=%s, %s)",
+                valve, cap, detail,
+            )
 
     def _prune_intent_day_tally(self) -> None:
         if not self._intent_call_counts_per_user_day:

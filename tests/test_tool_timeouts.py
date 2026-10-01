@@ -1126,7 +1126,6 @@ async def test_inside_a_fusion_answer_a_slow_call_does_not_hold_up_other_tools_w
                 system_prompt="PANEL PROMPT",
                 max_tool_calls=8,
                 live_queue=None,
-                bypass_restrictions=True,
             )
     finally:
         pipe._TOOL_CONTEXT.reset(token)

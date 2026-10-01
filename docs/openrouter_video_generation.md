@@ -2289,9 +2289,11 @@ other than `none`. Either pick a frame-capable model or set Frames =
 ### "Frame image MIME 'application/octet-stream' is not allowed"
 
 The attached image's content_type wasn't in
-`VIDEO_FRAME_IMAGE_MIME_ALLOWLIST`. The pipe sniffs MIME from the file
-record — if OWUI stored it with a generic content type, re-attach via
-the chat input rather than via URL ingestion.
+`VIDEO_FRAME_IMAGE_MIME_ALLOWLIST`. The pipe reads the type from the file
+record, and falls back to one derived from the file's own name when the
+record carries none, so reaching this with a name the platform cannot type
+means neither a recorded type nor a usable extension was available — re-attach
+via the chat input rather than via URL ingestion.
 
 This error can only come from a **user-attached** frame. A frame the
 pipe extracted from a prior video in the chat is re-encoded before it

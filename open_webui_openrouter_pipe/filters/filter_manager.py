@@ -21,6 +21,7 @@ import json
 import logging
 import re
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Iterable
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
@@ -52,7 +53,7 @@ from ..core.utils import (
     _clean_str,
 )
 from ..core.utils import OWUI_FUNCTION_ID_ILLEGAL_RE as _MODEL_FILTER_ID_RE
-from ..core.warn_latch import warn_level
+from ..core.warn_latch import bounded_warn_level, warn_level
 from ..integrations.provider_options import CHAT_PROVIDER_KEYS, TRANSPORT_PROVIDER_KEYS
 from ..models.catalog_manager import WEB_TOOL_SWITCHES, every_web_tool_is_off
 
@@ -94,6 +95,9 @@ _PROVIDER_NAME_COLLAPSE_RE = re.compile(r"[ _]{2,}")
 
 _warned_stale_filter_rows: set[str] = set()
 _warned_write_refusals: dict[str, float] = {}
+_warned_image_filter_installs: OrderedDict[str, None] = OrderedDict()
+_warned_video_filter_installs: OrderedDict[str, None] = OrderedDict()
+_PER_MODEL_INSTALL_WARN_WINDOW = 300
 
 _PIPE_OFF_META_KEY = "openrouter_pipe:switched_off_by_pipe"
 _PIPE_OFF_STAMP_META_KEY = "openrouter_pipe:switched_off_at"
@@ -2230,8 +2234,13 @@ class FilterManager:
                     ),
                 )
             except Exception as exc:
-                self.logger.warning(
-                    "Video filter install failed for %r: %s", canonical_id, exc, exc_info=True
+                self.logger.log(
+                    bounded_warn_level(
+                        _warned_video_filter_installs,
+                        f"{canonical_id}:{type(exc).__name__}",
+                        _PER_MODEL_INSTALL_WARN_WINDOW,
+                    ),
+                    "Video filter install failed for %r: %s", canonical_id, exc, exc_info=True,
                 )
                 unresolved.add(model_id)
                 if isinstance(original_id, str) and original_id.strip() and original_id != model_id:
@@ -2570,8 +2579,13 @@ class FilterManager:
                 # could enumerate, and one of them must not skip every remaining model.
                 if _is_install_enumeration_failure(exc):
                     raise
-                self.logger.warning(
-                    "Image filter install failed for %r: %s", canonical_id, exc, exc_info=True
+                self.logger.log(
+                    bounded_warn_level(
+                        _warned_image_filter_installs,
+                        f"{canonical_id}:{type(exc).__name__}",
+                        _PER_MODEL_INSTALL_WARN_WINDOW,
+                    ),
+                    "Image filter install failed for %r: %s", canonical_id, exc, exc_info=True,
                 )
                 unresolved.add(model_id)
                 if isinstance(original_id, str) and original_id.strip() and original_id != model_id:

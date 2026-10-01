@@ -174,7 +174,7 @@ This hook fires every time Open WebUI refreshes its model dropdown list. You rec
 - **Annotate** — tag model names (e.g., append "[FREE]" to zero-cost models)
 - **Filter by capability** — remove models that lack specific features (vision, tool calling, etc.)
 
-You get the full model data from OpenRouter (pricing, capabilities, context length), so filtering decisions can be precise.
+Each row carries `id`, `name`, `norm_id` and `original_id`. When the catalog has them it also carries `capabilities` — a map of booleans — and `zdr_capable`; read both with `.get`, because a deployment whose ZDR roster failed to load publishes rows with no `zdr_capable` at all (`registry.py:517-519`) and `row["zdr_capable"]` raises there. Pricing, context length, architecture and provider details are not on the row; read them with `OpenRouterModelRegistry.spec(row["norm_id"])`, which is the call the pipe's own filters make (`pipe.py:4975-4990`).
 
 ### on_request — Intercept or Inspect Requests
 
@@ -435,13 +435,12 @@ def on_models(self, models: list[dict[str, Any]], **kwargs: Any) -> None:
 
 **Dispatch location:** `Pipe.pipes()` (`pipe.py`):
 ```python
-# Plugins see full model data (pricing, capabilities) — trusted code
 if self.valves.ENABLE_PLUGIN_SYSTEM:
     try:
         await self._ensure_plugin_registry().dispatch_on_models(selected_models)
     except Exception:
-        self.logger.debug("Plugin on_models dispatch failed", exc_info=True)
-# Return simple id/name list — OWUI's get_function_models() only reads these fields
+        level = warn_level(_warned_pipes_maintenance, "on_models")
+        self.logger.log(level, "Plugin on_models dispatch failed", exc_info=True)
 return [
     {"id": m["id"], "name": m.get("name", m["id"])}
     for m in selected_models
@@ -449,11 +448,13 @@ return [
 ]
 ```
 
+Plugins see the pipe's own catalog rows, not the raw OpenRouter entries. The returned list is stripped to `{id, name}` after dispatch, and Open WebUI reads only those two fields off a sub-pipe's rows (`functions.py:106-107`).
+
 **Dispatch type:** **Void/Mutation** — all subscribers receive a reference to the same list and mutate it in place. Plugins run in priority order; mutations made by higher-priority plugins are immediately visible to lower-priority ones.
 
 **Return:** `None`. This is a void hook. Mutate the `models` list directly (append, remove, reorder, modify dicts in place). Do **not** reassign the parameter (`models = [...]`) -- that rebinds the local variable and the caller never sees the change.
 
-**Model dict format:** Plugins receive the **full model data** from OpenRouter (pricing, capabilities, context length, provider info, etc.). The pipe strips to `{id, name}` **after** plugin dispatch. Plugin-injected models with minimal fields work fine.
+**Model dict format:** Plugins receive the pipe's own catalog row: `id`, `name`, `norm_id`, `original_id`, plus `capabilities` and `zdr_capable` where the catalog has them (`registry.py:948-959`). There is no pricing, no context length and no provider details in it. Read those with `OpenRouterModelRegistry.spec(row["norm_id"])`. The pipe strips to `{id, name}` **after** plugin dispatch. Plugin-injected models with minimal fields work fine.
 
 > **Note:** `on_models` may be either `def` or `async def`. The dispatcher awaits the result when the hook returns an awaitable, so async implementations can call async APIs (e.g. OWUI's Models table) directly.
 
@@ -468,23 +469,27 @@ def on_models(self, models: list[dict[str, Any]], **kwargs: Any) -> None:
 **Example 2 — filter models by capability (moderate):**
 ```python
 def on_models(self, models: list[dict[str, Any]], **kwargs: Any) -> None:
-    """Remove models that only support vision input (no text chat)."""
+    """Remove models that do not accept an image."""
     # Iterate backwards so index stays valid while removing
     for i in range(len(models) - 1, -1, -1):
-        arch = models[i].get("architecture", {})
-        input_modalities = arch.get("modality", "").split("->")[0] if arch else ""
-        # Keep models that accept text; remove vision-only
-        if "text" not in input_modalities and "image" in input_modalities:
+        if not models[i].get("capabilities", {}).get("vision"):
             models.pop(i)
 ```
 
 **Example 3 — sort by pricing and add metadata (advanced):**
 ```python
+from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+
 def on_models(self, models: list[dict[str, Any]], **kwargs: Any) -> None:
     """Sort models by prompt price (cheapest first) and tag free models."""
     for m in models:
-        pricing = m.get("pricing") or {}
-        prompt_cost = float(pricing.get("prompt", "0") or "0")
+        norm_id = m.get("norm_id")
+        if norm_id:
+            pricing = OpenRouterModelRegistry.spec(norm_id).get("pricing") or {}
+            prompt_cost = float(pricing.get("prompt", "0") or "0")
+        else:
+            # No catalogue entry, so no price: sort last, never tag it free
+            prompt_cost = float("inf")
         if prompt_cost == 0:
             m["name"] = f"{m.get('name', m['id'])} [FREE]"
         m["_sort_cost"] = prompt_cost
@@ -1214,7 +1219,7 @@ log_level = ctx.pipe.valves.LOG_LEVEL     # Individual valve value
 # Model registry (class-level, no pipe reference needed)
 from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
 models = OpenRouterModelRegistry.list_models()   # Full model catalog
-spec = OpenRouterModelRegistry.spec("gpt-4o")    # Model capabilities
+spec = OpenRouterModelRegistry.spec("openai/gpt-4o")    # Model capabilities
 ```
 
 ---

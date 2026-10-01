@@ -1674,30 +1674,27 @@ def test_maybe_heal_no_ix_in_message(pipe_instance):
 
 
 def test_maybe_heal_with_schema(pipe_instance):
-    """Test _maybe_heal_index_conflict with schema qualification."""
+    """A conflicting index that is genuinely on the table is dropped.
+
+    Driven on a real engine: the heal now reads the table's own indexes before dropping
+    anything, so a stand-in that answers no inspector could only exercise the by-name path
+    the fix removed.
+    """
     store = pipe_instance._artifact_store
-
-    class _DummyTable:
-        name = "test_table"
-        schema = "test_schema"
-        indexes = set()
-        columns = []
-
-    executed = []
-
-    class _DummyEngine:
-        def begin(self):
-            class _Conn:
-                def execute(self, stmt):
-                    executed.append(str(stmt))
-
-            return contextlib.nullcontext(_Conn())
+    engine = create_engine("sqlite://")
+    table = _heal_fixture_table("test_table", "ix_test", indexed_column="chat_id")
+    table.create(bind=engine, checkfirst=True)
+    assert "ix_test" in _index_names(engine, table.name), "the fixture has no index to heal"
 
     result = store._maybe_heal_index_conflict(
-        _DummyEngine(), _DummyTable(), Exception("duplicate key ix_test")
+        engine, table, Exception("duplicate key ix_test")
     )
-    # Should try to drop the index
-    assert any("ix_test" in stmt.lower() for stmt in executed)
+
+    assert result is True, "the heal did not report that it dropped the orphan"
+    assert "ix_test" not in _index_names(engine, table.name), (
+        f"the orphan survived: {sorted(_index_names(engine, table.name))}"
+    )
+    engine.dispose()
 
 
 def test_maybe_heal_drop_fails(pipe_instance, caplog):
@@ -2251,42 +2248,52 @@ def test_init_artifact_store_with_sqlite(pipe_instance):
 
 
 def test_maybe_heal_index_conflict_drops_indexes(pipe_instance):
+    """A declared column index that collides is dropped, so the retry can create the table.
+
+    Driven on a real engine, because the heal reads the table's own indexes first: a
+    stand-in engine could only reach the by-name path the fix removed.
+    """
     store = pipe_instance._artifact_store
-
-    class _DummyColumn:
-        def __init__(self, name: str, index: bool = True) -> None:
-            self.name = name
-            self.index = index
-
-    class _DummyIndex:
-        def __init__(self, name: str) -> None:
-            self.name = name
-
-    class _DummyTable:
-        def __init__(self) -> None:
-            self.name = "response_items_test"
-            self.schema = None
-            self.indexes = {_DummyIndex("ix_response_items_test_chat_id")}
-            self.columns = [_DummyColumn("chat_id", index=True)]
-
-    executed: list[str] = []
-
-    class _DummyEngine:
-        def begin(self):
-            class _Conn:
-                def execute(self, stmt):
-                    executed.append(str(stmt))
-
-            return contextlib.nullcontext(_Conn())
+    engine = create_engine("sqlite://")
+    table = _heal_fixture_table(
+        "response_items_test", "ix_response_items_test_chat_id", indexed_column="chat_id"
+    )
+    table.create(bind=engine, checkfirst=True)
+    assert "ix_response_items_test_chat_id" in _index_names(engine, table.name)
 
     result = store._maybe_heal_index_conflict(
-        _DummyEngine(),
-        _DummyTable(),
+        engine,
+        table,
         Exception("duplicate key value violates unique constraint ix_response_items_test_chat_id"),
     )
 
-    assert result is True
-    assert executed
+    assert result is True, "the heal did not report that it dropped the orphan"
+    assert "ix_response_items_test_chat_id" not in _index_names(engine, table.name), (
+        f"the orphan survived: {sorted(_index_names(engine, table.name))}"
+    )
+    engine.dispose()
+
+
+def _heal_fixture_table(name: str, index_name: str, *, indexed_column: str | None = None):
+    """A one-column table that declares one index, for the heal's own inspection to find."""
+    from sqlalchemy import Column, Index, MetaData, String, Table
+
+    args = []
+    if indexed_column:
+        args.append(Index(index_name, indexed_column))
+    return Table(
+        name,
+        MetaData(),
+        Column("id", String(26), primary_key=True),
+        Column("chat_id", String(64), nullable=True),
+        *args,
+    )
+
+
+def _index_names(engine, table_name: str) -> set[str]:
+    from sqlalchemy import inspect as sa_inspect
+
+    return {idx["name"] for idx in sa_inspect(engine).get_indexes(table_name)}
 
 
 def test_db_persist_and_fetch_roundtrip(pipe_instance):

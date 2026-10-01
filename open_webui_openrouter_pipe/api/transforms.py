@@ -200,12 +200,17 @@ class ResponsesBody(BaseModel):
         if isinstance(value, int):
             return value
         if isinstance(value, float):
+            if not isfinite(value):
+                return None
             return round(value)
         if isinstance(value, str):
             try:
-                return round(float(value))
+                numeric = float(value)
             except ValueError as exc:
                 raise ValueError(f"Invalid integer value: {value!r}") from exc
+            if not isfinite(numeric):
+                return None
+            return round(numeric)
         raise ValueError(f"Invalid integer value: {value!r}")
 
     @field_validator("models", mode="before")
@@ -1424,23 +1429,7 @@ async def _responses_input_to_chat_messages(
 # Payload Transforms
 
 def _coerce_openrouter_int(value: Any) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return round(value)
-    if isinstance(value, str):
-        candidate = value.strip()
-        if not candidate:
-            return None
-        try:
-            return round(float(candidate))
-        except ValueError:
-            return None
-    return None
+    return _coerced_token_cap(value)
 
 
 def chat_payload_loses_fusion_entry(model_id: Any, plugins: Any) -> bool:

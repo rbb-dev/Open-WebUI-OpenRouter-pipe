@@ -786,6 +786,17 @@ def _canonical_image_model_id(model_id: str, image_model: dict[str, Any] | None)
     return candidate.rsplit(":", 1)[0].strip() if ":" in candidate else candidate
 
 
+def _modality_names(architecture: Any, key: str) -> list[str]:
+    if not isinstance(architecture, dict):
+        return []
+    declared = architecture.get(key)
+    if isinstance(declared, str):
+        return [part.strip() for part in declared.split(",") if part.strip()]
+    if not isinstance(declared, list):
+        return []
+    return [item.strip() for item in declared if isinstance(item, str) and item.strip()]
+
+
 def _image_render_template(model_id: str, image_model: dict[str, Any] | None) -> str:
     entry = _IMAGE_PER_MODEL_HELP_DATA.get(
         _canonical_image_model_id(model_id, image_model)
@@ -811,9 +822,9 @@ def _image_render_catalog_fallback(model_id: str, image_model: dict[str, Any] | 
         image_model = {}
     name = image_model.get("name") or model_id
     description = image_model.get("description") or "(no description)"
-    arch = image_model.get("architecture") or {}
-    out_mods = arch.get("output_modalities") or []
-    in_mods = arch.get("input_modalities") or []
+    arch = image_model.get("architecture")
+    out_mods = _modality_names(arch, "output_modalities")
+    in_mods = _modality_names(arch, "input_modalities")
     parts = [
         f"# {name}",
         "",

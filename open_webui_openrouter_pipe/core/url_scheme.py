@@ -192,6 +192,26 @@ def base64_data_url_payload_len(value: Any) -> int | None:
     return len(value) - comma - 1
 
 
+_BASE64_FOLDED_CHARS = (
+    "".join(chr(code) for code in range(0x21))
+    + "\x7f\x85          "
+    + "       　"
+)
+
+
+def base64_data_url_payload_chars(value: Any) -> int | None:
+    if not isinstance(value, str) or url_scheme(value) != "data":
+        return None
+    comma = value.find(",")
+    if comma == -1:
+        return None
+    if _base64_marker_end(value[:comma]) is None:
+        return None
+    start = comma + 1
+    folded = sum(value.count(char, start) for char in _BASE64_FOLDED_CHARS)
+    return len(value) - start - folded
+
+
 def base64_data_url_media_type(value: Any) -> str:
     if not isinstance(value, str) or url_scheme(value) != "data":
         return ""

@@ -427,9 +427,14 @@ def _build_collision_safe_tool_specs_and_registry(
             log.debug("Skipping extra tool %s: %d registry tools share the name.", origin_name, same_name_entries)
             continue
         tool_cfg = _pick_executor(origin_name)
+        runnable = isinstance(tool_cfg, dict) and tool_cfg.get("callable") is not None
         if (not owui_tool_passthrough) and (not tool_cfg or tool_cfg.get("callable") is None):
             log.debug("Skipping unexecutable extra tool %s (no callable).", origin_name)
             continue
+        if not (owui_tool_passthrough or not runnable):
+            carried = _bound_description_and_parameters(_bound_spec(tool_cfg))
+            if carried:
+                spec = {**spec, **carried}
         candidates.append(
             {
                 "origin_source": "extra_tools",

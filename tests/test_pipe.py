@@ -10438,3 +10438,9 @@ def _stage_real_segment(factory, model, chat_id, message_id, tag, *, age_s, term
     finally:
         session.close()
     assert _sm is not None
+
+
+def _index_names(engine, table_name):
+    from sqlalchemy import inspect as sa_inspect
+
+    return {idx["name"] for idx in sa_inspect(engine).get_indexes(table_name)}

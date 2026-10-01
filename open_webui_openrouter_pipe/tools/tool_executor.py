@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 from ..core.config import entry_data_url
 from ..core.timing_logger import timed, timing_mark
 from ..core.url_scheme import (
-    base64_data_url_payload_len,
+    base64_data_url_payload_chars,
     loggable_link,
     split_base64_data_url,
 )
@@ -1106,15 +1106,16 @@ class ToolExecutor:
         metadata = context.metadata or {}
         if is_temporary_chat(metadata.get("chat_id")):
             return None
-        payload_len = base64_data_url_payload_len(url)
-        if payload_len is None:
+        payload_chars = base64_data_url_payload_chars(url)
+        if payload_chars is None:
             return None
-        if not self._pipe._file_gateway.validate_base64_length(payload_len):
+        if not self._pipe._file_gateway.validate_base64_length(payload_chars):
             return None
         parsed = split_base64_data_url(url)
         if parsed is None:
             return None
         _header, payload = parsed
+        payload = _compact_base64(payload)
         mime_type = _mime_type_from_header(_header)
         try:
             raw = await _decode_data_entry(payload)

@@ -555,6 +555,101 @@ def _reset_package_caches():
     _clear_package_caches()
 
 
+def _package_process_state_containers() -> tuple[tuple[str, str], ...]:
+    """The package-owned containers whose lifetime is the process, as (module, name).
+
+    Written as one predicate rather than two resets, so the census in
+    test_unlinkable_chat_prefixes_isolation.py asserts against this same list.
+    Written twice, the census would test a copy and a name added to one half would
+    go unseen.
+
+    Two containers, and the census is scoped to exactly these on purpose. A module
+    name gives no signal about lifetime -- `_cache` and `ALLOWED_OPENROUTER_FIELDS`
+    are both module-level dicts and only one of them is per-test state -- so the
+    wider sweep a name-based list would need is not mechanically decidable from the
+    source. A container that is really process-lifetime and really per-test state
+    gets its own item and its own reach analysis.
+    """
+    return (
+        ("open_webui_openrouter_pipe", "_cache"),
+        (
+            "open_webui_openrouter_pipe.plugins.pipe_dashboard.dashboard_socket",
+            "_pending_emits",
+        ),
+    )
+
+
+def _clear_package_process_state() -> None:
+    """Return both process-lifetime containers to what a freshly-imported tree has.
+
+    `_cache` and the module namespace are cleared TOGETHER, and the second half is
+    not optional. `__getattr__` writes `_cache[name]` and then `globals()[name]`, so
+    emptying the dict alone leaves a stand-in bound in the module namespace --
+    where `__getattr__` is never reached for it, because module-level lookup finds
+    it first. Every such write in `__init__.py` is preceded by its `_cache` write
+    (`__init__.py:385-386, 392-393, 412-413, 434-435`), so `keys(_cache)` is a sound
+    upper bound on what `__getattr__` installed, and popping both is safe.
+
+    Unbinding a SUCCESSFUL lazy import does not produce a new object on the next
+    read: `importlib.import_module` finds the entry in `sys.modules` and re-binds
+    the same one, so `Valves` is still the same class after a reset.
+
+    Resolved FRESH on every call, never captured at module scope, because a test may
+    swap `sys.modules[PKG]` for a stand-in and assert identity on what it put back.
+
+    Guard-shaped, never assert-shaped, because four of the five CI modes load a flat
+    bundle that synthesises `__all__ = ["Pipe"]` and has neither `_cache` nor a
+    `__getattr__` (scripts/bundle_v2.py:1140-1152). There is nothing to clear in
+    those modes; the guards are what make that a no-op rather than an error.
+    """
+    for module_name, attr in _package_process_state_containers():
+        module = sys.modules.get(module_name)
+        container = getattr(module, attr, None) if module is not None else None
+        if isinstance(container, dict):
+            for key in list(container):
+                container.pop(key, None)
+                vars(module).pop(key, None)
+        elif isinstance(container, set):
+            # Cancel before clearing. asyncio holds only a WEAK reference to a
+            # running task, so dropping the last strong one would let the collector
+            # take a fire-and-forget emit out mid-flight -- the set exists precisely
+            # to prevent that. Cancelling is safe here because this runs at the
+            # TEARDOWN of the test that armed the emit, while its loop is still open
+            # (measured: pytest-asyncio closes a loop after the autouse fixtures
+            # tear down). It is not safe in general -- cancelling a task already
+            # suspended on a future, or one whose first step never ran, schedules
+            # the next step on the loop and raises `RuntimeError: Event loop is
+            # closed` if that loop has closed. Hence cancel-first rather than a bare
+            # clear, and hence the arm in
+            # test_a_package_owned_container_is_empty_at_the_start_of_every_test.py
+            # builds the one shape that leaks without making this raise.
+            for task in list(container):
+                if not task.done():
+                    task.cancel()
+            container.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_package_process_state():
+    """Reset the two package containers that live for the life of the process.
+
+    Both ends, for the reason `_reset_package_caches` gives: the teardown end stops an
+    arming from poisoning the next test, the setup end discards whatever a finalizer
+    ordering put back afterwards. Autouse fixtures are set up before `monkeypatch` and
+    torn down after it, so a test that does `monkeypatch.setattr(pkg, "UserValves", ...)`
+    is restored by the time the teardown end runs and cannot leave the fake behind.
+
+    Kept separate from `_reset_warn_latches` rather than folded into it: the two
+    guard unrelated invariants, and folding them would couple a state clear to a
+    latch clear for ~2 ms a test. `_warned` is also the exact set equality
+    test_warn_latch_isolation.py:155 asserts, so widening that predicate to reach a
+    container with no such prefix would fail it.
+    """
+    _clear_package_process_state()
+    yield
+    _clear_package_process_state()
+
+
 @pytest.fixture(autouse=True)
 def _reset_warn_latches():
     """Reset every warn-once latch that is currently loaded.

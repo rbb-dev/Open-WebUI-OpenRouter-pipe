@@ -146,8 +146,9 @@ def _request_overhead_chars(body: Any) -> int:
 def _gate_tool_pictures(
     item: dict[str, Any], logger: logging.Logger, *,
     max_inline_bytes: int, allow_insecure: Callable[[str], bool],
+    verdicts: dict[str, bool | None] | None = None,
 ) -> tuple[dict[str, Any], bool]:
-    from .transformer import _tool_picture_gate
+    from .transformer import _tool_picture_gate, _tool_picture_verdict_gate
 
     if item.get("type") != "function_call_output":
         return item, False
@@ -163,6 +164,8 @@ def _gate_tool_pictures(
     kept, refused = _tool_picture_gate(
         urls, max_inline_bytes=max_inline_bytes, allow_insecure=allow_insecure,
     )
+    kept, unfetchable = _tool_picture_verdict_gate(kept, verdicts)
+    refused = [*refused, *unfetchable]
     if not refused:
         return item, False
     for url, reason, cause in refused:
@@ -185,7 +188,10 @@ def _gate_tool_pictures(
     return {**item, "output": rebuilt}, True
 
 
-def _sanitize_request_input(pipe: Pipe, body: ResponsesBody) -> BudgetOutcome | None:
+def _sanitize_request_input(
+    pipe: Pipe, body: ResponsesBody, *,
+    verdicts: dict[str, bool | None] | None = None,
+) -> BudgetOutcome | None:
     """Remove non-replayable artifacts that may have snuck into body.input."""
     items = getattr(body, "input", None)
     if not isinstance(items, list):
@@ -229,6 +235,7 @@ def _sanitize_request_input(pipe: Pipe, body: ResponsesBody) -> BudgetOutcome | 
                 item, pipe.logger,
                 max_inline_bytes=pipe.valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
                 allow_insecure=pipe._multimodal_handler._is_insecure_http_allowed,
+                verdicts=verdicts,
             )
             changed = gated
             call_id = item.get("call_id")

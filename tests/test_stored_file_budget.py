@@ -911,7 +911,7 @@ async def test_the_orchestrator_sizes_every_attachment_before_the_budget_runs(
 
     captured: dict[str, Any] = {}
 
-    def _capture(pipe, body):
+    def _capture(pipe, body, **_kwargs):
         captured["body"] = body
         raise _Stop()
 
@@ -1007,7 +1007,7 @@ async def test_the_pre_dispatch_pass_tells_the_user_when_the_request_is_hopeless
     class _Stop(Exception):
         pass
 
-    def _verdict(pipe, body):
+    def _verdict(pipe, body, **_kwargs):
         return BudgetOutcome(
             frozenset(),
             futile,
@@ -1150,7 +1150,7 @@ async def test_the_futility_notice_is_silent_on_background_tasks(
     class _Session:
         pass
 
-    def _verdict(pipe, body):
+    def _verdict(pipe, body, **_kwargs):
         return BudgetOutcome(frozenset(), True, 6_274 * _CHARS_PER_TOKEN_HEURISTIC,
                              800 * _CHARS_PER_TOKEN_HEURISTIC)
 
@@ -1256,7 +1256,7 @@ async def test_the_reply_allowance_is_decided_before_the_budget_reads_it(
     )
     seen: dict[str, Any] = {}
 
-    def _capture(pipe, body):
+    def _capture(pipe, body, **_kwargs):
         seen["reservation"] = getattr(body, "max_output_tokens", None)
         raise _Stop()
 

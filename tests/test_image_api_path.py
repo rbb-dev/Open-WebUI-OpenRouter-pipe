@@ -35,6 +35,13 @@ BASE = "https://openrouter.ai/api/v1"
 #: row about how the *card* renders has to name itself as one.
 _CHAT_CALLER = {"chat_id": "c1", "message_id": "m1"}
 
+# The bytes one entry's classification prefix decodes to: `_IMAGE_DECODE_PREFIX_BYTES`
+# rounded up to a whole base64 quantum, which is what the loop decodes off the front of
+# every entry to name it before the ceiling is applied. Written out here rather than
+# imported, so the row measures the bound the client actually uses instead of agreeing
+# with it by construction.
+_PREFIX_DECODED_BYTES = ((512 // 3 + 1) * 4) // 4 * 3
+
 
 def monkeypatch_client(adapter: ImageGenerationAdapter, client: Any) -> None:
     object.__setattr__(adapter, "_client", lambda *_a, **_k: client)
@@ -3388,10 +3395,12 @@ async def test_the_ceiling_stops_the_loop_before_it_decodes(monkeypatch):
                 {"model": "m", "prompt": "p"}, max_decoded_bytes=1024 * 1024
             )
 
-    assert decoded.bytes == 600 * 1024 + len(_png(4, 4)), (
+    assert decoded.bytes == 600 * 1024 + len(_png(4, 4)) + 2 * _PREFIX_DECODED_BYTES, (
         "the pre-decode estimate exists so an oversized reply is refused without materialising "
         f"every blob; {decoded.bytes} bytes were decoded across {decoded.calls} calls, and one "
-        f"entry's payload is {600 * 1024 + len(_png(4, 4))} bytes. Counting decoded BYTES rather "
+        f"entry's payload is {600 * 1024 + len(_png(4, 4))} bytes plus the "
+        f"{_PREFIX_DECODED_BYTES}-byte classification prefix each of the two entries decodes "
+        "before the ceiling is applied. Counting decoded BYTES rather "
         "than calls is what makes this row true at any decode quantum: the client may now split "
         "one payload across several calls, and a call count would read that as a second decode."
     )

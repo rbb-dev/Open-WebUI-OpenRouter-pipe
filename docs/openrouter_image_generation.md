@@ -1284,6 +1284,15 @@ which is installed by the same pass. A log line names it when it happens:
 `OpenRouter Image filter ensure failed` or `OpenRouter Fusion filter ensure
 failed`.
 
+A single model's install failing is a different line, and a quieter one: it is
+named once per model per kind of failure, at WARNING, and every later
+occurrence of that same fault repeats at DEBUG with the same message and the
+same traceback. So a catalogue of a few hundred models against a database that
+is refusing writes costs a few hundred lines once rather than a few hundred on
+every refresh, while a model that starts failing *differently* — a new driver
+error after the old one clears — warns again at WARNING. The same holds for the
+video panel's per-model failures.
+
 While that valve is **off**, an already-installed panel is left exactly as it
 is. If a newer release changes what that panel should offer, the change is not
 delivered and a warning is written to the pipe's log naming the panel; turn the
@@ -1374,10 +1383,16 @@ store and shown inline, exactly as one from a dedicated image model is.
 Both end at the same stored file and the same message. Anything larger
 than `BASE64_MAX_SIZE_MB` is rejected rather than stored, and the same
 now holds of a tool's picture, which is left out of its round and named on
-the turn whose round carries it. A blob that is not a picture is not stored
+the turn whose round carries it. An entry in a generated-image reply that is
+not a picture is refused as such and does not count against that reply's
+ceiling, so a bad entry cannot displace a good one, and every entry is named
+for what it is — over the ceiling or not a picture — whatever the limit is
+set to. A blob that is not a picture is not stored
 either: the type written into the file name and the file's `content_type`
 is resolved from the bytes wherever the bytes identify themselves, the
-declaration decides only where they say nothing, and an entry that resolves
+declaration decides only where they say nothing and the head could still be
+a container — a head that is positively not a picture is refused whatever it
+declares itself to be — and an entry that resolves
 to no storable image type is not materialised as a picture at all. In a
 temporary, legacy-temporary or channel chat there is no row to hold the
 file, so nothing is stored there at all: the picture stays in the

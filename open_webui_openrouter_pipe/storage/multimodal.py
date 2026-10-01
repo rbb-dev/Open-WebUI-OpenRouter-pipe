@@ -719,6 +719,16 @@ def _sniff_mime_from_prefix(data: bytes) -> str | None:
     return found.mime if found is not None else None
 
 
+def head_is_not_a_picture(head: bytes) -> bool:
+    if not isinstance(head, (bytes, bytearray)) or not head:
+        return False
+    window = bytes(head[:_SNIFF_PREFIX_BYTES])
+    evidence = _sniff_evidence(window)
+    if evidence is not None:
+        return not evidence.mime.startswith("image/")
+    return len(set(window)) == 1
+
+
 def _sniff_evidence(data: bytes) -> Evidence | None:
     if not isinstance(data, (bytes, bytearray)) or not data:
         return None
@@ -2139,11 +2149,12 @@ class MultimodalHandler:
                 mime_type = "image/jpeg"
 
             b64_data = split[1]
+            measured = "".join(b64_data.split())
 
-            if not self._file_gateway.validate_base64_size(b64_data):
+            if not self._file_gateway.validate_base64_size(measured):
                 return None
 
-            file_data = _decode_strict_base64(b64_data)
+            file_data = _decode_strict_base64(measured)
             if file_data is None:
                 return None
 

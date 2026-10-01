@@ -63,9 +63,10 @@ def _make_store_host() -> Any:
     host._create_table_with_race_guard = (
         lambda table, eng, name: guard(host, table, eng, name)
     )
-    # The guard delegates to these two, so a stub host must carry them bound to itself.
+    # The guard delegates to these, so a stub host must carry them bound to itself.
     host._create_table_best_effort = MethodType(ArtifactStore._create_table_best_effort, host)
     host._create_declared_indexes = MethodType(ArtifactStore._create_declared_indexes, host)
+    host._drop_superseded_indexes = MethodType(ArtifactStore._drop_superseded_indexes, host)
     _install_persisted_collect_row(host, True)
     return host
 

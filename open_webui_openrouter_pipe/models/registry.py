@@ -145,13 +145,6 @@ class ModelFamily:
         return feature in cls.features(model_id)
 
     @classmethod
-    def capabilities(cls, model_id: str) -> dict[str, bool]:
-        """Return derived capability checkboxes for the given model."""
-        spec = cls._lookup_spec(model_id)
-        caps = spec.get("capabilities") or {}
-        return dict(caps)
-
-    @classmethod
     def supported_parameters(cls, model_id: str) -> frozenset[str]:
         """Return the raw `supported_parameters` set from the OpenRouter catalog."""
         spec = cls._lookup_spec(model_id)
@@ -918,8 +911,12 @@ class OpenRouterModelRegistry:
     ) -> dict[str, bool]:
         """Translate metadata into Open WebUI capability checkboxes."""
 
-        def _normalize(values: list[Any]) -> set[str]:
+        def _normalize(values: Any) -> set[str]:
             """Return a normalized lowercase set from the provider metadata."""
+            if isinstance(values, str):
+                values = values.split(",")
+            if not isinstance(values, list):
+                return set()
             normalized: set[str] = set()
             for item in values:
                 if isinstance(item, str):

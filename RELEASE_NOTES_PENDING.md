@@ -63,3 +63,21 @@
 - **model icons** — a model icon is now stored the way it displays. The icon sweep applies the orientation the
   source published before it writes the PNG, so a logo stored sideways is no longer stored sideways; an icon
   already stored keeps its pixels until its source URL changes, which is when it is downloaded again.
+- **integer request fields** — a non-finite value in `seed`, `max_tokens`, `max_output_tokens`,
+  `max_completion_tokens` or `top_logprobs` no longer ends the turn. `"inf"`, `"-inf"`, `"nan"`,
+  `"1e400"`, `inf`, `-inf` and `nan` all raised `OverflowError` out of the field validator, which pydantic
+  does not convert, so the request died before dispatch and the chat got an *Unexpected Error* card plus a
+  failure-budget strike. The field is now simply sent unset, which is what the float fields beside it
+  (`temperature`, `top_p`, `top_k` and the rest) have always done with the same spellings. A bool, a list, a
+  dict and a non-numeric string are still refused with the same message: those are mistakes, not infinities.
+- **per-model filter installs** — a single model's image or video panel failing to install is now named once
+  per model per kind of failure, at WARNING, and repeats at DEBUG with the same message and traceback. A
+  catalogue of a few hundred models against a database that is refusing writes cost a few hundred identical
+  lines on *every* refresh, which buried the one line that names the model. A model that starts failing
+  *differently* warns again at WARNING. The whole-pass lines (`OpenRouter Image filter ensure failed` and its
+  siblings) are unchanged.
+- **`ModelFamily.capabilities`** — removed. It was an accessor no production code called, kept only for tests;
+  `spec["capabilities"]` is still written, still read by `list_models()`, and still merged into Open WebUI's
+  `meta.capabilities`, so nothing about a model's checkboxes in the model editor changes. A third-party
+  Open WebUI plugin importing the pipe and calling this one accessor would break; nothing inside this package
+  does.

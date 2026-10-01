@@ -67,7 +67,7 @@ For each model, the registry stores the full catalog entry (`full_model`) and de
 - `web_search` is seeded from the model’s published `web_search` pricing and is never overwritten once you have set it, so a model OpenRouter does not price for search can still get Open WebUI’s native search by a manual tick. This applies to rows the pipe writes; a row synced by an earlier version keeps whatever `web_search` value it already has until an admin edits it. `citations` is seeded the same way, with the catalogue's own `True` as the value a row with no setting receives.
 - `max_completion_tokens`: taken from the model’s `top_provider.max_completion_tokens` field when present.
 
-The derived specs are shared with `ModelFamily` via `ModelFamily.set_dynamic_specs(...)`, so the rest of the pipe can use `ModelFamily.supports(...)`, `ModelFamily.capabilities(...)`, and `ModelFamily.supported_parameters(...)` without depending directly on the registry.
+The derived specs are shared with `ModelFamily` via `ModelFamily.set_dynamic_specs(...)`, so the rest of the pipe can use `ModelFamily.supports(...)` and `ModelFamily.supported_parameters(...)` without depending directly on the registry.
 
 ---
 
@@ -186,7 +186,6 @@ See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry
 | --- | --- | --- |
 | `ModelFamily.base_model(model_id)` | normalized model key | Use for stable comparisons and allowlist checks. |
 | `ModelFamily.supports(feature, model_id)` | boolean | Feature gates (vision, tools, web search support, etc.). |
-| `ModelFamily.capabilities(model_id)` | `dict[str,bool]` | Open WebUI capability checkboxes for UI affordances. |
 | `ModelFamily.supported_parameters(model_id)` | `frozenset[str]` | Provider-supported request parameter set (used for reasoning compatibility decisions). |
 | `ModelFamily.max_completion_tokens(model_id)` | `int \| None` | Provider-advertised max completion tokens, used when `USE_MODEL_MAX_OUTPUT_TOKENS=True`. |
 | `OpenRouterModelRegistry.api_model_id(model_id)` | provider slug, reconstructed non-catalog slug, or `None` | Maps the normalized/sanitized model ID back to the provider’s original ID for outbound API calls. The exact catalogue row always wins over its base family; only ids the catalogue does not list fall through, and then to reconstruction. A single leading pipe function-id prefix is removed on the reconstruction path too, and only when what follows it names a vendor segment. An id that is already double-prefixed, or whose remainder is empty or carries no vendor segment, is left alone, so there the function id does remain the provider's namespace. That is the boundary the two spellings of `open_webui_openrouter_pipe.gpt-4o` force: `sanitize_model_id` maps both a pipe-prefixed id and a catalogue id for a vendor slugged `open_webui_openrouter_pipe` to the same key, and the reconstruction path is reached only when the catalogue has nothing to say, so it cannot tell them apart. Leaving a bare remainder alone keeps a catalogue id for that vendor slug reachable instead of rerouting it to a different provider's model. |

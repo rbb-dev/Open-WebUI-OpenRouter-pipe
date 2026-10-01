@@ -99,6 +99,7 @@ from .fusion_engine import (
 )
 from .sanitizer import _sanitize_request_input
 from .task_model_adapter import TaskModelAdapter
+from .transformer import _tool_picture_verdicts_for_input
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -1330,7 +1331,12 @@ class RequestOrchestrator:
                 emitter, text, level="warning"
             )
 
-        budget_outcome = _sanitize_request_input(self._pipe, responses_body)
+        budget_outcome = _sanitize_request_input(
+            self._pipe, responses_body,
+            verdicts=await _tool_picture_verdicts_for_input(
+                self._pipe, responses_body.input,
+            ),
+        )
         if (
             budget_outcome is not None
             and budget_outcome.futile

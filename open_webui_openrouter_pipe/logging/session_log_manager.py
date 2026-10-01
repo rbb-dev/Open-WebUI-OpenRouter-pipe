@@ -634,6 +634,17 @@ class SessionLogManager:
             request_id,
         )
 
+    def _skip_task(self, task: str, chat_id: str, request_id: str) -> None:
+        _truncate_latch(self._skip_info_emitted, _MAX_DRAIN_LATCH_KEYS - 1)
+        self.logger.log(
+            warn_level(self._skip_info_emitted, f"task:{task}"),
+            "Session log segment skipped (task resolves to no message id): "
+            "task=%s chat_id=%s request_id=%s",
+            task,
+            chat_id or "(none)",
+            request_id,
+        )
+
     def _warn_archive_queue_full(self, job: Any) -> None:
         with self._lock:
             self._archive_queue_drops += 1
@@ -728,9 +739,10 @@ class SessionLogManager:
     def start_assembler_worker(self) -> None:
         """Start the DB-backed session log assembler thread (multi-worker safe)."""
         with self._lock:
-            if self._assembler_thread and self._assembler_thread.is_alive():
+            stop_was_set = bool(self._stop_event is not None and self._stop_event.is_set())
+            if self._assembler_thread and self._assembler_thread.is_alive() and not stop_was_set:
                 return
-            if self._stop_event is None or self._stop_event.is_set():
+            if self._stop_event is None or stop_was_set:
                 self._stop_event = threading.Event()
             stop_event = self._stop_event
 
@@ -875,11 +887,7 @@ class SessionLogManager:
         surrogate_in_play = False
         if not (chat_id and message_id):
             if task and not message_id:
-                self.logger.log(
-                    warn_level(self._skip_info_emitted, "task"),
-                    "Session log segment skipped (task resolves to no message id): request_id=%s",
-                    request_id,
-                )
+                self._skip_task(task, chat_id, request_id)
                 return
             if not getattr(valves, "SESSION_LOG_ARCHIVE_API_CALLS", True):
                 self.logger.log(

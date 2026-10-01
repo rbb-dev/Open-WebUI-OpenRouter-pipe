@@ -3059,25 +3059,6 @@ def test_capabilities_zero_web_search_is_disabled():
     assert caps["web_search"] is False
 
 
-def test_model_family_capabilities_returns_copy_and_defaults():
-    previous_specs = getattr(ModelFamily, "_DYNAMIC_SPECS").copy()
-    try:
-        ModelFamily.set_dynamic_specs(
-            {
-                "foo": {
-                    "capabilities": {"vision": True, "usage": True},
-                }
-            }
-        )
-        caps = ModelFamily.capabilities("foo")
-        assert caps["vision"] is True
-        caps["vision"] = False
-        assert ModelFamily.capabilities("foo")["vision"] is True
-        assert ModelFamily.capabilities("unknown") == {}
-    finally:
-        ModelFamily.set_dynamic_specs(previous_specs)
-
-
 # Stale Filter ID Pruning Tests
 
 

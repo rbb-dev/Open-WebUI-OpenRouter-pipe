@@ -50,6 +50,12 @@ EXPECTED_LATCHES = {
     "_warned_dropped_image_param",
     "_warned_image_cost_snapshot",
     "_warned_image_endpoints",
+    # The per-model image-filter install failure. A bounded `OrderedDict` rather than a
+    # set: the key is one model per catalogue refresh, so a permanent set would hold an
+    # entry for every model the pipe has ever served and outlive every request that
+    # filled it, and a model whose database recovered would never warn again. The window
+    # evicts by trim, so a cause the pipe has not seen in a long time warns again.
+    "_warned_image_filter_installs",
     "_warned_image_provider_keys",
     "_warned_image_reuse",
     "_warned_no_task_model",
@@ -103,6 +109,10 @@ EXPECTED_LATCHES = {
     # every pass, and that pass runs on every model list. Without a latch the operator
     # gets the same WARNING for as long as the fault lasts; with it, once per state.
     "_warned_video_gen_filter_ensure",
+    # The video twin of `_warned_image_filter_installs`, same loop shape in the same
+    # module and the same reasoning: latching one family and not the other leaves an
+    # operator whose deployment is video-first with the flood intact.
+    "_warned_video_filter_installs",
     "_warned_video_provider_keys",
     "_warned_write_refusals",
 }

@@ -17,7 +17,7 @@ open_webui_openrouter_pipe/
 ├── api/                 # Gateway adapters and transforms
 │   ├── transforms.py    # Request/response transforms
 │   └── gateway/         # OpenRouter API adapters
-├── filters/             # Filter generation (web tools, fusion, image, video, direct uploads)
+├── filters/             # Regenerable reference filter copies (scripts/build_reference_filters.py)
 ├── core/                # Config, logging, circuit breaker, timing
 │   ├── config.py        # Valve definitions
 │   ├── logging_system.py # Session logging

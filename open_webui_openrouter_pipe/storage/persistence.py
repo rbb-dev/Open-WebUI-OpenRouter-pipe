@@ -45,6 +45,7 @@ from sqlalchemy import (
     MetaData,
     String,
     Table,
+    and_,
     func,
     or_,
     text,
@@ -135,17 +136,17 @@ def _valve_column_body(raw: str) -> str:
     return stripped
 
 
-def raw_valve_column_decodes(raw: Any) -> bool:
+def _valve_column_decode_verdict(raw: Any) -> bool | None:
     if not isinstance(raw, str) or not raw.strip():
-        return True
-    secret = _webui_secret_key()
-    if not secret:
         return True
     body = _valve_column_body(raw)
     if not bool(re.fullmatch(r"[A-Za-z0-9_-]+={0,2}", body)) or not body.startswith(
         _FERNET_VERSION_HEAD
     ):
         return True
+    secret = _webui_secret_key()
+    if not secret:
+        return None
     key = secret.encode()
     if len(secret) != 44:
         key = base64.urlsafe_b64encode(hashlib.sha256(key).digest())
@@ -154,6 +155,10 @@ def raw_valve_column_decodes(raw: Any) -> bool:
     except (InvalidToken, ValueError, TypeError):
         return False
     return True
+
+
+def raw_valve_column_decodes(raw: Any) -> bool:
+    return _valve_column_decode_verdict(raw) is not False
 
 
 def _marker_spares_row(marker: Any, message_id: Any) -> bool:
@@ -235,14 +240,17 @@ def _sanitize_table_fragment(value: str) -> str:
     return fragment
 
 
+def _index_name(table_name: str, suffix: str) -> str:
+    digest = hashlib.sha256(table_name.encode("utf-8", "ignore")).hexdigest()[:16]
+    return f"ix_{digest}_{suffix}"
+
+
 def _assembler_index_name(table_name: str) -> str:
-    tail = table_name.rsplit("_", 1)[-1][:8]
-    return f"ix_{tail}_item_type_created"
+    return _index_name(table_name, "item_type_created")
 
 
 def _retention_index_name(table_name: str) -> str:
-    tail = table_name.rsplit("_", 1)[-1][:8]
-    return f"ix_{tail}_created_at"
+    return _index_name(table_name, "created_at")
 
 
 def _temporary_chat_chat_id_conditions(column: Any, prefix: str) -> list[Any]:
@@ -1262,6 +1270,40 @@ class ArtifactStore:
                     exc,
                     exc_info=True,
                 )
+        self._drop_superseded_indexes(table, engine, table_name)
+
+    def _drop_superseded_indexes(self, table: Any, engine: Any, table_name: str) -> None:
+        schema_name = getattr(table, "schema", None)
+        try:
+            present = {
+                str(idx.get("name") or "")
+                for idx in sa_inspect(engine).get_indexes(table_name, schema=schema_name or None)
+            }
+        except Exception as inspect_exc:
+            self.logger.debug(
+                "Could not read the indexes on %s while retiring the superseded ones: %s",
+                table_name,
+                inspect_exc,
+                exc_info=True,
+            )
+            return
+
+        current = {idx.name for idx in getattr(table, "indexes", None) or () if idx.name}
+        for name in sorted(present - current):
+            index = Index(name)
+            index.table = table
+            try:
+                index.drop(bind=engine, checkfirst=True)
+                self.logger.info("Retired superseded index %s on %s.", name, table_name)
+            except Exception as exc:
+                self.logger.debug(
+                    "Superseded index %s on %s not dropped: %s: %s",
+                    name,
+                    table_name,
+                    type(exc).__name__,
+                    exc,
+                    exc_info=True,
+                )
 
     def _reconcile_artifact_schema(
         self,
@@ -1378,10 +1420,6 @@ class ArtifactStore:
             for idx in raw_index_objects
             if (idx.name or "").strip()
         }
-        names_from_error = {
-            name.lower()
-            for name in re.findall(r"ix_[0-9a-z_]+", message, flags=re.IGNORECASE)
-        }
         names_from_columns = {
             f"ix_{table.name}_{column.name}"
             for column in getattr(table, "columns", [])
@@ -1391,12 +1429,28 @@ class ArtifactStore:
         for column_name in names_from_columns:
             normalized_map.setdefault(column_name.lower(), column_name)
 
-        names_to_drop: dict[str, str] = {}
-        for lowered, original in normalized_map.items():
-            names_to_drop[lowered] = original
-        for lowered in names_from_error:
-            if lowered not in names_to_drop:
-                names_to_drop[lowered] = lowered
+        schema_name = getattr(table, "schema", None)
+        try:
+            present = {
+                str(idx.get("name") or "").lower()
+                for idx in sa_inspect(engine).get_indexes(
+                    table.name, schema=schema_name or None
+                )
+            }
+        except Exception as inspect_exc:
+            self.logger.debug(
+                "Could not read the indexes on %s while healing an index conflict: %s",
+                getattr(table, "name", "?"),
+                inspect_exc,
+                exc_info=True,
+            )
+            return False
+
+        names_to_drop: dict[str, str] = {
+            lowered: original
+            for lowered, original in normalized_map.items()
+            if lowered in present
+        }
 
         if not names_to_drop:
             return False
@@ -3109,16 +3163,22 @@ class ArtifactStore:
         return ~model.item_type.in_(_PIPE_OWNED_ROW_TYPES)
 
     def _expired_cache_key_batch(
-        self, cutoff: datetime.datetime, after_id: str | None, limit: int
-    ) -> list[tuple[str, str]]:
+        self, cutoff: datetime.datetime, after: tuple[datetime.datetime, str] | None, limit: int
+    ) -> list[tuple[str, str, datetime.datetime]]:
         if not (self._session_factory and self._item_model):
             return []
         model = self._item_model
         with _db_session(self._session_factory) as session:
-            query = session.query(model.id, model.chat_id).filter(model.created_at < cutoff)
-            if after_id is not None:
-                query = query.filter(model.id > after_id)
-            return [(row[1], row[0]) for row in query.order_by(model.id).limit(limit)]
+            query = session.query(model.id, model.chat_id, model.created_at).filter(
+                self._artifact_retention_filter(model, cutoff)
+            )
+            if after is not None:
+                query = query.filter(or_(
+                    model.created_at > after[0],
+                    and_(model.created_at == after[0], model.id > after[1]),
+                ))
+            rows = query.order_by(model.created_at, model.id).limit(limit)
+            return [(row[1], row[0], row[2]) for row in rows]
 
     def _temporary_cache_key_batch(
         self, after_id: str | None, limit: int
@@ -3168,7 +3228,7 @@ class ArtifactStore:
         if not (self._redis_enabled and self._redis_client):
             return 0
         loop = asyncio.get_running_loop()
-        after_id: str | None = None
+        after: tuple[datetime.datetime, str] | None = None
         purged = 0
         while True:
             batch = await loop.run_in_executor(
@@ -3176,24 +3236,32 @@ class ArtifactStore:
                 functools.partial(
                     self._expired_cache_key_batch,
                     cutoff,
-                    after_id,
+                    after,
                     _RETENTION_CACHE_PURGE_BATCH,
                 ),
             )
             if not batch:
                 return purged
-            keys = [key for key in (self._redis_cache_key(chat_id, row_id) for chat_id, row_id in batch) if key]
+            keys = [
+                key
+                for key in (
+                    self._redis_cache_key(chat_id, row_id)
+                    for chat_id, row_id, _created_at in batch
+                )
+                if key
+            ]
             if keys:
                 try:
                     await _await_if_needed(self._redis_client.delete(*keys))
                 except Exception as exc:
                     self.logger.warning(
                         "Redis cache invalidation of expired artifacts failed (best-effort): %s",
-                        exc, exc_info=True,
+                        exc,
+                        exc_info=True,
                     )
                     return purged
             purged += len(batch)
-            after_id = batch[-1][1]
+            after = (batch[-1][2], batch[-1][1])
 
     def _expired_row_id_bounds(
         self, session: Session, model: Any, cutoff: datetime.datetime

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import binascii
 import json
 from typing import Any
@@ -34,6 +35,7 @@ from ..storage.multimodal import (
     _decode_base64_in_quanta,
     _guess_image_mime_type,
     canonical_image_mime,
+    head_is_not_a_picture,
 )
 
 _CATALOG_TIMEOUT_SECONDS = 15
@@ -52,6 +54,33 @@ from .image_types import (
 _IMAGE_SSE_CONTENT_TYPE = "text/event-stream"
 _IMAGE_SSE_PREFIX = "data:"
 _IMAGE_SSE_DONE = "[DONE]"
+
+_IMAGE_DECODE_PREFIX_BYTES = 512
+_IMAGE_DECODE_PREFIX_CHARS = (_IMAGE_DECODE_PREFIX_BYTES // 3 + 1) * 4
+
+
+def _decoded_prefix(blob: str) -> bytes | None:
+    try:
+        return base64.b64decode(blob[:_IMAGE_DECODE_PREFIX_CHARS], validate=True)
+    except (binascii.Error, ValueError):
+        return None
+
+
+def _classify(head: bytes, declared: str) -> str | None:
+    mime_type = _guess_image_mime_type("", "", head)
+    if mime_type is not None:
+        return mime_type
+    if head_is_not_a_picture(head):
+        return None
+    return canonical_image_mime(declared.split(";", 1)[0].strip().lower())
+
+
+def _not_a_picture_reason(byte_count: int, declared: str, head: bytes) -> str:
+    return clamp_text(
+        f"{byte_count} byte(s) declared "
+        f"{clamp_text(declared or 'none', 40)!r} are not a recognised "
+        f"image (starts {head[:16]!r})"
+    )
 
 
 def _over_ceiling_reason(what: str, max_decoded_bytes: int) -> str:
@@ -416,6 +445,12 @@ class OpenRouterImageClient:
                 rejected.append(clamp_text(f"an entry with keys {sorted(entry)} carried no inline base64"))
                 continue
             own_decoded = _own_decoded(blob)
+            raw_media_type = entry.get("media_type")
+            declared = raw_media_type if isinstance(raw_media_type, str) else ""
+            probe = _decoded_prefix(blob)
+            if probe is not None and _classify(probe, declared) is None:
+                rejected.append(_not_a_picture_reason(own_decoded, declared, probe))
+                continue
             if latched or 0 < max_decoded_bytes < decoded_total + own_decoded:
                 over_ceiling += 1
                 if 0 < max_decoded_bytes < own_decoded:
@@ -432,21 +467,10 @@ class OpenRouterImageClient:
             except (binascii.Error, ValueError):
                 rejected.append(clamp_text(f"an entry starting {blob[:24]!r} was not decodable base64"))
                 continue
-            raw_media_type = entry.get("media_type")
-            declared = raw_media_type if isinstance(raw_media_type, str) else ""
-            normalised = declared.split(";", 1)[0].strip().lower()
-            mime_type = _guess_image_mime_type("", "", raw)
+            mime_type = _classify(raw, declared)
             if mime_type is None:
-                mime_type = canonical_image_mime(normalised)
-                if mime_type is None:
-                    rejected.append(
-                        clamp_text(
-                            f"{len(raw)} byte(s) declared "
-                            f"{clamp_text(declared or 'none', 40)!r} are not a recognised "
-                            f"image (starts {raw[:16]!r})"
-                        )
-                    )
-                    continue
+                rejected.append(_not_a_picture_reason(len(raw), declared, raw))
+                continue
             images.append(GeneratedImage(data=raw, mime_type=mime_type))
             decoded_total += len(raw)
 

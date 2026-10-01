@@ -157,6 +157,16 @@ Tests (`tests/`) are **not** linted — patterns like mid-file imports, fixture 
 
 > **Warning:** Do not use `ruff --fix`. It cannot detect re-exports and will silently remove imports that other modules depend on. Fix issues manually.
 
+## Regenerating
+
+The reference filters under `filters/` are generated from the `FilterManager` renderers, so a renderer edit has to reach both copies:
+
+```bash
+source .venv/bin/activate && python scripts/build_reference_filters.py
+```
+
+It writes only the files whose bytes differ and prints what it changed. `tests/test_web_tools_filter.py` fails CI when a copy and its renderer drift, so this is for making them agree, not for enforcing it.
+
 ---
 
 ## Key Insight

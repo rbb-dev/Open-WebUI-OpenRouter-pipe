@@ -191,6 +191,29 @@ def test_standalone_and_embedded_web_tools_filter_are_identical():
     assert embedded.strip() == standalone.strip()
 
 
+def _reference_filter_script():
+    """`scripts/build_reference_filters.py`, loaded by path.
+
+    The marker-to-renderer table lives in the script and is read from THERE, so the
+    parity guard and the regeneration step cannot disagree about which renderer owns
+    which file. Written twice, the table here would be a copy: dropping a
+    `render_*(**kwargs)` call from the script would leave this test comparing the same
+    pairs as before and green.
+    """
+    import importlib.util
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "build_reference_filters.py"
+    assert script.is_file(), (
+        f"{script} is gone, so the reference copies under filters/ have no regeneration "
+        f"step and filters/README.md names a command that does not exist"
+    )
+    spec = importlib.util.spec_from_file_location("_build_reference_filters_for_parity", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _standalone_pairs():
     """Every filters/*.py paired with the renderer that installs it, by MARKER.
 
@@ -199,13 +222,12 @@ def _standalone_pairs():
     silently unguarded from the moment it was added — which is exactly how the
     direct-uploads pair drifted 24 lines apart, with the un-hardened copy being the one
     the pipe auto-installs for everyone.
+
+    The renderer table itself is the script's, not a copy of it.
     """
     renderers = {
-        "render_openrouter_web_tools_filter_source": {
-            "enable_web_search": True, "enable_web_fetch": True, "enable_datetime": True
-        },
-        "render_openrouter_image_gen_filter_source": {"dedicated_image_api": True},
-        "render_direct_uploads_filter_source": {},
+        renderer: kwargs
+        for _filename, renderer, kwargs in _reference_filter_script().REFERENCE_FILTERS
     }
     rendered = {
         name: getattr(FilterManager, name)(**kwargs) for name, kwargs in renderers.items()

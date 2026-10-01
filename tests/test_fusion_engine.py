@@ -231,7 +231,7 @@ def _capture_stream(captured, events=None, fail_first_with=None, pre_events=None
 
 class TestRunFusionMemberReentry:
     async def _run(self, orchestrator_and_pipe, monkeypatch, *,
-                   model="openai/gpt-5", registry=None, bypass=True, enforced=None,
+                   model="openai/gpt-5", registry=None, enforced=None,
                    catalog=None, fail_first_with=None, supports_fc=False,
                    valves=None, server_tools_config=None, pre_events=None):
         orchestrator, pipe = orchestrator_and_pipe
@@ -265,7 +265,7 @@ class TestRunFusionMemberReentry:
         result = await run_fusion_member(
             pipe, inv, model=model,
             messages=inv.messages, system_prompt="PANEL PROMPT",
-            max_tool_calls=8, live_queue=None, bypass_restrictions=bypass,
+            max_tool_calls=8, live_queue=None,
             server_tools_config=server_tools_config,
         )
         return result, captured
@@ -353,7 +353,7 @@ class TestRunFusionMemberReentry:
         """
         result, captured = await self._run(
             orchestrator_and_pipe, monkeypatch,
-            bypass=False, enforced={"other/model"}, catalog={"other/model"},
+            enforced={"other/model"}, catalog={"other/model"},
         )
         assert result.failed is True
         assert captured == []
@@ -403,7 +403,7 @@ class TestMemberFailureReasons:
             result = await run_fusion_member(
                 pipe, inv, model="m/x", messages=[{"role": "user", "content": "q"}],
                 system_prompt="P", max_tool_calls=4, live_queue=None,
-                bypass_restrictions=True, server_tools_config=None,
+                server_tools_config=None,
             )
         assert result.failed is True
         reason = result.fail_reason or ""
@@ -426,7 +426,7 @@ class TestMemberFailureReasons:
         result = await run_fusion_member(
             pipe, inv, model="m/x", messages=[{"role": "user", "content": "q"}],
             system_prompt="P", max_tool_calls=4, live_queue=None,
-            bypass_restrictions=True, server_tools_config=None,
+            server_tools_config=None,
         )
         assert result.failed is True
         assert result.fail_reason == "the model returned no answer"
@@ -443,7 +443,7 @@ class TestMemberFailureReasons:
         result = await run_fusion_member(
             pipe, inv, model="m/x", messages=[{"role": "user", "content": "q"}],
             system_prompt="P", max_tool_calls=4, live_queue=None,
-            bypass_restrictions=True, server_tools_config=None,
+            server_tools_config=None,
         )
         assert result.failed is True
         assert result.fail_reason == "the model call failed"
@@ -461,7 +461,7 @@ class TestMemberFailureReasons:
         result = await run_fusion_member(
             pipe, inv, model="m/x", messages=[{"role": "user", "content": "q"}],
             system_prompt="P", max_tool_calls=4, live_queue=None,
-            bypass_restrictions=True, server_tools_config=None,
+            server_tools_config=None,
         )
         assert result.failed is True
         assert result.fail_reason == "the model call failed before completing"
@@ -509,7 +509,7 @@ class TestMemberFileCapture:
             result = await run_fusion_member(
                 pipe, inv, model="m/x", messages=[{"role": "user", "content": "q"}],
                 system_prompt="P", max_tool_calls=4, live_queue=None,
-                bypass_restrictions=True, server_tools_config=None,
+                server_tools_config=None,
             )
         finally:
             pipe._TOOL_CONTEXT.reset(token)
@@ -538,7 +538,7 @@ class TestMemberFileCapture:
             result = await run_fusion_member(
                 pipe, inv, model="m/x", messages=[{"role": "user", "content": "q"}],
                 system_prompt="P", max_tool_calls=4, live_queue=None,
-                bypass_restrictions=True, server_tools_config=None,
+                server_tools_config=None,
             )
         finally:
             pipe._TOOL_CONTEXT.reset(token)
@@ -564,7 +564,7 @@ class TestInnerMessageCopies:
         result = await run_fusion_member(
             pipe, inv, model="openai/gpt-5", messages=messages,
             system_prompt="P", max_tool_calls=4, live_queue=None,
-            bypass_restrictions=True, server_tools_config=None,
+            server_tools_config=None,
         )
         assert result.failed is False
         body_messages = captured[0]["messages"]
@@ -864,7 +864,7 @@ class TestOwuiSurfaceInheritance:
         inv.metadata = {"chat_id": "c1", "tool_servers": [{"url": "http://srv"}]}
         result = await run_fusion_member(
             pipe, inv, model="a/b", messages=inv.messages, system_prompt="SP",
-            max_tool_calls=8, live_queue=None, bypass_restrictions=True,
+            max_tool_calls=8, live_queue=None,
             server_tools_config=({}, []),
         )
         assert result.failed is False
@@ -889,7 +889,7 @@ class TestInterruptionNoticeSuppression:
         inv = _invocation(orchestrator, pipe, Valves())
         result = await run_fusion_member(
             pipe, inv, model="a/b", messages=inv.messages, system_prompt="SP",
-            max_tool_calls=8, live_queue=None, bypass_restrictions=True,
+            max_tool_calls=8, live_queue=None,
             server_tools_config=({}, []),
         )
         assert result.failed is False
@@ -1037,7 +1037,7 @@ class TestMemberFileCaptureRobustness:
             result = await run_fusion_member(
                 pipe, inv, model="m/x", messages=[{"role": "user", "content": "q"}],
                 system_prompt="P", max_tool_calls=4, live_queue=None,
-                bypass_restrictions=True, server_tools_config=None,
+                server_tools_config=None,
             )
         finally:
             pipe._TOOL_CONTEXT.reset(token)
@@ -1079,7 +1079,7 @@ class TestMemberFileCaptureRobustness:
             result = await run_fusion_member(
                 pipe, inv, model="m/x", messages=[{"role": "user", "content": "q"}],
                 system_prompt="P", max_tool_calls=4, live_queue=None,
-                bypass_restrictions=True, server_tools_config=None,
+                server_tools_config=None,
             )
         finally:
             pipe._TOOL_CONTEXT.reset(token)
@@ -1183,7 +1183,7 @@ async def test_no_model_in_a_fusion_turn_is_offered_or_runs_open_webuis_ask_user
         results = await asyncio.gather(*(
             run_fusion_member(
                 pipe, invocation, model=model, messages=invocation.messages, system_prompt="PANEL PROMPT",
-                max_tool_calls=4, live_queue=None, bypass_restrictions=True, server_tools_config=({}, []),
+                max_tool_calls=4, live_queue=None, server_tools_config=({}, []),
             )
             for model in ("openai/gpt-5", "openai/gpt-5-mini")
         ))

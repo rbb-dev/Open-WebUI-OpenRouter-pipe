@@ -114,7 +114,11 @@ from .core.timing_logger import (
     timed,
     timing_mark,
 )
-from .storage.persistence import _detect_redis_config, _RedisClient
+from .storage.persistence import (
+    _detect_redis_config,
+    _RedisClient,
+    _valve_column_decode_verdict,
+)
 
 try:
     import pyzipper  # pyright: ignore[reportMissingImports]
@@ -1116,17 +1120,13 @@ class Pipe:
         `UserModel.model_dump()` and `UserSettings` allows extra keys, so the ciphertext
         travels on `settings.functions.valves.<pipe id>` and no second user-row fetch is
         needed to tell the two apart.
-
-        A non-empty STRING is the only positive evidence. With valve encryption off the
-        column holds a plain dict and `decrypt_valves` returns it unchanged, so an empty
-        decode there really is an empty row. A blob under some other pipe id reads as
-        absent, which degrades to the previous behaviour rather than enforcing ZDR on a
-        user who never asked for it.
         """
         if stored != {}:
             return False
         blob = self._stored_valve_blob(__user__)
-        return isinstance(blob, str) and bool(blob.strip())
+        if not (isinstance(blob, str) and blob.strip()):
+            return False
+        return _valve_column_decode_verdict(blob) is not True
 
     def _stored_valve_blob(self, __user__: dict[str, Any]) -> Any:
         settings = __user__.get("settings")

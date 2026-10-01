@@ -17,6 +17,7 @@ import copy
 import inspect
 import io
 import logging
+import mimetypes
 import re
 import shutil
 import tempfile
@@ -579,6 +580,14 @@ def infer_file_mime_type(file_obj: Any) -> str:
             if normalized == "image/jpg":
                 return "image/jpeg"
             return normalized
+    for name in (
+        meta.get("name") if isinstance(meta, dict) else None,
+        getattr(file_obj, "filename", None),
+    ):
+        if isinstance(name, str) and name.strip():
+            guessed = (mimetypes.guess_type(name.strip())[0] or "").strip().lower()
+            if guessed:
+                return "image/jpeg" if guessed == "image/jpg" else guessed
     return "application/octet-stream"
 
 

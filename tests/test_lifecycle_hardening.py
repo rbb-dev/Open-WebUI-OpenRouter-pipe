@@ -32,6 +32,7 @@ def _guard_host(heal: bool = False) -> Any:
     )
     host._create_table_best_effort = MethodType(ArtifactStore._create_table_best_effort, host)
     host._create_declared_indexes = MethodType(ArtifactStore._create_declared_indexes, host)
+    host._drop_superseded_indexes = MethodType(ArtifactStore._drop_superseded_indexes, host)
     return host
 
 
