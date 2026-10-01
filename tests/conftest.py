@@ -7,7 +7,9 @@ from __future__ import annotations
 # every probe subprocess, so retargeting DATA_DIR would move only half the harness.
 import owui_stubs  # noqa: F401 - Open WebUI/sqlalchemy/tenacity stand-ins + env defaults
 
+import contextlib
 import os
+import tempfile
 from typing import Any
 
 import asyncio
@@ -15,6 +17,7 @@ import base64
 import json
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
@@ -572,6 +575,53 @@ def _reset_warn_latches():
         memo.clear()
     _clear_stub_task_models()
     yield
+
+
+#: Module-level accumulators the package owns that no other fixture resets. Resolved by
+#: module OBJECT through `_package_modules()`, never by dotted name: a flat bundle aliases
+#: 107 submodule names onto two module objects, and a name import does not resolve in a
+#: bundle at all -- the same reasoning `_warn_latches` records.
+_ACCUMULATOR_NAMES = ("_PIPE_OFF_LANDED_AT", "_REFUSED_FILTER_WRITES")
+
+
+def _package_accumulators() -> list:
+    """Every package-global accumulator currently loaded, as the live containers.
+
+    These are state that accumulates FOR the life of a worker by design -- `_PIPE_OFF_LANDED_AT`
+    is when the pipe's own switch-off write landed, `_REFUSED_FILTER_WRITES` is the rows
+    Open WebUI refused -- so inside a worker they must survive. Across tests they must not:
+    the first test to write one silently decides what every later test in that worker reads.
+    `_PIPE_OFF_LANDED_AT` is read on the live path by `_pipe_owns_the_off`, which uses it to
+    tell the pipe's own switch-off from an administrator's later edit, so a stale entry can
+    make a later test read a row as retired when it was not.
+    """
+    out = []
+    for module in _package_modules():
+        for name in _ACCUMULATOR_NAMES:
+            value = getattr(module, name, None)
+            if isinstance(value, set | dict | list):
+                out.append(value)
+    return out
+
+
+@pytest.fixture(autouse=True)
+def _reset_filter_pass_accumulators():
+    """Clear the filter retire pass's module state around every test.
+
+    A SEPARATE fixture from `_reset_warn_latches`, not folded into it: the two guard
+    unrelated invariants, and folding them would couple a cache clear to a latch clear.
+    About twenty test files already clear these two by hand, which is the coupling this
+    removes -- each of those is a place the next file had to remember. What is swept is
+    asserted in test_a_retired_filter_pass_state_is_reset_between_tests.py, which also
+    carries the static census, so the next accumulator is caught where it is added rather
+    than by a reader rediscovering it.
+    """
+    accumulators = _package_accumulators()
+    for accumulator in accumulators:
+        accumulator.clear()
+    yield
+    for accumulator in accumulators:
+        accumulator.clear()
 
 
 def _clear_stub_task_models() -> None:

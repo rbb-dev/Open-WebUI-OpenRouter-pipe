@@ -618,7 +618,11 @@ class StreamingHandler:
 
         tool_call_item_ids: dict[str, str] = {}
         streamed_tool_call_args: dict[str, _ReasoningTextBox] = {}
-        streamed_tool_call_name_sent: set[str] = set()
+        host_call_indices: dict[str, int] = {}
+        host_call_item_ids: dict[str, str] = {}
+        host_call_names: dict[str, str] = {}
+        host_call_finalised: set[str] = set()
+        host_call_closed: set[str] = set()
         emitted_tool_call_items: set[str] = set()
         emitted_model_call_items: set[str] = set()
         calls_carded_this_round: set[str] = set()
@@ -1162,9 +1166,68 @@ class StreamingHandler:
                 published_item_ids.append(item_id if isinstance(item_id, str) and item_id else f"#{len(published_item_ids)}")
                 return len(published_item_ids) - 1
 
-            def _reserve_host_slot(call_id: str) -> None:
-                if call_id and call_id not in published_item_ids:
-                    published_item_ids.append(call_id)
+            async def _publish_host_call_item(call_id: str, item_id: str, tool_name: str) -> int:
+                if call_id in host_call_indices:
+                    return host_call_indices[call_id]
+                published_id = item_id or f"fc_{uuid.uuid4().hex}"
+                reserved = published_id not in published_item_ids
+                index = _output_index({"id": published_id})
+                try:
+                    await _publish_turn_frame(
+                        {
+                            "type": "response.output_item.added",
+                            "output_index": index,
+                            "item": {
+                                "type": "function_call",
+                                "id": published_id,
+                                "call_id": call_id,
+                                "name": tool_name,
+                                "arguments": "",
+                                "status": "in_progress",
+                            },
+                        }
+                    )
+                except Exception:
+                    if reserved:
+                        published_item_ids.remove(published_id)
+                    raise
+                host_call_item_ids[call_id] = published_id
+                host_call_names[call_id] = tool_name
+                host_call_indices[call_id] = index
+                return index
+
+            async def _close_host_call_item(call_id: str, arguments: str) -> None:
+                if call_id in host_call_closed:
+                    return
+                host_call_closed.add(call_id)
+                index = host_call_indices.get(call_id)
+                if index is None:
+                    return
+                published_id = host_call_item_ids.get(call_id) or f"fc_{uuid.uuid4().hex}"
+                if call_id not in host_call_finalised:
+                    host_call_finalised.add(call_id)
+                    await _publish_turn_frame(
+                        {
+                            "type": "response.function_call_arguments.done",
+                            "item_id": published_id,
+                            "output_index": index,
+                            "arguments": arguments,
+                        }
+                    )
+                await _publish_turn_frame(
+                    {
+                        "type": "response.output_item.done",
+                        "output_index": index,
+                        "item": {
+                            "type": "function_call",
+                            "id": published_id,
+                            "call_id": call_id,
+                            "name": host_call_names.get(call_id, ""),
+                            "arguments": arguments,
+                            "status": "completed",
+                        },
+                    }
+                )
 
             def _output_index_before_open_message(item: dict[str, Any]) -> int:
                 if open_message_id not in published_item_ids:
@@ -2378,13 +2441,15 @@ class StreamingHandler:
                             call_id = raw_call_id.strip() if isinstance(raw_call_id, str) else ""
                             if not call_id:
                                 continue
-                            index = streamed_tool_call_indices.setdefault(
+                            streamed_tool_call_indices.setdefault(
                                 call_id, len(streamed_tool_call_indices)
                             )
                             raw_name = event.get("name") or tool_call_names.get(call_id)
                             tool_name = _origin_tool_name(raw_name.strip()) if isinstance(raw_name, str) else ""
                             if not tool_name:
                                 continue
+                            index = await _publish_host_call_item(call_id, item_id, tool_name)
+                            published_id = host_call_item_ids.get(call_id) or item_id
 
                             if etype == "response.function_call_arguments.delta":
                                 raw_delta = (
@@ -2396,27 +2461,12 @@ class StreamingHandler:
                                 if not delta_text:
                                     continue
                                 streamed_tool_call_ids.add(call_id)
-                                streamed_tool_call_args.setdefault(call_id, _ReasoningTextBox()).add(delta_text)
-                                include_name = call_id not in streamed_tool_call_name_sent
-                                if include_name:
-                                    streamed_tool_call_name_sent.add(call_id)
-                                _reserve_host_slot(call_id)
                                 await _publish_turn_frame(
                                     {
-                                        "type": "chat:tool_calls",
-                                        "data": {
-                                            "tool_calls": [
-                                                {
-                                                    "index": index,
-                                                    "id": call_id,
-                                                    "type": "function",
-                                                    "function": {
-                                                        **({"name": tool_name} if include_name else {}),
-                                                        "arguments": delta_text,
-                                                    },
-                                                }
-                                            ]
-                                        },
+                                        "type": "response.function_call_arguments.delta",
+                                        "item_id": published_id,
+                                        "output_index": index,
+                                        "delta": delta_text,
                                     }
                                 )
                                 continue
@@ -2424,40 +2474,18 @@ class StreamingHandler:
                             raw_args = event.get("arguments")
                             args_text = raw_args.strip() if isinstance(raw_args, str) else ""
                             if args_text:
-                                args_box = streamed_tool_call_args.get(call_id)
-                                suffix = ""
-                                if args_box is None or args_box.length == 0:
-                                    suffix = args_text
-                                elif args_box.is_prefix_of(args_text):
-                                    suffix = args_text[args_box.length :]
-                                if not suffix:
-                                    continue
-
                                 streamed_tool_call_ids.add(call_id)
-                                if args_box is None:
-                                    args_box = _ReasoningTextBox()
-                                    streamed_tool_call_args[call_id] = args_box
-                                args_box.add(suffix)
-                                include_name = call_id not in streamed_tool_call_name_sent
-                                if include_name:
-                                    streamed_tool_call_name_sent.add(call_id)
-                                _reserve_host_slot(call_id)
+                                streamed_tool_call_args[call_id] = _ReasoningTextBox()
+                                streamed_tool_call_args[call_id].add(args_text)
+                                if call_id in host_call_finalised:
+                                    continue
+                                host_call_finalised.add(call_id)
                                 await _publish_turn_frame(
                                     {
-                                        "type": "chat:tool_calls",
-                                        "data": {
-                                            "tool_calls": [
-                                                {
-                                                    "index": index,
-                                                    "id": call_id,
-                                                    "type": "function",
-                                                    "function": {
-                                                        **({"name": tool_name} if include_name else {}),
-                                                        "arguments": suffix,
-                                                    },
-                                                }
-                                            ]
-                                        },
+                                        "type": "response.function_call_arguments.done",
+                                        "item_id": published_id,
+                                        "output_index": index,
+                                        "arguments": args_text,
                                     }
                                 )
                         except Exception as exc:
@@ -2584,6 +2612,17 @@ class StreamingHandler:
                                 )
                                 if tool_name:
                                     tool_call_names[call_id] = tool_name
+                                if event_emitter and tool_name:
+                                    try:
+                                        await _publish_host_call_item(
+                                            call_id, item_id, _origin_tool_name(tool_name)
+                                        )
+                                    except Exception as exc:
+                                        self.logger.warning(
+                                            "Failed to stream tool-call arguments: %s",
+                                            exc,
+                                            exc_info=True,
+                                        )
                             continue
 
                         if item_type.startswith("openrouter:") and event_emitter:
@@ -3592,34 +3631,18 @@ class StreamingHandler:
                                 )
 
                                 if body.stream and event_emitter:
-                                    idx = streamed_tool_call_indices.setdefault(
-                                        call_id, len(streamed_tool_call_indices)
-                                    )
-                                    args_box = streamed_tool_call_args.get(call_id)
-                                    suffix = ""
-                                    if args_box is None or args_box.length == 0:
-                                        suffix = args_text
-                                    elif args_box.is_prefix_of(args_text):
-                                        suffix = args_text[args_box.length :]
-
-                                    include_name = call_id not in streamed_tool_call_name_sent
-                                    if include_name:
-                                        streamed_tool_call_name_sent.add(call_id)
-
-                                    if suffix or include_name:
-                                        function_obj: dict[str, Any] = {}
-                                        if include_name:
-                                            function_obj["name"] = tool_name
-                                        if suffix:
-                                            function_obj["arguments"] = suffix
-                                        streamed_tool_call_ids.add(call_id)
-                                        if suffix:
-                                            if args_box is None:
-                                                args_box = _ReasoningTextBox()
-                                                streamed_tool_call_args[call_id] = args_box
-                                            args_box.add(suffix)
-                                        if owui_tool_passthrough:
-                                            _reserve_host_slot(call_id)
+                                    if owui_tool_passthrough:
+                                        streamed_tool_call_indices.setdefault(
+                                            call_id, len(streamed_tool_call_indices)
+                                        )
+                                        await _publish_host_call_item(
+                                            call_id, str(call.get("id") or ""), tool_name
+                                        )
+                                        await _close_host_call_item(call_id, args_text)
+                                    else:
+                                        idx = streamed_tool_call_indices.setdefault(
+                                            call_id, len(streamed_tool_call_indices)
+                                        )
                                         await event_emitter(
                                             {
                                                 "type": "chat:tool_calls",
@@ -3629,7 +3652,10 @@ class StreamingHandler:
                                                             "index": idx,
                                                             "id": call_id,
                                                             "type": "function",
-                                                            "function": function_obj,
+                                                            "function": {
+                                                                "name": tool_name,
+                                                                "arguments": args_text,
+                                                            },
                                                         }
                                                     ]
                                                 },

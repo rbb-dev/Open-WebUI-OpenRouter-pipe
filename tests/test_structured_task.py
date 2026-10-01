@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from tests.log_capture import emitted
+from tests._jumping_clock import event_loop_policy  # noqa: F401
 
 from open_webui_openrouter_pipe.structured_task.client import (
     TaskModelFault,

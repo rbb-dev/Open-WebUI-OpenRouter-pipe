@@ -3140,66 +3140,6 @@ def _build_sse_event(event_type: str, data: dict[str, Any]) -> bytes:
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n".encode("utf-8")
 
 
-def _build_sse_response_with_tool_call(*, tool_name: str = "my_tool", stream: bool = True) -> bytes:
-    """Build a complete SSE response with tool calls for testing.
-
-    Uses response.function_call_arguments.delta events which the streaming code
-    processes to emit chat:tool_calls events.
-    """
-    events = [
-        _build_sse_event(
-            "response.output_text.delta",
-            {"type": "response.output_text.delta", "delta": "Hello"},
-        ),
-        _build_sse_event(
-            "response.output_item.added",
-            {
-                "type": "response.output_item.added",
-                "output_index": 0,
-                "item": {
-                    "type": "function_call",
-                    "call_id": "call_1",
-                    "id": "call_1",
-                    "name": tool_name,
-                    "arguments": "",
-                },
-            },
-        ),
-        _build_sse_event(
-            "response.function_call_arguments.delta",
-            {
-                "type": "response.function_call_arguments.delta",
-                "item_id": "call_1",
-                "name": tool_name,
-                "delta": json.dumps({"a": 1}),
-            },
-        ),
-        _build_sse_event(
-            "response.completed",
-            {
-                "type": "response.completed",
-                "response": {
-                    "output": [
-                        {
-                            "type": "message",
-                            "role": "assistant",
-                            "content": [{"type": "output_text", "text": "Hello"}],
-                        },
-                        {
-                            "type": "function_call",
-                            "call_id": "call_1",
-                            "name": tool_name,
-                            "arguments": json.dumps({"a": 1}),
-                        },
-                    ],
-                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
-                },
-            },
-        ),
-    ]
-    return b"".join(events)
-
-
 def _build_sse_response_with_incremental_arguments(*, tool_name: str = "my_tool") -> bytes:
     """Build SSE response with incremental function_call_arguments.delta events."""
     events = [
@@ -3255,92 +3195,6 @@ def _build_sse_response_with_incremental_arguments(*, tool_name: str = "my_tool"
         ),
     ]
     return b"".join(events)
-
-
-@pytest.mark.asyncio
-async def test_tool_passthrough_streaming_emits_tool_calls_event() -> None:
-    """Test that streaming tool passthrough mode emits chat:tool_calls events without executing.
-
-    THIS IS A REAL TEST: Uses aioresponses to mock HTTP, exercises real streaming pipeline,
-    real event emission, and verifies tool_calls events are emitted in Open-WebUI mode.
-
-    Note: Events now go through SSE stream only (not original emitter) to avoid double emission.
-    We verify tool_calls are present in the SSE stream output.
-    """
-    # Mock HTTP at boundary
-    with aioresponses() as mock_http:
-        catalog_response = {
-            "data": [
-                {
-                    "id": "openai/gpt-4o-mini",
-                    "name": "GPT-4o Mini",
-                    "context_length": 128000,
-                    "pricing": {"prompt": "0.00000015", "completion": "0.0000006"},
-                    "supported_parameters": ["tools", "tool_choice"],
-                }
-            ]
-        }
-        mock_http.get(
-            re.compile(r"https://openrouter\.ai/api/v1/models.*"),
-            payload=catalog_response,
-            repeat=True,
-        )
-
-        sse_response = _build_sse_response_with_tool_call(tool_name="my_tool")
-        mock_http.post(
-            "https://openrouter.ai/api/v1/responses",
-            body=sse_response,
-            status=200,
-        )
-
-        pipe = Pipe()
-        pipe.valves.API_KEY = EncryptedStr("sk-test-api-key")
-        pipe.valves.TOOL_EXECUTION_MODE = "Open-WebUI"
-
-        try:
-            result = await pipe.pipe(
-                body={
-                    "model": "openai/gpt-4o-mini",
-                    "messages": [{"role": "user", "content": "hi"}],
-                    "stream": True,
-                },
-                __user__={"valves": {}},
-                __request__=None,
-                __event_emitter__=None,
-                __event_call__=None,
-                __metadata__={},
-                __tools__=None,
-            )
-            assert hasattr(result, "__aiter__")
-
-            stream_items: list[Any] = []
-            async for item in cast(AsyncGenerator[Any, None], result):
-                stream_items.append(item)
-
-            import json as json_module
-            found_tool_calls = False
-            for item in stream_items:
-                if isinstance(item, dict):
-                    choices = item.get("choices", [])
-                    for choice in choices:
-                        delta = choice.get("delta", {})
-                        if "tool_calls" in delta:
-                            for tc in delta.get("tool_calls", []):
-                                fn = tc.get("function", {})
-                                if fn.get("name") == "my_tool":
-                                    found_tool_calls = True
-                                    break
-                        if found_tool_calls:
-                            break
-                elif isinstance(item, str) and "tool_calls" in item and "my_tool" in item:
-                    found_tool_calls = True
-                if found_tool_calls:
-                    break
-
-            assert found_tool_calls, f"Expected tool_calls with 'my_tool' in stream. Got: {stream_items[:5]}"
-
-        finally:
-            await pipe.close()
 
 
 @pytest.mark.asyncio
@@ -4760,14 +4614,14 @@ async def test_a_repeatedly_unprocessable_tool_result_is_reported_once(
 
 @pytest.mark.asyncio
 async def test_tool_passthrough_streaming_does_not_repeat_function_name() -> None:
-    """Test that streaming tool passthrough doesn't repeat function name in delta events.
+    """Test that streaming tool passthrough sends the function name once, on the call item.
 
     THIS IS A REAL TEST: Uses aioresponses to mock HTTP with incremental argument deltas,
-    exercises real streaming pipeline, verifies that function name is only sent once
-    (in first event) and subsequent deltas don't repeat it.
+    exercises real streaming pipeline, verifies that function name is only sent once -- on
+    the `response.output_item.added` item -- and that no later frame repeats it.
 
     Note: Events now go through SSE stream only (not original emitter) to avoid double emission.
-    We verify tool_calls delta behavior in the SSE stream output.
+    We verify the name's position in the SSE stream output.
     """
     # Mock HTTP at boundary
     with aioresponses() as mock_http:
@@ -4819,42 +4673,35 @@ async def test_tool_passthrough_streaming_does_not_repeat_function_name() -> Non
             async for item in cast(AsyncGenerator[Any, None], result):
                 stream_items.append(item)
 
-            import json as json_module
-            tool_calls_events: list[dict[str, Any]] = []
-            for item in stream_items:
-                if isinstance(item, dict):
-                    # OpenAI format dict
-                    choices = item.get("choices", [])
-                    for choice in choices:
-                        delta = choice.get("delta", {})
-                        if "tool_calls" in delta:
-                            tool_calls_events.append(delta)
-                elif isinstance(item, str) and item.startswith("data: ") and "tool_calls" in item:
-                    # SSE format string
-                    try:
-                        data_str = item[6:].strip()
-                        if data_str and data_str != "[DONE]":
-                            parsed = json_module.loads(data_str)
-                            choices = parsed.get("choices", [])
-                            for choice in choices:
-                                delta = choice.get("delta", {})
-                                if "tool_calls" in delta:
-                                    tool_calls_events.append(delta)
-                    except json_module.JSONDecodeError:
-                        pass
+            argument_frames = [
+                item for item in stream_items
+                if isinstance(item, dict)
+                and str(item.get("type") or "").startswith("response.function_call_arguments")
+            ]
+            assert len(argument_frames) >= 2, (
+                f"Expected at least 2 argument frames, got {len(argument_frames)}. "
+                f"Items: {stream_items[:10]}"
+            )
 
-            assert len(tool_calls_events) >= 2, f"Expected at least 2 tool_calls deltas, got {len(tool_calls_events)}. Items: {stream_items[:10]}"
+            named = [f for f in argument_frames if f.get("name")]
+            assert named == [], f"no argument frame carries a name: {named}"
 
-            first_tc = tool_calls_events[0].get("tool_calls", [{}])[0]
-            first_fn = first_tc.get("function", {})
-            assert first_fn.get("name") == "my_tool", f"First delta should have function name, got: {first_fn}"
+            added = [
+                item for item in stream_items
+                if isinstance(item, dict)
+                and item.get("type") == "response.output_item.added"
+                and (item.get("item") or {}).get("type") == "function_call"
+            ]
+            assert len(added) == 1, f"the name rides once, on the item: {added}"
+            assert added[0]["item"]["name"] == "my_tool", added
 
-            second_tc = tool_calls_events[1].get("tool_calls", [{}])[0]
-            second_fn = second_tc.get("function", {})
-            assert "name" not in second_fn, f"Second delta should not repeat function name, got: {second_fn}"
-
-            combined_args = f"{first_fn.get('arguments', '')}{second_fn.get('arguments', '')}"
-            assert '{"a":1}' in combined_args, f"Expected complete arguments, got: {combined_args}"
+            combined_args = "".join(
+                f.get("delta", "") for f in argument_frames
+                if f.get("type") == "response.function_call_arguments.delta"
+            )
+            assert '{"a":' in combined_args and '1}' in combined_args, (
+                f"Expected the deltas to carry the whole argument object, got: {combined_args}"
+            )
 
         finally:
             await pipe.close()

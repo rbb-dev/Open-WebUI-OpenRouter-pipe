@@ -1648,7 +1648,10 @@ async def _install_ids(model_ids, endpoint_records):
     import json
     from unittest.mock import AsyncMock, MagicMock
 
-    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+    from open_webui_openrouter_pipe.filters.filter_manager import (
+        FilterManager,
+        _WriteOutcome,
+    )
 
     catalog = json.loads(
         (Path(__file__).parent / "fixtures" / "openrouter_image_models.json").read_text()
@@ -1670,7 +1673,7 @@ async def _install_ids(model_ids, endpoint_records):
     pipe.valves.ENABLE_OPENROUTER_IMAGE_GENERATION = True
     fm = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
     fm._ensure_filter_installed = AsyncMock(
-        side_effect=lambda **kwargs: (kwargs["preferred_id"], False)
+        side_effect=lambda **kwargs: (kwargs["preferred_id"], _WriteOutcome())
     )
 
     models = OpenRouterModelRegistry.list_models()
@@ -2103,7 +2106,10 @@ async def test_one_models_install_failure_costs_only_that_model():
     """
     from unittest.mock import AsyncMock, MagicMock
 
-    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+    from open_webui_openrouter_pipe.filters.filter_manager import (
+        FilterManager,
+        _WriteOutcome,
+    )
 
     wanted = ["recraft/recraft-v3", "recraft/recraft-v4", "qwen/qwen-image-3"]
     record = {
@@ -2128,7 +2134,7 @@ async def test_one_models_install_failure_costs_only_that_model():
     async def _install(**kwargs):
         if kwargs["preferred_id"] == doomed:
             raise RuntimeError("the database is locked")
-        return kwargs["preferred_id"], False
+        return kwargs["preferred_id"], _WriteOutcome()
 
     pipe = MagicMock()
     fm = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
@@ -2974,7 +2980,10 @@ async def test_a_contract_that_shrinks_to_nothing_replaces_the_old_controls():
     """
     from unittest.mock import AsyncMock, MagicMock
 
-    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+    from open_webui_openrouter_pipe.filters.filter_manager import (
+        FilterManager,
+        _WriteOutcome,
+    )
     from open_webui_openrouter_pipe.filters.image_filter_renderer import ALWAYS_ON_VALVE_NAMES
 
     wide = {
@@ -2991,7 +3000,7 @@ async def test_a_contract_that_shrinks_to_nothing_replaces_the_old_controls():
     written: list[str] = []
     fm._ensure_filter_installed = AsyncMock(
         side_effect=lambda **kw: (
-            written.append(kw["desired_source"]), (kw["preferred_id"], False)
+            written.append(kw["desired_source"]), (kw["preferred_id"], _WriteOutcome())
         )[1]
     )
 
@@ -3764,11 +3773,16 @@ async def test_only_a_contract_that_was_read_may_blank_an_installed_filter(
     """
     from unittest.mock import AsyncMock, MagicMock
 
-    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+    from open_webui_openrouter_pipe.filters.filter_manager import (
+        FilterManager,
+        _WriteOutcome,
+    )
 
     pipe = MagicMock()
     manager = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
-    manager._ensure_filter_installed = AsyncMock(side_effect=lambda **kw: (kw["preferred_id"], False))
+    manager._ensure_filter_installed = AsyncMock(
+        side_effect=lambda **kw: (kw["preferred_id"], _WriteOutcome())
+    )
 
     result, _write_not_installed = await manager._ensure_single_image_filter_function_id(
         model_id="v/m",

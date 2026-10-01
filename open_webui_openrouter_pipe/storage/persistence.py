@@ -892,17 +892,43 @@ class ArtifactStore:
     def _schedule_redis_valve_drain_on(
         self, loop: asyncio.AbstractEventLoop | None, drain: Any
     ) -> bool:
-        if loop is None or loop.is_closed():
+        def _abandon(reason: str) -> None:
             drain.close()
             self._redis_valve_draining = False
             self.logger.warning(
                 "Redis valve turned off off-loop with no usable event loop; writes are stopped "
-                "now and the buffered rows drain on the next request-path reconcile"
+                "now and the buffered rows drain on the next request-path reconcile (%s)",
+                reason,
             )
+
+        if loop is None or loop.is_closed():
+            _abandon("no loop resolved")
             return False
-        loop.call_soon_threadsafe(
-            functools.partial(loop.create_task, drain, name="openrouter-redis-valve-off")
-        )
+
+        owner = self._valves_owner
+        settle_release = getattr(owner, "_mark_valve_drain_complete", None)
+
+        def _settle(task: asyncio.Future) -> None:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                task.exception()
+            if callable(settle_release):
+                settle_release(self)
+            else:
+                self._redis_valve_draining = False
+
+        def _create() -> None:
+            try:
+                task = loop.create_task(drain, name="openrouter-redis-valve-off")
+            except RuntimeError:
+                _abandon("the loop closed before the drain task was created")
+                return
+            task.add_done_callback(_settle)
+
+        try:
+            loop.call_soon_threadsafe(_create)
+        except RuntimeError:
+            _abandon("the loop closed before the drain was scheduled")
+            return False
         return True
 
     def _resolve_valve_loop(self) -> asyncio.AbstractEventLoop | None:

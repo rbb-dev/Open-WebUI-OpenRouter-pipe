@@ -81,6 +81,27 @@ def _collect_events_of_type(emitted: list[dict], event_type: str) -> list[dict]:
     return [e for e in emitted if e.get("type") == event_type]
 
 
+def _host_call_items(emitted: list[dict]) -> list[dict]:
+    """The `function_call` items the pipe published as `response.output_item.added`, in order.
+
+    Under the Open-WebUI passthrough the pipe speaks the frames Open WebUI reduces, so a call
+    travels as its own item rather than as an OpenAI `tool_calls` chunk the host has to
+    translate: the item names the tool under the name Open WebUI looks it up by, and the
+    argument frames that follow carry the provider's own terminal payload.
+    """
+    return [
+        e["item"]
+        for e in emitted
+        if e.get("type") == "response.output_item.added"
+        and (e.get("item") or {}).get("type") == "function_call"
+    ]
+
+
+def _host_argument_frames(emitted: list[dict], kind: str) -> list[dict]:
+    """The `response.function_call_arguments.<kind>` frames, in order."""
+    return _collect_events_of_type(emitted, f"response.function_call_arguments.{kind}")
+
+
 def _native_reasoning_items(emitted: list[dict]) -> list[dict]:
     """Collect native reasoning output items from emitted events.
 
@@ -944,13 +965,22 @@ class TestToolPassthrough:
             user_id="user-123",
         )
 
-        tool_calls = _collect_events_of_type(emitted, "chat:tool_calls")
-        assert len(tool_calls) == 2, "The completed response must not duplicate streamed calls"
-        assert all(
-            event["data"]["tool_calls"][0]["id"] == "call-1"
-            for event in tool_calls
+        assert _collect_events_of_type(emitted, "chat:tool_calls") == [], (
+            "the passthrough leg speaks the frames Open WebUI reduces, not the pipe's own "
+            "tool-call vocabulary"
         )
-        assert tool_calls[0]["data"]["tool_calls"][0]["function"]["name"] == "get_weather"
+        items = _host_call_items(emitted)
+        assert len(items) == 1, "one call, one published item"
+        assert (items[0]["call_id"], items[0]["name"], items[0]["arguments"]) == (
+            "call-1",
+            "get_weather",
+            "",
+        )
+        deltas = _host_argument_frames(emitted, "delta")
+        assert [d["delta"] for d in deltas] == ['{"city":', '"NYC"}']
+        assert all(d["output_index"] == 0 for d in deltas), deltas
+        finals = _host_argument_frames(emitted, "done")
+        assert [f["arguments"] for f in finals] == ['{"city":"NYC"}']
 
     @pytest.mark.asyncio
     async def test_streaming_loop_tool_passthrough_no_call_id(self, monkeypatch, pipe_instance_async):
@@ -984,8 +1014,9 @@ class TestToolPassthrough:
             user_id="user-123",
         )
 
-        tool_calls = _collect_events_of_type(emitted, "chat:tool_calls")
-        assert not tool_calls, "Should skip tool calls without call_id"
+        assert _host_call_items(emitted) == [], "no call id, no call"
+        assert _host_argument_frames(emitted, "delta") == [], "no call id, no call"
+        assert _host_argument_frames(emitted, "done") == [], "no call id, no call"
 
     @pytest.mark.asyncio
     async def test_streaming_loop_tool_passthrough_nonstream_response(self, monkeypatch, pipe_instance_async):
@@ -1028,9 +1059,16 @@ class TestToolPassthrough:
             user_id="user-123",
         )
 
-        tool_calls = _collect_events_of_type(emitted, "chat:tool_calls")
-        assert tool_calls, "Expected tool call events in passthrough mode"
-        assert tool_calls[0]["data"]["tool_calls"][0]["function"]["name"] == "get_weather"
+        # The call arrives whole in `response.completed`, so this round has no argument frames
+        # of its own: the hand-back arm is what announces the call and hands over its arguments.
+        # The value is the round's own normalised form of them -- the same string the retired
+        # `chat:tool_calls` chunk carried on this arm, so the channel moved and the value did not.
+        assert _host_argument_frames(emitted, "delta") == []
+        items = _host_call_items(emitted)
+        assert [i["call_id"] for i in items] == ["call-1"], items
+        assert items[0]["name"] == "get_weather", items
+        finals = _host_argument_frames(emitted, "done")
+        assert [f["arguments"] for f in finals] == ['{"city": "NYC"}'], finals
 
     @pytest.mark.asyncio
     async def test_streaming_loop_tool_passthrough_exposed_name_mapping(self, monkeypatch, pipe_instance_async):
@@ -1075,10 +1113,11 @@ class TestToolPassthrough:
             user_id="user-123",
         )
 
-        tool_calls = _collect_events_of_type(emitted, "chat:tool_calls")
-        if tool_calls:
-            fn_name = tool_calls[0]["data"]["tool_calls"][0]["function"]["name"]
-            assert fn_name == "get_weather", "Should map back to original name"
+        items = _host_call_items(emitted)
+        assert [i["name"] for i in items] == ["get_weather"], (
+            "Should map back to original name; the call is named by the key Open WebUI looks "
+            "it up by, not by the alias the provider sent"
+        )
 
     @pytest.mark.asyncio
     async def test_streaming_loop_tool_passthrough_exception_handling(self, monkeypatch, pipe_instance_async, caplog):
@@ -1101,7 +1140,7 @@ class TestToolPassthrough:
 
         call_count = [0]
         async def failing_emitter(event):
-            if event.get("type") == "chat:tool_calls":
+            if event.get("type") == "response.output_item.added":
                 call_count[0] += 1
                 raise ValueError("Simulated emitter failure")
 
@@ -1118,64 +1157,6 @@ class TestToolPassthrough:
             )
 
         assert any("Failed to stream tool-call arguments" in record.message for record in caplog.records)
-
-    @pytest.mark.asyncio
-    async def test_tool_passthrough_arguments_done_suffix_calculation(self, monkeypatch, pipe_instance_async):
-        """Test tool passthrough arguments.done event with suffix calculation."""
-        pipe = pipe_instance_async
-        body = ResponsesBody(model="test/model", input=[], stream=True)
-        valves = pipe.valves.model_copy(update={"TOOL_EXECUTION_MODE": "Open-WebUI"})
-
-        events = [
-            {
-                "type": "response.output_item.added",
-                "item": {"type": "function_call", "call_id": "call-1", "name": "get_weather"},
-            },
-            {
-                "type": "response.function_call_arguments.delta",
-                "item_id": "call-1",
-                "delta": '{"city":',
-            },
-            {
-                "type": "response.function_call_arguments.done",
-                "item_id": "call-1",
-                "name": "get_weather",
-                "arguments": '{"city":"NYC","country":"US"}',
-            },
-            {
-                "type": "response.completed",
-                "response": {
-                    "output": [
-                        {
-                            "type": "function_call",
-                            "call_id": "call-1",
-                            "name": "get_weather",
-                            "arguments": '{"city":"NYC","country":"US"}',
-                        }
-                    ],
-                    "usage": {},
-                },
-            },
-        ]
-
-        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
-
-        emitted: list[dict] = []
-        async def emitter(event):
-            emitted.append(event)
-
-        await pipe._streaming_handler._run_streaming_loop(
-            body,
-            valves,
-            emitter,
-            metadata={"model": {"id": "test"}},
-            tools={},
-            session=cast(Any, object()),
-            user_id="user-123",
-        )
-
-        tool_calls = _collect_events_of_type(emitted, "chat:tool_calls")
-        assert tool_calls
 
     @pytest.mark.asyncio
     async def test_tool_passthrough_dict_arguments(self, monkeypatch, pipe_instance_async):
@@ -1217,10 +1198,11 @@ class TestToolPassthrough:
             user_id="user-123",
         )
 
-        tool_calls = _collect_events_of_type(emitted, "chat:tool_calls")
-        assert tool_calls
-        args = tool_calls[0]["data"]["tool_calls"][0]["function"]["arguments"]
-        assert isinstance(args, str)
+        finals = _host_argument_frames(emitted, "done")
+        assert [f["arguments"] for f in finals] == ['{"city": "NYC"}'], (
+            "a dict `arguments` on the completed output is serialised to a JSON string, the "
+            "shape the argument reducer concatenates and replaces"
+        )
 
 
 # Web Search Status Tests
@@ -7575,54 +7557,10 @@ class TestStreamingCoreAdditionalCoverage:
             user_id="user-123",
         )
 
-        tool_calls = _collect_events_of_type(emitted, "chat:tool_calls")
-        assert tool_calls
-
-    @pytest.mark.asyncio
-    async def test_tool_call_arguments_done_no_suffix_computed(self, monkeypatch, pipe_instance_async):
-        """Test arguments.done with non-computable suffix (lines 849-854)."""
-        pipe = pipe_instance_async
-        body = ResponsesBody(model="test/model", input=[], stream=True)
-        valves = pipe.valves.model_copy(update={"TOOL_EXECUTION_MODE": "Open-WebUI"})
-
-        events = [
-            {
-                "type": "response.output_item.added",
-                "item": {"type": "function_call", "call_id": "call-1", "name": "test_tool"},
-            },
-            {
-                "type": "response.function_call_arguments.delta",
-                "item_id": "call-1",
-                "delta": '{"already": "streamed"}',
-            },
-            {
-                "type": "response.function_call_arguments.done",
-                "item_id": "call-1",
-                "name": "test_tool",
-                "arguments": '{"different": "args"}',
-            },
-            {"type": "response.completed", "response": {"output": [], "usage": {}}},
-        ]
-
-        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
-
-        emitted: list[dict] = []
-        async def emitter(event):
-            emitted.append(event)
-
-        await pipe._streaming_handler._run_streaming_loop(
-            body,
-            valves,
-            emitter,
-            metadata={"model": {"id": "test"}},
-            tools={},
-            session=cast(Any, object()),
-            user_id="user-123",
+        deltas = _host_argument_frames(emitted, "delta")
+        assert [d["delta"] for d in deltas] == ['{"key": "value"}'], (
+            "an empty delta publishes nothing at all, not an empty frame the host would append"
         )
-
-        # Should still process tool calls
-        tool_calls = _collect_events_of_type(emitted, "chat:tool_calls")
-        assert tool_calls
 
     @pytest.mark.asyncio
     async def test_message_type_item_skipped(self, monkeypatch, pipe_instance_async):
@@ -8318,8 +8256,12 @@ class TestStreamingCoreAdditionalCoverage:
             user_id="user-123",
         )
 
-        tool_calls = _collect_events_of_type(emitted, "chat:tool_calls")
-        assert not tool_calls
+        # No name, no call: Open WebUI would look the call up by a key that does not exist, so
+        # the pipe announces nothing. The round still finishes normally.
+        assert _host_call_items(emitted) == [], "an unnamed call is not published"
+        assert _host_argument_frames(emitted, "delta") == [], "an unnamed call has no argument frames"
+        assert _host_argument_frames(emitted, "done") == [], "an unnamed call has no argument frames"
+        assert _collect_events_of_type(emitted, "chat:completion"), "the round still completes"
 
     @pytest.mark.asyncio
     async def test_annotations_persistence_skips_wrong_role(self, monkeypatch, pipe_instance_async):
@@ -8962,7 +8904,7 @@ class TestToolPassthroughExceptionHandling:
 
         call_count = [0]
         async def failing_emitter(event):
-            if event.get("type") == "chat:tool_calls":
+            if event.get("type") == "response.output_item.added":
                 call_count[0] += 1
                 if call_count[0] == 1:
                     raise RuntimeError("Simulated event_emitter failure during tool passthrough")
@@ -9416,7 +9358,7 @@ class TestToolPassthroughStreamingFirstDelta:
 
     @pytest.mark.asyncio
     async def test_tool_passthrough_streaming_first_delta(self, monkeypatch, pipe_instance_async):
-        """Test tool passthrough streaming first delta gets suffix (line 849)."""
+        """A call whose only argument frame is its own `.done` still arrives whole, after the item."""
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
         valves = pipe.valves.model_copy(update={"TOOL_EXECUTION_MODE": "Open-WebUI"})
@@ -9464,73 +9406,15 @@ class TestToolPassthroughStreamingFirstDelta:
             user_id="user-123",
         )
 
-        tool_calls = [e for e in emitted if e.get("type") == "chat:tool_calls"]
-        assert tool_calls
-
-
-class TestToolPassthroughNameSent:
-    """Test for tool passthrough name_sent tracking (line 860)."""
-
-    @pytest.mark.asyncio
-    async def test_tool_passthrough_name_sent_tracking(self, monkeypatch, pipe_instance_async):
-        """Test tool passthrough tracks name_sent to avoid re-sending (line 859-860)."""
-        pipe = pipe_instance_async
-        body = ResponsesBody(model="test/model", input=[], stream=True)
-        valves = pipe.valves.model_copy(update={"TOOL_EXECUTION_MODE": "Open-WebUI"})
-
-        events = [
-            {
-                "type": "response.output_item.added",
-                "item": {"type": "function_call", "call_id": "call-1", "id": "call-1", "name": "get_weather"},
-            },
-            {
-                "type": "response.function_call_arguments.done",
-                "item_id": "call-1",
-                "name": "get_weather",
-                "arguments": '{"city":"NY',
-            },
-            {
-                "type": "response.function_call_arguments.done",
-                "item_id": "call-1",
-                "name": "get_weather",
-                "arguments": '{"city":"NYC"}',
-            },
-            {
-                "type": "response.completed",
-                "response": {
-                    "output": [
-                        {
-                            "type": "function_call",
-                            "call_id": "call-1",
-                            "name": "get_weather",
-                            "arguments": '{"city":"NYC"}',
-                        }
-                    ],
-                    "usage": {},
-                },
-            },
-        ]
-
-        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
-
-        emitted: list[dict] = []
-        async def emitter(event):
-            emitted.append(event)
-
-        result = await pipe._streaming_handler._run_streaming_loop(
-            body,
-            valves,
-            emitter,
-            metadata={"model": {"id": "test"}},
-            tools={},
-            session=cast(Any, object()),
-            user_id="user-123",
+        assert [e.get("type") for e in emitted if str(e.get("type", "")).startswith("response.")] == [
+            "response.output_item.added",
+            "response.function_call_arguments.done",
+            "response.output_item.done",
+        ], emitted
+        finals = _host_argument_frames(emitted, "done")
+        assert [f["arguments"] for f in finals] == ['{"city":"NYC"}'], (
+            "with no prior deltas the terminal frame carries the whole payload"
         )
-
-        tool_calls = [e for e in emitted if e.get("type") == "chat:tool_calls"]
-        assert tool_calls
-        first_tool_call = tool_calls[0]["data"]["tool_calls"][0]["function"]
-        assert "name" in first_tool_call
 
 
 class TestFunctionCallRawTextConversion:
@@ -10846,8 +10730,9 @@ class TestToolCallsPayloadNonDict:
                 user_id="user-123",
             )
 
-        tool_calls = _collect_events_of_type(emitted, "chat:tool_calls")
-        assert tool_calls
+        items = _host_call_items(emitted)
+        assert len(items) == 1 and isinstance(items[0], dict), items
+        assert items[0]["call_id"] == "call-1", items
 
 
 class TestPersistToolsNormalizationNone:

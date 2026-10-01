@@ -257,7 +257,17 @@ _EXPECTED: dict[str, int] = {
     # `CancelledError` for the same reason its neighbours do, since a turn being torn
     # down must not raise out of its own teardown.
     "pipe.py": 42,
-    "storage/persistence.py": 3,
+    # 4th (B724): the done-callback's `suppress(asyncio.CancelledError, Exception)` around
+    # `task.exception()` in `_schedule_redis_valve_drain_on`'s `_settle`, which releases
+    # the Redis valve's ownership latch when a scheduled drain ends however it ends. The
+    # same shape and the same reason as the 40th above in `pipe.py`: the callback exists
+    # only to retrieve the exception so a drain that raised does not log "Task exception
+    # was never retrieved" on the way to being garbage-collected, and the latch release
+    # below it must still run. Letting a retrieval failure out would raise inside a done
+    # callback, where asyncio can only log it, and would skip the release that re-arms
+    # the valve -- so the swallow is what keeps the recovery total, and `CancelledError`
+    # is swallowed with it because the callback fires for a cancelled drain too.
+    "storage/persistence.py": 4,
     # 1st: the caller-supplied fallback in `_emit_templated_error_event`. It is reached only because the
     # admin's own template already failed to render, and the generic card below it is the answer if the
     # fallback fails too -- letting it out would replace the failure being reported with a template error.

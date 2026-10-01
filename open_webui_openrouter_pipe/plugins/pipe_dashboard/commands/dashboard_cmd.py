@@ -345,7 +345,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
         <div class="gc" id="{sid}-video-row" style="display:none;"><span class="gc-l">Active video gens</span><span class="gc-v" id="{sid}-video-val" style="color:#ec4899;">-</span></div>
         <div class="gc"><span class="gc-l">Log queue</span><span class="gc-v" id="{sid}-lq-val">-</span></div>
         <div class="gc"><span class="gc-l">Archive queue</span><span class="gc-v" id="{sid}-aq-val">-</span></div>
-        <div class="gc"><span class="gc-l">Uptime</span><span class="gc-v" id="{sid}-up-val">-</span></div>
+        <div class="gc"><span class="gc-l" title="age of the oldest live generation of the pipe; it restarts at zero on every in-place reload, so it is not the process's age">Generation</span><span class="gc-v" id="{sid}-up-val">-</span></div>
       </div>
 
       <!-- User Circuit Breakers -->
@@ -1558,7 +1558,10 @@ def _build_dashboard_shell(dash_id: str) -> str:
       }}
       $(ID + '-workers-section').style.display = '';
       var h = '<div class="tbl-wrap"><table class="tbl"><thead><tr>' +
-        '<th>PID</th><th class="r">Uptime</th><th class="r">Active</th>' +
+        '<th>PID</th>' +
+        '<th class="r" title="age of this worker\\'s current generation of the pipe; ' +
+        'it restarts at zero on every in-place reload, so it is not the process\\'s age">' +
+        'Generation</th><th class="r">Active</th>' +
         '<th class="r" title="age of this worker\\'s last published slice">Seen</th><th class="r">Status</th>' +
         '</tr></thead><tbody>';
       for (var i = 0; i < workers.length; i++) {{
@@ -1611,7 +1614,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
       if (d.sessions) updateSessions(d.sessions);
       if (d.sessions_live !== undefined) updateLiveSessions(d.sessions_live, d.sessions);
       if (d.uptime_s !== undefined) {{
-        var upTitle = (state.workerCount > 1) ? 'oldest worker' : '';
+        var upTitle = 'oldest generation';
         var upEl = $(ID + '-up-val');
         upEl.textContent = fmtUptime(d.uptime_s);
         upEl.title = upTitle;

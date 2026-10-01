@@ -523,11 +523,9 @@ class OpenRouterModelRegistry:
 
     @classmethod
     def _adopt_roster_for(cls, api_key: str) -> None:
-        fingerprint = _fingerprint(api_key)
         cls._zdr_model_ids = cls._zdr_roster_for(api_key)
-        if fingerprint != cls._zdr_attempted_key and cls._zdr_model_ids is not None:
-            for norm_id, spec in cls._specs.items():
-                cls._stamp_zdr_capable(spec, norm_id, cls._zdr_model_ids, cls._specs)
+        for norm_id, spec in cls._specs.items():
+            cls._stamp_zdr_capable(spec, norm_id, cls._zdr_model_ids, cls._specs)
 
     @classmethod
     def _catalog_lock(cls) -> asyncio.Lock:
@@ -603,6 +601,8 @@ class OpenRouterModelRegistry:
                     raise
                 if rotating:
                     cls._zdr_model_ids = None
+                    for norm_id, spec in cls._specs.items():
+                        cls._stamp_zdr_capable(spec, norm_id, None, cls._specs)
                 logger.warning(
                     "OpenRouter catalog refresh failed (%s). Serving %d cached model(s).",
                     exc,

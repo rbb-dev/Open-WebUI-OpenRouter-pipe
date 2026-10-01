@@ -165,12 +165,19 @@ _pending_emits: set[Any] = set()
 
 class _ValveEventSink:
     async def handle_event(self, app: Any, event: Any, request: Any = None) -> None:
-        if getattr(event, "event", None) != "function.valves_updated":
-            return
+        name = getattr(event, "event", None)
         pipe = _current_pipe()
         pipe_id = getattr(pipe, "id", None)
         subject = getattr(event, "subject", None)
         if not pipe_id or not isinstance(subject, dict) or subject.get("id") != pipe_id:
+            return
+        if name == "function.deleted":
+            from .plugin import release_registrations_for
+
+            release_registrations_for(pipe)
+            pipe.close_when_idle()
+            return
+        if name != "function.valves_updated":
             return
         if not await _socket_dashboard_enabled(pipe):
             await _evict_every_viewer()

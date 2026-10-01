@@ -256,17 +256,23 @@ def _one_open_webui_tool(key: str) -> dict[str, dict[str, Any]]:
     return {key: {"tool_id": "server:mcp:acme", "callable": _returns(f"ran {key}"), "spec": spec}}
 
 
-def _names_open_webui_stores(chunks: list[dict[str, Any]]) -> dict[str, str]:
-    """Fold `chat:tool_calls` chunks as Open WebUI's streaming handler does: a call keeps the name it was first sent,
-    replaced only by a later chunk that carries a non-empty name."""
+def _names_open_webui_stores(events: list[dict[str, Any]]) -> dict[str, str]:
+    """The names Open WebUI holds for the calls the pipe published, keyed by `call_id`.
+
+    Under the passthrough the pipe publishes each call as its own
+    `response.output_item.added` item, and the name rides on that item -- the key Open WebUI
+    resolves the call by. A later item for the same `call_id` replaces the earlier one
+    (`middleware.py:621-631`), so a name sent once is the name that stays."""
     names: dict[str, str] = {}
-    for chunk in chunks:
-        for call in chunk["data"]["tool_calls"]:
-            name = (call.get("function") or {}).get("name")
-            if name:
-                names[call["id"]] = name
-            else:
-                names.setdefault(call["id"], "")
+    for event in events:
+        if event.get("type") != "response.output_item.added":
+            continue
+        item = event.get("item") or {}
+        if item.get("type") != "function_call":
+            continue
+        call_id = item.get("call_id")
+        if isinstance(call_id, str) and call_id:
+            names[call_id] = item.get("name") or ""
     return names
 
 
@@ -309,9 +315,13 @@ async def test_open_webui_stores_a_handed_back_call_under_the_key_it_runs(
         tools={}, session=cast(Any, object()), user_id="user-1",
     )
 
-    chunks = [event for event in emitted if event.get("type") == "chat:tool_calls"]
-    assert chunks, emitted
-    assert _names_open_webui_stores(chunks) == {"call-1": key}
+    published = [
+        event for event in emitted
+        if event.get("type") == "response.output_item.added"
+        and (event.get("item") or {}).get("type") == "function_call"
+    ]
+    assert published, emitted
+    assert _names_open_webui_stores(published) == {"call-1": key}
 
 
 # --- tool names on the wire when Open WebUI replays a round ------------------------------------------------------------

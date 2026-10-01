@@ -2,6 +2,12 @@
 
 ## Behaviour changes
 
+- **Open-WebUI tool mode** — a call Open WebUI runs now shows its card from the moment the model names the tool, and the dashboard's live view now shows the running tool on those turns (it stayed empty before).
+- **Pipe dashboard, deleted function row** — deleting the pipe's function row now releases the live dashboard on the worker that served the DELETE and lets
+  the pipe finish its in-flight requests and close, instead of holding it, its session-log threads and its storage handle until a restart. The stand-down
+  happens whether or not `PIPE_DASHBOARD_ENABLE` is on, and it is per worker: on a multi-worker deployment the other workers release their own generation at
+  their next hot reload, exactly as Open WebUI keeps its own per-worker function cache. The action route and the socket gate still refuse once the row is
+  gone; nothing about the authorization answer changes.
 - **Config tab** — a save the database refuses to write now raises a durable banner instead of a toast alone.
   The banner names the fault, carries no Reload control, and leaves your staged edits in place, so nothing the
   refusal preserved can be discarded from the tab that preserved it. It clears on the next successful save or

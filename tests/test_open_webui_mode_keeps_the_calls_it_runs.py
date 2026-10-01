@@ -1,6 +1,7 @@
 """In Open-WebUI tool mode, Open WebUI runs the model's tool calls itself, so it must keep them.
 
-Open WebUI builds its own `function_call` items from the `delta.tool_calls` chunks the pipe streams. A
+Open WebUI reduces the `function_call` item the pipe publishes as a `response.output_item.added` frame, and the
+`response.function_call_arguments.delta` / `.done` frames that follow it. A
 `response.completed` whose `output` is not empty REPLACES Open WebUI's whole list, and after the stream Open WebUI only
 updates the call items it still finds -- it never adds a missing one back. Its re-call of the pipe is built from that
 list, and a result whose call is missing is dropped. So a response that hands calls to Open WebUI must not publish a
@@ -56,8 +57,9 @@ def _append_text(output: list[dict[str, Any]], value: str, output_id) -> None:
 
 
 def _open_webui_backend(emitted: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Open WebUI 0.11.4's backend fed the pipe's events: text through its chunk branch, tool calls through its
-    `delta.tool_calls` branch, `response.*` through its compiled handler, then its after-stream call update."""
+    """Open WebUI 0.11.4's backend fed the pipe's events: text through its chunk branch, the call under the
+    passthrough through its `response.*` handler (which is the branch that builds the `function_call` item),
+    a non-passthrough hand-back through its `delta.tool_calls` branch, then its after-stream call update."""
     handler = _open_webui_streaming_handler()
     output: list[dict[str, Any]] = []
     tool_calls: list[dict[str, Any]] = []

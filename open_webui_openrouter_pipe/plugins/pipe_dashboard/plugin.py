@@ -768,3 +768,12 @@ class PipeDashboardPlugin(PluginBase):
             coro.close()
             return None
         return loop.create_task(coro)
+
+
+def release_registrations_for(pipe: Any) -> None:
+    registry = getattr(pipe, "_plugin_registry", None)
+    for plugin in list(getattr(registry, "_plugins", None) or ()):
+        try:
+            plugin._clear_module_registrations()
+        except Exception:
+            logger.debug("pipe_dashboard module-global teardown failed", exc_info=True)

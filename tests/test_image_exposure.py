@@ -867,7 +867,10 @@ async def _installed_user_valves(model_id: str, contract: list[dict[str, Any]]):
     import aiohttp
     from aioresponses import aioresponses
 
-    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+    from open_webui_openrouter_pipe.filters.filter_manager import (
+        FilterManager,
+        _WriteOutcome,
+    )
     from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
 
     catalog = json.loads(
@@ -909,7 +912,7 @@ async def _installed_user_valves(model_id: str, contract: list[dict[str, Any]]):
 
     async def _capture(**kwargs):
         rendered["source"] = kwargs["desired_source"]
-        return kwargs["preferred_id"], False
+        return kwargs["preferred_id"], _WriteOutcome()
 
     manager._ensure_filter_installed = AsyncMock(side_effect=_capture)
     manager._retire_variant_image_filters = AsyncMock(return_value=None)

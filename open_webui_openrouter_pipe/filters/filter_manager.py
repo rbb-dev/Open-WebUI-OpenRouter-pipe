@@ -1845,7 +1845,7 @@ class FilterManager:
             )
         return complete
 
-    async def deactivate_video_gen_filters(self, rows: _FilterRows | None = None) -> None:
+    async def deactivate_video_gen_filters(self) -> None:
         if self.valves.ENABLE_VIDEO_GENERATION:
             return
         try:
@@ -1860,10 +1860,7 @@ class FilterManager:
             )
             return
         try:
-            if rows is not None and rows.active_rows is not None:
-                found = rows.active_rows
-            else:
-                found = await Functions.get_functions_by_type("filter", active_only=True)
+            found = await Functions.get_functions_by_type("filter", active_only=True)
         except Exception:
             self.logger.warning("Could not list the installed Video Generation filters", exc_info=True)
             return

@@ -4982,7 +4982,10 @@ async def test_a_contract_that_was_read_gets_a_panel_whether_or_not_it_names_a_k
     """
     from unittest.mock import AsyncMock, MagicMock
 
-    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+    from open_webui_openrouter_pipe.filters.filter_manager import (
+        FilterManager,
+        _WriteOutcome,
+    )
 
     slug, model_id = EVERY_CONTRACT[0]
     records = [{"provider_slug": "solo", "supported_parameters": {}}]
@@ -5003,7 +5006,7 @@ async def test_a_contract_that_was_read_gets_a_panel_whether_or_not_it_names_a_k
     written: list[str] = []
     manager._ensure_filter_installed = AsyncMock(
         side_effect=lambda **kw: (
-            written.append(kw["desired_source"]), (kw["preferred_id"], False)
+            written.append(kw["desired_source"]), (kw["preferred_id"], _WriteOutcome())
         )[1]
     )
 

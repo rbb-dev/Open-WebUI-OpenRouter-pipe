@@ -464,6 +464,22 @@ async def _write_own_slice(client: Any, worker_key: str, pipe: Any) -> bool:
     return True
 
 
+def _is_superseded(pipe: Any) -> bool:
+    if pipe is None:
+        return False
+    pipe_id = getattr(pipe, "id", None)
+    if not pipe_id:
+        return False
+    try:
+        from ...pipe import _get_lifecycle_registry
+
+        current = _get_lifecycle_registry().current(pipe_id)
+    except Exception:
+        logger.debug("Dashboard lifecycle lookup failed; publishing as shipped", exc_info=True)
+        return False
+    return current is not None and current is not pipe
+
+
 async def _redis_alive(pipe: Any) -> bool:
     """Liveness probe: a bounded real ping, not client-object existence."""
     client = getattr(pipe, "_redis_client", None)
@@ -659,12 +675,22 @@ async def run_dashboard_publisher(
     emitting = False
     slow_state: dict[str, Any] = {}
     agg_state: dict[str, Any] = {}
+    stood_down = False
 
     try:
         while True:
             client, enabled = get_redis()
             redis_ok = bool(enabled) and client is not None
             pipe = get_pipe()
+
+            if not stood_down and _is_superseded(pipe):
+                stood_down = True
+                logger.debug(
+                    "Dashboard publisher standing down (pid=%d, ns=%s): a newer generation owns this id",
+                    pid,
+                    namespace,
+                )
+                return
 
             if redis_ok and client is not None and pubsub is None:
                 try:
@@ -752,7 +778,7 @@ async def run_dashboard_publisher(
                 logger.debug("Dashboard wake listener teardown failed", exc_info=True)
         try:
             client, enabled = get_redis()
-            if enabled and client is not None:
+            if enabled and client is not None and not stood_down:
                 await client.delete(worker_key)
         except Exception:
             logger.debug("Dashboard worker-key cleanup failed (pid=%d)", pid, exc_info=True)

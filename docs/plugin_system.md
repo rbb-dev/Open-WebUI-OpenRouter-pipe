@@ -986,7 +986,7 @@ async def on_generation_complete(self, usage, status, **kwargs):
 def on_shutdown(self, **kwargs: Any) -> Any:
 ```
 
-**When:** During `Pipe.shutdown()`, before the artifact store and session log manager are closed. Synchronous; runs on both hot-reload and process shutdown.
+**When:** During `Pipe.shutdown()`, before the artifact store and session log manager are closed. Synchronous; runs on both hot-reload and process shutdown. A `function.deleted` event for the pipe's own function id reaches the same teardown path: the dashboard's valve-event sink calls `release_registrations_for(pipe)` when Open WebUI publishes that event, which walks the pipe's plugin instances and hands each one its own registration teardown, so a delete releases the same module globals a hot reload does and then drains the pipe through `close_when_idle()`. A `function.valves_updated` event does not: it evicts viewers and leaves the registrations alone.
 
 **Return value:** `None`, or an awaitable (e.g. a background task the hook just cancelled). Returned awaitables are gathered and awaited by the async teardown path (5 s bound) so the task's cleanup `finally` completes before `close()` returns. When the pipe is collected without an orderly shutdown, a destructor cannot await them: it disposes of each one instead — a coroutine is closed, a task is cancelled — and never creates, runs or blocks on an event loop. The shipped dashboard plugin is unaffected either way.
 
