@@ -13,6 +13,7 @@ from unittest.mock import Mock
 
 import pytest
 from sqlalchemy import (
+    JSON,
     Column,
     DateTime,
     Float,
@@ -24,7 +25,7 @@ from sqlalchemy import (
     inspect as sa_inspect,
     text,
 )
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
@@ -38,16 +39,104 @@ from open_webui_openrouter_pipe.plugins.pipe_dashboard.usage_queries import quer
 from sqlalchemy.engine import Connection
 import sqlalchemy
 import sqlite3
+import json
 import logging
 
 
-def _make_store_host() -> Any:
+def _persisted_function_model() -> Any:
+    """A declarative `Function` mapped to the `function` table Open WebUI owns.
+
+    Installed on `open_webui.models.functions` rather than imported from it, because
+    the stub module carries `Functions` and the form models but not the ORM class --
+    the reader imports it by name. Tests that need their own column types install one
+    only when the attribute is absent, so this stays the shared default.
+    """
+    import open_webui.models.functions as functions_mod
+
+    existing = getattr(functions_mod, "Function", None)
+    if existing is not None:
+        return existing
+
+    base = declarative_base()
+
+    class Function(base):  # type: ignore[misc, valid-type]
+        __tablename__ = "function"
+        id = Column(String, primary_key=True)
+        valves = Column(JSON)
+
+    functions_mod.Function = Function
+    _install_valve_codec()
+    return Function
+
+
+def _install_valve_codec() -> None:
+    """Stand in for `open_webui.utils.valves.decrypt_valves`, imported by the reader."""
+    import sys as _sys
+    import types as _types
+
+    def decrypt_valves(valves: Any) -> dict:
+        if not valves:
+            return {}
+        if isinstance(valves, dict):
+            return valves
+        return {}
+
+    utils_pkg = _sys.modules.setdefault("open_webui.utils", _types.ModuleType("open_webui.utils"))
+    utils_pkg.__path__ = []  # type: ignore[attr-defined]
+    valves_mod = _types.ModuleType("open_webui.utils.valves")
+    valves_mod.decrypt_valves = decrypt_valves  # type: ignore[attr-defined]
+    _sys.modules.setdefault("open_webui.utils.valves", valves_mod)
+    setattr(utils_pkg, "valves", _sys.modules["open_webui.utils.valves"])
+
+
+def _install_persisted_collect_row(host: Any, collect: bool) -> None:
+    """Create the `function` table on this host's engine and store the valve row."""
+    Function = _persisted_function_model()
+    _install_valve_codec()
+    Function.metadata.create_all(host._engine)
+    _store_persisted_collect_row(host, collect)
+
+
+def _store_persisted_collect_row(host: Any, collect: bool) -> None:
+    """Write this pipe's persisted valve row, replacing whatever was there.
+
+    Separate from the install so a test that changes the stored row mid-run -- the way
+    an administrator's second save does -- writes it rather than colliding on the
+    primary key. The value goes in as the column's Python type rather than as a dict,
+    because a suite that installs its own `Function` may declare `valves` as text, the
+    way an encrypted deployment's column reads on disk.
+    """
+    Function = _persisted_function_model()
+    _install_valve_codec()
+    Function.metadata.create_all(host._engine)
+    value: Any = {"PIPE_DASHBOARD_USAGE_COLLECT": collect}
+    column = Function.__table__.c.valves
+    if isinstance(column.type, sqlalchemy.String):
+        value = json.dumps(value)
+    with host._session_factory() as session:
+        session.query(Function).filter_by(id=host.id).delete()
+        session.add(Function(id=host.id, valves=value))
+        session.commit()
+
+
+def _make_store_host(collect: bool = True) -> Any:
+    """A store host on an engine that carries the pipe's persisted function row.
+
+    `UsageStore._persist_sync` gates every batch on the persisted
+    `PIPE_DASHBOARD_USAGE_COLLECT` row, read on the writer thread from the same engine
+    the store writes through -- which on a real deployment is Open WebUI's own engine,
+    where the `function` table lives. A stub engine without that table is a shape no
+    deployment has: the reader finds nothing and refuses, so every test below would
+    measure a closed gate rather than the writer. The row therefore goes in here, with
+    collection on by default; `collect=False` is how a test asks for the refusal.
+    """
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
     host = SimpleNamespace(
+        id="openrouter",
         _engine=engine,
         _session_factory=sessionmaker(bind=engine),
         logger=Mock(),
@@ -57,6 +146,7 @@ def _make_store_host() -> Any:
         _is_table_exists_error=ArtifactStore._is_table_exists_error,
         _maybe_heal_index_conflict=lambda *a, **k: False,
     )
+    _install_persisted_collect_row(host, collect)
     guard: Any = ArtifactStore._create_table_with_race_guard
     host._create_table_with_race_guard = (
         lambda table, eng, name: guard(host, table, eng, name)

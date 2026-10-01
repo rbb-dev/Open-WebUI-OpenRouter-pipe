@@ -532,7 +532,9 @@ async def test_upstream_http_error_is_logged_without_a_traceback(icon_handler):
         icon_handler.logger.removeHandler(recorder)
 
     assert result is None
-    matching = [r for r in recorder.records if "gone.png" in r.getMessage()]
+    matching = [
+        r for r in recorder.records if "cdn.example.com" in r.getMessage()
+    ]
     assert matching, [r.getMessage() for r in recorder.records]
     assert all(r.exc_info is None for r in matching)
     assert any("404" in r.getMessage() or "Not Found" in r.getMessage() for r in matching)
@@ -555,7 +557,9 @@ async def test_unexpected_download_failure_keeps_its_traceback(icon_handler):
         icon_handler.logger.removeHandler(recorder)
 
     assert result is None
-    matching = [r for r in recorder.records if "odd.png" in r.getMessage()]
+    matching = [
+        r for r in recorder.records if "cdn.example.com" in r.getMessage()
+    ]
     assert matching, [r.getMessage() for r in recorder.records]
     assert any(r.exc_info is not None for r in matching)
 
@@ -701,7 +705,7 @@ async def test_an_oversized_bitmap_is_refused_the_same_way_in_every_import_state
     shapes = [
         (r.getMessage(), r.levelno, r.exc_info is not None)
         for r in recorder.records
-        if "bomb.png" in r.getMessage()
+        if "cdn.example.com" in r.getMessage()
     ]
     assert len(shapes) == 1, shapes
     message, levelno, has_stack = shapes[0]
@@ -717,7 +721,7 @@ async def test_an_oversized_bitmap_is_refused_the_same_way_in_every_import_state
         f"the pixel budget {budget} does not appear in the rendered refusal: {message!r}"
     )
     byte_count = len(_png(side))
-    assert f"({byte_count} bytes, url=https://cdn.example.com/bomb.png)" in message, (
+    assert f"({byte_count} bytes, url=https://cdn.example.com)" in message, (
         f"the {byte_count}-byte count for a {side}x{side} icon does not appear in the "
         f"rendered refusal: {message!r}"
     )

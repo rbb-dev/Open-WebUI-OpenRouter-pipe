@@ -1154,6 +1154,10 @@ class ImageGenerationAdapter:
     async def _report_generation(
         self, usage: Any, status: str, metadata: dict[str, Any] | None
     ) -> None:
+        meta = metadata if isinstance(metadata, dict) else {}
+        fusion_inner = bool((meta.get(_PIPE_METADATA_KEY) or {}).get("fusion_inner"))
+        if fusion_inner:
+            return
         await self._pipe._dispatch_generation_complete(
             usage if isinstance(usage, dict) and usage else None,
             status,

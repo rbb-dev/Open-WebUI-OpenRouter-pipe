@@ -1115,15 +1115,31 @@ def _redact_payload_blobs(value: Any, *, max_chars: int = 256) -> Any:
         keep = max(8, min(64, max_chars // 4))
         return f"{text[:keep]}…{_REDACTED_DATA_URL_MARKER}({len(text)} chars)…"
 
-    def _walk(obj: Any, key: str = "") -> Any:
+    def _citation_url_holder(obj: dict[Any, Any]) -> bool:
+        declared = obj.get("type")
+        return isinstance(declared, str) and declared == "url_citation"
+
+    def _walk(obj: Any, key: str = "", citation: bool = False) -> Any:
         if isinstance(obj, dict):
-            return {k: _walk(v, k if isinstance(k, str) else "") for k, v in obj.items()}
+            own_citation = _citation_url_holder(obj)
+            out: dict[Any, Any] = {}
+            for k, v in obj.items():
+                name = k if isinstance(k, str) else ""
+                if own_citation and name == "url_citation" and isinstance(v, dict):
+                    out[k] = _walk(v, name, True)
+                elif isinstance(v, (dict, list, tuple)):
+                    out[k] = _walk(v, name, False)
+                else:
+                    out[k] = _walk(v, name, own_citation or citation)
+            return out
         if isinstance(obj, list):
-            return [_walk(v, key) for v in obj]
+            return [_walk(v, key, False) for v in obj]
         if isinstance(obj, tuple):
-            return tuple(_walk(v, key) for v in obj)
+            return tuple(_walk(v, key, False) for v in obj)
         if isinstance(obj, str):
-            if _payload_key(key) in _MEDIA_KEY_STEMS:
+            if _payload_key(key) in _MEDIA_KEY_STEMS and not (
+                citation and _payload_key(key) == "url"
+            ):
                 return loggable_link(obj) or _REDACTED_DATA_URL_MARKER
             if split_base64_data_url(obj.strip()) is not None:
                 return _redact_data_url(obj)

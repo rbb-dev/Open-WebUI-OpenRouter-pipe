@@ -69,6 +69,15 @@ def _valid_new_value(name, field):
         return lo
     if name.endswith("_TEMPLATE"):
         return "## Edited\nsecond line\n{{#if error_id}}- `{error_id}`{{/if}}"
+    if base is str:
+        # A `str` valve that carries a validator of its own (the frame MIME allowlist
+        # refuses a list naming no type it can convert) will not take the generic
+        # string, so the second candidate repeats the default with one more entry:
+        # still the default's own types, so it satisfies the same rule. Same mechanism
+        # and the same reason as `MAX_FUNCTION_CALL_LOOPS` above.
+        for cand in ("edited-config-value", f"{default},image/jpeg"):
+            if cand != default and _survives_the_model(name, cand):
+                return cand
     return "edited-config-value"
 
 

@@ -27,6 +27,7 @@ from .config import (
 from .utils import (
     _coerce_bool,
     _coerce_positive_int,
+    _data_url_log_subject,
     _get_open_webui_config_module,
     _normalize_optional_str,
     _normalize_string_list,
@@ -579,6 +580,20 @@ def _bounded_card_value(text: str) -> str:
         return text
     omitted = len(text) - limit
     return f"{text[:limit]}\n...(truncated: {omitted:,} characters omitted)..."
+
+
+_PROVIDER_LOG_EXCERPT_MAX_CHARS = 8_192
+
+
+def _provider_log_subject(exc: object) -> str:
+    subject = _data_url_log_subject(str(exc))
+    if len(subject) <= _PROVIDER_LOG_EXCERPT_MAX_CHARS:
+        return subject
+    omitted = len(subject) - _PROVIDER_LOG_EXCERPT_MAX_CHARS
+    return (
+        f"{subject[:_PROVIDER_LOG_EXCERPT_MAX_CHARS]}\n"
+        f"...(truncated: {omitted:,} characters omitted)..."
+    )
 
 
 def _bounded_card_span(text: str) -> str:

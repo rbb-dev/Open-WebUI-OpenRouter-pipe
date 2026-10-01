@@ -91,13 +91,20 @@ def collect_fast_stats(pipe: Pipe) -> dict[str, Any]:
     }
 
 
-def collect_model_registry() -> dict[str, Any]:
-    """Raw model-registry state shared by the dashboard and the health command.
+def _credential_in_use(pipe: Any) -> str | None:
+    try:
+        from ...models.registry import _fingerprint
+        from ...pipe import Pipe
 
-    Classifies the unified catalog into text/image/video using the same
-    feature rules the registry itself applies, so the type counts always
-    sum to the loaded total.
-    """
+        key, error = Pipe._resolve_openrouter_api_key(pipe.valves)
+    except Exception:  # noqa: BLE001 - any failure to resolve the key reads the same way
+        return None
+    if error or not isinstance(key, str) or not key:
+        return None
+    return _fingerprint(key)
+
+
+def collect_model_registry(pipe: Any = None) -> dict[str, Any]:
     from ...models.registry import OpenRouterModelRegistry as Reg
 
     specs = getattr(Reg, "_specs", {}) or {}
@@ -113,10 +120,9 @@ def collect_model_registry() -> dict[str, Any]:
         else:
             text_n += 1
     loaded = text_n + image_n + video_n
-    failures = max(
-        (getattr(Reg, "_failure_counts", None) or {}).values(),
-        default=0,
-    )
+    counts = getattr(Reg, "_failure_counts", None) or {}
+    in_use = _credential_in_use(pipe)
+    failures = max(counts.values(), default=0) if in_use is None else counts.get(in_use, 0)
     last_fetch = getattr(Reg, "_last_fetch", 0.0) or 0.0
     last_error = getattr(Reg, "_last_error", None)
     zdr = getattr(Reg, "_zdr_model_ids", None)
@@ -154,7 +160,7 @@ def collect_medium_stats(pipe: Pipe) -> dict[str, Any]:
     stats: dict[str, Any] = {}
 
     try:
-        reg = collect_model_registry()
+        reg = collect_model_registry(pipe)
         last_error = reg["last_error"]
         stats["models"] = {
             "loaded": reg["loaded"],

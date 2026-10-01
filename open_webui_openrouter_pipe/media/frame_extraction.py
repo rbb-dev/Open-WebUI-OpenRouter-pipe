@@ -26,7 +26,12 @@ from PIL import Image
 from .image_conversion import composite_on_white
 
 _MAX_FRAME_PIXELS = 25_000_000
-_MAX_FRAME_WIDTH = 1920
+_MAX_FRAME_LONG_EDGE = 1920
+_LONG_EDGE_SCALE = (
+    f"scale='min({_MAX_FRAME_LONG_EDGE},iw)':'min({_MAX_FRAME_LONG_EDGE},ih)'"
+    ":force_original_aspect_ratio=decrease"
+    ",scale=iw:round(ih/2)*2"
+)
 _MAX_CONCURRENT_EXTRACTIONS = 4
 _FFMPEG_TIMEOUT_S = 30.0
 _PROBE_TIMEOUT_S = 10.0
@@ -658,8 +663,10 @@ def _declared_size(path: Path) -> tuple[int, int] | None:
 
 
 def _scaled_frame_size(width: int, height: int) -> tuple[int, int]:
-    out_w = min(_MAX_FRAME_WIDTH, width)
-    return out_w, max(2, int(height * out_w / width / 2.0 + 0.5) * 2)
+    factor = min(min(_MAX_FRAME_LONG_EDGE, width) / width,
+                 min(_MAX_FRAME_LONG_EDGE, height) / height)
+    return (max(2, int(width * factor + 0.5)),
+            max(2, int(int(height * factor + 0.5) / 2.0 + 0.5) * 2))
 
 
 def _read_cap(max_frame_bytes: int) -> int:
@@ -738,8 +745,8 @@ def _extract_frame_imageio_sync(
                 "plugin": "FFMPEG",
                 "input_params": ["-f", input_format, "-protocol_whitelist", "file"],
             }
-            if declared is not None and declared[0] > _MAX_FRAME_WIDTH:
-                read_kwargs["output_params"] = ["-vf", f"scale={_MAX_FRAME_WIDTH}:-2"]
+            if declared is not None and max(declared) > _MAX_FRAME_LONG_EDGE:
+                read_kwargs["output_params"] = ["-vf", _LONG_EDGE_SCALE]
             arr = iio.imread(str(path), index=frame_index, **read_kwargs)
         if arr is None or len(arr.shape) < 2:
             raise FrameExtractionError("imageio returned empty frame")
@@ -781,11 +788,11 @@ async def _extract_frame_ffmpeg(
         # reverse it — frame 1 of the reversed tail is the last decodable frame.
         seek_arg_sets = _end_seek_hop_argv()
         deadline = time.monotonic() + _END_SEEK_BUDGET_SECONDS
-        vf = f"scale='min({_MAX_FRAME_WIDTH},iw)':-2,reverse"
+        vf = f"{_LONG_EDGE_SCALE},reverse"
     else:
         seek_arg_sets = [["-ss", _seek_seconds(timestamp_seconds)]]
         deadline = None
-        vf = f"scale='min({_MAX_FRAME_WIDTH},iw)':-2"
+        vf = _LONG_EDGE_SCALE
     last_no_frame: FrameExtractionError | None = None
     walked_past_damage = False
     for hop, seek_args in enumerate(seek_arg_sets):

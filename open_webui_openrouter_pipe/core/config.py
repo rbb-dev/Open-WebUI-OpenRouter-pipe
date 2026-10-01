@@ -18,10 +18,11 @@ import os
 import re
 from collections.abc import Mapping
 from contextvars import ContextVar
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, cast
 
 from cryptography.fernet import Fernet, InvalidToken
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -124,6 +125,25 @@ _CHANNEL_CARD_RULE = (
     "the provider, openrouter_code and status_code still render on a channel, and error_id is the handle to "
     "quote when following up there."
 )
+
+_WRITABLE_FRAME_MIMES = frozenset({"image/jpeg", "image/png", "image/webp"})
+
+
+def _frame_allowlist_is_satisfiable(value: Any) -> bool:
+    from .utils import _csv_set
+
+    return bool(_csv_set(value) & _WRITABLE_FRAME_MIMES)
+
+
+def _check_frame_allowlist(value: str) -> str:
+    from .utils import _csv_set
+
+    if not _csv_set(value):
+        return value
+    if not _frame_allowlist_is_satisfiable(value):
+        raise ValueError("name at least one of image/jpeg, image/png or image/webp")
+    return value
+
 
 _DEFAULT_RESPONSES_AUDIO_FORMATS = frozenset({"mp3", "wav"})
 
@@ -2767,13 +2787,13 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=2,
         ge=1,
         le=25,
-        description="Maximum number of video generation jobs running per user per pipe process. The check happens before any frame is extracted or reference relayed, so a turn over the cap costs no media work.",
+        description="Maximum number of video generation jobs running per user per pipe process. The check happens before any frame is extracted or reference relayed, so a turn over the cap costs no media work. On a resumed turn the job found in the message is left running and pickable, and the refusal is written as a resumable card rather than a failure.",
     )
     VIDEO_FRAME_IMAGE_MAX_BYTES: int = Field(
         default=12 * 1024 * 1024,
         ge=64 * 1024,
         le=64 * 1024 * 1024,
-        description="Maximum decoded size for a single image frame passed to OpenRouter video generation.",
+        description="Maximum decoded size for a single image frame passed to OpenRouter video generation. A frame the pipe itself extracts from a previous video is bounded to 1920 on its long edge before it is encoded, so at this default such a frame never meets this cap; an attached frame still can, and still fails the whole request over it.",
     )
     VIDEO_FRAME_TOTAL_MAX_BYTES: int = Field(
         default=50 * 1024 * 1024,
@@ -2781,9 +2801,11 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         le=128 * 1024 * 1024,
         description="Maximum combined decoded size for all image frames passed to one video generation request.",
     )
-    VIDEO_FRAME_IMAGE_MIME_ALLOWLIST: str = Field(
+    VIDEO_FRAME_IMAGE_MIME_ALLOWLIST: Annotated[
+        str, AfterValidator(_check_frame_allowlist)
+    ] = Field(
         default="image/jpeg,image/png,image/webp",
-        description="Comma-separated MIME allowlist for video generation frame images. Frames the pipe itself extracts from a prior video are re-encoded to a type on this list before upload, so dropping image/png no longer breaks frame reuse. A list naming none of image/jpeg, image/webp and image/png leaves the pipe's own extracted frame out with a note in the chat; the video still renders, and an attached frame of a type that is not listed still fails the whole request.",
+        description="Comma-separated MIME allowlist for video generation frame images. Frames the pipe itself extracts from a prior video are re-encoded to a type on this list before upload, so dropping image/png no longer breaks frame reuse. Name at least one of `image/jpeg`, `image/png` or `image/webp`: a list naming none of those three cannot be saved, because there would be no type left for a frame the pipe extracted to be converted into. An empty value is accepted and permits no type at all, so every frame image is refused; a value already stored that names none of the three is left empty on load, which refuses every frame rather than turning frames back on, and the log names the valve and the value it replaced. Either way a frame the pipe extracted is left out with a note in the chat and the video still renders, while an attached frame of a type that is not listed still fails the whole request.",
     )
     VIDEO_OUTPUT_MIME_ALLOWLIST: str = Field(
         default="video/mp4,video/webm",

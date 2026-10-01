@@ -294,27 +294,6 @@ async def test_plugin_emitter_wrap_observes_usage_and_tool_start():
     assert await plugin.on_emitter_wrap(inner, job_metadata={}) is None
 
 
-@pytest.mark.asyncio
-async def test_plugin_generation_complete_finalizes_and_respects_valve():
-    plugin = _make_plugin()
-    plugin._usage_store = Mock()
-    plugin._usage_store.enabled = True
-    plugin._tracker.start("rid-3", body={"model": "m"}, user={"id": "u", "name": "n"}, metadata={"chat_id": "c"})
-    await plugin.on_generation_complete(_usage(cost=0.07), "ok", request_id="rid-3")
-    assert plugin._tracker.live_sessions()[0]["status"] == "completed"
-    assert not plugin._usage_store.record.called
-
-    plugin.ctx.valves.PIPE_DASHBOARD_USAGE_COLLECT = True
-    pipe = Mock()
-    plugin._get_pipe = lambda: pipe
-    plugin._tracker.start("rid-4", body={"model": "m"}, user={"id": "u", "name": "n"}, metadata={"chat_id": "c"})
-    await plugin.on_generation_complete(_usage(cost=0.07), "failed", request_id="rid-4")
-    assert plugin._usage_store.record.called
-    recorded = plugin._usage_store.record.call_args.args[0]
-    assert recorded["status"] == "failed"
-    assert recorded["cost"] == 0.07
-
-
 def test_plugin_live_snapshot_sweeps_and_returns_tuple():
     plugin = _make_plugin()
     plugin._tracker.start("chat1", body={"model": "m"}, user={"id": "u", "name": "sam"},

@@ -649,9 +649,16 @@ class RequestOrchestrator:
         self._pipe = pipe
         self.logger = logger
 
-    async def _note_provider_failure(self, exc: OpenRouterAPIError | UpstreamBodyUnreadable) -> None:
+    async def _note_provider_failure(
+        self,
+        exc: OpenRouterAPIError | UpstreamBodyUnreadable,
+        *,
+        fusion_inner: bool = False,
+    ) -> None:
         if is_sign_in_failure(exc):
             self._pipe._note_auth_failure()
+        if fusion_inner:
+            return
         await self._pipe._dispatch_generation_complete(
             None,
             "failed",
@@ -1964,7 +1971,7 @@ class RequestOrchestrator:
                         retry_after_seconds=retry_after,
                     )
                 if escape is not None:
-                    await self._note_provider_failure(exc)
+                    await self._note_provider_failure(exc, fusion_inner=fusion_inner)
                     return escape
 
             if (__metadata__ or {}).get("message_id") and is_temporary_chat(
@@ -1983,11 +1990,12 @@ class RequestOrchestrator:
                 normalized_model_id=responses_body.model,
                 api_model_id=getattr(responses_body, "api_model", None),
             )
-            await self._pipe._dispatch_generation_complete(
-                None,
-                "failed",
-                request_id=SessionLogger.request_id.get() or "",
-            )
+            if not fusion_inner:
+                await self._pipe._dispatch_generation_complete(
+                    None,
+                    "failed",
+                    request_id=SessionLogger.request_id.get() or "",
+                )
             return shown
 
         try:
@@ -2237,7 +2245,7 @@ class RequestOrchestrator:
                     path=getattr(getattr(__request__, "url", None), "path", "") or "",
                 )
                 if escape is not None:
-                    await self._note_provider_failure(exc)
+                    await self._note_provider_failure(exc, fusion_inner=fusion_inner)
                     return escape
 
             if (__metadata__ or {}).get("message_id") and is_temporary_chat(
@@ -2261,9 +2269,10 @@ class RequestOrchestrator:
                     f"(Content-Type: {exc.content_type}): {exc.body_excerpt[:200]}"
                 ),
             )
-            await self._pipe._dispatch_generation_complete(
-                None,
-                "failed",
-                request_id=SessionLogger.request_id.get() or "",
-            )
+            if not fusion_inner:
+                await self._pipe._dispatch_generation_complete(
+                    None,
+                    "failed",
+                    request_id=SessionLogger.request_id.get() or "",
+                )
             return shown

@@ -19,7 +19,12 @@ from ..api.transforms import (
     _filter_openrouter_request,
 )
 from ..core.costs import maybe_dump_costs_snapshot
-from ..core.errors import OpenRouterAPIError, _inline_span, is_sign_in_failure
+from ..core.errors import (
+    OpenRouterAPIError,
+    _inline_span,
+    _provider_log_subject,
+    is_sign_in_failure,
+)
 from ..core.logging_system import SessionLogger
 from ..core.timing_logger import timed
 from ..core.utils import _render_error_template
@@ -269,7 +274,7 @@ class TaskModelAdapter:
                     "Task model returned no output_text content."
                 )
 
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - the provider raised; the retry loop decides
                 last_error = exc
                 is_auth_failure = isinstance(exc, OpenRouterAPIError) and is_sign_in_failure(exc)
                 if is_auth_failure:
@@ -278,8 +283,7 @@ class TaskModelAdapter:
                     "Task model attempt %d/%d failed: %s",
                     attempt,
                     attempts,
-                    exc,
-                    exc_info=not is_auth_failure,
+                    _provider_log_subject(exc),
                 )
                 if is_auth_failure:
                     break
@@ -291,11 +295,12 @@ class TaskModelAdapter:
         error_id, _context = self._pipe._ensure_error_formatter()._build_error_context()
         error_class = type(last_error).__name__ if last_error is not None else "NoneType"
         error_message = (
-            f"Task model '{task_type}' failed after {made_attempts} attempt(s): {last_error} "
+            f"Task model '{task_type}' failed after {made_attempts} attempt(s): "
+            f"{_provider_log_subject(last_error)} "
             f"[model={source_model_id} error_class={error_class} "
             f"error_id={error_id} request_id={SessionLogger.request_id.get() or ''}]"
         )
-        self.logger.error(error_message, exc_info=last_error)
+        self.logger.error(error_message)
         await self._pipe._dispatch_generation_complete(
             None,
             "failed",

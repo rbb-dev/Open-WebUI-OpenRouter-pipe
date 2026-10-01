@@ -18,6 +18,7 @@ _RENAMED_VALVES = {
     "VIDEO_INTENT_MAX_CALLS_PER_CHAT": "VIDEO_INTENT_MAX_TURNS_PER_CHAT",
     "VIDEO_INTENT_MAX_CALLS_PER_USER_DAY": "VIDEO_INTENT_MAX_TURNS_PER_USER_DAY",
 }
+_REFUSED_VALUES = {"VIDEO_FRAME_IMAGE_MIME_ALLOWLIST": ""}
 
 
 def carry_renamed_valves(cls: type, values: Any) -> Any:
@@ -94,6 +95,7 @@ def drop_unvalidatable(cls: type, values: Any) -> Any:
     kept = dict(values)
     unread: list[tuple[str, str]] = []
     blanked: set[str] = set()
+    substituted: set[str] = set()
     for _ in range(len(kept) + 2):
         try:
             _valve_schema(cls)(**kept)
@@ -129,13 +131,25 @@ def drop_unvalidatable(cls: type, values: Any) -> Any:
                 blank = _admits_none(cls, name) and isinstance(kept.get(name), str) and not kept[name].strip()
                 if blank:
                     blanked.add(name)
-                kept.pop(name, None)
+                if name in _REFUSED_VALUES:
+                    kept[name] = _REFUSED_VALUES[name]
+                    substituted.add(name)
+                else:
+                    kept.pop(name, None)
     for name, note in unread:
         logger.log(
             warn_level(_warned_stale_valves, name, cooldown_s=_STALE_VALVES_WARN_EVERY_S),
             "pipe: stored setting %s %s.",
             name,
             note,
+        )
+    for name in sorted(substituted):
+        logger.log(
+            warn_level(_warned_stale_valves, name, cooldown_s=_STALE_VALVES_WARN_EVERY_S),
+            "pipe: stored setting %s (was %r) is not accepted by this release and was "
+            "left at %r, which permits no frame image at all. The pipe keeps running; "
+            "set it again where you configure the pipe.",
+            name, values[name], _REFUSED_VALUES[name],
         )
     if len(kept) != len(values):
         stored = values
@@ -166,6 +180,7 @@ def repair_unvalidatable(cls: type, values: Any, handler: Callable[[Any], Any]) 
     kept = dict(values)
     unread: list[tuple[str, str]] = []
     blanked: set[str] = set()
+    substituted: set[str] = set()
     for _ in range(len(kept) + 2):
         try:
             result = handler(kept)
@@ -201,7 +216,11 @@ def repair_unvalidatable(cls: type, values: Any, handler: Callable[[Any], Any]) 
                 blank = _admits_none(cls, name) and isinstance(kept.get(name), str) and not kept[name].strip()
                 if blank:
                     blanked.add(name)
-                kept.pop(name, None)
+                if name in _REFUSED_VALUES:
+                    kept[name] = _REFUSED_VALUES[name]
+                    substituted.add(name)
+                else:
+                    kept.pop(name, None)
     else:
         result = handler(kept)
     for name, note in unread:
@@ -210,6 +229,14 @@ def repair_unvalidatable(cls: type, values: Any, handler: Callable[[Any], Any]) 
             "pipe: stored setting %s %s.",
             name,
             note,
+        )
+    for name in sorted(substituted):
+        logger.log(
+            warn_level(_warned_stale_valves, name, cooldown_s=_STALE_VALVES_WARN_EVERY_S),
+            "pipe: stored setting %s (was %r) is not accepted by this release and was "
+            "left at %r, which permits no frame image at all. The pipe keeps running; "
+            "set it again where you configure the pipe.",
+            name, values[name], _REFUSED_VALUES[name],
         )
     if len(kept) != len(values):
         stored = values

@@ -94,6 +94,87 @@ def _neutralise_log_text(value: str) -> str:
     return value.translate(_LOG_TEXT_NEUTRALISER)
 
 
+class _RedactionFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            sid = SessionLogger.session_id.get()
+            rid = SessionLogger.request_id.get()
+            uid = SessionLogger.user_id.get()
+            record.session_id = sid
+            record.request_id = rid
+            record.user_id = uid or "-"
+            record.max_lines = SessionLogger.max_lines.get()
+            if rid:
+                with SessionLogger._state_lock:
+                    SessionLogger._session_last_seen[rid] = time.time()
+        except Exception:  # noqa: BLE001, S110 - logging Filter: self-log re-enters Logger.handle
+            pass
+        had_args = bool(getattr(record, "args", ()))
+        if not hasattr(record, "raw_msg"):
+            raw = record.msg
+            if isinstance(record.msg, str) and had_args:
+                try:
+                    raw = record.msg % record.args
+                except Exception:  # noqa: BLE001 - logging Filter: self-log re-enters Logger.handle
+                    raw = record.msg
+            record.raw_msg = raw
+        if had_args:
+            record.args = ()
+        raw_message = getattr(record, "raw_msg", None)
+        if isinstance(raw_message, str):
+            try:
+                redacted_msg = _data_url_log_subject(raw_message)
+            except Exception:  # noqa: BLE001 - logging Filter: self-log re-enters Logger.handle
+                redacted_msg = raw_message
+            record.redacted_msg = redacted_msg
+            try:
+                record.msg = _neutralise_log_text(redacted_msg)
+            except Exception:  # noqa: BLE001 - logging Filter: self-log re-enters Logger.handle
+                record.msg = redacted_msg
+        else:
+            try:
+                derived = _safe_message(record)
+            except Exception:  # noqa: BLE001 - logging Filter: self-log re-enters Logger.handle
+                derived = ""
+            try:
+                redacted_msg = _data_url_log_subject(derived)
+            except Exception:  # noqa: BLE001 - logging Filter: self-log re-enters Logger.handle
+                redacted_msg = derived
+            record.raw_msg = redacted_msg
+            record.redacted_msg = redacted_msg
+            try:
+                record.msg = _neutralise_log_text(redacted_msg)
+            except Exception:  # noqa: BLE001 - logging Filter: self-log re-enters Logger.handle
+                record.msg = redacted_msg
+        if record.exc_info:  # noqa: SIM102 - nested so the sentinel guards the whole block
+            if not getattr(record, "_exc_shaped", False):
+                record._exc_shaped = True  # type: ignore[attr-defined]
+                raw_exc = None
+                try:
+                    raw_exc = "".join(traceback.format_exception(*record.exc_info))
+                except Exception:  # noqa: BLE001, S110 - logging Filter: self-log re-enters Logger.handle
+                    pass
+                if raw_exc:
+                    record.raw_exc_text = raw_exc  # type: ignore[attr-defined]
+                    deformed = None
+                    changed = False
+                    try:
+                        deformed, changed = _deformed_exception_text(raw_exc)
+                    except Exception:  # noqa: BLE001, S110 - logging Filter: self-log re-enters Logger.handle
+                        pass
+                    if deformed is not None:
+                        record.exc_text = deformed  # type: ignore[attr-defined]
+                    if changed and deformed is not None:
+                        shaped = None
+                        try:
+                            shaped = _shaped_exc_info(record.exc_info, deformed)
+                        except Exception:  # noqa: BLE001, S110 - logging Filter: self-log re-enters Logger.handle
+                            pass
+                        if shaped is not None:
+                            record.exc_info = shaped
+        return True
+
+
 # SessionLogger Class
 
 _RECORD_SHAPE_RE = re.compile(
@@ -392,71 +473,8 @@ class SessionLogger:
             root_logger.addHandler(logging.NullHandler())
         logger.propagate = False
 
-        def filter(record):
-            try:
-                sid = cls.session_id.get()
-                rid = cls.request_id.get()
-                uid = cls.user_id.get()
-                record.session_id = sid
-                record.request_id = rid
-                record.user_id = uid or "-"
-                record.max_lines = cls.max_lines.get()
-                if rid:
-                    with cls._state_lock:
-                        cls._session_last_seen[rid] = time.time()
-            except Exception:  # noqa: BLE001, S110 - logging Filter: self-log re-enters Logger.handle
-                pass
-            had_args = bool(getattr(record, "args", ()))
-            if not hasattr(record, "raw_msg"):
-                raw = record.msg
-                if isinstance(record.msg, str) and had_args:
-                    try:
-                        raw = record.msg % record.args
-                    except Exception:  # noqa: BLE001 - logging Filter: self-log re-enters Logger.handle
-                        raw = record.msg
-                record.raw_msg = raw
-            if had_args:
-                record.args = ()
-            if isinstance(record.raw_msg, str):
-                try:
-                    redacted_msg = _data_url_log_subject(record.raw_msg)
-                except Exception:  # noqa: BLE001 - logging Filter: self-log re-enters Logger.handle
-                    redacted_msg = record.raw_msg
-                record.redacted_msg = redacted_msg
-                try:
-                    record.msg = _neutralise_log_text(redacted_msg)
-                except Exception:  # noqa: BLE001 - logging Filter: self-log re-enters Logger.handle
-                    record.msg = redacted_msg
-            if record.exc_info:  # noqa: SIM102 - nested so the sentinel guards the whole block
-                if not getattr(record, "_exc_shaped", False):
-                    record._exc_shaped = True  # type: ignore[attr-defined]
-                    raw_exc = None
-                    try:
-                        raw_exc = "".join(traceback.format_exception(*record.exc_info))
-                    except Exception:  # noqa: BLE001, S110 - logging Filter: self-log re-enters Logger.handle
-                        pass
-                    if raw_exc:
-                        record.raw_exc_text = raw_exc  # type: ignore[attr-defined]
-                        deformed = None
-                        changed = False
-                        try:
-                            deformed, changed = _deformed_exception_text(raw_exc)
-                        except Exception:  # noqa: BLE001, S110 - logging Filter: self-log re-enters Logger.handle
-                            pass
-                        if deformed is not None:
-                            record.exc_text = deformed  # type: ignore[attr-defined]
-                        if changed and deformed is not None:
-                            shaped = None
-                            try:
-                                shaped = _shaped_exc_info(record.exc_info, deformed)
-                            except Exception:  # noqa: BLE001, S110 - logging Filter: self-log re-enters Logger.handle
-                                pass
-                            if shaped is not None:
-                                record.exc_info = shaped
-            return True
-
         async_handler = _SessionCaptureHandler()
-        async_handler.addFilter(filter)
+        async_handler.addFilter(_RedactionFilter())
 
         def _emit(record: logging.LogRecord) -> None:
             cls._enqueue(record)

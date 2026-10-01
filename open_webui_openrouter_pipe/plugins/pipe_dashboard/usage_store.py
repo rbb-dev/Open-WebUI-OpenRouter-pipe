@@ -529,6 +529,29 @@ class UsageStore:
             )
             return False
 
+    def _stored_collect_flag(self, store: Any) -> tuple[bool, bool]:
+        session_factory = getattr(store, "_session_factory", None)
+        if session_factory is None:
+            return False, False
+        try:
+            from open_webui.models.functions import Function
+            from open_webui.utils.valves import decrypt_valves
+            from sqlalchemy import select
+
+            with _db_session(session_factory) as session:
+                raw = session.execute(
+                    select(Function.valves).filter_by(id=getattr(store, "id", "") or "")
+                ).scalar_one_or_none()
+            stored = decrypt_valves(raw)
+        except Exception:
+            logger.debug("usage store could not read the persisted collect valve", exc_info=True)
+            return False, False
+        if isinstance(raw, str) and raw.strip() and not isinstance(stored, dict):
+            return False, False
+        if not isinstance(stored, dict):
+            return False, False
+        return bool(stored.get("PIPE_DASHBOARD_USAGE_COLLECT", False)), True
+
     def _persist_sync(self, rows: list[dict[str, Any]]) -> bool:
         store = self._store
         if store is None:
@@ -538,6 +561,14 @@ class UsageStore:
         model = self._model
         if model is None:
             return False
+        _collect_on, _read_ok = self._stored_collect_flag(store)
+        if not _collect_on:
+            if not _read_ok:
+                logger.warning(
+                    "usage store: the persisted PIPE_DASHBOARD_USAGE_COLLECT valve "
+                    "could not be read; no usage rows are being written"
+                )
+            return True
         session_factory = getattr(store, "_session_factory", None)
         if session_factory is None:
             return False

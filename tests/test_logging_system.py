@@ -352,7 +352,7 @@ class TestGetLogger:
             # Apply the filter
             for handler in logger.handlers:
                 for f in handler.filters:
-                    f(record)
+                    getattr(f, "filter", f)(record)
 
             assert getattr(record, "session_id", None) == "sid-filter-test"
             assert getattr(record, "request_id", None) == "rid-filter-test"
@@ -1394,7 +1394,7 @@ class TestFilterContextUpdates:
                 # Apply filters
                 for handler in logger.handlers:
                     for f in handler.filters:
-                        f(record)
+                        getattr(f, "filter", f)(record)
 
                 # Check that last_seen was updated
                 assert "rid-last-seen-test" in SessionLogger._session_last_seen

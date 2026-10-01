@@ -35,6 +35,7 @@ from .update_service import UpdateError
 logger = logging.getLogger(__name__)
 
 _PD_ACTION_MIN_INTERVAL = 1.0
+_VALUE_ERROR_PREFIX = "Value error, "
 _rate_state: dict[tuple[str, str], float] = {}
 _config_write_locks: dict[tuple[str, int], asyncio.Lock] = {}
 
@@ -427,6 +428,22 @@ async def _config_get(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
     return snapshot
 
 
+def _save_refusal_message(exc: ValidationError) -> str:
+    errors = [err for err in exc.errors() if err.get("loc")]
+    names = sorted({str(err["loc"][0]) for err in errors})
+    reasons: list[str] = []
+    for err in errors:
+        if err.get("type") != "value_error":
+            continue
+        text = str(err.get("msg") or "").removeprefix(_VALUE_ERROR_PREFIX)
+        if text and text not in reasons:
+            reasons.append(text)
+    message = f"the stored settings would not accept: {', '.join(names)}"
+    if reasons:
+        message = f"{message} - {'; '.join(reasons)}"
+    return message
+
+
 @register_action(
     "config_set",
     permission="write",
@@ -509,10 +526,7 @@ async def _write_config_edits(
             type(pipe.valves), current, edits
         )
     except ValidationError as exc:
-        names = sorted({str(err["loc"][0]) for err in exc.errors() if err.get("loc")})
-        raise _ClientInput(
-            f"the stored settings would not accept: {', '.join(names)}"
-        ) from exc
+        raise _ClientInput(_save_refusal_message(exc)) from exc
     result = await Functions.update_function_valves_by_id(getattr(pipe, "id", ""), to_save)
     if result is None:
         raise _ClientMessage("the database refused the write, so nothing was saved")

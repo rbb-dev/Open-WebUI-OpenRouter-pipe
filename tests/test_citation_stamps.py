@@ -96,7 +96,13 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # `Users.get_user_by_id`, on the same refusal path only, because the role is not in scope
 # at either call site -- `streaming_core.py` is handed a bare `user_id: str` and `pipe.py`
 # the job. Both raise into a caller that handles them, which is the lazy contract.
-_EXPECTED_OWUI_IMPORTS = (25, 95)
+# 95 -> 97: the usage write gate reads the persisted collect valve on the writer thread.
+# `UsageStore._stored_collect_flag` imports `Function` and `decrypt_valves` lazily, inside
+# the read, for the same reason the other lazy readers do: a module-scope `open_webui` import
+# would make the pipe fail to import on a host that cannot supply them, where the read is
+# only reached on a write. Both raise into a caller that catches them and denies, which is
+# the fail-closed contract the valve's own `False` default requires.
+_EXPECTED_OWUI_IMPORTS = (25, 97)
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),

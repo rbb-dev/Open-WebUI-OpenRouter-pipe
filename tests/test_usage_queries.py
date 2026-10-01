@@ -30,15 +30,26 @@ pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
 from open_webui_openrouter_pipe.plugins.pipe_dashboard import usage_queries as uq
 from open_webui_openrouter_pipe.plugins.pipe_dashboard.usage_store import USAGE_ROW_FIELDS, UsageStore
 from open_webui_openrouter_pipe.storage.persistence import ArtifactStore
+from tests.test_usage_store import _install_persisted_collect_row
 
 
 def _make_store_host() -> Any:
+    """This suite's own host, with the persisted collect valve carried as production does.
+
+    `UsageStore._persist_sync` gates every batch on the persisted
+    `PIPE_DASHBOARD_USAGE_COLLECT` row, read from the same engine it writes through --
+    which on a deployment is Open WebUI's, where the `function` table lives. A stub
+    engine without it is a shape no deployment has, and every aggregate below would be
+    computed over an empty table because the writer refused rather than because the
+    query is wrong.
+    """
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
     host = SimpleNamespace(
+        id="openrouter",
         _engine=engine,
         _session_factory=sessionmaker(bind=engine),
         logger=Mock(),
@@ -55,6 +66,7 @@ def _make_store_host() -> Any:
     # The guard delegates to these two, so a stub host must carry them bound to itself.
     host._create_table_best_effort = MethodType(ArtifactStore._create_table_best_effort, host)
     host._create_declared_indexes = MethodType(ArtifactStore._create_declared_indexes, host)
+    _install_persisted_collect_row(host, True)
     return host
 
 

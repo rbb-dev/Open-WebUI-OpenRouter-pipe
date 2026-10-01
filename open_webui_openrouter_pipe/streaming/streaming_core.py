@@ -4212,7 +4212,7 @@ class StreamingHandler:
             generation_status = _generation_status(
                 was_cancelled, error_occurred, fusion_no_usable_member
             )
-            if not handed_back_for_retry:
+            if not handed_back_for_retry and not fusion_inner_call:
                 try:
                     dispatch = asyncio.ensure_future(
                         self._pipe._dispatch_generation_complete(

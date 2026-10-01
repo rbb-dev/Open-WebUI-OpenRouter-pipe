@@ -225,7 +225,6 @@ async def run_fusion_member(
     identifier_metadata = {
         **inner_metadata,
         "chat_id": (invocation.metadata or {}).get("chat_id"),
-        _PIPE_METADATA_KEY: copy.deepcopy(pipe_meta),
     }
     inner_rid = f"fusion-inner-{uuid.uuid4().hex[:12]}"
     request_token = SessionLogger.request_id.set(inner_rid)

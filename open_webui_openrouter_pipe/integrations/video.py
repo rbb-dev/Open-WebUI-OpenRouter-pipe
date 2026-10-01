@@ -331,29 +331,44 @@ def _reference_family(label: str) -> str:
 
 _B64_WHITESPACE = " \n\r\t\v\f"
 
+_B64_DROP_WHITESPACE = str.maketrans("", "", _B64_WHITESPACE)
+
 _B64_ALPHABET = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 )
+
+_B64_SCAN_QUANTUM = 1024 * 1024
+
+
+def _b64_scan_chunk(core: str, at: int, stop: int) -> str:
+    return core[at : min(at + _B64_SCAN_QUANTUM, stop)]
 
 
 async def _decoded_length(b64: str) -> int:
     core = b64
     if any(char in core for char in _B64_WHITESPACE):
-        core = "".join(char for char in core if char not in _B64_WHITESPACE)
+        parts: list[str] = []
+        for at in range(0, len(core), _B64_SCAN_QUANTUM):
+            piece = _b64_scan_chunk(core, at, len(core))
+            if any(char in piece for char in _B64_WHITESPACE):
+                parts.append(await asyncio.to_thread(piece.translate, _B64_DROP_WHITESPACE))
+            else:
+                parts.append(piece)
+        core = "".join(parts)
     length = len(core)
     if length == 0:
         return 0
     if length % 4:
         raise binascii.Error("Invalid base64-encoded string: number of characters is not a multiple of 4")
     pad = core[-4:].count("=")
-    body = core[: length - pad]
-    if (
-        pad > 2
-        or length - pad < 0
-        or len(body) % 4 != (4 - pad) % 4
-        or not _B64_ALPHABET.issuperset(body)
-    ):
+    body_length = length - pad
+    if pad > 2 or body_length < 0 or body_length % 4 != (4 - pad) % 4:
         raise binascii.Error("Invalid base64-encoded string")
+    for at in range(0, body_length, _B64_SCAN_QUANTUM):
+        if not await asyncio.to_thread(
+            _B64_ALPHABET.issuperset, _b64_scan_chunk(core, at, body_length)
+        ):
+            raise binascii.Error("Invalid base64-encoded string")
     return (length // 4) * 3 - pad
 
 
@@ -800,12 +815,14 @@ class VideoGenerationAdapter:
             if resume_job_id:
                 user_slot_acquired, user_slot_lock = await self._try_acquire_user_slot(user_id, valves)
                 if not user_slot_acquired:
-                    content = self._build_failure_content(
+                    content = self._build_pending_content(
                         job_id=resume_job_id,
                         model_id=api_model_id,
-                        reason=(
+                        note=(
                             "Video generation limit reached for this user "
-                            f"({valves.MAX_CONCURRENT_VIDEO_GENS_PER_USER} active job(s))."
+                            f"({valves.MAX_CONCURRENT_VIDEO_GENS_PER_USER} active job(s)). The job is "
+                            "still running and is still billed."
+                            + (_VIDEO_CAN_BE_PICKED_BACK_UP if is_linkable_chat(chat_id) else "")
                         ),
                     )
                     await self._emit_status(event_emitter, "Video generation limit reached.", done=True)
@@ -859,6 +876,7 @@ class VideoGenerationAdapter:
                 getattr(responses_body, "provider", None), metadata
             )
             vetted_addresses: dict[str, bool | None] = {}
+            resolved_addresses: dict[str, bool | None] = {}
             await self._vet_passthrough_addresses_before_admission(
                 api_model_id=api_model_id,
                 prompt=prompt,
@@ -868,6 +886,7 @@ class VideoGenerationAdapter:
                 provider_options=provider_options,
                 valves=valves,
                 vetted=vetted_addresses,
+                resolved=resolved_addresses,
             )
 
             if self._intent_classifier_should_run(
@@ -1110,6 +1129,7 @@ class VideoGenerationAdapter:
                 video_reference_allowed_domains=getattr(
                     valves, "VIDEO_REFERENCE_ALLOWED_DOMAINS", ""
                 ),
+                resolved=resolved_addresses,
             )
 
             disclosure_block = self._with_the_withheld_record(disclosure_block, withheld)
@@ -1943,7 +1963,11 @@ class VideoGenerationAdapter:
         if not user_slot_acquired:
             return False, user_slot_lock, None, False
         global_semaphore = self._ensure_global_semaphore(valves)
-        await global_semaphore.acquire()
+        try:
+            await global_semaphore.acquire()
+        except BaseException:
+            await asyncio.shield(self._release_user_slot(user_id))
+            raise
         return True, user_slot_lock, global_semaphore, True
 
     async def _refuse_for_user_limit(
@@ -1972,6 +1996,7 @@ class VideoGenerationAdapter:
         provider_options: dict[str, Any],
         valves: Any,
         vetted: dict[str, bool | None],
+        resolved: dict[str, bool | None] | None = None,
     ) -> None:
         skeleton = self._build_passthrough_payload(
             api_model_id=api_model_id,
@@ -1989,6 +2014,7 @@ class VideoGenerationAdapter:
                 video_reference_allowed_domains=getattr(
                     valves, "VIDEO_REFERENCE_ALLOWED_DOMAINS", ""
                 ),
+                resolved=resolved,
             )
         except (VideoGenerationError, UnvettableRequest):
             self.logger.debug(
@@ -2148,6 +2174,7 @@ class VideoGenerationAdapter:
         withheld: list[tuple[str, str]] | None = None,
         vetted: dict[str, bool | None] | None = None,
         video_reference_allowed_domains: str | None = None,
+        resolved: dict[str, bool | None] | None = None,
     ) -> dict[str, Any]:
         payload = self._build_passthrough_payload(
             api_model_id=api_model_id,
@@ -2177,6 +2204,7 @@ class VideoGenerationAdapter:
             payload, withheld, vetted=vetted,
             relayed=relayed,
             video_reference_allowed_domains=video_reference_allowed_domains,
+            resolved=resolved,
         )
         return payload
 
@@ -2219,10 +2247,14 @@ class VideoGenerationAdapter:
         deadline: float | None = None,
         video_reference_allowed_domains: str | None = None,
         relayed: frozenset[str] | None = None,
+        resolved: dict[str, bool | None] | None = None,
     ) -> None:
         root = seen is None
         if seen is None:
-            seen = dict(vetted) if isinstance(vetted, dict) else {}
+            seen = {
+                **(vetted if isinstance(vetted, dict) else {}),
+                **{url: ok for url, ok in (resolved or {}).items() if ok is not None},
+            }
         entries, usable, unusable = _host_entries(video_reference_allowed_domains)
         for entry in sorted(unusable):
             self._warn_inert_scope_entry(entry, bool(usable))
@@ -2246,6 +2278,7 @@ class VideoGenerationAdapter:
                         video_reference_allowed_domains=video_reference_allowed_domains,
                         vetted=vetted,
                         relayed=relayed,
+                        resolved=resolved,
                     )
         url_fields = ("audio", "last_image", "video")
         array_fields = ("videos", "images")
@@ -2270,6 +2303,8 @@ class VideoGenerationAdapter:
                     url, seconds=min(ADDRESS_CHECK_SECONDS, deadline - time.monotonic()),
                 )
                 seen[url] = safe
+                if resolved is not None:
+                    resolved[url] = safe
             refusal = _address_verdict(safe, field=field_name)
             if refusal is not None:
                 raise VideoGenerationError(refusal)

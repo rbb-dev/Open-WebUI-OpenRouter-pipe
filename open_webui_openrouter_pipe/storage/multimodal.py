@@ -1839,6 +1839,7 @@ class MultimodalHandler:
         elif not url.startswith(("http://", "https://")):
             url = f"{_OPENROUTER_SITE_URL}/{url.lstrip('/')}"
 
+        icon_subject = loggable_link(url)
         _sweep_token = _icon_sweep_address_check.set(True)
         try:
             async with self._vetted_get(
@@ -1850,20 +1851,30 @@ class MultimodalHandler:
                     self.logger.debug(
                         "Skipping model icon over %d bytes (url=%s)",
                         _MAX_MODEL_PROFILE_IMAGE_BYTES,
-                        url,
+                        icon_subject,
                     )
                     return None
                 data = capped
                 content_type = resp.headers.get("Content-Type")
-        except UnfetchableAddress as exc:
-            self.logger.debug("Refusing model icon address: %s", exc)
+        except UnfetchableAddress:
+            self.logger.debug(
+                "Refusing model icon address (url=%s): UnfetchableAddress", icon_subject
+            )
             return None
         except aiohttp.ClientResponseError as exc:
-            self.logger.debug("Failed to download model icon (url=%s): %s", url, exc)
+            self.logger.debug(
+                "Failed to download model icon (url=%s): status=%s message=%s",
+                icon_subject,
+                exc.status,
+                exc.message,
+            )
             return None
         except Exception as exc:
             self.logger.debug(
-                "Failed to download model icon (url=%s): %s", url, exc, exc_info=True
+                "Failed to download model icon (url=%s): %s",
+                icon_subject,
+                exc,
+                exc_info=True,
             )
             return None
         finally:
@@ -1903,17 +1914,18 @@ class MultimodalHandler:
                 loggable_link(url),
             )
             return None
-        return await self._icon_bytes_to_data_url(data, None, loggable_link(url))
+        return await self._icon_bytes_to_data_url(data, None, url)
 
     async def _icon_bytes_to_data_url(
         self, data: bytes, content_type: str | None, url: str
     ) -> str | None:
+        icon_subject = loggable_link(url)
         mime = _guess_image_mime_type(url, content_type, data)
         if not mime:
             self.logger.debug(
                 "Skipping model icon with unsupported content-type (%s, url=%s)",
                 content_type,
-                url,
+                icon_subject,
             )
             return None
         if mime == "image/svg+xml":
@@ -1940,7 +1952,10 @@ class MultimodalHandler:
                 )
             except Exception as exc:
                 self.logger.debug(
-                    "Failed to rasterize SVG model icon (url=%s): %s", url, exc, exc_info=True
+                    "Failed to rasterize SVG model icon (url=%s): %s",
+                    icon_subject,
+                    exc,
+                    exc_info=True,
                 )
                 return None
 
@@ -1948,7 +1963,7 @@ class MultimodalHandler:
                 self.logger.debug(
                     "Unexpected SVG raster output type '%s' (url=%s)",
                     type(png_bytes).__name__,
-                    url,
+                    icon_subject,
                 )
                 return None
             if isinstance(png_bytes, bytearray):
@@ -1958,7 +1973,7 @@ class MultimodalHandler:
                 self.logger.debug(
                     "Skipping oversized rasterized SVG model icon (%d bytes, url=%s)",
                     len(png_bytes),
-                    url,
+                    icon_subject,
                 )
                 return None
 
@@ -1983,12 +1998,15 @@ class MultimodalHandler:
                 "(%d bytes, url=%s)",
                 _MAX_MODEL_PROFILE_IMAGE_PIXELS,
                 len(data),
-                url,
+                icon_subject,
             )
             return None
         except Exception as exc:
             self.logger.debug(
-                "Failed to convert model icon to PNG (url=%s): %s", url, exc, exc_info=True
+                "Failed to convert model icon to PNG (url=%s): %s",
+                icon_subject,
+                exc,
+                exc_info=True,
             )
             return None
 
@@ -1996,7 +2014,7 @@ class MultimodalHandler:
             self.logger.debug(
                 "Unexpected PNG conversion output type '%s' (url=%s)",
                 type(png_bytes).__name__,
-                url,
+                icon_subject,
             )
             return None
         if isinstance(png_bytes, bytearray):
@@ -2006,7 +2024,7 @@ class MultimodalHandler:
             self.logger.debug(
                 "Skipping oversized converted model icon (%d bytes, url=%s)",
                 len(png_bytes),
-                url,
+                icon_subject,
             )
             return None
 

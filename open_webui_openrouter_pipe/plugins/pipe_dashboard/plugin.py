@@ -145,7 +145,10 @@ class PipeDashboardPlugin(PluginBase):
                 "to a dedicated dashboard_ table so the dashboard's Usage tab can show usage over time. "
                 "Off by default; records are purged after the configured retention. "
                 "A request that never reaches a terminal state is recorded as `failed` after two hours "
-                "of silence, and that happens on a timer rather than when someone is looking."
+                "of silence, and that happens on a timer rather than when someone is looking. "
+                "Turning it off stops records written by the background abandon sweep as well as by the "
+                "request path, on every worker including ones that have served no request, with no "
+                "restart; a request already in flight when you switch it off still records its own usage."
             ),
         )),
         "PIPE_DASHBOARD_USAGE_RETENTION_DAYS": (int, Field(
@@ -591,10 +594,7 @@ class PipeDashboardPlugin(PluginBase):
         return row if read_ok else None
 
     def _persist_usage_row(self, entry: dict[str, Any]) -> None:
-        """Finalize callback: enqueue a DB row when collection is enabled (live valve read)."""
         try:
-            if not self._usage_collect_on():
-                return
             get_pipe = getattr(self, "_get_pipe", None)
             pipe = get_pipe() if get_pipe else None
             store = getattr(pipe, "_artifact_store", None) if pipe else None

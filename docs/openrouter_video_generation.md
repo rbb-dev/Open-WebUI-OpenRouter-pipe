@@ -1411,8 +1411,11 @@ Constraints (admin-tunable):
   size cap. An **attached** image over it fails before submission, and the
   error names the offending frame and the cap that fired, so a failure is
   actionable without the operator having to know which storage-layer limit
-  applied. A frame the pipe itself extracted from a prior video is measured on
-  its stored bytes — after the conversion to an allowed format, which is what
+  applied. A frame the pipe itself extracted from a prior video is bounded to
+  1920 on its long edge before it is encoded, so at this default such a frame
+  never meets the cap and raising the valve does not rescue a tall prior video
+  — what was dropped there was the geometry, not the size. It is still measured
+  on its stored bytes — after the conversion to an allowed format, which is what
   is sent — and is dropped with a note in the chat before it is written, so
   the video still renders.
 - **`VIDEO_FRAME_TOTAL_MAX_BYTES`** (default 50 MB): combined cap across
@@ -1422,10 +1425,16 @@ Constraints (admin-tunable):
   submission. A frame the pipe itself extracted from a prior video in
   the chat is re-encoded to the first listed type it can write — JPEG,
   then WebP, then PNG — before it is stored, so a list without
-  `image/png` no longer rejects the pipe's own frame. A list naming
-  none of those three is the one case with nothing to convert into:
-  the pipe then writes no type at all, leaves that one frame out with a
-  note in the chat, and the video still renders.
+  `image/png` no longer rejects the pipe's own frame. A non-empty list
+  naming none of `image/jpeg`, `image/png` and `image/webp` cannot be
+  saved: there would be no type left for that conversion, so the save is
+  refused with a message naming the three. An empty value is accepted and
+  permits no type at all, and so does a value already stored that names
+  none of the three — it is left empty on load, which refuses every frame
+  rather than turning frames back on, and the log names the valve and
+  the value it replaced. Either way there is no type to write a
+  pipe-extracted frame in: that one frame is left out with a note in the
+  chat and the video still renders.
 
 These three are strict for **frames**, because the clip was meant to be
 anchored on them: one that breaks a limit fails the whole request. The
@@ -1624,7 +1633,10 @@ JSON document as well as inside a bare link; a refusal names the path the
 address was found at, for example `provider.options.runway.keyframes[0].image`.
 Nothing is rewritten on the way out, so a value that passes the check is
 forwarded exactly as it was written, and a provider option too large or too
-deeply nested for the check to certify is refused rather than sent.
+deeply nested for the check to certify is refused rather than sent. The check
+runs twice per turn — once before the request takes a slot, once while the
+payload is built — and the two passes share one per-request record, so each
+distinct address is resolved once per turn rather than once per pass.
 
 OpenRouter's video request schema defines exactly one provider property,
 `options`. Chat-routing and privacy fields — `only`, `order`, `sort`,
@@ -2044,7 +2056,8 @@ Every time `pipe()` is invoked for a video chat:
    returned, on a line of its own, and free text interpolated into a rendered
    block beside it is whitespace-flattened onto a single line, so no line of
    the message body can be one.
-2. If a marker is found AND a final `<video>` block also exists, the
+2. If a marker is found AND a final ending also exists — a `<video>`
+   block, or a `### Video generation failed` heading — the
    adapter returns the cached content (no re-poll, no double-submit).
 3. If a marker exists but no `<video>` block, the adapter resumes
    polling that job_id — skipping submission.
@@ -2089,6 +2102,18 @@ A job that goes silent past `VIDEO_MAX_POLL_TIME_SECONDS` is *not* a
 failure: the adapter persists pending content carrying the same marker,
 so Continue Response on that message resumes the identical job.
 
+A turn refused at the per-user cap on the resume path is likewise
+persisted as a pending card, not a failure card. The job it found is
+still running at OpenRouter and is still billed; the refusal only means
+this turn could not take the slot it needed to go and collect it. The
+card names the cap, keeps the marker, and is stored where the waiting
+card was, so a later Continue Response — press Continue again, not
+Regenerate — picks the *same* job back up once one of the user's other
+jobs finishes. Writing a terminal card there instead would make the
+refusal permanent: every later Continue on that message would short
+circuit on it and return it verbatim, and the job would stay billed at
+OpenRouter with no way to reach it.
+
 `Pipe.close()` cancels in-process video lifecycle tasks during pipe
 restart or OWUI shutdown. OpenRouter does not expose a cancel endpoint
 for these jobs — persisted markers are the recovery mechanism on the
@@ -2114,9 +2139,16 @@ Two valves cap simultaneous generations:
 - **`MAX_CONCURRENT_VIDEO_GENS_PER_USER`** (default 2): per-user cap.
   Implemented as a counter + per-user lock. The check runs before any
   frame is extracted or any reference relayed, so a turn over the cap
-  costs no media work. Exceeding the cap returns an immediate visible
-  error in chat — the user must wait for one of their existing jobs to
-  complete.
+  costs no media work. The two arms of the check read differently,
+  because they leave different things behind. A **new** generation over
+  the cap returns an immediate visible error in chat, naming the cap,
+  and leaves nothing running — the user must wait for one of their
+  existing jobs to complete. A **resumed** generation over the cap also
+  returns a visible card immediately, but the job it found in the
+  message keeps running and keeps its bill, and the card is written as
+  a pending card: the same marker, the cap named, and a note that the
+  job is still running. Continue Response on that message again — not
+  Regenerate — resumes the identical job once a slot frees.
 
 If two requests target the same `(chat_id, message_id)` (e.g. a user
 hits send twice on the same message slot), the active-task registry
@@ -2165,9 +2197,9 @@ Functions → OpenRouter pipe → Valves; the per-model filter ones live on each
 | `VIDEO_DOWNLOAD_CHUNK_SIZE` | `1048576` | 65536–8388608 | Chunk size in bytes for streaming download. |
 | `MAX_CONCURRENT_VIDEO_GENS` | `2` | 1–100 | Global concurrency cap per pipe process. Applies on the next generation, with no restart; a lower value binds from that moment and jobs already running finish first. |
 | `MAX_CONCURRENT_VIDEO_GENS_PER_USER` | `2` | 1–25 | Per-user concurrency cap. |
-| `VIDEO_FRAME_IMAGE_MAX_BYTES` | `12_582_912` (12 MB) | 65536–67108864 | Per-image decoded size cap. A pipe-extracted frame is measured on the re-encoded artefact that is stored and dropped with a note before it is written; an attached frame over the cap still fails the request. |
+| `VIDEO_FRAME_IMAGE_MAX_BYTES` | `12_582_912` (12 MB) | 65536–67108864 | Per-image decoded size cap. A frame the pipe extracts from a prior video is bounded to 1920 on its long edge before it is encoded, so at this default it never meets the cap; it is still measured on the re-encoded artefact that is stored and dropped with a note before it is written. An attached frame over the cap still fails the request. |
 | `VIDEO_FRAME_TOTAL_MAX_BYTES` | `52_428_800` (50 MB) | 65536–134217728 | Combined frame-bytes cap across one request. |
-| `VIDEO_FRAME_IMAGE_MIME_ALLOWLIST` | `image/jpeg,image/png,image/webp` | comma-list | Allowed MIMEs for frame images. A frame extracted by the pipe from a prior video is re-encoded to the first listed type it can write (JPEG, then WebP, then PNG) before it is stored; a list naming none of those three leaves the pipe's own frame out with a note, and the video still renders. |
+| `VIDEO_FRAME_IMAGE_MIME_ALLOWLIST` | `image/jpeg,image/png,image/webp` | comma-list | Allowed MIMEs for frame images. A frame extracted by the pipe from a prior video is re-encoded to the first listed type it can write (JPEG, then WebP, then PNG) before it is stored. A non-empty list naming none of `image/jpeg`, `image/png` and `image/webp` is refused at save time; empty is accepted and permits no type, and so is a stored value that names none of the three, which is left empty on load. In either case the pipe's own frame is left out with a note, and the video still renders. |
 | `VIDEO_OUTPUT_MIME_ALLOWLIST` | `video/mp4,video/webm` | comma-list | Allowed MIMEs for downloaded video (header first; bytes consulted only when the header is unlisted). |
 | `VIDEO_REFERENCE_ALLOWED_DOMAINS` | `""` | comma-list | Hosts a per-user reference URL may name before this pipe forwards it. Applies to the filter's own reference fields, **and** to any key under the free-text `provider.options` box and to the JSON controls (`VIDEO_KEYFRAMES`, `VIDEO_BACKGROUND`, `VIDEO_CAPTION`, `VIDEO_VOICE_SETTINGS`, `VIDEO_CONTENT_MODERATION`), on the same check over every address in the built request. Exact-or-parent host match, case-insensitive; a bare host matches on any port, a `host:port` entry names that host on that port only, and a URL with no port is read as the port its own scheme implies; empty means unrestricted, which is the default. Additional to the `https://`/SSRF address check, which still runs either way; takes no `!` block entries and no CIDR ranges, and (unlike `ALLOW_INSECURE_HTTP_HOSTS`) a listed parent covers its subdomains. A link the media relay published for this request is recorded as the pipe's own and goes out whatever this holds; a host address a user typed is not recorded and is not exempt. |
 | `VIDEO_AIGC_WATERMARK` | `str` | `""` | passthrough `aigc_watermark` | `"aigc_watermark"` allowed | H3, H3 Max |
