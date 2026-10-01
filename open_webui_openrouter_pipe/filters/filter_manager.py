@@ -1445,7 +1445,7 @@ class FilterManager:
         template += '        user_valves = None\n'
         template += '        if isinstance(__user__, dict):\n'
         template += '            user_valves = __user__.get("valves")\n'
-        template += '        if not isinstance(user_valves, BaseModel):\n'
+        template += '        if not isinstance(user_valves, self.UserValves):\n'
         template += '            user_valves = self.UserValves()\n'
         template += '\n'
         template += '        prev_st = (__metadata__.get("__PIPE_META_KEY__") or {}).get("server_tools") if isinstance(__metadata__, dict) else None\n'
@@ -2857,7 +2857,7 @@ __KEEP_WHAT_STILL_FITS__
         user_valves = None
         if isinstance(__user__, dict):
             user_valves = __user__.get("valves")
-        if not isinstance(user_valves, BaseModel):
+        if not isinstance(user_valves, self.UserValves):
             user_valves = self.UserValves()
 
         enable_files = bool(getattr(user_valves, "DIRECT_FILES", False))
@@ -3250,6 +3250,8 @@ __KEEP_WHAT_STILL_FITS__
             logic += '''
         # OWUI injects user valves into __user__["valves"], not self.user_valves
         user_valves = __user__.get("valves") if __user__ else None
+        if not isinstance(user_valves, self.UserValves):
+            user_valves = None
         if user_valves is not None:
             user_set = user_valves.model_fields_set
 '''

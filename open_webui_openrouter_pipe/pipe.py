@@ -191,8 +191,12 @@ from .models.registry import (
 # Import request handling
 from .requests import NonStreamingAdapter, TaskModelAdapter
 from .requests.orchestrator import _is_api_caller
-from .storage.multimodal import MultimodalHandler
-from .storage.owui_files import OwuiFileGateway, is_channel_chat
+from .storage.multimodal import REQUEST_VALIDATED_IPS, MultimodalHandler
+from .storage.owui_files import (
+    FILE_READ_AUTH_MEMO,
+    OwuiFileGateway,
+    is_channel_chat,
+)
 from .storage.persistence import ArtifactStore
 from .streaming.event_emitter import EventEmitter, EventEmitterHandler
 from .streaming.streaming_core import StreamingHandler, _wrap_event_emitter
@@ -3314,6 +3318,8 @@ class Pipe:
                 tokens.append((CONTINUED_REPLY, CONTINUED_REPLY.set(job.continued_reply)))
                 tokens.append((OWUI_REQUEST, OWUI_REQUEST.set(job.request)))
                 tokens.append((OWUI_CHAT_ID, OWUI_CHAT_ID.set(str(job.metadata.get("chat_id") or ""))))
+                tokens.append((FILE_READ_AUTH_MEMO, FILE_READ_AUTH_MEMO.set({})))
+                tokens.append((REQUEST_VALIDATED_IPS, REQUEST_VALIDATED_IPS.set({})))
                 tool_queue: asyncio.Queue[list[_QueuedToolCall] | None] = asyncio.Queue(maxsize=50)
                 per_request_tool_sem = asyncio.Semaphore(job.valves.MAX_PARALLEL_TOOLS_PER_REQUEST)
                 per_tool_timeout = job.valves.TOOL_TIMEOUT_SECONDS

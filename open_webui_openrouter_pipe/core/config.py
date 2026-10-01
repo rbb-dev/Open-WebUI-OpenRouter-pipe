@@ -26,6 +26,7 @@ from pydantic import (
     ConfigDict,
     Field,
     GetCoreSchemaHandler,
+    TypeAdapter,
     ValidationError,
     model_validator,
 )
@@ -74,6 +75,8 @@ logger = logging.getLogger(__name__)
 _warned_forward_headers: set[str] = set()
 _warned_bzip2_compresslevel: set[str] = set()
 
+_BZIP2_COMPRESSLEVEL_ADAPTER: TypeAdapter[int | None] = TypeAdapter(int | None)
+
 
 def _warn_bzip2_level_floored() -> None:
     logger.log(
@@ -115,8 +118,9 @@ _CHANNEL_CARD_RULE = (
     "detail, sanitized_detail, reason, openrouter_message, upstream_message, moderation_reasons, "
     "flagged_excerpt, raw_body, metadata_json, provider_raw_json and body_excerpt are withheld, and the card "
     "is rendered "
-    "as though each were empty. Wrap a line that uses one in {{#if name}} and it is left out; otherwise the "
-    "name is left in the text verbatim, exactly as for a value the pipe never supplies. error_id, the model, "
+    "as though each were empty. Wrap a line that uses one in {{#if name}} and it is left out; otherwise the whole "
+    "line is omitted, exactly as any other line whose value came out empty; a name the pipe never "
+    "supplies at all is the one left in the text verbatim. error_id, the model, "
     "the provider, openrouter_code and status_code still render on a channel, and error_id is the handle to "
     "quote when following up there."
 )
@@ -179,8 +183,10 @@ _EMPTY_TOOL_SCHEMA: dict[str, Any] = {"type": "object", "properties": {}}
 _REMOTE_FILE_MAX_SIZE_DEFAULT_MB = 50
 _REMOTE_FILE_MAX_SIZE_MAX_MB = 500
 _INTERNAL_FILE_ID_PATTERN = re.compile(r"/files/([A-Za-z0-9-]+)(?:[/?#]|$)")
+_RUN = r"(?:[^ \t()\n]++|\n(?![\"'(]))"
 _MARKDOWN_IMAGE_RE = re.compile(
-    r"!\[[^\]]*+\]\(\s*(?:<(?P<angled>[^<>\n]*)>|(?P<bare>(?:(?!\n[\"'(])[^ \t()])*(?:\((?:(?!\n[\"'(])[^ \t()])*\)(?:(?!\n[\"'(])[^ \t()])*)*))"
+    r"!\[[^\]]*+\]\(\s*(?:<(?P<angled>[^<>\n]*)>|"
+    r"(?P<bare>" + _RUN + r"*(?:\(" + _RUN + r"*\)" + _RUN + r"*)*))"
     r"(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^()]*\)))?\s*\)"
 )
 
@@ -1006,8 +1012,13 @@ class Valves(BaseModel):
             return values
         if values.get("SESSION_LOG_ZIP_COMPRESSION") != "bzip2":
             return values
-        level = values.get("SESSION_LOG_ZIP_COMPRESSLEVEL")
-        if level != 0 or isinstance(level, bool):
+        try:
+            coerced = _BZIP2_COMPRESSLEVEL_ADAPTER.validate_python(
+                values.get("SESSION_LOG_ZIP_COMPRESSLEVEL")
+            )
+        except ValidationError:
+            return values
+        if coerced != 0:
             return values
         _warn_bzip2_level_floored()
         return dict(values, SESSION_LOG_ZIP_COMPRESSLEVEL=1)
@@ -1492,7 +1503,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "it keeps the depth this setting chose and draws no status line. "
             "A request that carries its own reasoning.max_tokens overrides this default, except while this setting "
             "is 'none': there a per-chat thinking budget is ignored, because 'none' switches reasoning off on every "
-            "path. Use 'xhigh' when maximum depth is desired (only on supporting models)."
+            "path. A request that carries its own verbosity keeps it on both endpoints, whichever of the two "
+            "spellings it used, and this setting never overrides it. Use 'xhigh' when maximum depth is desired "
+            "(only on supporting models)."
         ),
     )
     REASONING_SUMMARY_MODE: Literal["auto", "concise", "detailed", "disabled"] = Field(
@@ -1520,7 +1533,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     PERSIST_REASONING_TOKENS: Literal["disabled", "next_reply", "conversation"] = Field(
         default="conversation",
         title="Reasoning retention",
-        description="Reasoning retention: 'disabled' keeps nothing, and covers the reasoning already stored as well as the new - the first turn after the switch stops replaying the rows an earlier one stored and deletes them - and it also covers the reasoning_details a client sends back on an earlier message, which is not put on the wire again. 'next_reply' keeps thoughts only until the following assistant reply finishes, when that reply happens in this chat; rows whose answering request never arrives are dropped by the periodic cleanup, and 'conversation' keeps them for the full chat history. The copy of the reasoning written onto the Open WebUI assistant message follows the same setting, and at 'next_reply' that copy is not removed when the following reply finishes; only the rows are. Reasoning is kept when the provider sends it as a replayable output item; reasoning that arrives only as streamed deltas is shown in the thinking box but not replayed on later turns. A temporary chat stores no reasoning; in Open-WebUI tool mode the thinking of a streamed reply is held in memory for that reply only, and dropped when the pipe answers its last call back, or when the provider refuses a call-back the pipe was waiting for, or when the reply is stopped, or after 15 minutes unused. A user setting the pipe cannot read (an undecodable stored row, after a rotation of `WEBUI_SECRET_KEY`, or the deprecated `WEBUI_JWT_SECRET_KEY` it falls back to (a default, so an empty primary is not a fallback)) falls back to that field's own per-user default, whichever side of this site-wide value that default sits on, and never to the value set here. A call that carries no chat_id has its reasoning and tool records held in memory for the length of that request only and never written to the database (see API_CALL_ARTIFACT_MEMORY), so an API call's records last for the request, not the conversation.",
+        description="Reasoning retention: 'disabled' keeps nothing, and covers the reasoning already stored as well as the new - the first turn after the switch stops replaying the rows an earlier one stored and deletes them, it does not put them on the wire again, and it does not save each reply's reasoning_details onto the stored chat message - and the round's own tool markers still go out, so a tool round is sent without the thinking block that preceded it. 'next_reply' keeps thoughts only until the following assistant reply finishes, when that reply happens in this chat; rows whose answering request never arrives are dropped by the periodic cleanup, and 'conversation' keeps them for the full chat history. The copy of the reasoning written onto the Open WebUI assistant message follows the same setting, and at 'next_reply' that copy is not removed when the following reply finishes; only the rows are. Reasoning is kept when the provider sends it as a replayable output item; reasoning that arrives only as streamed deltas is shown in the thinking box but not replayed on later turns. A temporary chat stores no reasoning; in Open-WebUI tool mode the thinking of a streamed reply is held in memory for that reply only, and dropped when the pipe answers its last call back, or when the provider refuses a call-back the pipe was waiting for, or when the reply is stopped, or after 15 minutes unused. A user setting the pipe cannot read (an undecodable stored row, after a rotation of `WEBUI_SECRET_KEY`, or the deprecated `WEBUI_JWT_SECRET_KEY` it falls back to (a default, so an empty primary is not a fallback)) falls back to that field's own per-user default, whichever side of this site-wide value that default sits on, and never to the value set here. A call that carries no chat_id has its reasoning and tool records held in memory for the length of that request only and never written to the database (see API_CALL_ARTIFACT_MEMORY), so an API call's records last for the request, not the conversation.",
     )
     TASK_MODEL_REASONING_EFFORT: Literal["none", "minimal", "low", "medium", "high", "xhigh"] = Field(
         default="low",
@@ -1683,6 +1696,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "Persistence needs a user_id and a request_id; with it on, a call that carries no usable chat_id or message_id is archived under "
             "`api/api-<request_id>.zip` (see SESSION_LOG_ARCHIVE_API_CALLS), and every temporary chat is still dropped; that drop is logged as a warning on each of the two archive paths (segment persist, bundle assembly) and again after a five-minute cooldown, once per person on the one path that runs and once per worker process on bundle assembly, which is called without a user. Only the segment-persist path runs for a request today, so that is the one that warns. "
             "A Fusion panel member is the other shape that carries no message id: it has none of its own, but `run_fusion_member` restores the outer turn's chat_id onto it, so its traffic takes the request surrogate and is written as `api/api-<request_id>.zip` while Archive API calls is on, and skipped when it is off - one file per inner call, so an N-model panel turn writes N+2 of them (the members, the judge and the synthesis), or N+3 with the judge's second pass, on top of the turn's own archives. "
+            "A turn whose chat id names a saved chat the caller does not own is not staged either, and is refused by the same rule Open WebUI applies to a chat message (admins excepted); the assembler separately refuses any bundle whose staged segments do not all name the same user, keeping every segment for retry and writing no archive under either name. "
             "Turning this off also stops the retention sweep, leaving every archive already on disk untouched until it is re-enabled and the retention window passes. "
             "A write already inside an assembly pass is read again at the write itself, so one that is already under way when this is switched off publishes nothing and its staged segments stay in the database for a later pass."
         ),
@@ -1711,6 +1725,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "Base directory for encrypted session log archives. "
             "Files are stored under <SESSION_LOG_DIR>/<user_id>/<chat_id>/<message_id>.zip, "
             "with a housekeeping task's own archive beside the answer's as <message_id>.<task>.zip. "
+            "<user_id> is the user every event in that file belongs to: a turn whose chat id names a "
+            "saved chat the caller does not own is not staged, and a bundle whose staged segments disagree "
+            "about the user is never written under either name. "
             "Surrounding whitespace is ignored, and a value that is blank once trimmed counts as unset. "
             "A path component holding a character outside [0-9A-Za-z._-], or long enough to be cut, keeps its sanitized stem "
             "and gains a short digest of the exact id, so two ids that would otherwise land on the same name cannot; the exact ids stay in "
@@ -1945,7 +1962,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         description=(
             "Markdown template used when OpenRouter rejects a request with a status that has no template of its own (400, 403, 404, 422, and so on), and when a failure reported inside a started reply resolves to such a status, from the kind OpenRouter named or, when that kind is unknown, from the code it sent. Clear this box and save to restore this built-in text. Placeholders such as {heading}, {detail}, {sanitized_detail}, {provider}, {model_identifier}, {requested_model}, {api_model_id}, {normalized_model_id}, {openrouter_code}, {upstream_type}, {reason}, {request_id}, {request_id_reference}, {openrouter_message}, {upstream_message}, {moderation_reasons}, {flagged_excerpt}, {raw_body}, {context_limit_tokens}, {max_output_tokens}, {include_model_limits}, {metadata_json}, {provider_raw_json}, {error_id}, {timestamp}, {session_id}, {user_id}, {native_finish_reason}, {error_chunk_id}, {error_chunk_created}, {is_streaming_error}, {streaming_provider}, {streaming_model}, {retry_after_seconds}, {rate_limit_type}, {required_cost}, and {account_balance} are replaced when values are available. Lines whose **own** placeholder resolves to a missing or empty value are omitted automatically; a value that itself contains a placeholder in braces is shown verbatim, never re-read as a placeholder. A template whose rendered card comes out empty -- every line inside a `{{#if}}` whose value is absent, which is what happens when a card is written entirely out of the values a channel chat withholds -- falls back to the built-in provider-error card rather than emitting nothing, so a reader always gets a card and a support handle to quote. `{streaming_provider}` and `{streaming_model}` are filled only for a failure reported inside a reply that has already started, on a rejected request they are empty however the provider is named, and they are also empty when such a failure names no provider at all. "
             + _BOOLEAN_PLACEHOLDER_RULE
-            + " The pipe does the span and fence work on these values itself: a value placed inside a backtick span, on a `### ` heading, or on a bare `**…**` / `- ` line arrives as one logical line with its backticks removed, and a value placed in a fenced block arrives inside a fence long enough to contain it, so a custom template does not have to. A fence written inside a blockquote keeps that quote on every line the renderer emits from it, and a `>` alone on that line is not a label. The pipe's own numbers and labels (`status_code`, `retry_after_seconds`, `context_limit_tokens`, `max_output_tokens`, `diagnostics`) are already single-line. Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to show them only when that value is set. {metadata_json} and {provider_raw_json} are the provider's metadata and its raw error block, including any field the pipe itself adds; so are the five copies of the provider's own message the card carries inline -- {detail}, {sanitized_detail}, {reason}, {upstream_message} and {openrouter_message} -- and the joined {moderation_reasons} list. All seven are cut at 16,384 characters, each with a marker naming how many characters were removed, so a value that arrives cut is no longer the whole one. The two marker shapes differ: a fenced JSON value carries its marker on a line of its own inside the fence, while a cut inline value carries it inside the value, space-joined onto the card's line, because an inline value is always one logical line. {raw_body} and {flagged_excerpt} are never cut: they are the provider's own bytes and reach the card whole on purpose, so that what a person reads is what the provider sent. The complete values stay on the error object and in the session log, which is where an operator who needs the whole payload reads it."
+            + " The pipe does the span and fence work on these values itself: a value placed inside a backtick span, on a `### ` heading, or on a bare `**…**` / `- ` line arrives as one logical line with its backticks removed, and a value placed in a fenced block arrives inside a fence long enough to contain it, so a custom template does not have to. A fence written inside a blockquote keeps that quote on every line the renderer emits from it, and a `>` alone on that line is not a label. The pipe's own numbers and labels (`status_code`, `retry_after_seconds`, `context_limit_tokens`, `max_output_tokens`, `diagnostics`) are already single-line. A fence written inside a blockquote keeps that quote on every line the renderer emits from it, and a `>` alone on that line is not a label. {error_chunk_created} is rendered as a Z-suffixed UTC ISO-8601 instant when the provider sends a Unix epoch, and as the provider's own text otherwise. Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to show them only when that value is set. {metadata_json} and {provider_raw_json} are the provider's metadata and its raw error block, including any field the pipe itself adds; so are the five copies of the provider's own message the card carries inline -- {detail}, {sanitized_detail}, {reason}, {upstream_message} and {openrouter_message} -- and the joined {moderation_reasons} list. All seven are cut at 16,384 characters, each with a marker naming how many characters were removed, so a value that arrives cut is no longer the whole one. The two marker shapes differ: a fenced JSON value carries its marker on a line of its own inside the fence, while a cut inline value carries it inside the value, space-joined onto the card's line, because an inline value is always one logical line. {raw_body} and {flagged_excerpt} are never cut: they are the provider's own bytes and reach the card whole on purpose, so that what a person reads is what the provider sent. The complete values stay on the error object and in the session log, which is where an operator who needs the whole payload reads it."
             + _CHANNEL_CARD_RULE
         ),
     )
@@ -2753,7 +2770,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     )
     VIDEO_FRAME_IMAGE_MIME_ALLOWLIST: str = Field(
         default="image/jpeg,image/png,image/webp",
-        description="Comma-separated MIME allowlist for video generation frame images. Frames the pipe itself extracts from a prior video are re-encoded to a type on this list before upload, so dropping image/png no longer breaks frame reuse.",
+        description="Comma-separated MIME allowlist for video generation frame images. Frames the pipe itself extracts from a prior video are re-encoded to a type on this list before upload, so dropping image/png no longer breaks frame reuse. A list naming none of image/jpeg, image/webp and image/png leaves the pipe's own extracted frame out with a note in the chat; the video still renders, and an attached frame of a type that is not listed still fails the whole request.",
     )
     VIDEO_OUTPUT_MIME_ALLOWLIST: str = Field(
         default="video/mp4,video/webm",
@@ -3029,7 +3046,7 @@ class UserValves(BaseModel):
     REASONING_EFFORT: Literal["none", "minimal", "low", "medium", "high", "xhigh"] = Field(
         default="medium",
         title="Reasoning depth",
-        description="Choose how much thinking the AI should do before answering (higher depth is slower but more thorough). 'none' switches reasoning off where the model allows it; a model that always reasons gets the lightest level its catalog entry lists other than `none` instead, and no level at all when it lists no other level. A request that only hides the reasoning trace (`reasoning.exclude` of `true`) is not one of these offs: it keeps the depth you chose here and draws no status line. Use 'xhigh' for maximum depth when available.",
+        description="Choose how much thinking the AI should do before answering (higher depth is slower but more thorough). 'none' switches reasoning off where the model allows it; a model that always reasons gets the lightest level its catalog entry lists other than `none` instead, and no level at all when it lists no other level. A request that only hides the reasoning trace (`reasoning.exclude` of `true`) is not one of these offs: it keeps the depth you chose here and draws no status line. A request that carries its own verbosity keeps it on both endpoints, whichever of the two spellings it used. Use 'xhigh' for maximum depth when available.",
     )
     REASONING_SUMMARY_MODE: Literal["auto", "concise", "detailed", "disabled"] = Field(
         default="auto",
@@ -3039,7 +3056,7 @@ class UserValves(BaseModel):
     PERSIST_REASONING_TOKENS: Literal["disabled", "next_reply", "conversation"] = Field(
         default="next_reply",
         title="How long to keep reasoning",
-        description="Choose whether reasoning is kept just for the next reply or the entire conversation. The copy of the reasoning written onto the Open WebUI assistant message follows the same choice, and at 'next_reply' that copy is not removed when the following reply finishes; only the rows are. A setting the pipe cannot read (an undecodable stored row, after a rotation of `WEBUI_SECRET_KEY`, or the deprecated `WEBUI_JWT_SECRET_KEY` it falls back to (a default, so an empty primary is not a fallback)) falls back to this valve's own per-user default rather than to the administrator's site-wide value.",
+        description="Choose whether reasoning is kept just for the next reply, the entire conversation, or not at all: 'disabled' writes nothing, withholds rows already stored from every later turn and deletes them on the same terms as 'next_reply', and does not save each reply's reasoning_details onto the stored chat message. The copy of the reasoning written onto the Open WebUI assistant message follows the same choice, and at 'next_reply' that copy is not removed when the following reply finishes; only the rows are. A setting the pipe cannot read (an undecodable stored row, after a rotation of `WEBUI_SECRET_KEY`, or the deprecated `WEBUI_JWT_SECRET_KEY` it falls back to (a default, so an empty primary is not a fallback)) falls back to this valve's own per-user default rather than to the administrator's site-wide value.",
     )
     PERSIST_TOOL_RESULTS: bool = Field(
         default=False,

@@ -75,6 +75,14 @@ def _install_open_webui_stubs() -> None:
         async def get_message_by_id_and_message_id(*_args, **_kwargs):
             return None
 
+        @staticmethod
+        async def is_chat_owner(chat_id, user_id, db=None):
+            # The host's own rule (open_webui/models/chats.py:1787-1798), and the check
+            # the pipe's session-log write gate delegates to. This double carries no chat
+            # table, so it answers the way a single-principal test process does: the
+            # caller owns what it names. A test about the refusal overrides this.
+            return True
+
         _chat_files: dict[tuple, list] = {}
 
         @staticmethod

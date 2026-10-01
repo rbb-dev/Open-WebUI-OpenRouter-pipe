@@ -32,8 +32,9 @@ from open_webui_openrouter_pipe.media import (
     normalise_mime,
     probe_video,
 )
+from open_webui_openrouter_pipe.media import frame_extraction as fe
 import imageio.v3 as iio
-from typing import Any, Self, cast
+from typing import Any, Literal, Self, cast
 
 
 # -----------------------------------------------------------------------------

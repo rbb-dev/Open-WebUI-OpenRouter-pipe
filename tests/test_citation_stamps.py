@@ -88,7 +88,15 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # the one `_stored_profile_images` held beside its own `get_models_by_ids` -- is gone.
 # Nothing became less guarded: `_read_model_rows` is still the single lazy, function-local
 # reader of that table, and the icon projection still answers from its rows.
-_EXPECTED_OWUI_IMPORTS = (25, 93)
+# 93 -> 95: the session-log write gate's ownership read (`_caller_owns_chat` in
+# logging/session_log_manager.py) asks Open WebUI's own `Chats.is_chat_owner` lazily, and
+# only on the refusal path's common case, so a host that cannot supply the chat table
+# fails the turn closed rather than the pipe failing to import. Its sibling
+# `_caller_is_admin` is the second: it resolves the caller's role with a lazy
+# `Users.get_user_by_id`, on the same refusal path only, because the role is not in scope
+# at either call site -- `streaming_core.py` is handed a bare `user_id: str` and `pipe.py`
+# the job. Both raise into a caller that handles them, which is the lazy contract.
+_EXPECTED_OWUI_IMPORTS = (25, 95)
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),

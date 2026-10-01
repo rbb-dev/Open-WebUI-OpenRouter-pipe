@@ -760,7 +760,10 @@ class UpdateService:
     async def _actor_names(records: list[dict[str, Any]]) -> dict[str, str]:
         names: dict[str, str] = {}
         for actor in {str(r.get("actor") or "") for r in records}:
-            if not actor or actor == "auto":
+            if actor == "auto":
+                names["auto"] = "auto"
+                continue
+            if not actor:
                 continue
             try:
                 from open_webui.models.users import Users
@@ -782,7 +785,6 @@ class UpdateService:
                 "version": r["version"],
                 "ts": r["ts"],
                 "size": r["size"],
-                "actor": r["actor"],
                 "actor_name": names.get(str(r.get("actor") or "")),
                 "sha256": r["sha256"],
             }

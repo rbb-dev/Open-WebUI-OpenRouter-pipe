@@ -89,6 +89,20 @@ property of the conversation, not of the frame:
   stored reply with the card; the error frame goes to the error area under the message and
   leaves the content alone. The stored record is unaffected either way — it is the answer
   plus the card, in that order.
+- **A notice the turn is not over for.** A second saved-chat case travels on
+  `chat:message:error` too, with **no `done` key**: a refusal the pipe issues before the model
+  is called — an attachment it dropped — is not the end of the turn, and the model answers past
+  it. The browser gates that branch's close on `data.done === true`, so the card is read in the
+  error area while the reply stays open, the caret keeps pulsing and Stop keeps working, and
+  the turn's own closing `chat:completion` is the one frame that finishes it. A
+  `chat:completion` carrying `error` would set `message.error` **and** `message.done`
+  regardless of its own `done`, because the browser's `handleOpenAIError` sets the close from
+  the presence of `error` and never reads that field — so a notice sent there ends the reply
+  early, badges it as a failed response, and leaves the model answering into a message the UI
+  already considers finished. On a **channel** the same notice still closes the message: the
+  channel emitter closes on any `chat:message:error` and ignores the frame's `done`, and no
+  frame the pipe can send leaves a channel message open after one. That is the host's
+  behaviour, accepted and recorded in a test rather than worked around.
 - **Channel.** The channel's emitter is a different function from the socket emitter, and it
   honours a different set of types. It has no `chat:message` branch at all, so on a channel
   the card is written by a `chat:message:error` frame — which Open WebUI prefixes with
@@ -288,7 +302,7 @@ The OpenRouter error formatter supports a larger set of optional values, includi
 - `include_model_limits`, `context_limit_tokens`, `max_output_tokens`
 - `metadata_json`, `provider_raw_json`, `diagnostics` — every value derived from the provider's payload is cut at 16,384 characters, with a marker naming how many characters were removed: the two JSON values `metadata_json` and `provider_raw_json`, the five inline copies of the provider's message (`detail`, `sanitized_detail`, `reason`, `upstream_message`, `openrouter_message`) and the joined `moderation_reasons` list. A cut JSON value is no longer parseable JSON; a cut inline value is still one logical line, its marker space-joined onto the card's line. `raw_body` and `flagged_excerpt` are not cut and arrive whole
 - `body_excerpt` — the provider's own first 200 characters when an accepted response's body was not decodable at all, arriving inside a code fence. Filled on that fault only, never cut, and never scrubbed: a proxy's own words are the evidence. Pair it with a `reason` that names the endpoint and the `Content-Type`, and do not put the excerpt in `reason` as well. It is withheld on a channel chat, so a room's card is the diagnosis that names no one
-- `error_chunk_id`, `error_chunk_created`, `is_streaming_error`, `native_finish_reason`, `request_id_reference`
+- `error_chunk_id`, `error_chunk_created`, `is_streaming_error`, `native_finish_reason`, `request_id_reference` — `error_chunk_created` is the provider's own chunk clock: a Unix-second epoch is rendered as a Z-suffixed UTC ISO-8601 instant, in the same form and zone as the `Time` row beside it, and any other value reaches the card as the provider's own text
 - `streaming_provider`, `streaming_model` — filled only for a failure reported inside a reply that has already started; empty on a rejected request however the provider is named, and empty when such a failure names no provider at all
 
 Because OpenRouter/provider responses vary, treat these fields as optional and wrap them in `{{#if ...}}` blocks. Guarding is optional for `streaming_provider` and `streaming_model` — they are filled for a mid-reply failure that names a provider and empty for every other failure, so a line using them already disappears when it should.

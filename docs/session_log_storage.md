@@ -126,6 +126,11 @@ Archives are written under the base directory `SESSION_LOG_DIR` using a director
 
 That layout is exact for every identifier Open WebUI mints: a user id and a chat id are a uuid, and a message id is one the caller chooses. A component that needs escaping is still one directory and one file deep — only its name changes, as the last bullet under Path safety describes.
 
+`<user_id>` is the user **every event in that file belongs to**, and the layout is a partition by that, not a label. Two rules keep it one:
+
+- A turn is staged only when its `(chat_id, user_id)` is a pair the caller could have been given — a chat the caller owns, or one the caller is an admin for. The pipe asks Open WebUI's own `Chats.is_chat_owner` and admits the same exception Open WebUI admits (`backend/open_webui/main.py:1504-1509` exempts an admin), and it fails closed: if that check cannot be run, nothing is staged and the pipe log says why once per cooldown. A refusal is logged, not silent, and nothing is deleted.
+- A bundle whose staged segments do not all name the same user is **never written**. The assembler refuses it, warns, restores every segment for a later retry, and writes no zip under either name — rather than picking one principal's directory and filing the other's events there. The staged rows are kept, not dropped, so the retention sweep still bounds them; the turn is refused on the same backoff every other permanent failure in that function takes, so it cannot starve the other bundles.
+
 A call in either group has no usable `message_id`, so letting the empty string through would collide: sanitisation turns `""` into a fixed literal per slot and every such call from every user would land on one shared file. The user slot is guarded the same way, so a turn whose segments name no usable owner gets a directory derived from that empty id rather than a shared one. The pipe therefore substitutes the request-scoped surrogate pair `api` / `api-<request_id>` before staging, which is the same key the assembler gates on, so a surrogate archive is packed and written like any other:
 
 ```
@@ -137,6 +142,8 @@ A call in either group has no usable `message_id`, so letting the empty string t
 ```
 
 The two sit in one directory rather than one each. An inner Fusion call mints its own request id, `fusion-inner-<12 hex>`, so its file is `api-fusion-inner-<12 hex>.zip`: a panel member, the judge and the synthesis are told apart from a plain API call by that prefix, not by where they are filed. An N-model panel turn therefore writes N+2 archives here, or N+3 when the judge runs a second pass, on top of the turn's own archives.
+
+The `api` directory sits in the same place a chat id would, so the ownership rule above applies to it unchanged in effect: the surrogate is not a saved chat, so the ownership gate does not apply to it, and its bundle still has to name one user.
 
 The task files sit beside the answer's in the same `<chat_id>/` directory and keep the `message_id` as their prefix, so `ls <chat_id>/` and `grep <message_id>` both still work for an id that needs no escaping. The message id is truncated from the right to fit a 64-character column, with the task name's space reserved first — the qualifier is never the part that gets cut. The pipe's own video-intent classifier is a task archive too, but Open WebUI withholds a `message_id` from it (`utils/middleware.py:3286` builds a live emitter only when `chat_id` **and** `message_id` are present, and the classifier has only the former), so it resolves through `user_message.childrenIds[0]` and its file is keyed on the **first** assistant reply under the user's message rather than the turn's own. On the plain API route there is no id at all and, like any other id-less task, it is skipped rather than filed under `api/`.
 

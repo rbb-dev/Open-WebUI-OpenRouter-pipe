@@ -292,6 +292,11 @@ class ReasoningConfigManager:
         # Don't override if the user already set verbosity explicitly.
         if responses_body.verbosity is not None:
             return
+        text = responses_body.text
+        if isinstance(text, dict):
+            caller = text.get("verbosity")
+            if isinstance(caller, str) and caller.strip():
+                return
 
         normalized = ModelFamily.base_model(responses_body.model)
         if not _is_claude_reasoning_model(normalized):

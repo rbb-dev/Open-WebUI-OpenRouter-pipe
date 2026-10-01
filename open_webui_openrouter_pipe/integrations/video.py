@@ -205,12 +205,12 @@ def resolve_frame_mime(allowlist_csv: Any) -> tuple[str, ...]:
     )
     return tuple(
         mime for mime in _FRAME_MIME_PREFERENCE if mime in allowed
-    ) or _FRAME_MIME_PREFERENCE
+    )
 
 
 def _frame_bytes_allowed_as(
     image_bytes: bytes, allowlist_csv: Any
-) -> tuple[bytes, str, str]:
+) -> tuple[bytes, str, str] | None:
     candidates = resolve_frame_mime(allowlist_csv)
     if "image/png" in candidates:
         return image_bytes, "image/png", "png"
@@ -233,7 +233,7 @@ def _frame_bytes_allowed_as(
             except (OSError, ValueError):
                 continue
             return buffer.getvalue(), mime, _FRAME_MIME_EXTENSIONS[mime]
-    return image_bytes, "image/png", "png"
+    return None
 
 
 _HostEntry = tuple[str, int | None]
@@ -632,6 +632,28 @@ def _refuse_frame_over_byte_budget(
     )
     intent.downgrades.append(
         f"frame_over_byte_budget_idx_{entry.source_index}_at_{position}"
+    )
+    thumb_urls.append("")
+
+
+def _refuse_frame_for_mime(
+    logger: logging.Logger,
+    *,
+    entry: FramePlanEntry,
+    position: int,
+    intent: VideoIntentResult,
+    thumb_urls: list[str],
+) -> None:
+    logger.log(
+        warn_level(
+            _warned_frame_not_materialised,
+            f"frame_mime:{entry.source_index}",
+        ),
+        "no allowed frame image format for entry %s",
+        entry.source_index,
+    )
+    intent.downgrades.append(
+        f"frame_mime_not_allowed_idx_{entry.source_index}_at_{position}"
     )
     thumb_urls.append("")
 
@@ -3417,9 +3439,26 @@ class VideoGenerationAdapter:
                             continue
 
                     allowlist_raw = getattr(valves, "VIDEO_FRAME_IMAGE_MIME_ALLOWLIST", None)
-                    frame_bytes, frame_mime, frame_ext = await asyncio.to_thread(
+                    converted = await asyncio.to_thread(
                         _frame_bytes_allowed_as, frame.image_bytes, allowlist_raw,
                     )
+                    if converted is None:
+                        _refuse_frame_for_mime(
+                            self.logger, entry=entry, position=position,
+                            intent=intent, thumb_urls=thumb_urls,
+                        )
+                        continue
+                    frame_bytes, frame_mime, frame_ext = converted
+                    if 0 < frame_max_bytes < len(frame_bytes):
+                        _refuse_frame_over_byte_budget(
+                            self.logger, entry=entry, position=position,
+                            exc=FrameExtractionError(
+                                f"frame too large: {len(frame_bytes)} bytes exceeds the "
+                                f"{frame_max_bytes} byte frame budget", byte_budget=True,
+                            ),
+                            intent=intent, thumb_urls=thumb_urls,
+                        )
+                        continue
                     if frame_mime != "image/png":
                         intent.downgrades.append(
                             f"frame_reencoded_{frame_mime.replace('/', '_')}_idx_"

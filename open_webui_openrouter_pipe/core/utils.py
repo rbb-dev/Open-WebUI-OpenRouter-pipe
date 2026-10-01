@@ -888,7 +888,7 @@ def contains_marker(text: str) -> bool:
     Returns:
         bool: True if the sentinel substring is present; otherwise False.
     """
-    return bool(_iter_marker_spans(text))
+    return _MARKER_SUFFIX in text and bool(_iter_marker_spans(text))
 
 
 def is_hidden_marker_line(line: str) -> bool:
@@ -909,7 +909,7 @@ def ends_on_hidden_marker_line(text: Any) -> bool:
     return bool(lines) and is_hidden_marker_line(lines[-1])
 
 
-def split_text_by_markers(text: str) -> list[dict]:
+def split_text_by_markers(text: str, spans: list[dict[str, Any]] | None = None) -> list[dict]:
     """Split text into a sequence of literal segments and marker segments.
 
     Args:
@@ -925,7 +925,7 @@ def split_text_by_markers(text: str) -> list[dict]:
     """
     segments: list[dict[str, Any]] = []
     last = 0
-    for span in _iter_marker_spans(text):
+    for span in _iter_marker_spans(text) if spans is None else spans:
         if span["start"] > last:
             segments.append({"type": "text", "text": text[last:span["start"]]})
         if span["marker"]:

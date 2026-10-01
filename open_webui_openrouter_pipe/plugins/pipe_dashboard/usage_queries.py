@@ -363,7 +363,6 @@ def query_usage_stats(
     model_rows.sort(key=lambda row: -row["cost"])
 
     user_out = [{
-        "user_id": u["user_id"],
         "user_name": u["user_name"],
         "sessions": u["sessions"],
         "tokens_in": u["tokens_in"],

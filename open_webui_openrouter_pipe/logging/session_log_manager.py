@@ -481,6 +481,7 @@ class SessionLogManager:
         self._archive_queue_full_warnings: dict[str, float] = {}
         self._archive_queue_drops: int = 0
         self._temporary_chat_sweep_at: float = 0.0
+        self._ownership_skips: dict[str, float] = {}
 
     @property
     def _assembly_failures(self) -> dict[tuple[str, str], float]:
@@ -572,6 +573,56 @@ class SessionLogManager:
                 message,
                 *args,
             )
+
+    async def _caller_owns_chat(self, chat_id: str, user_id: str) -> bool:
+        try:
+            from open_webui.models.chats import Chats
+
+            return bool(await Chats.is_chat_owner(chat_id, user_id))
+        except Exception:
+            self.logger.log(
+                warn_level(
+                    self._ownership_skips,
+                    f"session_log_ownership_unreadable:{chat_id}:{user_id}",
+                    cooldown_s=3600.0,
+                ),
+                "Session log segment not staged: Open WebUI's chat ownership check is "
+                "unavailable, so the archive path cannot be trusted (user_id=%s "
+                "chat_id=%s). Refusing rather than writing under an unverified id.",
+                user_id,
+                chat_id,
+                exc_info=True,
+            )
+            return False
+
+    async def _caller_is_admin(self, user_id: str) -> bool:
+        try:
+            from open_webui.models.users import Users
+
+            user = await Users.get_user_by_id(user_id)
+            return getattr(user, "role", None) == "admin"
+        except Exception:
+            self.logger.debug(
+                "Session log admin bypass lookup failed for user_id=%s", user_id, exc_info=True,
+            )
+            return False
+
+    def _latch_ownership_skip(
+        self, user_id: str, chat_id: str, message_id: str, request_id: str
+    ) -> None:
+        self.logger.log(
+            warn_level(
+                self._ownership_skips,
+                f"session_log_not_owned:{chat_id}:{user_id}",
+                cooldown_s=3600.0,
+            ),
+            "Session log segment not staged (chat is not the caller's): user_id=%s "
+            "chat_id=%s message_id=%s request_id=%s",
+            user_id,
+            chat_id,
+            message_id,
+            request_id,
+        )
 
     def _warn_archive_queue_full(self, job: Any) -> None:
         with self._lock:
@@ -774,7 +825,7 @@ class SessionLogManager:
         single `<SESSION_LOG_DIR>/<user_id>/<chat_id>/<message_id>.zip`.
         """
         from ..core.logging_system import _SessionLogArchiveJob
-        from ..storage.owui_files import is_temporary_chat
+        from ..storage.owui_files import is_linkable_chat, is_temporary_chat
         from ..storage.persistence import generate_item_id
 
         temporary = is_temporary_chat(chat_id)
@@ -833,6 +884,14 @@ class SessionLogManager:
                     message_id,
                     request_id,
                 )
+            return
+        if (
+            not surrogate_in_play
+            and is_linkable_chat(chat_id)
+            and not await self._caller_owns_chat(chat_id, user_id)
+            and not await self._caller_is_admin(user_id)
+        ):
+            self._latch_ownership_skip(user_id, chat_id, message_id, request_id)
             return
         archive_settings = self.resolve_archive_settings(valves)
         if archive_settings is None:
@@ -1682,6 +1741,31 @@ class SessionLogManager:
                 return False
 
             resolved_user_id = ""
+            distinct_user_ids = sorted({
+                str(seg.get("user_id") or "").strip()
+                for seg in segments
+                if str(seg.get("user_id") or "").strip()
+            })
+            if len(distinct_user_ids) > 1:
+                self.logger.log(
+                    warn_level(
+                        self._unreadable_archive_warnings,
+                        f"session_log_mixed_user:{chat_id}:{message_id}",
+                        cooldown_s=3600.0,
+                    ),
+                    "Refusing to assemble a session log bundle whose segments name %d "
+                    "different users (chat_id=%s message_id=%s users=%s); no archive is "
+                    "written under any of them and every staged segment is kept for retry.",
+                    len(distinct_user_ids),
+                    chat_id,
+                    message_id,
+                    ",".join(distinct_user_ids),
+                )
+                self._restore_touched_stamps(model, session_factory, stamps, list(ids), chat_id, message_id)
+                self._release_assembly_lock(lock_id)
+                return False
+            if distinct_user_ids:
+                resolved_user_id = distinct_user_ids[0]
             resolved_session_id = ""
             preferred_request_id = _preferred_request_id(segments)
             resolved_status = ""
@@ -1689,10 +1773,6 @@ class SessionLogManager:
             merged_events: list[dict[str, Any]] = []
 
             for seg in segments:
-                if not resolved_user_id:
-                    raw_uid = seg.get("user_id")
-                    if isinstance(raw_uid, str) and raw_uid.strip():
-                        resolved_user_id = raw_uid.strip()
                 if not resolved_session_id:
                     raw_sid = seg.get("session_id")
                     if isinstance(raw_sid, str) and raw_sid.strip():

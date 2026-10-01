@@ -2176,6 +2176,9 @@ class _Field:
     def __lt__(self, other):  # type: ignore[override]
         return ("lt", self.name, other)
 
+    def __ge__(self, other):  # type: ignore[override]
+        return ("ge", self.name, other)
+
     def in_(self, values):
         return _In(self.name, list(values))
 
@@ -2242,8 +2245,8 @@ class _FakeQuery:
         self._limit: int | None = None
         self._select_fields = select_fields
 
-    def filter(self, condition):
-        self._filters.append(condition)
+    def filter(self, *conditions):
+        self._filters.extend(conditions)
         return self
 
     def order_by(self, order):
@@ -2270,6 +2273,8 @@ class _FakeQuery:
             return current in value
         if op == "lt":
             return current < value
+        if op == "ge":
+            return current >= value
         if op == "startswith":
             return isinstance(current, str) and current.startswith(value)
         return False

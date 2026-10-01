@@ -48,7 +48,11 @@ def _inlet(body, *, valves=None, metadata=None, allow_non_fusion=False):
     f = mod.Filter()
     if allow_non_fusion:
         f.valves.ALLOW_ON_NON_FUSION_MODELS = True
-    return f.inlet(body, metadata, {"valves": valves or {}})
+    # A built `UserValves`, not a raw dict: Open WebUI's `apply_user_valves` runs
+    # `UserValves(**row)` and assigns the result (`utils/filter.py:44-47`, `:147-156`),
+    # so a dict in that slot is a shape the host never produces and the filter is not
+    # required to read one.
+    return f.inlet(body, metadata, {"valves": mod.Filter.UserValves(**(valves or {}))})
 
 
 def _fusion_plugin(body):
@@ -174,7 +178,10 @@ def test_panel_cardinality_fails_visibly(n, raises):
     f = mod.Filter()
 
     def call():
-        return f.inlet({"model": FUSION}, None, {"valves": {"FUSION_ANALYSIS_MODELS": panel}})
+        return f.inlet(
+            {"model": FUSION}, None,
+            {"valves": mod.Filter.UserValves(FUSION_ANALYSIS_MODELS=panel)},
+        )
 
     if raises:
         with pytest.raises(mod.FusionConfigError):

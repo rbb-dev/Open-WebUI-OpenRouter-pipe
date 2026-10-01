@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Awaitable, Callable, Iterator
+from math import isfinite
 from typing import TYPE_CHECKING, Any
 
 from pydantic import (
@@ -177,7 +178,7 @@ class ResponsesBody(BaseModel):
     )
     @classmethod
     def _coerce_float_fields(cls, value: Any) -> Any:
-        return cls._strip_blank_string(value)
+        return _coerced_sampling_float(cls._strip_blank_string(value))
 
     @field_validator(
         "max_output_tokens",
@@ -685,6 +686,20 @@ def _coerced_token_cap(value: Any) -> int | None:
         return round(float(value))
     except (OverflowError, ValueError):
         return None
+
+
+def _coerced_sampling_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if not isinstance(value, (int, float, str)):
+        return None
+    try:
+        numeric = float(value)
+    except (OverflowError, ValueError):
+        return None
+    if not isfinite(numeric):
+        return None
+    return numeric
 
 
 def _chat_response_format_to_responses_text_format(value: Any) -> dict[str, Any] | None:
@@ -1564,6 +1579,17 @@ def _responses_payload_to_chat_completions_payload(
 
 # Model Fallback
 
+def _fallback_off_carry(primary: str) -> dict[str, Any]:
+    from ..core.utils import _select_best_effort_fallback
+
+    contract = ModelFamily.reasoning_contract(primary)
+    if contract.get("mandatory") is not True:
+        return {"effort": "none"}
+    supported = [e for e in contract.get("supported_efforts") or [] if e != "none"]
+    floor = _select_best_effort_fallback("none", supported)
+    return {"effort": floor} if floor else {}
+
+
 def _drop_include_reasoning_for_unsupported_fallbacks(
     request_payload: dict[str, Any], logger: logging.Logger
 ) -> None:
@@ -1581,7 +1607,7 @@ def _drop_include_reasoning_for_unsupported_fallbacks(
         if dropped is False:
             primary = str(request_payload.get("model") or "")
             if "reasoning" in ModelFamily.supported_parameters(primary):
-                request_payload["reasoning"] = {"effort": "none"}
+                request_payload["reasoning"] = _fallback_off_carry(primary)
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 "Dropped include_reasoning=%r: fallback %r does not list it.",

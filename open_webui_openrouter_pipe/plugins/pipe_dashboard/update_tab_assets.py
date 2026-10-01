@@ -267,7 +267,7 @@ UPDATE_TAB_JS = """
           var s = snaps[i];
           rows += '<tr><td>' + esc(String(s.version || '?')) + '</td><td>' + updFmtDate(s.ts)
             + '</td><td>' + (s.size ? Math.round(s.size / 1024) + ' KiB' : '\\u2014')
-            + '</td><td>' + esc(String(s.actor_name || s.actor || '?')) + '</td>'
+            + '</td><td>' + esc(String(s.actor_name || '?')) + '</td>'
             + '<td><button class="upd-btn" data-upd-restore="' + esc(String(s.file_id)) + '">Restore</button> '
             + '<button class="upd-btn" data-upd-delete="' + esc(String(s.file_id))
             + '" data-upd-sha="' + esc(String(s.sha256 || '')) + '">Delete</button></td></tr>';

@@ -214,7 +214,13 @@ async def test_emit_error_event_basic(event_handler):
 
 @pytest.mark.asyncio
 async def test_emit_error_event_with_exception(event_handler):
-    """Test error emission with exception object."""
+    """Test error emission with exception object.
+
+    `done` is left at its default, so this is the non-terminal leg and the frame is
+    `chat:message:error`, whose payload key is `error.content`. The turn is still
+    open at this point, which is why the notice does not travel on `chat:completion`
+    -- `handleOpenAIError` would finish the reply on it whatever its own `done` said.
+    """
     emitted = []
 
     async def capture_emitter(event):
@@ -224,7 +230,8 @@ async def test_emit_error_event_with_exception(event_handler):
     await event_handler._emit_error_event(capture_emitter, error, show_error_message=True)
 
     assert len(emitted) == 1
-    assert "Something went wrong" in emitted[0]["data"]["error"]["message"]
+    assert emitted[0]["type"] == "chat:message:error", emitted
+    assert "Something went wrong" in emitted[0]["data"]["error"]["content"]
 
 
 @pytest.mark.asyncio
@@ -2084,6 +2091,7 @@ async def test_an_error_that_ends_the_turn_also_stops_the_progress_line(event_ha
         assert statuses, emitted
         assert statuses[-1]["data"]["done"] is True, statuses
         assert emitted.index(statuses[-1]) < len(emitted) - 1, emitted
+        assert emitted[-1]["type"] == "chat:completion", emitted
     else:
         assert statuses == [], emitted
-    assert emitted[-1]["type"] == "chat:completion", emitted
+        assert emitted[-1]["type"] == "chat:message:error", emitted

@@ -1939,6 +1939,7 @@ class StreamingHandler:
                     reasoning_display.pop("__reasoning__", None)
                     calls_in_this_round = 0
                     named_tool_call = False
+                    final_response = None
                 if event_source is not None:
                     if loop_index > 0:
                         break
@@ -2431,6 +2432,7 @@ class StreamingHandler:
                                         note_generation_activity()
                                         reasoning_stream_active = True
                                         display_state = _reasoning_display_state(key)
+                                        _rearm_reasoning_window(display_state)
                                         display_state["mono_close"] = None
                                 if thinking_status_enabled:
                                     cancel_thinking()

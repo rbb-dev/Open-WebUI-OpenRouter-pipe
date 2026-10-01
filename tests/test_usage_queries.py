@@ -261,7 +261,7 @@ def test_by_user_returns_all_sorted_by_cost(seeded):
     usage._persist_sync(rows)
     users = _query(usage, host, now)["by_user"]
     assert len(users) == 12
-    assert [u["user_id"] for u in users] == [f"u{i}" for i in range(12)]
+    assert [u["user_name"] for u in users] == [f"user{i}" for i in range(12)]
     assert users[0]["tokens_cached"] == 40 and users[0]["tools"] == 2 and users[0]["tools_failed"] == 1
     assert users[0]["last_active"] is not None
     assert all("others" not in u["user_name"] for u in users)

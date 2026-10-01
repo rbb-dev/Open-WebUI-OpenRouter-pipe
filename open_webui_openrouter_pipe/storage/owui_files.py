@@ -22,6 +22,7 @@ import shutil
 import tempfile
 import uuid
 from collections.abc import Iterable
+from contextvars import ContextVar
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -411,6 +412,11 @@ def _requester_field(user: Any, field: str) -> Any:
     return user.get(field) if isinstance(user, dict) else getattr(user, field, None)
 
 
+FILE_READ_AUTH_MEMO: ContextVar[dict[tuple[str, Any], bool] | None] = ContextVar(
+    "owui_file_read_auth_memo", default=None
+)
+
+
 @timed
 async def authorize_file_read(file_obj: Any, user: Any, logger: logging.Logger) -> bool:
     """Authorise reading a real OWUI file: owner, admin, or has_access_to_file. Fail closed."""
@@ -425,6 +431,10 @@ async def authorize_file_read(file_obj: Any, user: Any, logger: logging.Logger) 
     file_id = getattr(file_obj, "id", None)
     if not file_id:
         return False
+    memo = FILE_READ_AUTH_MEMO.get()
+    memo_key = (str(file_id), requester_id)
+    if memo is not None and memo_key in memo:
+        return memo[memo_key]
     try:
         from open_webui.utils.access_control.files import (  # type: ignore[import-not-found]
             has_access_to_file,
@@ -433,10 +443,13 @@ async def authorize_file_read(file_obj: Any, user: Any, logger: logging.Logger) 
         logger.warning("OWUI access-control helper unavailable; denying file read", exc_info=True)
         return False
     try:
-        return bool(await has_access_to_file(str(file_id), "read", user))
+        granted = bool(await has_access_to_file(str(file_id), "read", user))
     except Exception as exc:
         logger.warning("has_access_to_file failed for %s: %s", file_id, exc, exc_info=True)
-        return False
+        granted = False
+    if memo is not None:
+        memo[memo_key] = granted
+    return granted
 
 
 PUBLISHING_NEEDS_OWNERSHIP = (

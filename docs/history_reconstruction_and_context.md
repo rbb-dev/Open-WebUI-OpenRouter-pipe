@@ -109,7 +109,7 @@ If the assistant text contains embedded marker lines, the pipe splits the text i
 
 When a marker split produces several `output_text` items for one assistant message, `annotations` and `reasoning_details` go on the **last** of them, once each, and on no other item.
 
-Marker detection and splitting is performed by helper functions (for example `contains_marker(...)` and `split_text_by_markers(...)`) and uses the marker format:
+Marker detection and splitting is performed by helper functions (for example `contains_marker(...)` and `split_text_by_markers(...)`); an assistant message's spans are computed once per message per request and read by every consumer of them, and a message carrying no `]: #` is not scanned at all. The marker format is:
 
 ```text
 [<20-char-ulid>]: #
@@ -298,6 +298,8 @@ cleanup. It is never published as an output item, so Open WebUI neither draws it
 ## 6. Reasoning replay and `PERSIST_REASONING_TOKENS`
 
 When replayed artifacts include reasoning items, the pipe can optionally record references in `replayed_reasoning_refs` so the caller can delete those artifacts after replay when reasoning retention is limited to a single turn. Under `next_reply` and `disabled` alike, the cleanup runs only on a generation that finished the reply: it must not have been cancelled or errored, and it must not have handed its tool calls back for another request to answer. The two ways a reply is not finished are both guarded by the same clause. A Continue keeps the rows of the message that request is still writing, so continuing an answer does not delete the reasoning of the generation it continues; a hand-back keeps them, because the request that comes back to answer the tool results is the one that will need them, and when that request arrives it is the one that deletes them; if it never arrives -- the user stops, or the sender errors -- the rows wait for the housekeeping sweep, because no generation finished the reply and `next_reply` has nothing to bind to. A delete that fails does not fail the reply: the turn has already been answered, so the store reports the failure, keeps the rows and the references, and the next turn retries the delete. The tool-round copies of §5.4 are not reasoning and are not deleted with it.
+
+`disabled` gates the replay as well as the write. A chat that still holds a reasoning marker from a turn run under another setting reaches the provider with that reasoning withheld: on `/responses` no `reasoning` input item is built from the row, and on `/chat/completions` the message's own `reasoning_details` are not re-attached either. The row is still recorded in `replayed_reasoning_refs`, so the delete above removes it on exactly the terms `next_reply` uses; a row that is never deleted that way waits for the housekeeping sweep, whose `created_at` clock was refreshed by the read that resolved it, so a withheld row keeps ageing from the last turn it was resolved in and is reaped within `ARTIFACT_CLEANUP_DAYS` as usual. The gate is a `continue` over one marker, not a `break` over the message, so the round's own `function_call` / `function_call_output` markers still replay under `PERSIST_TOOL_RESULTS` - an Anthropic tool round therefore goes out with its tool call and result and no thinking block.
 
 System default is `PERSIST_REASONING_TOKENS="conversation"`; see [Valves & Configuration Atlas](valves_and_configuration_atlas.md) for the exact semantics and defaults.
 

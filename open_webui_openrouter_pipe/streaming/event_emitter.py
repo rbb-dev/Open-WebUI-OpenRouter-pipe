@@ -255,15 +255,24 @@ class EventEmitterHandler:
                     })
                 on_channel = is_channel_chat(OWUI_CHAT_ID.get())
                 continuing = CONTINUED_REPLY.get() is not None
-                completion: dict[str, Any] = {
-                    "error": {"message": error_message},
-                    "done": terminal,
-                }
-                if on_channel or continuing:
-                    await self._publish_card(event_emitter, shown, on_channel, continuing)
-                if shown and (on_channel or not continuing):
-                    completion["content"] = shown
-                await event_emitter({"type": "chat:completion", "data": completion})
+                if not done:
+                    if on_channel or continuing:
+                        await self._publish_card(event_emitter, shown, on_channel, continuing)
+                    else:
+                        await event_emitter({
+                            "type": "chat:message:error",
+                            "data": {"error": {"content": shown}},
+                        })
+                else:
+                    completion: dict[str, Any] = {
+                        "error": {"message": error_message},
+                        "done": terminal,
+                    }
+                    if on_channel or continuing:
+                        await self._publish_card(event_emitter, shown, on_channel, continuing)
+                    if shown and (on_channel or not continuing):
+                        completion["content"] = shown
+                    await event_emitter({"type": "chat:completion", "data": completion})
             except Exception:
                 self.logger.exception("Failed to emit error event")
 
@@ -784,6 +793,14 @@ class EventEmitterHandler:
                     answer_pieces[:] = [next_on_queue]
                     return True
                 return False
+
+            if etype == "chat:message:error":
+                error = data.get("error")
+                if not (isinstance(error, dict) and error):
+                    return None
+                return await self._put_middleware_stream_terminal(
+                    job, stream_queue, {"event": event}
+                )
 
             if etype == "chat:message:delta":
                 delta_text = data.get("content")

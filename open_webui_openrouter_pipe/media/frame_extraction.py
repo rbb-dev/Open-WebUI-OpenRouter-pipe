@@ -547,20 +547,23 @@ def _probe_video_sync(path: Path, cancel: threading.Event | None = None) -> Vide
             raise FrameExtractionError(_ABANDONED)
         duration = _usable_duration(meta.get("duration")) or 0.0
         duration_is_stream = False
-        if duration > 0:
-            probed = _ffprobe_stream_duration(path)
+        probed = _ffprobe_stream_duration(path)
+        if _cancelled(cancel):
+            raise FrameExtractionError(_ABANDONED)
+        if probed is None:
+            binary = _ffmpeg_binary()
+            if binary is not None:
+                probed = _ffmpeg_video_stream_duration(path, binary)
+                if _cancelled(cancel):
+                    raise FrameExtractionError(_ABANDONED)
+        if probed is None and not duration:
+            probed = _video_track_seconds_sync(path, cancel)
             if _cancelled(cancel):
                 raise FrameExtractionError(_ABANDONED)
-            if probed is None:
-                binary = _ffmpeg_binary()
-                if binary is not None:
-                    probed = _ffmpeg_video_stream_duration(path, binary)
-                    if _cancelled(cancel):
-                        raise FrameExtractionError(_ABANDONED)
-            probed = _usable_duration(probed)
-            if probed is not None:
-                duration = probed
-                duration_is_stream = True
+        probed = _usable_duration(probed)
+        if probed is not None:
+            duration = probed
+            duration_is_stream = True
         fps_raw = meta.get("fps") or 0.0
         fps = float(fps_raw) if fps_raw else 24.0
         size = meta.get("size") or (0, 0)
@@ -636,12 +639,10 @@ def _normalise_png_mode(img: Image.Image) -> bytes:
 
 
 def _scale_to_max_width(img: Image.Image) -> Image.Image:
-    if img.width <= _MAX_FRAME_WIDTH:
+    out_w, out_h = _scaled_frame_size(img.width, img.height)
+    if (out_w, out_h) == (img.width, img.height):
         return img
-    height = max(
-        2, ((_MAX_FRAME_WIDTH * img.height + img.width) // (2 * img.width)) * 2,
-    )
-    return img.resize((_MAX_FRAME_WIDTH, height), Image.Resampling.LANCZOS)
+    return img.resize((out_w, out_h), Image.Resampling.LANCZOS)
 
 
 def _declared_size(path: Path) -> tuple[int, int] | None:

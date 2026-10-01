@@ -212,6 +212,10 @@ _icon_sweep_address_check: ContextVar[bool] = ContextVar(
     "icon_sweep_address_check", default=False
 )
 
+REQUEST_VALIDATED_IPS: ContextVar[dict[tuple[str, int | None], list[str] | None] | None] = (
+    ContextVar("request_validated_ips", default=None)
+)
+
 
 def _pipe_pool(
     handler: Any, attr: str, workers: int, prefix: str
@@ -1387,6 +1391,19 @@ class MultimodalHandler:
         return self._validated_ips_for_host(target[0], target[1])
 
     def _validated_ips_for_host(
+        self, host: str, port: int | None = None
+    ) -> list[str] | None:
+        memo = REQUEST_VALIDATED_IPS.get()
+        if memo is None:
+            return self._resolve_and_validate_host(host, port)
+        memo_key = (host, port)
+        if memo_key in memo:
+            return memo[memo_key]
+        verdict = self._resolve_and_validate_host(host, port)
+        memo[memo_key] = verdict
+        return verdict
+
+    def _resolve_and_validate_host(
         self, host: str, port: int | None = None
     ) -> list[str] | None:
         try:

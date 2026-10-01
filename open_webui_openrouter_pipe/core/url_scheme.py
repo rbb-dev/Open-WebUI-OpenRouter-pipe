@@ -128,7 +128,7 @@ def _data_url_header(value: Any) -> tuple[bool, str] | None:
     colon = value.find(":")
     comma = value.find(",", colon + 1)
     if comma == -1:
-        return (False, value[colon + 1 :][:64])
+        return (False, "")
     return (True, value[colon + 1 : comma])
 
 

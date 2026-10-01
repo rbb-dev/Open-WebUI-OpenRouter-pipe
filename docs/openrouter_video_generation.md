@@ -1408,9 +1408,13 @@ the start and/or end of the generated clip. To use this:
 Constraints (admin-tunable):
 
 - **`VIDEO_FRAME_IMAGE_MAX_BYTES`** (default 12 MB): per-image decoded
-  size cap. Oversized images fail before submission, and the error names the
-  offending frame and the cap that fired, so a failure is actionable without
-  the operator having to know which storage-layer limit applied.
+  size cap. An **attached** image over it fails before submission, and the
+  error names the offending frame and the cap that fired, so a failure is
+  actionable without the operator having to know which storage-layer limit
+  applied. A frame the pipe itself extracted from a prior video is measured on
+  its stored bytes — after the conversion to an allowed format, which is what
+  is sent — and is dropped with a note in the chat before it is written, so
+  the video still renders.
 - **`VIDEO_FRAME_TOTAL_MAX_BYTES`** (default 50 MB): combined cap across
   all frames in one request.
 - **`VIDEO_FRAME_IMAGE_MIME_ALLOWLIST`** (default
@@ -1418,7 +1422,10 @@ Constraints (admin-tunable):
   submission. A frame the pipe itself extracted from a prior video in
   the chat is re-encoded to the first listed type it can write — JPEG,
   then WebP, then PNG — before it is stored, so a list without
-  `image/png` no longer rejects the pipe's own frame.
+  `image/png` no longer rejects the pipe's own frame. A list naming
+  none of those three is the one case with nothing to convert into:
+  the pipe then writes no type at all, leaves that one frame out with a
+  note in the chat, and the video still renders.
 
 These three are strict for **frames**, because the clip was meant to be
 anchored on them: one that breaks a limit fails the whole request. The
@@ -2158,9 +2165,9 @@ Functions → OpenRouter pipe → Valves; the per-model filter ones live on each
 | `VIDEO_DOWNLOAD_CHUNK_SIZE` | `1048576` | 65536–8388608 | Chunk size in bytes for streaming download. |
 | `MAX_CONCURRENT_VIDEO_GENS` | `2` | 1–100 | Global concurrency cap per pipe process. Applies on the next generation, with no restart; a lower value binds from that moment and jobs already running finish first. |
 | `MAX_CONCURRENT_VIDEO_GENS_PER_USER` | `2` | 1–25 | Per-user concurrency cap. |
-| `VIDEO_FRAME_IMAGE_MAX_BYTES` | `12_582_912` (12 MB) | 65536–67108864 | Per-image decoded size cap. |
+| `VIDEO_FRAME_IMAGE_MAX_BYTES` | `12_582_912` (12 MB) | 65536–67108864 | Per-image decoded size cap. A pipe-extracted frame is measured on the re-encoded artefact that is stored and dropped with a note before it is written; an attached frame over the cap still fails the request. |
 | `VIDEO_FRAME_TOTAL_MAX_BYTES` | `52_428_800` (50 MB) | 65536–134217728 | Combined frame-bytes cap across one request. |
-| `VIDEO_FRAME_IMAGE_MIME_ALLOWLIST` | `image/jpeg,image/png,image/webp` | comma-list | Allowed MIMEs for frame images. A frame extracted by the pipe from a prior video is re-encoded to the first listed type it can write (JPEG, then WebP, then PNG) before it is stored. |
+| `VIDEO_FRAME_IMAGE_MIME_ALLOWLIST` | `image/jpeg,image/png,image/webp` | comma-list | Allowed MIMEs for frame images. A frame extracted by the pipe from a prior video is re-encoded to the first listed type it can write (JPEG, then WebP, then PNG) before it is stored; a list naming none of those three leaves the pipe's own frame out with a note, and the video still renders. |
 | `VIDEO_OUTPUT_MIME_ALLOWLIST` | `video/mp4,video/webm` | comma-list | Allowed MIMEs for downloaded video (header first; bytes consulted only when the header is unlisted). |
 | `VIDEO_REFERENCE_ALLOWED_DOMAINS` | `""` | comma-list | Hosts a per-user reference URL may name before this pipe forwards it. Applies to the filter's own reference fields, **and** to any key under the free-text `provider.options` box and to the JSON controls (`VIDEO_KEYFRAMES`, `VIDEO_BACKGROUND`, `VIDEO_CAPTION`, `VIDEO_VOICE_SETTINGS`, `VIDEO_CONTENT_MODERATION`), on the same check over every address in the built request. Exact-or-parent host match, case-insensitive; a bare host matches on any port, a `host:port` entry names that host on that port only, and a URL with no port is read as the port its own scheme implies; empty means unrestricted, which is the default. Additional to the `https://`/SSRF address check, which still runs either way; takes no `!` block entries and no CIDR ranges, and (unlike `ALLOW_INSECURE_HTTP_HOSTS`) a listed parent covers its subdomains. A link the media relay published for this request is recorded as the pipe's own and goes out whatever this holds; a host address a user typed is not recorded and is not exempt. |
 | `VIDEO_AIGC_WATERMARK` | `str` | `""` | passthrough `aigc_watermark` | `"aigc_watermark"` allowed | H3, H3 Max |
@@ -2250,7 +2257,8 @@ This error can only come from a **user-attached** frame. A frame the
 pipe extracted from a prior video in the chat is re-encoded before it
 is stored, so it is uploaded under a listed type; a list naming none
 of `image/jpeg`, `image/webp` and `image/png` is the one case where the
-extracted frame cannot be converted and this error is still honest.
+extracted frame cannot be converted, and there it is left out with a
+note in the chat rather than failing the request.
 
 ### Generation status shows "expired"
 

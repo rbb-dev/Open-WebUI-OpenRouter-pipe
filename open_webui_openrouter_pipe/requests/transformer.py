@@ -48,6 +48,7 @@ from ..core.url_scheme import (
 
 # Import utility functions
 from ..core.utils import (
+    _MARKER_SUFFIX,
     BUILTIN_ASK_USER_ROUND_KEY,
     OPEN_WEBUI_TOOL_IMAGES_TEXT,
     PIPE_ONLY_TOOL_ROUND_KEY,
@@ -60,8 +61,8 @@ from ..core.utils import (
     SERVER_TOOL_CALL_PREFIX,
     TOOL_ROUND_SKELETON_KEY,
     _extract_plain_text_content,
+    _iter_marker_spans,
     _tool_result_failed,
-    contains_marker,
     is_picture_output,
     is_server_tool_call_id,
     is_text_part_output,
@@ -417,6 +418,7 @@ def _resolve_inline_type(
     *,
     cause: str = "reuse_untyped",
     subject: str = "",
+    split_from: str = "",
 ) -> tuple[str, ImageRefusal | None]:
     declared = head[len("data:"):].split(";", 1)[0].strip().lower()
     try:
@@ -430,6 +432,8 @@ def _resolve_inline_type(
         return head, ImageRefusal("not identifiable as an image", cause, subject=subject)
     if resolved != declared:
         return f"data:{resolved};base64,{body}", None
+    if split_from and len(split_from) == len(head) + 1 + len(body):
+        return split_from, None
     return f"{head},{body}", None
 
 
@@ -1332,24 +1336,54 @@ async def transform_messages_to_input(
         """Strip hidden transport markers from non-assistant free text."""
         return strip_hidden_marker_lines(text)
 
-    artifact_groups: dict[str | None, dict[str, dict]] = {}
-    if artifact_loader and chat_id and openwebui_model_id:
-        wanted_by_group: dict[str | None, list[str]] = {}
-        for entry in messages:
-            entry_role = (entry.get("role") or "").lower()
-            if entry_role in {"tool", "user"}:
-                continue
+    message_texts: dict[int, str] = {}
+    marker_spans_by_text: dict[int, list[dict[str, Any]]] = {}
+    marker_segments_by_text: dict[int, list[dict[str, Any]]] = {}
+
+    def _message_text(index: int, entry: dict[str, Any]) -> str:
+        text = message_texts.get(index)
+        if text is None:
             entry_content = entry.get("content", "")
-            entry_text = (
+            text = (
                 entry_content
                 if isinstance(entry_content, str)
                 else _extract_plain_text_content(entry_content)
             )
-            if not contains_marker(entry_text):
+            message_texts[index] = text
+        return text
+
+    def _marker_spans_for(text: str) -> list[dict[str, Any]]:
+        if _MARKER_SUFFIX not in text:
+            return []
+        key = id(text)
+        spans = marker_spans_by_text.get(key)
+        if spans is None:
+            spans = _iter_marker_spans(text)
+            marker_spans_by_text[key] = spans
+        return spans
+
+    def _marker_segments_for(text: str, spans: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        key = id(text)
+        segments = marker_segments_by_text.get(key)
+        if segments is None:
+            segments = split_text_by_markers(text, spans)
+            marker_segments_by_text[key] = segments
+        return segments
+
+    artifact_groups: dict[str | None, dict[str, dict]] = {}
+    if artifact_loader and chat_id and openwebui_model_id:
+        wanted_by_group: dict[str | None, list[str]] = {}
+        for entry_index, entry in enumerate(messages):
+            entry_role = (entry.get("role") or "").lower()
+            if entry_role in {"tool", "user"}:
+                continue
+            entry_text = _message_text(entry_index, entry)
+            entry_spans = _marker_spans_for(entry_text)
+            if not entry_spans:
                 continue
             group_id = entry.get("message_id") or _message_identifier(entry)
             group_markers = wanted_by_group.setdefault(group_id, [])
-            for segment in split_text_by_markers(entry_text):
+            for segment in _marker_segments_for(entry_text, entry_spans):
                 if segment.get("type") == "marker" and segment["marker"] not in group_markers:
                     group_markers.append(segment["marker"])
         async def _load_group(
@@ -1389,20 +1423,16 @@ async def transform_messages_to_input(
 
     recorded_rounds: set[tuple[str, str]] = set()
     builtin_rounds: set[tuple[str, str]] = set()
-    for entry in messages:
+    for entry_index, entry in enumerate(messages):
         if (entry.get("role") or "").lower() != "assistant":
             continue
-        entry_content = entry.get("content", "")
-        entry_text = (
-            entry_content
-            if isinstance(entry_content, str)
-            else _extract_plain_text_content(entry_content)
-        )
-        if not contains_marker(entry_text):
+        entry_text = _message_text(entry_index, entry)
+        entry_spans = _marker_spans_for(entry_text)
+        if not entry_spans:
             continue
         group_id = entry.get("message_id") or _message_identifier(entry)
         batch = artifact_groups.get(group_id) or {}
-        for segment in split_text_by_markers(entry_text):
+        for segment in _marker_segments_for(entry_text, entry_spans):
             if segment.get("type") != "marker":
                 continue
             payload = batch.get(segment["marker"])
@@ -1812,28 +1842,27 @@ async def transform_messages_to_input(
                             )
                         url = inlined.data_url
 
-                    if mode == "reuse":
-                        reuse_split = split_base64_data_url(url)
-                        if not (reuse_split[1] if reuse_split is not None else ""):
-                            if is_http_or_https_url(url):
-                                return _refuse(
-                                    "could not be fetched, so it was not sent",
-                                    "remote_unfetched",
-                                    subject=_image_subject(url),
-                                )
-                            return ImageRefusal(
-                                "could not be fetched, so its type could not be established",
-                                "reuse_unfetched",
+                    split = split_base64_data_url(url)
+                    if mode == "reuse" and not (split[1] if split is not None else ""):
+                        if is_http_or_https_url(url):
+                            return _refuse(
+                                "could not be fetched, so it was not sent",
+                                "remote_unfetched",
                                 subject=_image_subject(url),
                             )
+                        return ImageRefusal(
+                            "could not be fetched, so its type could not be established",
+                            "reuse_unfetched",
+                            subject=_image_subject(url),
+                        )
 
-                    split = split_base64_data_url(url)
                     if split is not None and split[1]:
                         url, refusal = _resolve_inline_type(
                             split[0],
                             split[1],
                             cause="reuse_untyped" if mode == "reuse" else "inline_untyped",
                             subject=loggable_link(url),
+                            split_from=url,
                         )
                         if refusal is not None:
                             return refusal
@@ -2870,11 +2899,7 @@ async def transform_messages_to_input(
             )
             else []
         )
-        assistant_text = (
-            raw_content
-            if isinstance(raw_content, str)
-            else _extract_plain_text_content(raw_content)
-        )
+        assistant_text = _message_text(idx, msg)
         is_old_message = _is_old_turn(msg_turn_index, threshold=prune_before_turn)
 
         assistant_spans = markdown_image_spans(assistant_text)
@@ -2931,9 +2956,10 @@ async def transform_messages_to_input(
             openai_input.extend(chunk_items)
             appended.extend(chunk_items)
 
-        if contains_marker(assistant_text):
+        assistant_marker_spans = _marker_spans_for(assistant_text)
+        if assistant_marker_spans:
             withhold_replayed_reasoning = active_valves.PERSIST_REASONING_TOKENS == "disabled"
-            segments = split_text_by_markers(assistant_text)
+            segments = _marker_segments_for(assistant_text, assistant_marker_spans)
             segment_cursor = 0
             markers = [seg["marker"] for seg in segments if seg.get("type") == "marker"]
 

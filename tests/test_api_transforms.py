@@ -3106,7 +3106,7 @@ class TestFilterOpenrouterRequestResponsesExtensions:
         "background": True,
         "frequency_penalty": 0.5,
         "image_config": {"quality": "high"},
-        "include": ["usage"],
+        "include": ["reasoning.encrypted_content"],
         "max_tool_calls": 10,
         "modalities": ["text"],
         "presence_penalty": 0.3,

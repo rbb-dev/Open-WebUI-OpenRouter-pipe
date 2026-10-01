@@ -1172,8 +1172,8 @@ async def test_snapshot_actor_names_resolved(svc, fake_functions, fake_http, fak
     out = await svc.check()
     by_id = {s["file_id"]: s for s in out["snapshots"]}
     assert by_id[_slot_id(0)]["actor_name"] == "Dev Admin"
-    assert by_id[_slot_id(1)]["actor_name"] is None
-    assert by_id[_slot_id(1)]["actor"] == "auto"
+    assert by_id[_slot_id(1)]["actor_name"] == "auto"
+    assert "actor" not in by_id[_slot_id(1)]
 
 
 @pytest.mark.asyncio

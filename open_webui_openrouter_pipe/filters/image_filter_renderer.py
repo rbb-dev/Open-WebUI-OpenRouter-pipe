@@ -1055,19 +1055,8 @@ class Filter:
             return body
         if not _matches_model(body.get("model")):
             return body
-        user_valves = None
-        if isinstance(__user__, dict):
-            uv_raw = __user__.get("valves")
-            if uv_raw is not None and not isinstance(uv_raw, self.UserValves):
-                try:
-                    user_valves = self.UserValves.model_validate(
-                        uv_raw if isinstance(uv_raw, dict) else uv_raw.model_dump()
-                    )
-                except Exception:
-                    user_valves = self.UserValves()
-            elif isinstance(uv_raw, self.UserValves):
-                user_valves = uv_raw
-        if user_valves is None:
+        user_valves = __user__.get("valves") if isinstance(__user__, dict) else None
+        if not isinstance(user_valves, self.UserValves):
             user_valves = self.UserValves()
 
         overrides: dict = {{}}
@@ -1364,19 +1353,8 @@ class Filter:
         if not isinstance(body, dict):
             return body
 
-        user_valves = None
-        if isinstance(__user__, dict):
-            stored = __user__.get("valves")
-            if isinstance(stored, self.UserValves):
-                user_valves = stored
-            elif stored is not None:
-                try:
-                    user_valves = self.UserValves.model_validate(
-                        stored if isinstance(stored, dict) else stored.model_dump()
-                    )
-                except Exception:  # noqa: BLE001 - a stored valve must not block the turn
-                    user_valves = self.UserValves()
-        if user_valves is None:
+        user_valves = __user__.get("valves") if isinstance(__user__, dict) else None
+        if not isinstance(user_valves, self.UserValves):
             user_valves = self.UserValves()
 
         params: dict[str, Any] = {{"model": (self.valves.IMAGE_GENERATION_MODEL or "").strip() or {model_id!r}}}

@@ -273,7 +273,7 @@ class Filter:
         user_valves = None
         if isinstance(__user__, dict):
             user_valves = __user__.get("valves")
-        if not isinstance(user_valves, BaseModel):
+        if not isinstance(user_valves, self.UserValves):
             user_valves = self.UserValves()
 
         enable_files = bool(getattr(user_valves, "DIRECT_FILES", False))

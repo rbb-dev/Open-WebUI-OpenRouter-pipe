@@ -13,6 +13,7 @@ Responsible for translating technical errors into user-friendly markdown message
 from __future__ import annotations
 
 import concurrent.futures
+import datetime
 import re
 from typing import Any
 
@@ -548,6 +549,27 @@ def _inline_span(text: str) -> str:
     return collapsed
 
 
+def _epoch_as_iso(value: Any) -> Any:
+    if isinstance(value, bool):
+        return value
+    number: Any = value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return value
+        try:
+            number = float(text)
+        except ValueError:
+            return value
+    if not isinstance(number, (int, float)):
+        return value
+    try:
+        stamp = datetime.datetime.fromtimestamp(number, tz=datetime.UTC)
+    except (OverflowError, OSError, ValueError):
+        return value
+    return stamp.isoformat().replace("+00:00", "Z")
+
+
 _ERROR_CARD_DERIVED_VALUE_MAX_CHARS = 16_384
 
 
@@ -642,7 +664,7 @@ def _build_error_template_values(
         "provider_raw_json": _fenced_block(_bounded_card_value(provider_raw_json)),
         "native_finish_reason": _inline_span(error.native_finish_reason or ""),
         "error_chunk_id": _inline_span(error.chunk_id or ""),
-        "error_chunk_created": _inline_span(error.chunk_created or ""),
+        "error_chunk_created": _inline_span(_epoch_as_iso(error.chunk_created or "")),
         "streaming_provider": streaming_provider,
         "streaming_model": streaming_model,
         "is_streaming_error": bool(error.is_streaming_error),

@@ -85,10 +85,14 @@ def test_a_stated_numeric_range_is_the_range_the_control_enforces(path, typed, a
     )
 
     meta: dict[str, Any] = {}
+    # Open WebUI hands the inlet a built ``UserValves``, never a raw dict: its
+    # ``apply_user_valves`` runs ``UserValves(**row)`` and assigns the result
+    # (``utils/filter.py:44-47``, ``:147-156``). The inlet reads that object or its own
+    # defaults, so the fixture is built the way the host builds it.
     module.Filter().inlet(
         {"model": model_id},
         meta,
-        {"valves": {"IMAGE_OUTPUT_COMPRESSION": typed}},
+        {"valves": module.Filter.UserValves(IMAGE_OUTPUT_COMPRESSION=typed)},
     )
     params = meta["openrouter_pipe"]["server_tools"]["image_generation"]
     if accepted:

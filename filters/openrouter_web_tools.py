@@ -250,7 +250,7 @@ class Filter:
         user_valves = None
         if isinstance(__user__, dict):
             user_valves = __user__.get("valves")
-        if not isinstance(user_valves, BaseModel):
+        if not isinstance(user_valves, self.UserValves):
             user_valves = self.UserValves()
 
         prev_st = (__metadata__.get("openrouter_pipe") or {}).get("server_tools") if isinstance(__metadata__, dict) else None

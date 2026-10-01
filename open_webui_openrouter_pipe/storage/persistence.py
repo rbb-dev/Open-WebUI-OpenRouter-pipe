@@ -236,6 +236,22 @@ def _retention_index_name(table_name: str) -> str:
     return f"ix_{tail}_created_at"
 
 
+def _temporary_chat_chat_id_conditions(column: Any, prefix: str) -> list[Any]:
+    upper = _prefix_upper_bound(prefix)
+    if upper is None:
+        return [column >= prefix]
+    return [column >= prefix, column < upper]
+
+
+def _prefix_upper_bound(prefix: str) -> str | None:
+    if not prefix:
+        return None
+    last = ord(prefix[-1])
+    if last >= 0x10FFFF:
+        return None
+    return prefix[:-1] + chr(last + 1)
+
+
 @contextlib.contextmanager
 def _db_session(factory: Callable[..., Session]):
     """Open a SQLAlchemy session, ensuring rollback-on-error and safe close.
@@ -3106,7 +3122,7 @@ class ArtifactStore:
             )
             left_by_temporary_chats = sum(
                 session.query(self._item_model)
-                .filter(self._item_model.chat_id.startswith(prefix))
+                .filter(*_temporary_chat_chat_id_conditions(self._item_model.chat_id, prefix))
                 .delete(synchronize_session=False)
                 for prefix in temporary_chat_prefixes()
             )

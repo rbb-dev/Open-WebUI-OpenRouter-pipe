@@ -1102,6 +1102,10 @@ _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
     "frame_over_byte_budget": (
         "One frame of the previous video was too large to send and was left out."
     ),
+    "frame_mime_not_allowed": (
+        "One frame of the previous video was left out because the allowed frame image "
+        "formats do not include any this pipe can write."
+    ),
     "frame_reencoded_image_jpeg": (
         "One frame of the previous video was sent as JPEG instead of PNG, because the allowed "
         "frame image types leave PNG out."
