@@ -2191,7 +2191,7 @@ Functions → OpenRouter pipe → Valves; the per-model filter ones live on each
 
 | Valve | Default | Range | Purpose |
 |-------|---------|-------|---------|
-| `ENABLE_VIDEO_GENERATION` | `True` | bool | Master kill switch. False removes all video models from `pipes()` output and deactivates all installed per-model video filter rows at the next model-list refresh; the rows are identified by their source, so a hand-made copy of one of these filters' source is switched off too. `AUTO_INSTALL_VIDEO_FILTERS` is the install valve for that family. Turning it back on re-activates a filter the pipe itself switched off whose family's install valve, `AUTO_INSTALL_VIDEO_FILTERS`, is still on; a row that valve has retired stays off until that valve comes back on. |
+| `ENABLE_VIDEO_GENERATION` | `True` | bool | Master kill switch. A video-generation model is never answered from as a Fusion panel, judge or synthesis member: a Fusion turn that names one takes the ordinary chat path and starts no job. False removes all video models from `pipes()` output and deactivates all installed per-model video filter rows at the next model-list refresh; the rows are identified by their source, so a hand-made copy of one of these filters' source is switched off too. `AUTO_INSTALL_VIDEO_FILTERS` is the install valve for that family. Turning it back on re-activates a filter the pipe itself switched off whose family's install valve, `AUTO_INSTALL_VIDEO_FILTERS`, is still on; a row that valve has retired stays off until that valve comes back on. |
 | `AUTO_INSTALL_VIDEO_FILTERS` | `True` | bool | Install per-model filter rows in OWUI Functions table on `pipes()`. A model whose catalogue entry publishes no video contract is left as it is: any filter it already has is kept, and none is installed for it, and the same holds for a model whose install this pass could not write. With this off, an installed row whose stored source is out of date is logged but never rewritten, so every fix to that filter stays undelivered until it is on. Turning this off retires the rows the pipe installed for it - switched off, not deleted, so their settings survive - and turning it back on brings them back; a copy an admin installed by hand carries no such record and is left alone. A row an earlier install of this pipe wrote — the pipe function was renamed or re-created, so its record names an id Open WebUI no longer loads as a pipe — is retired too. |
 | `AUTO_ATTACH_VIDEO_FILTERS` | `True` | bool | Attach each filter to its corresponding video model row. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next catalog fetch. |
 | `AUTO_DEFAULT_VIDEO_FILTERS` | `True` | bool | Keep per-model filter enabled by default per chat (**re-asserted on every catalog metadata sync** — admins who manually disable a filter will see it re-defaulted on the next sync; set to `False` to opt out). A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next catalog fetch. |
@@ -2463,10 +2463,25 @@ Key files:
   stamped once an attempt completes — a failed or empty fetch, or a
   successful registration — but not while the modality sweep is still
   running, so a fetch cancelled mid-sweep neither loses the video models
-  nor suppresses the next attempt. The fetch is single-flight: concurrent
+  nor suppresses the next attempt. Each of those three stamps also writes
+  the fingerprint of the account that asked, so the window is a hit only
+  for that account: fetch under key A, call under key B inside the window,
+  and B is asked anyway rather than answered from A's rows. One fingerprint
+  rather than one per outcome, because there is one video clock and the
+  image catalogue's two share a stamp for the same reason. The master-off
+  arm clears it with the clock, so a valve off/on cycle refetches under the
+  key in hand. The fetch is single-flight: concurrent
   callers on a cold cache queue on one lock, one caller fetches and the
   rest re-check the clock behind it, so a refresh that fails is still
-  one refresh.
+  one refresh. A request that arrives while a sweep is in flight is
+  answered from the catalogue the registry already holds and never waits
+  -- but the sweep registers its rows only when it finishes, so on a
+  registry that holds none yet (the first sweep after a worker start, or
+  after the valve is toggled off and on) that answer is an empty list, and
+  a request for one of these models would be refused as if the operator
+  had configured it away. Those refusals name the cause instead: the video
+  catalogue is still loading and the next turn will carry the model. The
+  request is still not made to wait.
 - [`integrations/media_relay.py`](../open_webui_openrouter_pipe/integrations/media_relay.py)
   — puts an attached clip or sound file behind a public link so it can be
   sent as a reference: which hosts are known, which origins each may

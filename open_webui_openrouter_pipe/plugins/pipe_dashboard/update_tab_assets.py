@@ -64,6 +64,7 @@ UPDATE_TAB_JS = """
       lease_unavailable: 'The server could not reach Redis, which is where workers elect the single auto-updater. This worker applied nothing; it will try again and the tab will say so when it can.',
       disabled: 'Updates are switched off by the "Enable the Update tab" valve.',
       plugin_system_off: 'The plugin system is switched off, so no Pipe Dashboard action can run. Turn "Enable plugin system" back on in the Config tab.',
+      dashboard_off: 'The Pipe Dashboard is switched off (the "Enable Pipe Dashboard" valve, PIPE_DASHBOARD_ENABLE), so none of its own actions can run. Turning that switch back on needs Open WebUI\\'s Workspace > Functions editor, which is where the valve lives when the panel that would carry it is the thing that is closed.',
       valve_unreadable: 'The stored update settings could not be read, so every stored setting has fallen back to its default and every update action is refused until the server can read it again. A rotated WEBUI_SECRET_KEY with valve encryption on does this; the server log has the warning.',
       bad_repo_valve: 'The update repo valve is not a valid owner/repo value. Fix it in the Config tab.',
       repo_not_found: 'GitHub has no such repo or no releases for it. Check the update repo valve.',

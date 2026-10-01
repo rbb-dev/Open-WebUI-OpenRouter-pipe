@@ -321,6 +321,11 @@ is still in the routing valves the row stays on and the pipe writes nothing to i
 the model out of the routing valves and the pipe retires the row again on the next
 model-list refresh, exactly as it would have done without the re-enable.
 
+A row left switched off by a pass that was cancelled between its insert and its activation
+is not one of those. The insert stamps the row as the pipe's own switch-off, so it is
+re-armed by the next catalog refresh that can write and does not need the Functions screen;
+only a row whose off the pipe does not own is yours to switch back on by hand.
+
 Note that the entry may still be visible in the model's filter list while it is inactive.
 Open WebUI applies only the active entries, so a listed-but-inactive provider routing entry
 does nothing until it is switched on again. An entry an admin left Global stays in every
@@ -330,13 +335,17 @@ A row the pipe could not switch on is named in the log with its id, is not attac
 is off, and is retried on the next catalog refresh. The retry stops once it succeeds, so a
 row you switch off by hand afterwards stays off. A row the database would not create at
 all is named in the log by model slug, and the models it covers keep the routing filter
-they already have until the create lands.
+they already have until the create lands. A row the database would not *activate* is named
+the same way and is removed; the models it covers likewise keep the routing filter they
+already have until the activation lands.
 
 Removal is a decision, so a pass that never obtained the answer does not make one. If the
 filter installation raises, returns something that is not a map, or is skipped because the
 provider catalog failed to load, the sync leaves the model's `filterIds`, `defaultFilterIds`
-and ownership record exactly as they were and writes nothing. An `ADMIN_` model's enforced
-policy therefore survives such a pass unchanged rather than losing its Integrations entry
+and ownership record exactly as they were and writes nothing. So does a pass whose create
+or whose activation the database refused: the slug went unanswered, and an unanswered slug
+is not a decision to remove anything. An `ADMIN_` model's enforced policy therefore
+survives such a pass unchanged rather than losing its Integrations entry
 with no switch left to bring it back through. A model that really is gone from the routing
 valves, or whose providers have gone away, is still detached on the next pass that can tell
 the difference.

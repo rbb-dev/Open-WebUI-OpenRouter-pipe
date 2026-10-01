@@ -187,6 +187,9 @@ const STORE_WRITE_REFUSED="the database refused the write";
 const STORE_WRITE_REFUSED_TEXT="Saving settings failed: the database refused the write, so nothing was saved. Your edits are still here and nothing on the stored row changed — fix the database, then save again.";
 function storeUnreadableText(d){if(typeof d!=="string")return "";if(d.indexOf(STORE_UNREADABLE_KEY)===0)return STORE_UNREADABLE_KEY_TEXT;if(d===STORE_UNREADABLE)return STORE_UNREADABLE_TEXT;return "";}
 function storeTextOr(t,d){const s=storeUnreadableText(d);return s||t;}
+const ROUTE_OFF={dashboard_off:"the Pipe Dashboard is switched off (the Enable Pipe Dashboard valve), so this tab is closed with it. Turn that switch back on in Open WebUI\u2019s Workspace > Functions editor.",plugin_system_off:"the plugin system is switched off (the Enable plugin system valve), so no Pipe Dashboard action can run. Turn it back on in Open WebUI\u2019s Workspace > Functions editor."};
+function routeOffText(c){if(typeof c!=="string")return "";return ROUTE_OFF[c]||"";}
+function routeTextOr(t,c){return routeOffText(c)||t;}
 const edits={}; const invalid=new Set();
 let SEL=null, Q="", CHANGED=false;
 const openG={};
@@ -445,7 +448,7 @@ function refuseSave(btn, names, detail, err){
   if(detail===STORE_UNREADABLE) showConflict(STORE_UNREADABLE_TEXT);
   else if(typeof detail==="string"&&detail.indexOf(STORE_UNREADABLE_KEY)===0) showConflict(STORE_UNREADABLE_KEY_TEXT);
   else if(typeof detail==="string"&&detail.indexOf(STORE_WRITE_REFUSED)===0){ showStoreWriteRefused(); toast("Save failed: nothing was saved — "+detail); }
-  else if(err) toast("Save failed: nothing was saved — "+(detail||err));
+  else if(err) toast("Save failed: nothing was saved \u2014 "+routeTextOr(detail||err,err));
   else if(detail) toast("Save failed: nothing was saved — "+(typeof detail==="string"?detail:"the server rejected the request"));
   else showConflict();
 }
@@ -541,7 +544,7 @@ function loadConfig(){
   const tree=$("#tree"); if(tree)tree.innerHTML='<div class="empty" style="margin-top:60px">Loading configuration\u2026</div>';
   callAction("config_get",{}).then(resp=>{
     const r=resp&&resp.result;
-    if(!resp||resp.error||!r){ hideConflict(); if(resp&&resp.detail){ showConflict(storeTextOr("Could not load configuration: "+esc(resp.detail), resp.detail)); if(tree)tree.innerHTML='<div class="empty" style="margin-top:60px">Could not load configuration: '+esc(resp.detail)+'</div>'; return; } if(tree)tree.innerHTML='<div class="empty" style="margin-top:60px">Could not load configuration'+(resp&&resp.error?": "+esc(resp.error):"")+'</div>'; return; }
+    if(!resp||resp.error||!r){ hideConflict(); if(resp&&resp.detail){ showConflict(storeTextOr("Could not load configuration: "+esc(resp.detail), resp.detail)); if(tree)tree.innerHTML='<div class="empty" style="margin-top:60px">Could not load configuration: '+esc(resp.detail)+'</div>'; return; } if(tree)tree.innerHTML='<div class="empty" style="margin-top:60px">Could not load configuration'+(resp&&resp.error?": "+esc(routeOffText(resp.error)||resp.error):"")+'</div>'; return; }
     applySnapshot(r);
   }).catch(()=>{ if(tree)tree.innerHTML='<div class="empty" style="margin-top:60px">Could not load configuration.</div>'; });
 }
@@ -550,7 +553,7 @@ function quietReload(){
   const ts=tree?tree.scrollTop:0, ds=det?det.scrollTop:0;
   callAction("config_get",{}).then(resp=>{
     const r=resp&&resp.result;
-    if(!resp||resp.error||!r){ if(resp&&resp.detail){ showConflict(storeTextOr("Could not load configuration: "+esc(resp.detail), resp.detail)); return; } return; }
+    if(!resp||resp.error||!r){ if(resp&&resp.detail){ showConflict(storeTextOr("Could not load configuration: "+esc(resp.detail), resp.detail)); return; } if(resp&&resp.error){ showConflict(routeOffText(resp.error)); } return; }
     applySnapshot(r);
     const t2=$("#tree"), d2=$("#detail"); if(t2)t2.scrollTop=ts; if(d2)d2.scrollTop=ds;
   }).catch(()=>{});

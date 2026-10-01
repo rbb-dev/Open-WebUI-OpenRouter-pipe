@@ -139,6 +139,9 @@ def _with_repair(
         repaired["messages"] = messages
         if repaired.get("temperature") == 0:
             repaired["temperature"] = _REPAIR_TEMPERATURE
+            options = repaired.get("options")
+            if isinstance(options, dict) and options.get("temperature") == 0:
+                repaired["options"] = {**options, "temperature": _REPAIR_TEMPERATURE}
     return repaired
 
 

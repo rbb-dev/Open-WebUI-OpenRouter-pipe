@@ -3045,7 +3045,7 @@ def test_capabilities_detects_modalities_and_pricing():
 
     caps = OpenRouterModelRegistry._derive_capabilities(architecture, pricing)
 
-    assert caps["vision"] is True
+    assert caps["vision"] is False
     assert caps["file_upload"] is True
     assert caps["image_generation"] is True
     assert caps["web_search"] is True

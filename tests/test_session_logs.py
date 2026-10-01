@@ -1250,6 +1250,12 @@ from open_webui_openrouter_pipe.core.utils import _stable_crockford_id
 from open_webui_openrouter_pipe.storage import persistence as _persistence_module
 
 
+def _pass(manager, settings, terminal=True):
+    return manager._assemble_and_write_bundle(
+        "chat-1", "msg-1", terminal=terminal, archive_settings=settings,
+    )
+
+
 def _assemble(pipe, chat_id, message_id, *, terminal, logs, password=b"pw", stale=3600):
     return pipe._session_log_manager._assemble_and_write_bundle(
         chat_id,

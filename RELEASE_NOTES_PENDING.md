@@ -33,6 +33,12 @@
   up is only the tall-and-narrow half of an asymmetry with no principled basis. The gate and the decoded-size check
   behind it stay in the code for a header that lies about the source.
 
+- **Pipe Dashboard, Config tab** — when two administrators save at the same moment on *different* workers, one
+  save is now refused with "nothing was saved" instead of being silently lost. Until this, both saves were
+  answered "Saved 1 setting": the per-pipe lock only ever serialised saves on one worker, and the revision it is
+  checked against is a whole-second timestamp, so two saves inside one second are one revision apart by nothing.
+  The refusal appears as the Config tab's own save-failure toast, names the other save as the cause, and leaves
+  your edits staged. Installs without Redis (`WEBSOCKET_MANAGER` unset) keep today's behaviour exactly.
 - **fusion** — a Fusion panel member's tool file is no longer filed against the outer chat. The file is still
   stored and still rendered in the panel, but it no longer appears in the chat's file list: the tool executor
   re-checks `fusion_inner` before it hands `chat_id`/`message_id` to Open WebUI's upload, so a member's file

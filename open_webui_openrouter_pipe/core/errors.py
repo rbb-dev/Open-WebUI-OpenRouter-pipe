@@ -632,9 +632,9 @@ def _build_error_template_values(
     raw_body = (error.raw_body or "").strip()
 
     detail_lower = detail.lower()
-    include_model_limits = (
-        error.openrouter_error_type == _CONTEXT_OVERFLOW_ERROR_TYPE
-        or any(phrase in detail_lower for phrase in _CONTEXT_OVERFLOW_PHRASES)
+    spelled_kind = (error.openrouter_error_type or "").strip().lower()
+    include_model_limits = spelled_kind == _CONTEXT_OVERFLOW_ERROR_TYPE or any(
+        phrase in detail_lower for phrase in _CONTEXT_OVERFLOW_PHRASES
     )
     context_limit_value = metrics.get("context_limit") if include_model_limits else None
     max_output_tokens_value = metrics.get("max_output_tokens") if include_model_limits else None

@@ -421,6 +421,7 @@ async def test_the_catalog_loader_puts_the_declared_kinds_where_the_gates_read_t
     monkeypatch.setattr(OpenRouterModelRegistry, "_id_map", {})
     monkeypatch.setattr(OpenRouterModelRegistry, "_models", [])
     monkeypatch.setattr(OpenRouterModelRegistry, "_last_video_attempt", 0.0)
+    monkeypatch.setattr(OpenRouterModelRegistry, "_last_video_account", "")
     monkeypatch.setattr(OpenRouterModelRegistry, "_last_video_modality_attempt", 0.0)
 
     await video_catalog.ensure_video_catalog_loaded(

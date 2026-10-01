@@ -1613,6 +1613,25 @@ class RequestOrchestrator:
                 labels = ", ".join(
                     self._pipe._model_restriction_labels(reasons, valves=valves)
                 ) or "restricted"
+                if reasons == ["VIDEO_CATALOG_LOADING"]:
+                    if outcome_sink is not None:
+                        outcome_sink["member_refusal_reason"] = (
+                            f"{responses_body.model} is not in the catalogue yet because "
+                            "the video catalogue is still loading; the next turn will "
+                            "carry it"
+                        )
+                    return await self._pipe._ensure_error_formatter()._emit_templated_error(
+                        __event_emitter__,
+                        template=valves.VIDEO_CATALOG_LOADING_TEMPLATE,
+                        variables={
+                            "requested_model": responses_body.model,
+                            "normalized_model_id": normalized_model_id,
+                        },
+                        log_message=(
+                            f"Model absent while the video catalogue is still loading "
+                            f"(requested={responses_body.model}, normalized={normalized_model_id})"
+                        ),
+                    )
                 if outcome_sink is not None:
                     outcome_sink["member_refusal_reason"] = (
                         f"{responses_body.model} is not permitted by the pipe's model "
@@ -1668,7 +1687,10 @@ class RequestOrchestrator:
 
         video_spec = OpenRouterModelRegistry.spec(normalized_model_id)
         video_features = set(video_spec.get("features") or set()) if isinstance(video_spec, dict) else set()
-        if valves.ENABLE_VIDEO_GENERATION and "video_generation" in video_features:
+        fusion_member_turn = fusion_inner and not asks_for_help(
+            latest_user_text(body.get("messages") if isinstance(body, dict) else None)
+        )
+        if valves.ENABLE_VIDEO_GENERATION and "video_generation" in video_features and not fusion_member_turn:
             api_model_id = OpenRouterModelRegistry.api_model_id(normalized_model_id) or normalized_model_id
             return await self._pipe._ensure_video_generation_adapter().generate(
                 body=body,

@@ -63,11 +63,15 @@ def _set_video_sweep_in_flight(running: asyncio.AbstractEventLoop, value: bool) 
 
 
 def _video_catalog_stale(
-    cache_seconds: int, wants_modalities: bool,
+    cache_seconds: int, wants_modalities: bool, api_key: str,
 ) -> tuple[bool, bool]:
     now = time.time()
     last_attempt = OpenRouterModelRegistry.last_video_attempt()
-    stale_list = not last_attempt or (now - last_attempt) >= cache_seconds
+    stale_list = (
+        not OpenRouterModelRegistry.video_accounts_match(api_key)
+        or not last_attempt
+        or (now - last_attempt) >= cache_seconds
+    )
     if not wants_modalities:
         return stale_list, False
     last_modalities = OpenRouterModelRegistry.last_video_modality_attempt()
@@ -90,7 +94,7 @@ async def ensure_video_catalog_loaded(
     """Fetch video models and register them into the shared model registry."""
     if getattr(valves, "ENABLE_VIDEO_GENERATION", False):
         stale_list, stale_modalities = _video_catalog_stale(
-            cache_seconds, with_modalities
+            cache_seconds, with_modalities, api_key
         )
         if not stale_list and not stale_modalities:
             return
@@ -114,7 +118,7 @@ async def ensure_video_catalog_loaded(
             return
 
         stale_list, stale_modalities = _video_catalog_stale(
-            cache_seconds, with_modalities
+            cache_seconds, with_modalities, api_key
         )
         if not stale_list and not stale_modalities:
             return
@@ -143,7 +147,7 @@ async def ensure_video_catalog_loaded(
             try:
                 models = await client.list_models()
             except (TimeoutError, aiohttp.ClientError, OSError) as exc:
-                OpenRouterModelRegistry.record_video_attempt()
+                OpenRouterModelRegistry.record_video_attempt(api_key)
                 logger.log(
                     warn_level(_warned_video_catalog, type(exc).__name__),
                     "Video catalog fetch failed (/videos/models): %s — chat catalog kept, video models will not appear.",
@@ -152,7 +156,7 @@ async def ensure_video_catalog_loaded(
                 return
 
             if not models:
-                OpenRouterModelRegistry.record_video_attempt()
+                OpenRouterModelRegistry.record_video_attempt(api_key)
                 kept = len(OpenRouterModelRegistry._video_catalog_norms)
                 logger.log(
                     warn_level(_warned_video_catalog, "empty"),
@@ -170,7 +174,7 @@ async def ensure_video_catalog_loaded(
                 _carry_declared_input_modalities(models)
 
             OpenRouterModelRegistry.register_video_models(models)
-            OpenRouterModelRegistry.record_video_attempt()
+            OpenRouterModelRegistry.record_video_attempt(api_key)
             if with_modalities:
                 OpenRouterModelRegistry.record_video_modality_attempt()
             logger.info(

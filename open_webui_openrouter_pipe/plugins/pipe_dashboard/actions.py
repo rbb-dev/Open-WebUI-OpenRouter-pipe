@@ -30,7 +30,7 @@ from .config_service import (
     stored_row_readable,
 )
 from .dashboard_socket import emit_config_changed, publish_valves_changed
-from .update_service import UpdateError
+from .update_service import UpdateError, UpdateService, _distributed_lock
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,63 @@ _PD_ACTION_MIN_INTERVAL = 1.0
 _VALUE_ERROR_PREFIX = "Value error, "
 _rate_state: dict[tuple[str, str], float] = {}
 _config_write_locks: dict[tuple[str, int], asyncio.Lock] = {}
+_PD_CONFIG_LOCK_SUFFIX = "config_lock"
+_PD_CONFIG_LOCK_TIMEOUT_S = 30
+
+
+class _ConfigLease:
+    __slots__ = ("lock",)
+
+    def __init__(self, lock: Any) -> None:
+        self.lock = lock
+
+
+async def _acquire_config_lease() -> _ConfigLease | None:
+    lock = _distributed_lock(_PD_CONFIG_LOCK_SUFFIX, _PD_CONFIG_LOCK_TIMEOUT_S)
+    if lock is None:
+        logger.warning(
+            "pipe_dashboard: the cross-worker configuration lease is unavailable, so a "
+            "save on this worker is guarded by the in-process lock and the revision alone"
+        )
+        return None
+    acquire = getattr(lock, "acquire_lock", None) or getattr(lock, "aquire_lock", None)
+    if acquire is None:
+        logger.warning(
+            "pipe_dashboard: the configuration lease exposes no way to take it, so a save "
+            "on this worker is guarded by the in-process lock and the revision alone"
+        )
+        return None
+    try:
+        acquired = await asyncio.to_thread(acquire)
+    except Exception:
+        logger.warning(
+            "pipe_dashboard: the configuration lease could not be taken, so a save on this "
+            "worker is guarded by the in-process lock and the revision alone",
+            exc_info=True,
+        )
+        return None
+    if not acquired:
+        UpdateService._dispose_lock(lock)
+        raise _ClientMessage(
+            "another administrator is saving the configuration on another worker, so nothing "
+            "was saved; try again in a moment"
+        )
+    return _ConfigLease(lock)
+
+
+async def _release_config_lease(lease: _ConfigLease | None) -> None:
+    lock = getattr(lease, "lock", None)
+    if lease is None or lock is None:
+        return
+    lease.lock = None
+    try:
+        await asyncio.to_thread(lock.release_lock)
+    except Exception:
+        logger.warning(
+            "pipe_dashboard: the cross-worker configuration lease could not be released",
+            exc_info=True,
+        )
+    UpdateService._dispose_lock(lock)
 
 
 class _OptionalKey(NamedTuple):
@@ -224,7 +281,7 @@ async def dispatch_action(
         return 400, {"error": "request unavailable"}
     if not await _dashboard_enabled(pipe):
         _audit(user, name, "disabled", client_ip)
-        return 404, {"error": "unknown action"}
+        return 404, {"error": "dashboard_off"}
     write = entry.permission == "write"
     try:
         if entry.needs_request:
@@ -459,12 +516,16 @@ async def _config_set(
     pipe: Any, user: Any, args: Any, request: Any = None
 ) -> dict[str, Any]:
     """Merge edits into the stored custom subset (not the live model) and persist; rev-guarded."""
-    async with _config_write_lock(getattr(pipe, "id", "")):
-        result, committed = await _persist_config_edit(pipe, user, args, request)
-        if committed:
-            result["values"], result["secrets"] = await _saved_values(
-                pipe, args["edits"]
-            )
+    lease = await _acquire_config_lease()
+    try:
+        async with _config_write_lock(getattr(pipe, "id", "")):
+            result, committed = await _persist_config_edit(pipe, user, args, request, lease)
+            if committed:
+                result["values"], result["secrets"] = await _saved_values(
+                    pipe, args["edits"]
+                )
+    finally:
+        await _release_config_lease(lease)
     return result
 
 
@@ -509,6 +570,7 @@ async def _write_config_edits(
     edits: dict[str, Any],
     conflicts: list[str],
     refused: dict[str, Any] | None,
+    lease: _ConfigLease | None = None,
 ) -> tuple[dict[str, Any], bool]:
     from open_webui.models.functions import Functions
 
@@ -531,6 +593,7 @@ async def _write_config_edits(
     if result is None:
         raise _ClientMessage("the database refused the write, so nothing was saved")
     rev = getattr(result, "updated_at", None)
+    await _release_config_lease(lease)
     await emit_config_changed(rev)
     await publish_valves_changed(getattr(pipe, "id", ""), user, request)
     payload: dict[str, Any] = {
@@ -548,7 +611,13 @@ async def _write_config_edits(
 
 
 async def _persist_base_checked_edit(
-    pipe: Any, user: Any, args: Any, request: Any, current_rev: Any, base: dict[str, Any]
+    pipe: Any,
+    user: Any,
+    args: Any,
+    request: Any,
+    current_rev: Any,
+    base: dict[str, Any],
+    lease: _ConfigLease | None = None,
 ) -> tuple[dict[str, Any], bool]:
     effective, _dropped, stored, read_ok = await _effective_valves_and_state(pipe)
     if not read_ok and stored is None:
@@ -569,12 +638,12 @@ async def _persist_base_checked_edit(
         return stale, False
     allowed = {name: value for name, value in args["edits"].items() if name not in conflicts}
     return await _write_config_edits(
-        pipe, user, stored or {}, current_rev, request, allowed, conflicts, stale
+        pipe, user, stored or {}, current_rev, request, allowed, conflicts, stale, lease
     )
 
 
 async def _persist_config_edit(
-    pipe: Any, user: Any, args: Any, request: Any = None
+    pipe: Any, user: Any, args: Any, request: Any = None, lease: _ConfigLease | None = None
 ) -> tuple[dict[str, Any], bool]:
     current_rev = await _current_config_rev(pipe)
     client_rev = args.get("rev")
@@ -593,7 +662,9 @@ async def _persist_config_edit(
         stale_payload["config_unreadable"] = not conflict_read_ok
         return stale_payload, False
     if isinstance(base, dict):
-        return await _persist_base_checked_edit(pipe, user, args, request, current_rev, base)
+        return await _persist_base_checked_edit(
+            pipe, user, args, request, current_rev, base, lease
+        )
     edits = args["edits"]
     if not edits:
         return {"saved": 0, "rev": current_rev}, False
@@ -604,7 +675,7 @@ async def _persist_config_edit(
             "rev": current_rev,
         }, False
     return await _write_config_edits(
-        pipe, user, current, current_rev, request, edits, [], None
+        pipe, user, current, current_rev, request, edits, [], None, lease
     )
 
 

@@ -1169,6 +1169,10 @@ def _build_dashboard_shell(dash_id: str) -> str:
       }}
     }}
 
+    var US_REASONS = {{ dashboard_off: "the Pipe Dashboard is switched off (the Enable Pipe Dashboard valve)",
+      plugin_system_off: "the plugin system is switched off (the Enable plugin system valve)" }};
+    function usReason(c) {{ return (typeof c === "string" && US_REASONS[c]) || c || 'request failed'; }}
+
     function usRender(res) {{
       var note = $(ID + '-us-note'), body = $(ID + '-us-body');
       usApplyRetention(res && res.meta);
@@ -1227,7 +1231,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
       callAction('usage_stats', {{ range: usRange, tz_offset_min: -(new Date().getTimezoneOffset()), include_tasks: usTasks }})
         .then(function(resp) {{
           if (resp && resp.ok && resp.result) usRender(resp.result);
-          else usRender({{ available: false, reason: (resp && resp.error) || 'request failed' }});
+          else usRender({{ available: false, reason: usReason(resp && resp.error) }});
         }})
         .catch(function() {{ usRender({{ available: false, reason: 'request failed' }}); }});
       usScheduleRefresh();

@@ -843,7 +843,7 @@ class ToolExecutor:
                 tool_name = call.get("name")
                 if queued.holds_slot:
                     message = (
-                        f"Tool '{tool_name}' timed out after {allowance:.0f}s (idle timeout)."
+                        f"Tool '{tool_name}' timed out after {context.idle_timeout:.0f}s (idle timeout)."
                         if allowance
                         else "Tool idle timeout exceeded."
                     )

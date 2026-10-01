@@ -159,7 +159,9 @@ __KEEP_WHAT_STILL_FITS__
             description=(
                 "1-8 model IDs that answer in parallel, comma-separated, e.g. "
                 "'anthropic/claude-opus-latest, openai/gpt-latest'. Each model adds a call. "
-                "Empty = use the preset / Fusion default panel."
+                "Empty = use the preset / Fusion default panel. A video-generation model "
+                "named here is not answered from as a video job on a panel, judge or "
+                "synthesis turn; it answers the question as an ordinary chat call."
             ),
         )
         FUSION_JUDGE_MODEL: str = Field(

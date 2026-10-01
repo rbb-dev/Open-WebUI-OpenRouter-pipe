@@ -173,6 +173,11 @@ _CANCEL_REQUEUE_POLL_ATTEMPTS = 40
 
 _UNREADABLE_ARTIFACT_TABLE_KEY = "\x00artifact-key-unreadable"
 
+_PERSIST_LOSS_NOTICE = (
+    "Some stored items for this turn could not be written to the "
+    "database; they will be missing from later turns."
+)
+
 _PIPE_OWNED_ROW_TYPES = frozenset({
     "session_log_segment",
     "session_log_segment_terminal",
@@ -726,6 +731,16 @@ class ArtifactStore:
             "turns. Re-enter ARTIFACT_ENCRYPTION_KEY to resume storing them.",
             level="warning",
         )
+
+    async def _note_write_loss(self, context: Any, text: str) -> None:
+        emitter = context.event_emitter if context else None
+        if self._emit_notification:
+            await self._emit_notification(emitter, text, level="warning")
+        if emitter is not None:
+            try:
+                await emitter({"type": "status", "data": {"description": text, "done": False}})
+            except Exception:
+                self.logger.exception("Failed to emit the write-loss status")
 
     def _initialize_circuit_breakers(self):
         """Initialize circuit breaker tracking."""
@@ -1928,13 +1943,7 @@ class ArtifactStore:
                 len(rows),
                 sorted({str(r.get("item_type")) for r in rows if isinstance(r, dict)}),
             )
-            if self._emit_notification:
-                await self._emit_notification(
-                    context.event_emitter if context else None,
-                    "Some stored items for this turn could not be written to the "
-                    "database; they will be missing from later turns.",
-                    level="warning",
-                )
+            await self._note_write_loss(context, _PERSIST_LOSS_NOTICE)
             return []
 
     @timed

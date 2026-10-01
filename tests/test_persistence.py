@@ -7,6 +7,8 @@ import asyncio
 import contextlib
 import datetime
 import json
+import os
+import subprocess
 import sys
 import types
 from concurrent.futures import ThreadPoolExecutor
@@ -2153,3 +2155,6 @@ async def test_redis_client_enables_a_pubsub_keepalive(pipe_instance, monkeypatc
     client = pipe_instance._redis_client
     await pipe_instance.close()
     assert client.closed is True, "Pipe.close() did not close the Redis client it was given"
+
+
+_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".venv", "bin", "python")

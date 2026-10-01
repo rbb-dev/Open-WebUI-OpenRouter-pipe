@@ -928,7 +928,7 @@ class OpenRouterModelRegistry:
 
         input_modalities = _normalize(architecture.get("input_modalities") or [])
 
-        vision_capable = "image" in input_modalities or "video" in input_modalities
+        vision_capable = "image" in input_modalities
         file_upload_capable = True
         image_generation_capable = is_image_output_architecture(architecture)
         web_search_capable = OpenRouterModelRegistry._supports_web_search(pricing)
@@ -960,6 +960,7 @@ class OpenRouterModelRegistry:
 
     _last_video_fetch: float = 0.0
     _last_video_attempt: float = 0.0
+    _last_video_account: str = ""
     _last_video_modality_attempt: float = 0.0
     _video_catalog_norms: frozenset[str] = frozenset()
 
@@ -986,13 +987,23 @@ class OpenRouterModelRegistry:
         return cls._last_video_attempt
 
     @classmethod
-    def record_video_attempt(cls) -> None:
+    def record_video_attempt(cls, api_key: str) -> None:
         """Stamp `_last_video_attempt` with the current time."""
         cls._last_video_attempt = time.time()
+        cls._last_video_account = _fingerprint(api_key)
+
+    @classmethod
+    def video_accounts_match(cls, api_key: str) -> bool:
+        return _fingerprint(api_key) == cls._last_video_account
+
+    @classmethod
+    def video_catalog_is_published(cls) -> bool:
+        return bool(cls._video_catalog_norms)
 
     @classmethod
     def reset_video_attempt(cls) -> None:
         cls._last_video_attempt = 0.0
+        cls._last_video_account = ""
 
     @classmethod
     def last_video_modality_attempt(cls) -> float:

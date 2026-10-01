@@ -446,6 +446,9 @@ class TestOnModels:
 import os
 import subprocess
 
+_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".venv", "bin", "python")
+
+
 # ── Message Extraction Tests ──
 
 

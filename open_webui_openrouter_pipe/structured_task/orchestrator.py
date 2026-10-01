@@ -37,6 +37,8 @@ _OWUI_REQUEST_SCOPED_PARAM_KEYS = frozenset(
     }
 )
 
+_OWUI_MIRRORED_OWN_KEYS = frozenset({"temperature"})
+
 
 async def read_task_model_config() -> tuple[dict[str, str] | None, dict[str, Any]]:
     try:
@@ -89,7 +91,13 @@ def _deep_update(target: dict[str, Any], source: Mapping[str, Any]) -> dict[str,
 def merge_task_model_params(
     payload: dict[str, Any], params: dict[str, Any], *, owned_by: str = ""
 ) -> dict[str, Any]:
-    if not isinstance(payload, dict) or not isinstance(params, dict) or not params:
+    if not isinstance(payload, dict):
+        return payload
+    if owned_by == "ollama":
+        mirrored = {k: payload[k] for k in _OWUI_MIRRORED_OWN_KEYS if payload.get(k) is not None}
+        if mirrored:
+            payload["options"] = {**mirrored, **(payload.get("options") or {})}
+    if not isinstance(params, dict) or not params:
         return payload
 
     mergeable = {key: value for key, value in params.items() if key not in payload}

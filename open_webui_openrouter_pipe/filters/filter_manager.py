@@ -4043,6 +4043,7 @@ class Filter:
             hash_unchanged and not content_drifted
             and not missing_filters and not stale_active and not orphaned_active
             and not global_rows
+            and not deliverable_off
         ):
             for slug in all_models:
                 if slug in undeliverable_slugs:
@@ -4249,6 +4250,7 @@ class Filter:
                             slug_to_filter_id[slug] = candidate_id
                         else:
                             writes_ok = False
+                            self._provider_routing_ids_known = False
                             removed = await Functions.delete_function_by_id(candidate_id)
                             if not removed:
                                 self.logger.warning(

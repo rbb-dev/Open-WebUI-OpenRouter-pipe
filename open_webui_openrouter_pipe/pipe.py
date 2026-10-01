@@ -355,6 +355,9 @@ _LIMITS_HOLDER_KEY = "_openrouter_pipe_limits"
 
 _RESTRICTION_REASON_PHRASES: dict[str, str] = {
     "not_in_catalog": "the model is not in this pipe's model list",
+    "VIDEO_CATALOG_LOADING": (
+        "the video model catalogue is still loading; the next turn will carry this model"
+    ),
     "ZDR_LIST_UNAVAILABLE": (
         "OpenRouter's Zero Data Retention endpoint list could not be read"
     ),
@@ -5288,6 +5291,16 @@ class Pipe:
 
         return expanded, virtual_variant_bases
 
+    @staticmethod
+    def _video_catalogue_is_still_loading(*, valves: Pipe.Valves) -> bool:
+        if not getattr(valves, "ENABLE_VIDEO_GENERATION", False):
+            return False
+        if OpenRouterModelRegistry.video_catalog_is_published():
+            return False
+        from .integrations.video_catalog import _video_sweep_in_flight
+
+        return _video_sweep_in_flight()
+
     @timed
     def _model_restriction_reasons(
         self,
@@ -5308,7 +5321,10 @@ class Pipe:
             catalog_norm_ids and model_norm_id not in catalog_norm_ids
             and model_norm_id not in allowlist_norm_ids
         ):
-            reasons.append("not_in_catalog")
+            if self._video_catalogue_is_still_loading(valves=valves):
+                reasons.append("VIDEO_CATALOG_LOADING")
+            else:
+                reasons.append("not_in_catalog")
 
         model_id_filter = valves.MODEL_ID
         if (

@@ -684,6 +684,12 @@ def _render_error_template(template: str, values: dict[str, Any]) -> str:
             continue
 
         line = "".join(line_parts)
+        quoted_line = _BLOCKQUOTE_PREFIX_RE.match(line)
+        line_prefix = quoted_line.group(0) if quoted_line else ""
+        remainder = line[len(line_prefix) :]
+
+        def _emit(text: str, prefix: str = line_prefix) -> None:
+            rendered_lines.extend(prefix + row for row in text.split("\n"))
 
         if any(
             f"{{{name}}}" in line and not _template_value_present(value)
@@ -692,7 +698,7 @@ def _render_error_template(template: str, values: dict[str, Any]) -> str:
             continue
         opened_on_this_line = fence_open
         closed_here = False
-        stripped = line.strip()
+        stripped = remainder.strip()
         if not opened_on_this_line and _wrapped_fence_key(line):
             rendered_lines.extend(_wrapped_fence_block(line))
             continue
@@ -700,8 +706,7 @@ def _render_error_template(template: str, values: dict[str, Any]) -> str:
             leading = _FENCE_RUN_RE.match(stripped)
             if leading and stripped[: len(leading.group(0))] == leading.group(0):
                 if stripped[len(leading.group(0)) :].strip().startswith("`"):
-                    line = _TEMPLATE_PLACEHOLDER_RE.sub(_replace, line)
-                    rendered_lines.append(line)
+                    _emit(_TEMPLATE_PLACEHOLDER_RE.sub(_replace, remainder))
                     continue
                 fence_marker = leading.group(0)
                 emit_marker = fence_marker
@@ -717,15 +722,15 @@ def _render_error_template(template: str, values: dict[str, Any]) -> str:
                 continue
         elif stripped:
             fence_carried_content = True
-        line = _TEMPLATE_PLACEHOLDER_RE.sub(_replace, line)
+        remainder = _TEMPLATE_PLACEHOLDER_RE.sub(_replace, remainder)
         if opened_on_this_line and not closed_here:
-            widened = _body_fence(emit_marker, line)
+            widened = _body_fence(emit_marker, remainder)
             if len(widened) > len(emit_marker):
                 emit_marker = widened
-                rendered_lines[pending_opener] = widened + rendered_lines[pending_opener][
-                    len(fence_marker) :
+                rendered_lines[pending_opener] = line_prefix + widened + rendered_lines[pending_opener][
+                    len(fence_marker) + len(line_prefix) :
                 ]
-        rendered_lines.append(line)
+        _emit(remainder)
     return "\n".join(rendered_lines).strip()
 
 

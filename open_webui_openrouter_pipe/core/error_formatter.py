@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 from ..storage.owui_files import is_channel_chat
 from .config import OWUI_CHAT_ID
 from .errors import (
+    _carries_a_content_decision,
     _provider_log_subject,
     _resolve_error_model_context,
     is_sign_in_failure,
@@ -266,8 +267,9 @@ class ErrorFormatter:
     # Template Selection
     # ======================================================================
 
-    def _select_openrouter_template(self, status: int | None) -> str:
-        """Return the appropriate template based on the HTTP status."""
+    def _select_openrouter_template(self, status: int | None, *, content_decision: bool = False) -> str:
+        if content_decision:
+            return self.valves.OPENROUTER_ERROR_TEMPLATE
         if status == 401:
             return self.valves.AUTHENTICATION_ERROR_TEMPLATE
         if status == 402:
@@ -435,7 +437,10 @@ class ErrorFormatter:
         if is_sign_in_failure(exc):
             self._pipe._note_auth_failure()
         error_id, context_defaults = self._build_error_context()
-        template_to_use = self._select_openrouter_template(exc.status)
+        template_to_use = self._select_openrouter_template(
+            exc.status,
+            content_decision=_carries_a_content_decision(exc) and not is_sign_in_failure(exc),
+        )
         retry_after_hint = _resolve_retry_after_seconds(exc.metadata)
         if retry_after_hint is not None and context_defaults.get("retry_after_seconds") is None:
             context_defaults["retry_after_seconds"] = retry_after_hint

@@ -697,6 +697,7 @@ class StreamingHandler:
             if isinstance(t, dict) and t.get("type") == "function"
         }
         unclaimed_token: Any = None
+        api_hold_key = ""
         try:
             may_hand_back = owui_tool_passthrough or bool(offered_function_names - set(tool_registry))
             holds_the_reply = bool(
@@ -705,7 +706,6 @@ class StreamingHandler:
             _release_armed = holds_the_reply
             if holds_the_reply:
                 self._pipe._artifact_store._reply_memory.open(chat_id, message_id)
-            api_hold_key = ""
             unclaimed_token = _UNCLAIMED_LATCH.set(
                 set() if (chat_id and not message_id and not fusion_inner_call) else None
             )
@@ -1962,6 +1962,8 @@ class StreamingHandler:
         except BaseException:
             if _release_armed:
                 self._pipe._artifact_store._reply_memory.release(chat_id, message_id)
+            if api_hold_key:
+                self._pipe._artifact_store._api_reply_memory.release("", api_hold_key)
             raise
 
         try:

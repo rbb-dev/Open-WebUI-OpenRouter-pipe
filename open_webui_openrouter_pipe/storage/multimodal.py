@@ -165,10 +165,16 @@ def _decode_strict_base64(payload: str) -> bytes | None:
     cleaned = "".join(payload.split())
     if not cleaned:
         return None
+    out = bytearray()
     try:
-        return base64.b64decode(cleaned, validate=True)
+        for at in range(0, len(cleaned), _BASE64_DECODE_QUANTUM_CHARS):
+            out += base64.b64decode(cleaned[at : at + _BASE64_DECODE_QUANTUM_CHARS], validate=True)
     except (binascii.Error, ValueError):
-        return None
+        try:
+            return base64.b64decode(cleaned, validate=True)
+        except (binascii.Error, ValueError):
+            return None
+    return bytes(out)
 
 
 async def _decode_base64_in_quanta(payload: str) -> bytes:

@@ -324,12 +324,14 @@ def _is_base64_parameter(header: str) -> bool:
 def inline_payload_bytes(value: str) -> int:
     if url_scheme(value[:_DATA_URL_PREFIX_CHARS]) != "data":
         return (len(value) * 3) // 4
-    header, sep, raw = value.partition(",")
-    if not sep:
+    comma = value.find(",")
+    if comma == -1:
         return len(value)
+    header = value[:comma]
+    raw_chars = len(value) - comma - 1
     if _is_base64_parameter(header):
-        return (len(raw) * 3) // 4
-    return len(raw)
+        return (raw_chars * 3) // 4
+    return raw_chars
 
 
 def _payload_bytes(value: Any) -> tuple[int, str, str | None] | None:

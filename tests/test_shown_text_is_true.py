@@ -3679,7 +3679,10 @@ async def test_the_document_records_the_one_template_reached_without_a_status(
     )
 
     doc = (DOCS / "error_handling_and_user_experience.md").read_text(encoding="utf-8")
-    claim = doc.index("Status selection is the only thing that chooses one of these templates")
+    # The anchor is the sentence's own first clause. T646 made the claim "almost-false" and the
+    # design amends it in place, naming a content decision as the one other input, so the anchor
+    # reads the clause that survived rather than the whole sentence that changed.
+    claim = doc.index("Status selection chooses one of these templates")
     assert re.search(
         r"AUTHENTICATION_ERROR_TEMPLATE[^\n]{0,600}\b(directly|without|no status)\b",
         doc[claim:],

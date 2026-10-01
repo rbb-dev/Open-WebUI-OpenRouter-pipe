@@ -610,6 +610,7 @@ def _reset_model_registry():
     reg._last_fetch = 0.0
     reg._last_video_fetch = 0.0
     reg._last_video_attempt = 0.0
+    reg._last_video_account = ""
     reg._last_video_modality_attempt = 0.0
     reg._last_image_fetch = 0.0
     reg._image_endpoints = {}

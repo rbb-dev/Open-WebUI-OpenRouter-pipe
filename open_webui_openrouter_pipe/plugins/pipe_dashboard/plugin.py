@@ -20,6 +20,7 @@ from .command_registry import CommandRegistry
 
 # Trigger command auto-imports so @register_command decorators fire
 from .commands.help_cmd import handle_help as _pd_commands_loaded  # noqa: F401
+from .config_service import persisted_dashboard_enabled
 from .context import CommandContext
 from .dashboard_publisher import (
     clear_snapshot_getter,
@@ -40,6 +41,7 @@ from .usage_store import UsageStore
 logger = logging.getLogger(__name__)
 
 _PIPE_DASHBOARD_MODEL_ID = "pipe-dashboard"
+_PD_OFF_META_KEY = "openrouter_pipe:dashboard_switched_off_by_pipe"
 
 
 def _as_int(value: Any, default: int) -> int:
@@ -49,6 +51,28 @@ def _as_int(value: Any, default: int) -> int:
         return default
 
 
+def _pd_stored_meta(row: Any) -> dict[str, Any]:
+    stored = getattr(row, "meta", None)
+    dump = getattr(stored, "model_dump", None)
+    if callable(dump):
+        stored = dump()
+    return stored if isinstance(stored, dict) else {}
+
+
+def _overlay_claims_off(row: Any) -> bool:
+    return bool(_pd_stored_meta(row).get(_PD_OFF_META_KEY))
+
+
+def _overlay_target(row: Any, enabled: bool) -> tuple[bool, bool]:
+    active = bool(getattr(row, "is_active", False))
+    claimed = _overlay_claims_off(row)
+    if not enabled:
+        return (False, True) if active else (active, claimed)
+    if not active and claimed:
+        return True, False
+    return active, claimed
+
+
 def _overlay_update_form(
     model_form_cls: Any,
     model_meta_cls: Any,
@@ -56,6 +80,8 @@ def _overlay_update_form(
     fresh: Any,
     display_name: str,
     description: str,
+    is_active: bool | None = None,
+    claim: bool | None = None,
 ) -> Any:
     if fresh is None:
         return None
@@ -64,13 +90,17 @@ def _overlay_update_form(
     if fresh_meta:
         meta_dict = fresh_meta.model_dump() if hasattr(fresh_meta, "model_dump") else dict(fresh_meta)
     meta_dict["description"] = description
+    if claim is True:
+        meta_dict[_PD_OFF_META_KEY] = True
+    elif claim is False:
+        meta_dict.pop(_PD_OFF_META_KEY, None)
     return model_form_cls(
         id=fresh.id,
         base_model_id=fresh.base_model_id,
         name=display_name,
         meta=model_meta_cls(**meta_dict),
         params=fresh.params if fresh.params else model_params_cls(),
-        is_active=fresh.is_active,
+        is_active=fresh.is_active if is_active is None else is_active,
     )
 
 
@@ -135,7 +165,10 @@ class PipeDashboardPlugin(PluginBase):
             title="Enable Pipe Dashboard plugin",
             description="Enable the Pipe Dashboard virtual model in the model selector. "
                         "Read from the persisted row, so a committed change holds on every "
-                        "worker without a restart; an unreadable row refuses.",
+                        "worker without a restart; an unreadable row refuses. The Open WebUI "
+                        "model row behind the dashboard is switched off and back on with this "
+                        "valve, so the admin model lists agree with the selector; a row an "
+                        "administrator switched off themselves is left as they set it.",
         )),
         "PIPE_DASHBOARD_USAGE_COLLECT": (bool, Field(
             default=False,
@@ -320,18 +353,19 @@ class PipeDashboardPlugin(PluginBase):
     async def on_models(self, models: list[dict[str, Any]], **kwargs: Any) -> None:
         if not hasattr(self, "ctx"):
             return
-        if not await _dashboard_enabled(self.ctx.pipe):
-            return
         _display_name = "Pipe Dashboard"
         _description = (
             "Live dashboard for pipe monitoring and diagnostics. "
             "Access: a read grant = view the dashboard; a write grant = run operator actions; "
             "the Config tab = the admin role."
         )
-        models.append({"id": _PIPE_DASHBOARD_MODEL_ID, "name": _display_name})
+        _dashboard_on, _gate_read_ok = await persisted_dashboard_enabled(self.ctx.pipe)
         # Write a clean display name into OWUI's Models table so the UI shows
         # "Pipe Dashboard" instead of the ugly concatenated format.
-        await self._ensure_model_overlay(_display_name, _description)
+        await self._ensure_model_overlay(_display_name, _description, _dashboard_on, _gate_read_ok)
+        if not _dashboard_on:
+            return
+        models.append({"id": _PIPE_DASHBOARD_MODEL_ID, "name": _display_name})
         # Retry both on every model-list request — on_init may fire before
         # OWUI's socket module or the event loop is ready on this worker.
         get_pipe = getattr(self, "_get_pipe", None)
@@ -339,7 +373,13 @@ class PipeDashboardPlugin(PluginBase):
         if get_pipe is not None:
             self._re_register_registrations(get_pipe)
 
-    async def _ensure_model_overlay(self, display_name: str, description: str) -> None:
+    async def _ensure_model_overlay(
+        self,
+        display_name: str,
+        description: str,
+        enabled: bool | None = None,
+        read_ok: bool = True,
+    ) -> None:
         """Create or update the OWUI Models table entry for this virtual model."""
         try:
             from open_webui.models.models import (
@@ -353,22 +393,19 @@ class PipeDashboardPlugin(PluginBase):
             owui_model_id = model_id(self.ctx.pipe)
             if not owui_model_id:
                 return
-            existing = await Models.get_model_by_id(owui_model_id)
-            if existing is not None:
-                # Already exists — update name/description only if they differ
-                existing_meta = getattr(existing, "meta", None)
-                existing_desc = getattr(existing_meta, "description", None) if existing_meta else None
-                if existing.name == display_name and existing_desc == description:
-                    return
-                form = _overlay_update_form(
-                    ModelForm, ModelMeta, ModelParams,
-                    await Models.get_model_by_id(owui_model_id),
-                    display_name, description,
+            if not read_ok:
+                logger.debug(
+                    "pipe-dashboard model overlay: the valve row could not be read, so the "
+                    "overlay row is left exactly as it is stored"
                 )
-                if form is None:
+                return
+            if enabled is None:
+                enabled = await _dashboard_enabled(self.ctx.pipe)
+            row = await Models.get_model_by_id(owui_model_id)
+            reread = False
+            if row is None:
+                if not enabled:
                     return
-                await Models.update_model_by_id(owui_model_id, form)
-            else:
                 owner_id = ""
                 try:
                     admin = await Users.get_super_admin_user()
@@ -390,15 +427,30 @@ class PipeDashboardPlugin(PluginBase):
                 inserted = await Models.insert_new_model(form, user_id=owner_id)
                 if inserted is not None:
                     return
-                fresh = await Models.get_model_by_id(owui_model_id)
-                if fresh is None:
+                row = await Models.get_model_by_id(owui_model_id)
+                reread = True
+                if row is None:
                     return
-                form = _overlay_update_form(
-                    ModelForm, ModelMeta, ModelParams, fresh, display_name, description,
-                )
-                if form is None:
+            described = row.name != display_name or _pd_stored_meta(row).get("description") != description
+            active, claim = _overlay_target(row, bool(enabled))
+            if (
+                not described
+                and active == bool(getattr(row, "is_active", False))
+                and claim == _overlay_claims_off(row)
+            ):
+                return
+            if described and not reread:
+                row = await Models.get_model_by_id(owui_model_id)
+                if row is None:
                     return
-                await Models.update_model_by_id(owui_model_id, form)
+                active, claim = _overlay_target(row, bool(enabled))
+            form = _overlay_update_form(
+                ModelForm, ModelMeta, ModelParams, row, display_name, description,
+                is_active=active, claim=claim,
+            )
+            if form is None:
+                return
+            await Models.update_model_by_id(owui_model_id, form)
         except Exception:
             logging.getLogger(__name__).debug("pipe-dashboard model overlay ensure failed", exc_info=True)
 

@@ -338,6 +338,8 @@ _B64_ALPHABET = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 )
 
+_VIDEO_DECODE_QUANTUM_CHARS = 1024 * 1024
+
 _B64_SCAN_QUANTUM = 1024 * 1024
 
 
@@ -374,7 +376,15 @@ async def _decoded_length(b64: str) -> int:
 
 
 async def _decoded_payload(b64: str) -> bytes:
-    return await asyncio.to_thread(base64.b64decode, b64, validate=False)
+    out = bytearray()
+    try:
+        for at in range(0, len(b64), _VIDEO_DECODE_QUANTUM_CHARS):
+            out += await asyncio.to_thread(
+                base64.b64decode, b64[at : at + _VIDEO_DECODE_QUANTUM_CHARS], validate=True
+            )
+    except (binascii.Error, ValueError):
+        return await asyncio.to_thread(base64.b64decode, b64, validate=False)
+    return bytes(out)
 
 
 @dataclass(frozen=True, slots=True)
@@ -3048,7 +3058,7 @@ class VideoGenerationAdapter:
             blob = bytes(payload)
         else:
             try:
-                blob = await asyncio.to_thread(base64.b64decode, payload, validate=False)
+                blob = await _decoded_payload(payload)
             except (binascii.Error, ValueError):
                 return ""
         suffix = extension_for_video_mime(mime) or ".mp4"
@@ -3084,7 +3094,7 @@ class VideoGenerationAdapter:
             blob = bytes(payload)
         else:
             try:
-                blob = await asyncio.to_thread(base64.b64decode, payload, validate=False)
+                blob = await _decoded_payload(payload)
             except (binascii.Error, ValueError) as exc:
                 raise VideoGenerationError(
                     f"The attached {family} could not be read, so it was not sent."

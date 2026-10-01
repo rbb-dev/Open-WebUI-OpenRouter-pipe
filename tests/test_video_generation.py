@@ -2917,6 +2917,9 @@ def _ttl_test_valves():
     )
 
 
+_TTL_KEY = "sk-ttl-window-key"
+
+
 def _video_catalog_entry(model_id: str, display_name: str) -> dict[str, Any]:
     return {
         "id": model_id,
@@ -2986,16 +2989,23 @@ async def test_master_disable_takes_video_models_out_of_the_model_list(
 
 @pytest.mark.asyncio
 async def test_ensure_video_catalog_loaded_respects_ttl_within_window():
+    """A window earned by the key in hand is a window: no fetch, so `session=None` is never reached.
+
+    The clock is stamped with the account that earned it, so the pair has to be stamped
+    together; the next arm is the other half of that sentence.
+    """
     from open_webui_openrouter_pipe.integrations.video_catalog import ensure_video_catalog_loaded
+    from open_webui_openrouter_pipe.models.registry import _fingerprint
 
     OpenRouterModelRegistry._last_video_attempt = time.time()
+    OpenRouterModelRegistry._last_video_account = _fingerprint(_TTL_KEY)
     OpenRouterModelRegistry._last_video_modality_attempt = time.time()
     before_fetch = OpenRouterModelRegistry._last_video_fetch
 
     await ensure_video_catalog_loaded(
         session=cast(Any, None),
         valves=_ttl_test_valves(),
-        api_key="unused",
+        api_key=_TTL_KEY,
         logger=logging.getLogger("test"),
         cache_seconds=3600,
     )
@@ -3040,6 +3050,7 @@ async def test_ensure_video_catalog_loaded_empty_result_engages_attempt_ttl_with
 
     OpenRouterModelRegistry._last_video_fetch = 100.0
     OpenRouterModelRegistry._last_video_attempt = 0.0
+    OpenRouterModelRegistry._last_video_account = ""
     OpenRouterModelRegistry._last_video_modality_attempt = 0.0
 
     class _StubClient:
@@ -3074,6 +3085,7 @@ async def test_ensure_video_catalog_loaded_network_failure_engages_attempt_ttl(m
 
     OpenRouterModelRegistry._last_video_fetch = 100.0
     OpenRouterModelRegistry._last_video_attempt = 0.0
+    OpenRouterModelRegistry._last_video_account = ""
     OpenRouterModelRegistry._last_video_modality_attempt = 0.0
 
     class _RaisingClient:
@@ -3107,6 +3119,7 @@ async def test_ensure_video_catalog_loaded_propagates_cancelled_error_without_bu
     from open_webui_openrouter_pipe.integrations import video_catalog as _vc
 
     OpenRouterModelRegistry._last_video_attempt = 0.0
+    OpenRouterModelRegistry._last_video_account = ""
     OpenRouterModelRegistry._last_video_modality_attempt = 0.0
 
     class _CancellingClient:

@@ -466,9 +466,14 @@ async def _gate_inline_data_url(
             "not decodable as base64", "undecodable_inline", subject=loggable_link(url),
         )
     head = "data:" + split[0].partition(":")[2]
+    unchanged = (
+        type(url) is str
+        and url[: url.find(",")] == head
+        and body == split[1]
+    )
     if not resolve_type:
-        return head + "," + body, None
-    return _resolve_inline_type(head, body)
+        return (url if unchanged else head + "," + body), None
+    return _resolve_inline_type(head, body, split_from=url if unchanged else "")
 
 
 async def _gate_inline_tool_pictures(

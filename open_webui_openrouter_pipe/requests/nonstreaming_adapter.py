@@ -23,6 +23,7 @@ from ..api.transforms import (
 )
 from ..core.timing_logger import timed
 from ..storage.persistence import generate_item_id
+from ..structured_task.client import output_message_text
 
 if TYPE_CHECKING:
     from ..api.gateway.chat_completions_adapter import ChatCompletionsAdapter
@@ -145,14 +146,8 @@ class NonStreamingAdapter:
                     if not isinstance(item, dict):
                         continue
                     if item.get("type") == "message" and item.get("role") == "assistant":
-                        text_parts: list[str] = []
-                        content = item.get("content")
-                        if isinstance(content, list):
-                            for block in content:
-                                if isinstance(block, dict) and block.get("type") == "output_text":
-                                    text_val = block.get("text")
-                                    if isinstance(text_val, str) and text_val:
-                                        text_parts.append(text_val)
+                        answer = output_message_text([item])
+                        text_parts: list[str] = [answer] if answer else []
                         refusal_text = responses_refusal_text(item)
                         if task_request and refusal_text:
                             raise TaskProviderRefusal("task_model_refusal")
