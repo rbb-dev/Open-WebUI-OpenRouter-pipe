@@ -219,7 +219,7 @@ These are configured on the **pipe** function in Open WebUI (Admin → Functions
 
 | Valve | Default (verified) | Purpose / notes |
 | --- | --- | --- |
-| `AUTO_ATTACH_DIRECT_UPLOADS_FILTER` | `True` | Auto-enable the OpenRouter Direct Uploads filter in each compatible model’s Advanced Settings (`filterIds`), so the switch appears only where it can work. |
+| `AUTO_ATTACH_DIRECT_UPLOADS_FILTER` | `True` | Auto-enable the OpenRouter Direct Uploads filter in each compatible model’s Advanced Settings (`filterIds`), so the switch appears only where it can work. A pass that could not install the filter, because Open WebUI refused the write, is not a decision to detach: the switch stays exactly where it was and the install is tried again at the next catalog fetch. |
 | `AUTO_INSTALL_DIRECT_UPLOADS_FILTER` | `True` | Auto-install / auto-update the companion filter function into Open WebUI’s Functions DB (recommended with auto-attach). Turning this off retires the rows the pipe installed for it - switched off, not deleted, so their settings survive - and turning it back on brings them back; a copy an admin installed by hand carries no such record and is left alone. |
 | `BASE64_MAX_SIZE_MB` | `50` | Upper bound for inlining Open WebUI internal file URLs into base64 data URLs. |
 

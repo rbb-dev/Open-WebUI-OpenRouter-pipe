@@ -2516,6 +2516,8 @@ class FilterManager:
                     continue
             if getattr(row, "is_active", True) is False:
                 continue
+            if not _claimable_by(row, self._install_owner()):
+                continue
             if not await _write_function(
                 Functions,
                 row_id,

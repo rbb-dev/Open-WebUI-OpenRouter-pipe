@@ -22,6 +22,7 @@ When you configure provider routing for a model, the pipe:
 4. **Attaches the filter** to the model so it appears in the Integrations menu, enabled by default in new chats (`AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS`, on by default) so saved preferences apply without a per-chat toggle
 5. **Detaches on clearing** — emptying both valve lists switches that model's filter row off (`is_active: False`, not deleted) on the next model-list refresh, and removes the filter from the model's own `filterIds` and `defaultFilterIds` on the next metadata sync, so a model you took out of routing stops enforcing it
 6. **Keeps each row current** — on every model-list refresh the pipe compares each routing filter's stored source against freshly rendered source, so an edit made in Workspace ▸ Functions is reverted on the next pass; it also keeps each row's own scope, so a *Global* click in Workspace ▸ Functions is reverted on the next pass too
+7. **Leaves the models alone on a failed pass** — a pass that could not read the filter table, or could not write a new routing filter, keeps every `filterIds` and `defaultFilterIds` entry it already found and tries again at the next catalog fetch; only an answer that names the model (clearing the lists, or the row going away) detaches it
 
 **Limit.** The two halves above have different clocks, and the second is the one that can wait: the filter row is switched off on the next model-list refresh, while the model's own `filterIds` and `defaultFilterIds` entries are removed on the next metadata sync. So a model whose metadata sync is switched off — `UPDATE_MODEL_CAPABILITIES`, `UPDATE_MODEL_IMAGES` and `UPDATE_MODEL_DESCRIPTIONS` all off, with no other sync valve on — keeps its stale `filterIds` and `defaultFilterIds` until a sync valve comes back on. The filter row itself is inactive, so the chat path is unaffected; only the Integrations menu entry lingers until the next sync. Separately, a startup sweep clears any remaining `openrouter_*` id from every model's `filterIds` when no `openrouter_*` filter row survives at all — the all-gone case it previously skipped — so a model left by a transient install failure does not keep a dangling name forever.
 
@@ -373,7 +374,11 @@ the claim that would identify it belongs to the installer, which never runs whil
 valve is off. The two clauses that keep this from reaching too far are unchanged — a row
 carrying another copy's `openrouter_pipe:installed_by` is never selected, and a row that
 carries no marker at all is never written — so the arms select in one order: a row this
-copy installed, else a marked row with no record at all, else nothing. What no valve can
+copy installed, else a marked row with no record at all, else nothing. The sweep that
+retires image rows left over from the fixed-variant design obeys the same rule, on the same
+predicate: it selects on the image marker and the off-identity shape, and then writes only
+to a row this copy installed or to a row carrying no record at all, so two copies never
+stamp `switched_off_by_pipe` onto each other's rows. What no valve can
 recover is the id: a row keeps the id it was installed under, so an admin who wants the
 canonical id back removes the row holding it and lets the next refresh install a fresh
 one.

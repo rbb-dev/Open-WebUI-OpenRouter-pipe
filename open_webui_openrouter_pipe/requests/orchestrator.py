@@ -1626,14 +1626,6 @@ class RequestOrchestrator:
                         f"Model restricted (requested={responses_body.model}, normalized={normalized_model_id}, reasons={reasons})"
                     ),
                 )
-        if not features:
-            fallback_caps = (
-                ModelFamily.capabilities(openwebui_model_id or "")
-                or ModelFamily.capabilities(responses_body.model)
-            )
-            if fallback_caps:
-                features = dict(fallback_caps)
-
         task_effort = None
         if use_task_model_adapter:
             self.logger.debug("Detected task model: %s", __task__)

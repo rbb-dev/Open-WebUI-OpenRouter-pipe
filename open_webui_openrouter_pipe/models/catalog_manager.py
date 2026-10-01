@@ -476,6 +476,20 @@ def _release_stale_seed(
     return remaining, True
 
 
+def _single_id_is_transient(
+    filter_function_id: str | None,
+    supported: bool,
+    auto_attach: bool,
+    family_off: bool,
+    blank_is_a_decision: bool,
+) -> bool:
+    blank_id_release = bool(
+        not filter_function_id
+        and (family_off or (blank_is_a_decision and (not supported or not auto_attach)))
+    )
+    return not filter_function_id and not blank_id_release
+
+
 def _apply_single_id_filter_ids(
     meta_dict: dict,
     *,
@@ -489,12 +503,9 @@ def _apply_single_id_filter_ids(
 ) -> bool:
     if hands_off:
         return False
-    blank_id_release = bool(
-        not filter_function_id
-        and (family_off or (blank_is_a_decision and (not supported or not auto_attach)))
-    )
-    blank_id_is_transient = not filter_function_id and not blank_id_release
-    if blank_id_is_transient:
+    if _single_id_is_transient(
+        filter_function_id, supported, auto_attach, family_off, blank_is_a_decision
+    ):
         return False
     offered_id = filter_function_id or ""
     normalized = _normalize_id_list(meta_dict, "filterIds")
@@ -2300,7 +2311,7 @@ class ModelCatalogManager:
                         or valves.AUTO_DEFAULT_WEB_TOOLS_FILTER
                     )
                     and not tool_use_ruled_out
-                    and not pipe_capabilities.get("image_output")
+                    and not picture_only
                     and not pipe_capabilities.get("video_generation")
                     and not _is_fusion(openrouter_id)
                 )
@@ -2796,6 +2807,34 @@ class ModelCatalogManager:
                 family_off=image_gen_family_off,
             )
 
+        def _recorded_ids_kept_this_pass(meta_dict: dict) -> frozenset[str]:
+            keep: set[str] = set()
+            if video_ids_unresolved:
+                keep.add(_recorded_filter_id(meta_dict, "video_gen_filter_id"))
+            if image_ids_unresolved or not image_filter_ids_known:
+                keep |= _recorded_ids_any_shape(meta_dict, prune_key="image_filter_ids")
+            if not fusion_ids_known:
+                keep |= _recorded_ids_any_shape(meta_dict, prune_key="fusion_filter_ids")
+            if not provider_routing_ids_known:
+                keep.add(_recorded_filter_id(meta_dict, "provider_routing_filter_id"))
+            if _single_id_is_transient(
+                filter_function_id, filter_supported, auto_attach_filter,
+                web_tools_family_off, blank_is_a_decision=False,
+            ):
+                keep.add(_recorded_filter_id(meta_dict, "web_tools_attached_id"))
+            if _single_id_is_transient(
+                image_gen_filter_function_id, image_gen_filter_supported,
+                auto_attach_image_gen_filter, image_gen_family_off,
+                blank_is_a_decision=True,
+            ):
+                keep.add(_recorded_filter_id(meta_dict, "image_gen_filter_id"))
+            if _single_id_is_transient(
+                direct_uploads_filter_function_id, direct_uploads_filter_supported,
+                auto_attach_direct_uploads_filter, direct_uploads_family_off,
+                blank_is_a_decision=True,
+            ):
+                keep.add(_recorded_filter_id(meta_dict, "direct_uploads_filter_id"))
+            return frozenset(keep)
 
         def _apply_default_filter_ids(
             meta_dict: dict,
@@ -3067,12 +3106,9 @@ class ModelCatalogManager:
                 meta_dict["description"] = description
                 meta_updated = True
 
-            _video_keep = frozenset(
-                fid
-                for fid in _normalize_id_list(meta_dict, "filterIds")
-                if video_ids_unresolved and fid == _recorded_filter_id(meta_dict, "video_gen_filter_id")
-            )
-            if _prune_stale_openrouter_filter_ids(meta_dict, _video_keep):
+            if _prune_stale_openrouter_filter_ids(
+                meta_dict, _recorded_ids_kept_this_pass(meta_dict)
+            ):
                 meta_updated = True
 
             web_tools_hands_off = "web_tools_attached_id" in hands_off

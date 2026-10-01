@@ -22,11 +22,11 @@ import random
 import threading
 import time
 import weakref
-from collections.abc import Collection, MutableMapping, Sequence
+from collections.abc import Callable, Collection, MutableMapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import case, func, tuple_
+from sqlalchemy import case, func, not_
 
 from ..core.logging_system import _prune_archive_dir
 from ..core.timing_logger import timed
@@ -217,6 +217,8 @@ _WRITER_DRAIN_SECONDS = 1.0
 
 _MAX_EXCLUDED_TURNS = 1000
 
+_EXCLUDED_KEY_SEP = "\x1f"
+
 _MAX_DRAIN_LATCH_KEYS = 32
 
 _DEAD_MANAGER_DRAIN_WARNINGS: dict[str, float] = {}
@@ -225,6 +227,45 @@ _INCOMPLETE_MARKER_PREFIX = "Session log finalized as incomplete"
 _INCOMPLETE_MARKER_FUNC = "_assemble_and_write_bundle"
 
 _TEMPORARY_CHAT_PROCESS_SCOPE = "process"
+
+
+def _excluded_key(model: Any) -> Any:
+    return model.chat_id + _EXCLUDED_KEY_SEP + model.message_id
+
+
+def _set_aside_predicate(model: Any, exclude: Collection[tuple[str, str]]) -> Any:
+    return not_(
+        _excluded_key(model).in_(
+            [f"{chat_id}{_EXCLUDED_KEY_SEP}{message_id}" for chat_id, message_id in exclude]
+        )
+    )
+
+
+def _window_rows(
+    rows: Sequence[Any],
+    exclude: Collection[tuple[str, str]],
+    refusable: Callable[[str], bool],
+    limit: int,
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    offered: list[tuple[str, str]] = []
+    held: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for chat_id, message_id in rows:
+        if not (isinstance(chat_id, str) and isinstance(message_id, str)):
+            continue
+        key = (chat_id, message_id)
+        if key in seen or key in exclude:
+            continue
+        seen.add(key)
+        if refusable(chat_id):
+            if len(held) < 1:
+                held.append(key)
+            continue
+        offered.append(key)
+        if len(offered) >= int(limit):
+            break
+    return offered, held
+
 
 class _LockContended:
 
@@ -1122,7 +1163,11 @@ class SessionLogManager:
         limit: int,
         exclude: Collection[tuple[str, str]] = (),
     ) -> list[tuple[str, str]]:
+        from ..storage.owui_files import is_temporary_chat
+
         rows: list[Any] = []
+        offered: list[tuple[str, str]] = []
+        held: list[tuple[str, str]] = []
         _page = int(limit) + len(exclude)
         while True:
             try:
@@ -1130,9 +1175,7 @@ class SessionLogManager:
                     query = session.query(model.chat_id, model.message_id)  # type: ignore[attr-defined]
                     query = query.filter(model.item_type == "session_log_segment_terminal")  # type: ignore[attr-defined]
                     if exclude:
-                        query = query.filter(
-                            ~tuple_(model.chat_id, model.message_id).in_(list(exclude))  # type: ignore[attr-defined]
-                        )
+                        query = query.filter(_set_aside_predicate(model, exclude))
                     rows = (
                         query
                         .group_by(model.chat_id, model.message_id)  # type: ignore[attr-defined]
@@ -1140,33 +1183,16 @@ class SessionLogManager:
                         .limit(_page)
                         .all()
                     )
+                offered, held = _window_rows(rows, exclude, is_temporary_chat, limit)
             except Exception as exc:
                 self.logger.debug("Terminal message listing skipped — %s: %s", type(exc).__name__, exc, exc_info=True)
                 return []
-            if len(rows) < _page or len({(r[0], r[1]) for r in rows} - set(exclude)) >= int(limit):
+            if len(rows) < _page or len(offered) >= int(limit):
                 break
             _page *= 2
             if _page > 100_000:
                 break
-        try:
-            seen: set[tuple[str, str]] = set()
-            out: list[tuple[str, str]] = []
-            for chat_id, message_id in rows:
-                if not (isinstance(chat_id, str) and isinstance(message_id, str)):
-                    continue
-                key = (chat_id, message_id)
-                if key in seen:
-                    continue
-                seen.add(key)
-                if key in exclude:
-                    continue
-                out.append(key)
-                if len(out) >= int(limit):
-                    break
-            return out
-        except Exception as exc:
-            self.logger.debug("Terminal message listing skipped — %s: %s", type(exc).__name__, exc, exc_info=True)
-            return []
+        return [*offered, *held]
 
     @timed
     def _list_stale_messages(
@@ -1178,40 +1204,46 @@ class SessionLogManager:
         limit: int,
         exclude: Collection[tuple[str, str]] = (),
     ) -> list[tuple[str, str]]:
+        from ..storage.owui_files import is_temporary_chat
+
         cutoff = datetime.datetime.now(datetime.UTC).replace(tzinfo=None) - datetime.timedelta(seconds=float(stale_finalize_seconds))
-        try:
-            with _db_session(session_factory) as session:
+        rows: list[Any] = []
+        offered: list[tuple[str, str]] = []
+        held: list[tuple[str, str]] = []
+        _page = int(limit)
+        while True:
+            try:
                 # Candidates (best effort): any message that has at least one segment.
-                terminal_count = func.sum(
-                    case((model.item_type == "session_log_segment_terminal", 1), else_=0)  # type: ignore[attr-defined]
-                )
-                query = session.query(model.chat_id, model.message_id)  # type: ignore[attr-defined]
-                query = query.filter(model.item_type.in_(["session_log_segment", "session_log_segment_terminal"]))  # type: ignore[attr-defined]
-                query = (
-                    query
-                    .group_by(model.chat_id, model.message_id)  # type: ignore[attr-defined]
-                    .having(func.max(model.created_at) < cutoff)  # type: ignore[attr-defined]
-                    .having(terminal_count == 0)  # type: ignore[attr-defined]
-                )
-                if exclude:
-                    query = query.having(
-                        ~tuple_(model.chat_id, model.message_id).in_(list(exclude))  # type: ignore[attr-defined]
+                with _db_session(session_factory) as session:
+                    terminal_count = func.sum(
+                        case((model.item_type == "session_log_segment_terminal", 1), else_=0)  # type: ignore[attr-defined]
                     )
-                rows = (
-                    query
-                    .order_by(func.max(model.created_at).asc())  # type: ignore[attr-defined]
-                    .limit(int(limit))
-                    .all()
-                )
-                out = [
-                    (chat_id, message_id)
-                    for chat_id, message_id in rows
-                    if isinstance(chat_id, str) and isinstance(message_id, str)
-                ][: int(limit)]
-                return out
-        except Exception as exc:
-            self.logger.debug("Stale message listing skipped — %s: %s", type(exc).__name__, exc, exc_info=True)
-            return []
+                    query = session.query(model.chat_id, model.message_id)  # type: ignore[attr-defined]
+                    query = query.filter(model.item_type.in_(["session_log_segment", "session_log_segment_terminal"]))  # type: ignore[attr-defined]
+                    query = (
+                        query
+                        .group_by(model.chat_id, model.message_id)  # type: ignore[attr-defined]
+                        .having(func.max(model.created_at) < cutoff)  # type: ignore[attr-defined]
+                        .having(terminal_count == 0)  # type: ignore[attr-defined]
+                    )
+                    if exclude:
+                        query = query.having(_set_aside_predicate(model, exclude))
+                    rows = (
+                        query
+                        .order_by(func.max(model.created_at).asc())  # type: ignore[attr-defined]
+                        .limit(_page)
+                        .all()
+                    )
+                offered, held = _window_rows(rows, exclude, is_temporary_chat, limit)
+            except Exception as exc:
+                self.logger.debug("Stale message listing skipped — %s: %s", type(exc).__name__, exc, exc_info=True)
+                return []
+            if len(rows) < _page or len(offered) >= int(limit):
+                break
+            _page *= 2
+            if _page > 100_000:
+                break
+        return [*offered, *held]
 
     # =========================================================================
     # Archive Event Helpers
@@ -1909,20 +1941,17 @@ class SessionLogManager:
             if not root.exists():
                 continue
             try:
-                for path in root.rglob("*.zip"):
-                    with contextlib.suppress(Exception):
-                        stat = path.stat()
-                        if stat.st_mtime < cutoff:
-                            path.unlink(missing_ok=True)  # type: ignore[arg-type]
-            except OSError:
-                self.logger.debug("Session log cleanup: archive scan failed for %s", base_dir, exc_info=True)
-                continue
-
-            # Prune empty directories, including the root if it's emptied out.
-            try:
-                for dirpath, dirnames, filenames in os.walk(root, topdown=False):
+                for dirpath, _dirnames, filenames in os.walk(root, topdown=False):
+                    for name in filenames:
+                        if not name.endswith(".zip"):
+                            continue
+                        with contextlib.suppress(Exception):
+                            path = Path(dirpath) / name
+                            stat = path.stat()
+                            if stat.st_mtime < cutoff:
+                                path.unlink(missing_ok=True)  # type: ignore[arg-type]
                     with contextlib.suppress(Exception):
                         _prune_archive_dir(dirpath)
             except OSError:
-                self.logger.debug("Session log cleanup: directory prune failed for %s", base_dir, exc_info=True)
+                self.logger.debug("Session log cleanup: archive scan failed for %s", base_dir, exc_info=True)
                 continue

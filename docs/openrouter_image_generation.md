@@ -209,10 +209,14 @@ for a chat, the next sync will re-default it. Set
 
 **Web Tools / Web Search guard.** The `OR Web Tools` filter (web
 search + web fetch + datetime) and the `OR Web Search` overlay are
-**capability-gated to skip image-output models** — these models do
-not support tool use and would fail with an HTTP 404 "No endpoints
-found that support tool use" if web search were attached. The same
-guard applies to video-generation models.
+**capability-gated to skip picture-only models** — a model that
+returns pictures and no text has no endpoint that accepts tool use,
+and would fail with an HTTP 404 "No endpoints found that support tool
+use" if web search were attached. A model that returns **text as
+well as** pictures is a chat model that can draw, and it keeps both
+this overlay and the Image Generation toggle, which is decided from
+the same four facts. The same guard applies to video-generation
+models.
 
 See [Configuration valves](#configuration-valves-admin) for the
 image-specific valves; the master `MODEL_CATALOG_REFRESH_SECONDS`
@@ -1488,16 +1492,21 @@ Tuning hints:
 
 ### `OR Web Tools` filter showing on image models / 404 "No endpoints found that support tool use"
 
-If the user sees the OR Web Tools filter toggle on an image-output
-model (e.g. Sourceful Riverflow), and enabling it causes a 404, the
-capability gate may not be working. The pipe explicitly excludes
-image-output and video-generation models from Web Tools attach: a model
-that answers with a picture or a clip is never given the Web Tools
-filter, whatever the attach valves are set to.
+If the user sees the OR Web Tools filter toggle on an image model
+(e.g. Sourceful Riverflow) and enabling it causes a 404, the
+capability gate may not be working. The pipe excludes **picture-only**
+and video-generation models from Web Tools attach: a model whose whole
+answer is a picture, or a clip, is never given the Web Tools filter,
+whatever the attach valves are set to. A model that answers with text
+as well as pictures is a chat model that can draw, and it **keeps** the
+Web Tools filter alongside the Image Generation toggle — the two are
+decided from the same four facts, so a 404 here means a text+image row
+is being read as picture-only.
 
 If a model is mis-detected, check its `architecture.output_modalities`
-in the OpenRouter catalog — only models with `image` (and not `text`,
-or without `text` for pure-image-only) trigger the gate. Toggle
+in the OpenRouter catalog — the gate fires only for a model whose
+`output_modalities` carry `image` and **not** `text`. A row carrying
+both is a chat model. Toggle
 `ENABLE_OPENROUTER_IMAGE_GENERATION` off → save → on → save to force a
 catalog sync; the gate is re-evaluated each sync.
 
@@ -1758,10 +1767,12 @@ pipes()
           │  is already installed keeps it until a refresh reads it
           ├─ each install in own try/except — partial failures isolated
           └─ retire rows left over from the fixed-variant design
+             (only rows this copy installed, or that carry no
+             openrouter_pipe:installed_by record at all)
 
   └─ catalog_manager._update_or_insert_model_with_metadata()
         ├─ pipe_capabilities.image_output gate
-        ├─ web_tools_supported = ... and not image_output
+        ├─ web_tools_supported = ... and not picture_only
         ├─ _apply_list_filter_ids(meta_dict)       — writes filterIds
         └─ _apply_list_default_filter_ids(meta_dict) — writes defaultFilterIds
 

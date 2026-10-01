@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import re
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import (
+    _WHATWG_C0_CONTROL_OR_SPACE,  # pyright: ignore[reportAttributeAccessIssue]
+    urlsplit,
+)
 
 HTTP_SCHEMES = frozenset({"http", "https"})
+
+_SCHEME_WINDOW = 64
+_MEMOISED_MAX_CHARS = 1024
+_STRIPPED_SCHEME_BYTES = str.maketrans("", "", "\t\r\n")
 
 MEDIA_TYPE_PATTERN = re.compile(
     r"^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$"
@@ -22,16 +29,21 @@ def media_type_or_empty(value: Any) -> str:
 
 
 def _scheme_prefix(url: str) -> str | None:
-    if url[:5].lower() == "data:":
-        return "data"
-    return None
+    window = url[:_SCHEME_WINDOW].lstrip(_WHATWG_C0_CONTROL_OR_SPACE)
+    if window[:5].lower() != "data:" and (
+        "\t" in window or "\r" in window or "\n" in window
+    ):
+        window = window.translate(_STRIPPED_SCHEME_BYTES)
+    return "data" if window[:5].lower() == "data:" else None
 
 
 _split_uncached = getattr(urlsplit, "__wrapped__", urlsplit)
 
 
 def _split(value: str) -> Any:
-    return _split_uncached(value) if _scheme_prefix(value) == "data" else urlsplit(value)
+    if _scheme_prefix(value) == "data" or len(value) > _MEMOISED_MAX_CHARS:
+        return _split_uncached(value)
+    return urlsplit(value)
 
 
 def url_scheme(url: Any) -> str:
@@ -41,11 +53,11 @@ def url_scheme(url: Any) -> str:
     if prefix is not None:
         return prefix
     try:
-        return urlsplit(url).scheme
+        return _split(url).scheme
     except ValueError:
         pass
     try:
-        return urlsplit(f"{url.partition(':')[0]}:").scheme
+        return _split(f"{url.partition(':')[0]}:").scheme
     except ValueError:
         return ""
 
@@ -56,10 +68,10 @@ def is_absolute_url(url: Any) -> bool:
     if _scheme_prefix(url) is not None:
         return True
     try:
-        parts = urlsplit(url)
+        parts = _split(url)
     except ValueError:
         try:
-            parts = urlsplit(f"{url.partition(':')[0]}:")
+            parts = _split(f"{url.partition(':')[0]}:")
         except ValueError:
             return False
     return bool(parts.scheme or parts.netloc)
@@ -130,7 +142,7 @@ def loggable_link(url: Any) -> str:
             return ""
         return f"data:{parsed[1].partition(';')[0].strip()[:64]}"
     try:
-        parts = urlsplit(candidate)
+        parts = _split(candidate)
     except ValueError:
         return ""
     if not parts.netloc:

@@ -152,6 +152,8 @@ _VETTED_DNS_CACHE_SECONDS = 300
 _REMOTE_DOWNLOAD_CONNECT_CAP_SECONDS = 60
 _REMOTE_DOWNLOAD_READ_SECONDS = 60.0
 
+_BASE64_DECODE_QUANTUM_CHARS = 1024 * 1024
+
 
 def _seeded_connect_budget(seeded: int) -> int:
     return min(int(seeded), _REMOTE_DOWNLOAD_CONNECT_CAP_SECONDS)
@@ -165,6 +167,19 @@ def _decode_strict_base64(payload: str) -> bytes | None:
         return base64.b64decode(cleaned, validate=True)
     except (binascii.Error, ValueError):
         return None
+
+
+async def _decode_base64_in_quanta(payload: str) -> bytes:
+    if "=" in payload.rstrip("="):
+        raise ValueError("interior padding")
+    return b"".join(
+        [
+            await asyncio.to_thread(
+                base64.b64decode, payload[at : at + _BASE64_DECODE_QUANTUM_CHARS], validate=True
+            )
+            for at in range(0, len(payload), _BASE64_DECODE_QUANTUM_CHARS)
+        ]
+    )
 
 
 async def _capped_body(resp: Any, cap: int) -> bytes | None:

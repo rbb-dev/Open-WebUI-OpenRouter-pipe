@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import base64
 import binascii
 import json
 from typing import Any
@@ -32,7 +30,11 @@ from ..requests.debug import (
     _debug_print_request,
     _debug_print_response,
 )
-from ..storage.multimodal import _guess_image_mime_type, canonical_image_mime
+from ..storage.multimodal import (
+    _decode_base64_in_quanta,
+    _guess_image_mime_type,
+    canonical_image_mime,
+)
 
 _CATALOG_TIMEOUT_SECONDS = 15
 """Cap on one catalog or published-contract read.
@@ -47,7 +49,6 @@ from .image_types import (
     ImageGenerationResult,
 )
 
-_IMAGE_DECODE_CHUNK_BYTES = 1024 * 1024
 _IMAGE_SSE_CONTENT_TYPE = "text/event-stream"
 _IMAGE_SSE_PREFIX = "data:"
 _IMAGE_SSE_DONE = "[DONE]"
@@ -382,6 +383,7 @@ class OpenRouterImageClient:
         decoded_total = 0
         over_ceiling = 0
         over_ceiling_own = 0
+        latched = False
         for index, entry in enumerate(entries):
             if not isinstance(entry, dict):
                 rejected.append(clamp_text(f"an entry of type {type(entry).__name__} carried no image"))
@@ -390,12 +392,12 @@ class OpenRouterImageClient:
             if not isinstance(blob, str) or not blob:
                 rejected.append(clamp_text(f"an entry with keys {sorted(entry)} carried no inline base64"))
                 continue
-            own_decoded = (len(blob) * 3) // 4
-            decoded_total += own_decoded
-            if 0 < max_decoded_bytes < decoded_total:
+            own_decoded = (len(blob.rstrip("=")) // 4) * 3
+            if latched or 0 < max_decoded_bytes < decoded_total + own_decoded:
                 over_ceiling += 1
                 if 0 < max_decoded_bytes < own_decoded:
                     over_ceiling_own += 1
+                latched = True
                 rejected.append(
                     clamp_text(
                         _over_ceiling_reason(f"entry {index + 1} of {len(entries)}", max_decoded_bytes)
@@ -403,14 +405,7 @@ class OpenRouterImageClient:
                 )
                 continue
             try:
-                if "=" in blob.rstrip("="):
-                    raise ValueError("interior padding")
-                raw = b"".join(
-                    [
-                        await asyncio.to_thread(base64.b64decode, blob[at : at + _IMAGE_DECODE_CHUNK_BYTES], validate=True)
-                        for at in range(0, len(blob), _IMAGE_DECODE_CHUNK_BYTES)
-                    ]
-                )
+                raw = await _decode_base64_in_quanta(blob)
             except (binascii.Error, ValueError):
                 rejected.append(clamp_text(f"an entry starting {blob[:24]!r} was not decodable base64"))
                 continue
@@ -430,6 +425,7 @@ class OpenRouterImageClient:
                     )
                     continue
             images.append(GeneratedImage(data=raw, mime_type=mime_type))
+            decoded_total += len(raw)
 
         if not images:
             detail = f" ({summarise_names(rejected)})" if rejected else ""

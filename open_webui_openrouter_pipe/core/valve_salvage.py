@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import typing
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from pydantic import BaseModel, ValidationError, create_model
@@ -157,3 +157,77 @@ def drop_unvalidatable(cls: type, values: Any) -> Any:
             name,
         )
     return kept
+
+
+def repair_unvalidatable(cls: type, values: Any, handler: Callable[[Any], Any]) -> Any:
+    values = carry_renamed_valves(cls, values)
+    if not isinstance(values, Mapping):
+        return handler(values)
+    kept = dict(values)
+    unread: list[tuple[str, str]] = []
+    blanked: set[str] = set()
+    for _ in range(len(kept) + 2):
+        try:
+            result = handler(kept)
+            break
+        except ValidationError as exc:
+            names = {str(err["loc"][0]) for err in exc.errors() if err.get("loc")}
+            for name in names:
+                if not is_secret_field(cls, name) or isinstance(kept.get(name), str):
+                    continue
+                value = kept.get(name)
+                if value is None:
+                    kept.pop(name, None)
+                    note = "was not set and has been cleared"
+                elif (
+                    isinstance(value, (list, tuple))
+                    and len(value) == 1
+                    and isinstance(value[0], str)
+                ):
+                    kept[name] = _secret_as_str(value)
+                    note = "was not text and has been read as the text it holds"
+                else:
+                    kept[name] = _secret_as_str(value)
+                    note = (
+                        "was kept and is not a key this release can use; re-enter it "
+                        "where you configure the pipe"
+                    )
+                if all(existing != name for existing, _ in unread):
+                    unread.append((name, note))
+            bad = {name for name in names if not is_secret_field(cls, name)}
+            if not bad:
+                continue
+            for name in bad:
+                blank = _admits_none(cls, name) and isinstance(kept.get(name), str) and not kept[name].strip()
+                if blank:
+                    blanked.add(name)
+                kept.pop(name, None)
+    else:
+        result = handler(kept)
+    for name, note in unread:
+        logger.log(
+            warn_level(_warned_stale_valves, name, cooldown_s=_STALE_VALVES_WARN_EVERY_S),
+            "pipe: stored setting %s %s.",
+            name,
+            note,
+        )
+    if len(kept) != len(values):
+        stored = values
+        for name in sorted(set(values) - set(kept) - {n for n, _ in unread} - blanked):
+            default = cls.model_fields[name].get_default(call_default_factory=True)
+            shown = "<redacted>" if is_secret_field(cls, name) else stored[name]
+            logger.log(
+                warn_level(_warned_stale_valves, name, cooldown_s=_STALE_VALVES_WARN_EVERY_S),
+                "pipe: stored setting %s (was %r) is not accepted by this release and "
+                "was left at its default %r. The pipe keeps running; set it again where "
+                "you configure the pipe.",
+                name, shown, default,
+            )
+    for name in sorted(set(values) - set(cls.model_fields)):
+        logger.log(
+            warn_level(_warned_stale_valves, name, cooldown_s=_STALE_VALVES_WARN_EVERY_S),
+            "pipe: stored setting %s is not a setting this release has, and is not used. "
+            "The pipe keeps running; nothing is read from it.",
+            name,
+        )
+    return result

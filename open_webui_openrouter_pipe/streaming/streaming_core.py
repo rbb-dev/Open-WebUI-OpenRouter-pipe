@@ -7,7 +7,6 @@ and endpoint selection.
 from __future__ import annotations
 
 import asyncio
-import base64
 import binascii
 import contextlib
 import copy
@@ -198,6 +197,7 @@ def _member_notice_text(event: Any) -> str:
 # Imports from storage.persistence
 from ..storage.multimodal import (
     _SNIFF_PREFIX_BYTES,
+    _decode_base64_in_quanta,
     _sniff_evidence,
     canonical_image_mime,
     image_extension_for_mime,
@@ -919,7 +919,7 @@ class StreamingHandler:
                 if not self._pipe._file_gateway.validate_base64_size(cleaned):
                     return None
                 try:
-                    decoded = base64.b64decode(cleaned, validate=True)
+                    decoded = await _decode_base64_in_quanta(cleaned)
                 except (binascii.Error, ValueError):
                     return None
                 mime_type = _resolved_stored_mime(None, decoded)
@@ -953,7 +953,7 @@ class StreamingHandler:
                             if not self._pipe._file_gateway.validate_base64_size(cleaned):
                                 continue
                             try:
-                                decoded = base64.b64decode(cleaned, validate=True)
+                                decoded = await _decode_base64_in_quanta(cleaned)
                             except (binascii.Error, ValueError):
                                 continue
                             explicit_mime = (

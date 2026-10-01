@@ -46,8 +46,9 @@ from .valve_salvage import (
     _VALVE_SCHEMA_CACHE,  # noqa: F401
     _valve_schema,  # noqa: F401
     _warned_stale_valves,  # noqa: F401
-    drop_unvalidatable,
+    drop_unvalidatable,  # noqa: F401
     is_secret_field,  # noqa: F401
+    repair_unvalidatable,
 )
 from .warn_latch import warn_level
 
@@ -1011,10 +1012,10 @@ class Valves(BaseModel):
         _warn_bzip2_level_floored()
         return dict(values, SESSION_LOG_ZIP_COMPRESSLEVEL=1)
 
-    @model_validator(mode="before")
+    @model_validator(mode="wrap")
     @classmethod
-    def _drop_unvalidatable(cls, values):
-        return drop_unvalidatable(cls, values)
+    def _drop_unvalidatable(cls, values, handler):
+        return repair_unvalidatable(cls, values, handler)
 
     # Connection & Auth
     BASE_URL: str = Field(
@@ -1235,7 +1236,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "Comma-separated host allowlist for the per-user reference links a video filter "
             "forwards to OpenRouter, on the filter's own reference fields and on free-text "
             "provider.options alike. An entry matches exactly or as a parent domain, "
-            "case-insensitively, so example.com covers cdn.example.com. Empty - the default - "
+            "case-insensitively, so example.com covers cdn.example.com. A bare host matches on "
+            "any port; a host:port entry names that host on that port only, and a URL with no "
+            "port is read as the port its own scheme implies. Empty - the default - "
             "means unrestricted. This is an additional restriction: the https:// and SSRF "
             "address check still applies, and runs either way. It takes no '!' block entries "
             "and no CIDR ranges, unlike the Plaintext HTTP host allowlist, which is "
@@ -1462,7 +1465,8 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         title="Enable plugin system",
         description=(
             "Master switch for the plugin system. When False, plugins are never called at all. "
-            "Takes effect immediately without restart."
+            "Takes hold on each worker's next request or model-list build; the dashboard's own "
+            "route reads the persisted row and closes at once."
         ),
     )
     AUTO_CONTEXT_TRIMMING: bool = Field(
@@ -1800,6 +1804,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         description=(
             "Maximum number of message bundles listed per archiving pass, in each of the two listings "
             "(finished turns and crash-stranded ones), so a pass lists up to twice this many; counted in turns, not rows. "
+            "The count is of turns that can be assembled: one the assembler refuses by policy — a temporary chat's, which "
+            "the pipe never archives — does not consume a slot, and is offered at most once per listing per pass, so a "
+            "stranded one cannot hold the window. "
             "A pass then assembles as many of those as SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS of wall clock allows, "
             "leaving the rest staged for the next pass."
         ),
@@ -2368,11 +2375,11 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     )
     AUTO_ATTACH_WEB_TOOLS_FILTER: bool = Field(
         default=True,
-        description="Automatically attach the OpenRouter Web Tools per-chat switch to every pipe model that is not an image-output, a video-generation or a Fusion model (so the toggle appears in the Integrations menu). Turning this off detaches the filters the pipe attached, and also releases the default the pipe seeded for them; a filter id an admin attached by hand is left alone, and so is a Default Filter ticked by hand in the model editor, which this valve never seeds (seeding a default is the separate AUTO_DEFAULT_WEB_TOOLS_FILTER setting). This relies on the ownership record the pipe writes, which it keeps up to date on every pass where the pipe attaches it, so a record that has drifted is repaired on the next sync. A model carrying the panel with no record -- one attached before this build wrote records -- is not given one: detach the panel by hand once and the next sync records the current one.",
+        description="Automatically attach the OpenRouter Web Tools per-chat switch to every pipe model that is not a picture-only model, a video-generation or a Fusion model (a model that answers with text as well as pictures is a chat model that can draw, and it keeps the switch, so the toggle appears in the Integrations menu). Turning this off detaches the filters the pipe attached, and also releases the default the pipe seeded for them; a filter id an admin attached by hand is left alone, and so is a Default Filter ticked by hand in the model editor, which this valve never seeds (seeding a default is the separate AUTO_DEFAULT_WEB_TOOLS_FILTER setting). A pass that cannot install the filter, because Open WebUI refused the write, is not a decision to detach: the switch and the default it already carried stay exactly where they are, and the install is tried again at the next catalog fetch. This relies on the ownership record the pipe writes, which it keeps up to date on every pass where the pipe attaches it, so a record that has drifted is repaired on the next sync. A model carrying the panel with no record -- one attached before this build wrote records -- is not given one: detach the panel by hand once and the next sync records the current one.",
     )
     AUTO_DEFAULT_WEB_TOOLS_FILTER: bool = Field(
         default=False,
-        description="When enabled, marks the OpenRouter Web Tools filter as a Default Filter on every pipe model that is not an image-output, a video-generation or a Fusion model (pre-enabled per chat; users can still turn it off). Turning it off removes the already-seeded default from models on the next sync, and so does switching every Web Tool off, and turning it back on reclaims a default the operator re-ticked in between, so the next turn-off still removes it. A default seeded under an id the panel no longer has is released too, even after the panel has been reinstalled under a new id, and a default seeded by a build older than the durable seed record, whose row carries only the attach record, is left in place and the admin removes it in the model editor. A default an installer hiccup left in place is not one of them: a blank filter id is a lookup that failed, not a decision to release, so a seeded default survives it, and with the valve on it is never looked for.",
+        description="When enabled, marks the OpenRouter Web Tools filter as a Default Filter on every pipe model that is not a picture-only model, a video-generation or a Fusion model (a model that answers with text as well as pictures is a chat model that can draw, and it keeps the switch, pre-enabled per chat; users can still turn it off). Turning it off removes the already-seeded default from models on the next sync, and so does switching every Web Tool off, and turning it back on reclaims a default the operator re-ticked in between, so the next turn-off still removes it. A default seeded under an id the panel no longer has is released too, even after the panel has been reinstalled under a new id, and a default seeded by a build older than the durable seed record, whose row carries only the attach record, is left in place and the admin removes it in the model editor. A default an installer hiccup left in place is not one of them: a blank filter id is a lookup that failed, not a decision to release, so a seeded default survives it, and with the valve on it is never looked for.",
     )
 
     AUTO_INSTALL_IMAGE_GEN_FILTER: bool = Field(
@@ -2392,7 +2399,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     )
     AUTO_ATTACH_IMAGE_GEN_FILTER: bool = Field(
         default=True,
-        description="Automatically attach the OpenRouter Image Generation filter to every pipe model that can send the tool: not a model whose catalogue entry rules tool use out, not a picture-only model, not a video model, not the hosted Fusion model. A model that stops qualifying loses the switch at the next refresh, and the id the pipe had recorded for it is released from `filterIds` on that same refresh. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. On its own, with the per-model image filter pair off, this valve also buys the published-contract sweep the tool's six controls are drawn from and checked against, so the choices on them are the drawing model's own.",
+        description="Automatically attach the OpenRouter Image Generation filter to every pipe model that can send the tool: not a model whose catalogue entry rules tool use out, not a picture-only model, not a video model, not the hosted Fusion model. A model that stops qualifying loses the switch at the next refresh, and the id the pipe had recorded for it is released from `filterIds` on that same refresh. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. A pass that cannot install the filter, because Open WebUI refused the write, is not a decision to detach: the switch stays exactly where it was and the install is tried again at the next catalog fetch. On its own, with the per-model image filter pair off, this valve also buys the published-contract sweep the tool's six controls are drawn from and checked against, so the choices on them are the drawing model's own.",
     )
     ENABLE_OPENROUTER_IMAGE_GENERATION: bool = Field(
         default=True,
@@ -2505,7 +2512,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     )
     AUTO_ATTACH_FUSION_FILTER: bool = Field(
         default=True,
-        description="Automatically attach the OpenRouter Fusion filter to the fusion models only — `openrouter/fusion`, `openrouter/fusion-flash`, and their `:tag` variant and `@preset/…` rows (so their panel/judge options appear in the Integrations menu). Never attaches to any other model. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. Auto-install off with this on — the install-by-hand mode — no longer detaches on a pass that finds no panel: the attached filter stays and the next catalog fetch tries again.",
+        description="Automatically attach the OpenRouter Fusion filter to the fusion models only — `openrouter/fusion`, `openrouter/fusion-flash`, and their `:tag` variant and `@preset/…` rows (so their panel/judge options appear in the Integrations menu). Never attaches to any other model. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. Auto-install off with this on — the install-by-hand mode — no longer detaches on a pass that finds no panel: the attached filter stays and the next catalog fetch tries again. Neither does a pass that could not install the panel because Open WebUI refused the write: the attached filter and the default it carried stay, and the install is tried again at the next catalog fetch.",
     )
     AUTO_DEFAULT_FUSION_FILTER: bool = Field(
         default=True,
@@ -2909,7 +2916,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=True,
         description=(
             "When enabled, automatically attaches the OpenRouter Direct Uploads toggleable filter to models that support "
-            "at least one of OpenRouter direct file/audio/video inputs (so the switch appears in the Integrations menu only where it can work). Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone."
+            "at least one of OpenRouter direct file/audio/video inputs (so the switch appears in the Integrations menu only where it can work). Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. A pass that cannot install the filter, because Open WebUI refused the write, is not a decision to detach: the switch stays exactly where it was and the install is tried again at the next catalog fetch."
         ),
     )
     AUTO_INSTALL_DIRECT_UPLOADS_FILTER: bool = Field(

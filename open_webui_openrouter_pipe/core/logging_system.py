@@ -263,13 +263,18 @@ class SessionLogger:
     @classmethod
     def _build_event(cls, record: logging.LogRecord) -> dict[str, Any]:
         """Return a structured session log event extracted from a LogRecord."""
-        try:
-            message = record.getMessage()
-        except Exception:  # noqa: BLE001 - capture path: self-log recurses; in-band fallback
-            message = _safe_message(record)
-        raw_message = getattr(record, "raw_msg", None)
-        if isinstance(raw_message, str):
-            message = raw_message
+        redacted = getattr(record, "redacted_msg", None)
+        if isinstance(redacted, str):
+            message = redacted
+        else:
+            try:
+                message = record.getMessage()
+            except Exception:  # noqa: BLE001 - capture path: self-log recurses; in-band fallback
+                message = _safe_message(record)
+            raw_message = getattr(record, "raw_msg", None)
+            if isinstance(raw_message, str):
+                message = raw_message
+            message = _data_url_log_subject(message)
 
         event_type = cls._classify_event_type(message)
 
@@ -292,9 +297,9 @@ class SessionLogger:
                 record, "exc_text", None
             )
             if exc_text:
-                event["exception"] = {"text": str(exc_text)}
+                event["exception"] = {"text": _data_url_log_subject(str(exc_text))}
             elif exc_info:
-                event["exception"] = {"text": "".join(traceback.format_exception(*exc_info))}
+                event["exception"] = {"text": _data_url_log_subject("".join(traceback.format_exception(*exc_info)))}
         except Exception:  # noqa: BLE001 - capture path: self-log recurses; in-band sentinel
             event["exception"] = {"text": "<<failed to format exception>>"}
 
@@ -403,25 +408,25 @@ class SessionLogger:
                 pass
             had_args = bool(getattr(record, "args", ()))
             if not hasattr(record, "raw_msg"):
-                try:
-                    raw = (record.msg % record.args) if (
-                        isinstance(record.msg, str) and had_args
-                    ) else record.msg
-                except Exception:  # noqa: BLE001 - logging Filter: self-log re-enters Logger.handle
-                    raw = record.msg
+                raw = record.msg
+                if isinstance(record.msg, str) and had_args:
+                    try:
+                        raw = record.msg % record.args
+                    except Exception:  # noqa: BLE001 - logging Filter: self-log re-enters Logger.handle
+                        raw = record.msg
                 record.raw_msg = raw
-            if isinstance(record.msg, str) and had_args:
-                try:
-                    record.msg = record.msg % record.args
-                except Exception:  # noqa: BLE001, S110 - a mismatched site must keep its record
-                    pass
             if had_args:
                 record.args = ()
-            if isinstance(record.msg, str):
+            if isinstance(record.raw_msg, str):
                 try:
-                    record.msg = _neutralise_log_text(record.msg)
-                except Exception:  # noqa: BLE001, S110 - logging Filter: self-log re-enters Logger.handle
-                    pass
+                    redacted_msg = _data_url_log_subject(record.raw_msg)
+                except Exception:  # noqa: BLE001 - logging Filter: self-log re-enters Logger.handle
+                    redacted_msg = record.raw_msg
+                record.redacted_msg = redacted_msg
+                try:
+                    record.msg = _neutralise_log_text(redacted_msg)
+                except Exception:  # noqa: BLE001 - logging Filter: self-log re-enters Logger.handle
+                    record.msg = redacted_msg
             if record.exc_info:  # noqa: SIM102 - nested so the sentinel guards the whole block
                 if not getattr(record, "_exc_shaped", False):
                     record._exc_shaped = True  # type: ignore[attr-defined]

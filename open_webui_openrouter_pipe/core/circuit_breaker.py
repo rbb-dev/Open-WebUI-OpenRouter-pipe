@@ -57,21 +57,26 @@ class CircuitBreaker:
         self._sweep_after: float = 0.0
         self._read_swept_at: float = 0.0
 
-    def _sweep_expired(self, now: float, *, force: bool = False) -> None:
+    def _sweep_expired(
+        self, now: float, *, force: bool = False, which: str = "both"
+    ) -> None:
         if not force and now < self._sweep_after:
             return
-        self._sweep_after = now + self._window_seconds
         window = self._window_seconds
-        for key, failures in list(self._breaker_records.items()):
-            if not failures or now - failures[-1] > window:
-                self._breaker_records.pop(key, None)
-        for user_id, tools in list(self._tool_breakers.items()):
-            for tool_key in list(tools.keys()):
-                failures = tools[tool_key]
+        if which in ("both", "requests"):
+            for key, failures in list(self._breaker_records.items()):
                 if not failures or now - failures[-1] > window:
-                    tools.pop(tool_key, None)
-            if not tools:
-                self._tool_breakers.pop(user_id, None)
+                    self._breaker_records.pop(key, None)
+        if which in ("both", "tools"):
+            for user_id, tools in list(self._tool_breakers.items()):
+                for tool_key in list(tools.keys()):
+                    failures = tools[tool_key]
+                    if not failures or now - failures[-1] > window:
+                        tools.pop(tool_key, None)
+                if not tools:
+                    self._tool_breakers.pop(user_id, None)
+        if which == "both":
+            self._sweep_after = now + window
 
     @property
     def threshold(self) -> int:
@@ -138,7 +143,7 @@ class CircuitBreaker:
             return None
         now = time.time()
         self._breaker_records[user_id].append(now)
-        self._sweep_expired(now, force=True)
+        self._sweep_expired(now, force=True, which="requests")
         return now
 
     def retract_failure(self, user_id: str, recorded_at: float | None) -> None:
@@ -206,7 +211,7 @@ class CircuitBreaker:
             return
         now = time.time()
         self._tool_breakers[user_id][(tool_type, tool_name)].append(now)
-        self._sweep_expired(now, force=True)
+        self._sweep_expired(now, force=True, which="tools")
 
     def reset_tool(self, user_id: str, tool_type: str, tool_name: str = "") -> None:
         """Clear failure records for a specific tool type.

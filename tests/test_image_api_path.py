@@ -3364,8 +3364,6 @@ async def test_the_ceiling_stops_the_loop_before_it_decodes(monkeypatch):
     import aiohttp
     import base64 as _base64
 
-    import open_webui_openrouter_pipe.integrations.image_client as client_module
-
     decoded = _DecodeCounter()
     real = _base64.b64decode
 
@@ -3375,7 +3373,7 @@ async def test_the_ceiling_stops_the_loop_before_it_decodes(monkeypatch):
         decoded.bytes += len(out)
         return out
 
-    monkeypatch.setattr(client_module.base64, "b64decode", _spy)
+    monkeypatch.setattr(_base64, "b64decode", _spy)
     entry = {"b64_json": _b64(_png(4, 4) + b"\x00" * (600 * 1024))}
 
     with aioresponses() as mocked:

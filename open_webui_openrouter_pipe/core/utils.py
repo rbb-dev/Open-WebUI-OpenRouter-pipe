@@ -254,8 +254,15 @@ def tool_output_text_and_pictures(output: Any) -> tuple[str, list[str]]:
     return (output if isinstance(output, str) else ("" if output is None else str(output))), []
 
 
-_DATA_URL_LOG_SCAN = re.compile(r"(?<![A-Za-z0-9+.-])data:[^\s]*", re.IGNORECASE)
+_DATA_URL_LOG_SCAN = re.compile(r"""(?<![A-Za-z0-9+.-])data:[^\s"')\]}]*""", re.IGNORECASE)
+_DATA_URL_LOG_MARKER_RE = re.compile(r"\s*\[redacted\]")
 _DATA_URL_NAME_PARAM = re.compile(r";name=[^;,]*", re.IGNORECASE)
+
+
+def _is_a_bare_media_type(head: str) -> bool:
+    candidate = head[len("data:") :]
+    media_type = media_type_or_empty(candidate)
+    return bool(media_type) and candidate.strip().lower() == media_type
 
 
 def _data_url_log_subject(text: str) -> str:
@@ -270,6 +277,10 @@ def _data_url_log_subject(text: str) -> str:
         token = match.group(0)
         comma = token.find(",")
         head = token[:comma] if comma >= 0 else token
+        if comma < 0 and (
+            _is_a_bare_media_type(head) or _DATA_URL_LOG_MARKER_RE.match(text, match.end())
+        ):
+            continue
         if comma >= 0 and ";base64" not in head.lower():
             newline = text.find("\n", match.end())
             end = len(text) if newline < 0 else newline

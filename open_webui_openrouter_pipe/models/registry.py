@@ -249,7 +249,19 @@ class ModelFamily:
         spec = cls._DYNAMIC_SPECS.get(norm) or {}
         full = spec.get("full_model") if isinstance(spec, dict) else None
         name = full.get("name") if isinstance(full, dict) else None
-        return name if isinstance(name, str) and name else None
+        if not (isinstance(name, str) and name):
+            base_spec = cls.catalog_spec(model_id)
+            base_full = base_spec.get("full_model") if isinstance(base_spec, dict) else None
+            base_name = base_full.get("name") if isinstance(base_full, dict) else None
+            if not (isinstance(base_name, str) and base_name):
+                return None
+            _head, separator, tag = norm.rpartition(":")
+            if not separator or not tag or tag.startswith("preset/"):
+                return base_name
+            if "/" not in _head and "." not in _head:
+                return base_name
+            return f"{base_name} {tag.capitalize()}"
+        return name
 
 
 def _catalog_norm(model_id: str) -> str:

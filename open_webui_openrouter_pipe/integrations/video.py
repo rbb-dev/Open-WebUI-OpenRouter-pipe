@@ -236,34 +236,77 @@ def _frame_bytes_allowed_as(
     return image_bytes, "image/png", "png"
 
 
-def _host_entries(raw: Any) -> tuple[frozenset[str], frozenset[str]]:
-    entries: set[str] = set()
+_HostEntry = tuple[str, int | None]
+
+
+def _host_entries(
+    raw: Any,
+) -> tuple[frozenset[_HostEntry], frozenset[_HostEntry], frozenset[str]]:
+    entries: set[_HostEntry] = set()
+    usable: set[_HostEntry] = set()
     unusable: set[str] = set()
     for entry in _csv_set(raw):
-        head, sep, port = entry.rpartition(":")
-        if sep and head and port.isdigit():
-            head = head.rstrip(".")
-        else:
-            head = entry.rstrip(".")
-        if not head:
+        host, port, ok = _split_host_port(entry)
+        if not ok:
+            unusable.add(entry)
+            entries.add((entry, None))
             continue
-        if any(ch in head for ch in "!/") or "://" in head:
-            unusable.add(head)
-        entries.add(head)
-    return frozenset(entries), frozenset(unusable)
+        usable.add((host, port))
+        entries.add((host, port))
+    return frozenset(entries), frozenset(usable), frozenset(unusable)
 
 
-def _host_in_scope(url: str, entries: frozenset[str]) -> bool:
+def _split_host_port(entry: str) -> tuple[str, int | None, bool]:
+    candidate = entry
+    port: int | None = None
+    if candidate.startswith("[") and "]" in candidate:
+        host = candidate[1 : candidate.index("]")]
+        remainder = candidate[candidate.index("]") + 1 :]
+        if remainder.startswith(":") and remainder[1:]:
+            if not remainder[1:].isdigit():
+                return candidate, None, False
+            port = int(remainder[1:])
+        elif remainder:
+            return candidate, None, False
+    elif candidate.count(":") == 1:
+        host_part, _, port_str = candidate.partition(":")
+        if port_str:
+            if not port_str.isdigit():
+                return candidate, None, False
+            port = int(port_str)
+        host = host_part
+    else:
+        host = candidate
+    host = host.strip().lower().rstrip(".")
+    if not host:
+        return candidate, None, False
+    if any(ch in host for ch in "!/") or "://" in host:
+        return candidate, None, False
+    if port is not None and not 0 < port <= 65535:
+        return candidate, None, False
+    return host, port, True
+
+
+def _host_in_scope(
+    url: str, entries: frozenset[_HostEntry], usable: frozenset[_HostEntry],
+) -> bool:
     if not entries:
         return True
     try:
-        host = urlsplit(url).hostname
+        parts = urlsplit(url)
+        host = parts.hostname
+        port = parts.port
     except ValueError:
         return False
     if not host:
         return False
     host = host.lower().rstrip(".")
-    return any(host == entry or host.endswith("." + entry) for entry in entries)
+    if port is None:
+        port = 443 if parts.scheme == "https" else 80
+    return any(
+        (host == entry or host.endswith("." + entry)) and listed in (None, port)
+        for entry, listed in usable
+    )
 
 
 def _is_pipe_published(field_name: str, url: str, relayed: frozenset[str]) -> bool:
@@ -2059,6 +2102,18 @@ class VideoGenerationAdapter:
             for reason, items in grouped.items()
         )
 
+    def _warn_inert_scope_entry(self, entry: str, any_usable: bool) -> None:
+        self.logger.log(
+            warn_level(_warned_reference_scope_entry, f"video_reference_scope_entry:{entry}"),
+            "VIDEO_REFERENCE_ALLOWED_DOMAINS entry %r cannot match a host this "
+            "deployment can reach, so %s. Write a bare host such as media.example.com, "
+            "or host:port for one service: a ! block entry, a whole URL and a CIDR "
+            "range are not accepted here.",
+            entry,
+            "every reference URL is refused" if not any_usable else "it is not applied and "
+            "the rest of the list still governs",
+        )
+
     async def _validate_passthrough_urls(
         self,
         payload: dict[str, Any],
@@ -2074,16 +2129,9 @@ class VideoGenerationAdapter:
         root = seen is None
         if seen is None:
             seen = dict(vetted) if isinstance(vetted, dict) else {}
-        entries, unusable = _host_entries(video_reference_allowed_domains)
+        entries, usable, unusable = _host_entries(video_reference_allowed_domains)
         for entry in sorted(unusable):
-            self.logger.log(
-                warn_level(_warned_reference_scope_entry, f"video_reference_scope_entry:{entry}"),
-                "VIDEO_REFERENCE_ALLOWED_DOMAINS entry %r cannot match any host, so every "
-                "reference URL is refused. Write a bare host such as "
-                "media.example.com: a ! block entry, a whole URL and a CIDR range are "
-                "not accepted here.",
-                entry,
-            )
+            self._warn_inert_scope_entry(entry, bool(usable))
         relayed = frozenset(relayed or ())
         if deadline is None:
             deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
@@ -2131,7 +2179,7 @@ class VideoGenerationAdapter:
             refusal = _address_verdict(safe, field=field_name)
             if refusal is not None:
                 raise VideoGenerationError(refusal)
-            if entries and not _is_pipe_published(field_name, url, relayed) and not _host_in_scope(url, entries):
+            if entries and not _is_pipe_published(field_name, url, relayed) and not _host_in_scope(url, entries, usable):
                 self.logger.log(
                     warn_level(
                         _warned_reference_scope,

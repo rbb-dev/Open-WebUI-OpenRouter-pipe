@@ -80,6 +80,7 @@ _PLAYLIST_HEAD_BYTES = 64
 _extraction_semaphores: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 _ACTIVE_SLOT: contextvars.ContextVar = contextvars.ContextVar("extraction_slot", default=None)
 _admitted: contextvars.ContextVar[bool] = contextvars.ContextVar("_admitted", default=False)
+logger = logging.getLogger(__name__)
 _ABANDONED = "extraction abandoned: the awaiting task was cancelled"
 
 
@@ -249,6 +250,11 @@ def _ffmpeg_pixel_cap_refusal(width: int, height: int) -> FrameExtractionError:
 
 def _refuse_unsafe_input(path: Path) -> str:
     if str(path).startswith("-"):
+        logger.info(
+            "frame extraction refused a video attachment (reason=%s); "
+            "no decoder was handed its path",
+            "argv",
+        )
         raise FrameExtractionError("refusing path starting with '-' (argv injection guard)")
     try:
         with path.open("rb") as handle:
@@ -257,11 +263,21 @@ def _refuse_unsafe_input(path: Path) -> str:
         head = b""
     for magic in _PLAYLIST_MAGIC:
         if head.startswith(magic):
+            logger.info(
+                "frame extraction refused a video attachment (reason=%s); "
+                "no decoder was handed its path",
+                "playlist",
+            )
             raise FrameExtractionError(
                 "refusing input that is a playlist naming a second file"
             )
     demuxer = _INPUT_DEMUXER.get(path.suffix.lower())
     if not demuxer:
+        logger.info(
+            "frame extraction refused a video attachment (reason=%s); "
+            "no decoder was handed its path",
+            "unnamed_container",
+        )
         raise FrameExtractionError(
             "refusing input whose container is not one the pipe names"
         )

@@ -95,16 +95,16 @@ def _rejected_image_note(result: ImageGenerationResult, ceiling_mb: int) -> str:
     on_its_own = result.over_ceiling_own
     total = len(result.images) + unreadable
     limit = megabytes(ceiling_mb * 1024 * 1024)
-    own_phrase = (
-        f"{on_its_own} of the {unreadable} on its own"
-        if on_its_own == 1
-        else f"{on_its_own} of the {unreadable} on their own"
-    )
     size_clause = ""
     if over:
+        own_phrase = ""
+        if on_its_own == 1:
+            own_phrase = f" ({on_its_own} of the {unreadable} on its own)"
+        elif on_its_own:
+            own_phrase = f" ({on_its_own} of the {unreadable} on their own)"
         size_clause = (
             f" {over} of the {unreadable} pushed the reply past the {limit} size limit "
-            f"this deployment applies to one generated-image reply ({own_phrase}): raise "
+            f"this deployment applies to one generated-image reply{own_phrase}: raise "
             "that limit, ask for fewer images, or ask for a smaller picture."
         )
     return (
