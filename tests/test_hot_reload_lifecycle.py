@@ -14,6 +14,7 @@ import weakref
 from pathlib import Path
 from typing import Any, cast
 
+from tests.pipe_limits import slot, set_slot, set_slots, REQUEST_SEMAPHORE, REQUEST_LIMIT
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

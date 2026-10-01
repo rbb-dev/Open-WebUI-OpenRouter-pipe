@@ -11,6 +11,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from tests.pipe_limits import set_slot
 from open_webui_openrouter_pipe.core.config import Valves
 from open_webui_openrouter_pipe.plugins.base import PluginBase, PluginContext
 from open_webui_openrouter_pipe.plugins.registry import PluginRegistry
@@ -114,8 +115,8 @@ def _make_mock_pipe():
     pipe._circuit_breaker._breaker_records = {}
     pipe._circuit_breaker._tool_breakers = {}
     pipe._active_pipes_calls = 0
-    pipe._video_global_semaphore = None
-    pipe._video_global_limit = 0
+    set_slot(pipe, "video_semaphore", None)
+    set_slot(pipe, "video_limit", 0)
     pipe._video_active_tasks = {}
     pipe._redis_client = None
     pipe._redis_enabled = False

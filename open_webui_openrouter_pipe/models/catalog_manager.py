@@ -1183,12 +1183,16 @@ class ModelCatalogManager:
             return
         exc = task.exception()
         if exc is None:
-            return
+            incomplete = task.result()
+            if not incomplete:
+                return
+        else:
+            incomplete = []
         try:
             self.logger.error(
                 "Model metadata sync failed (%s); the key is released so the next "
                 "model-list refresh retries it",
-                exc,
+                exc or f"{len(incomplete)} model(s) were not written",
                 exc_info=exc,
             )
         except Exception:
@@ -1199,7 +1203,7 @@ class ModelCatalogManager:
     def _model_metadata_sync_floor_cleared(self, task: asyncio.Task) -> None:
         if task.cancelled() or self._model_metadata_sync_task is not task:
             return
-        if task.exception() is None:
+        if task.exception() is None and not task.result():
             self._model_metadata_sync_retry_after = 0.0
 
     @timed
@@ -1657,7 +1661,7 @@ class ModelCatalogManager:
         models: list[dict[str, Any]],
         *,
         pipe_identifier: str,
-    ) -> None:
+    ) -> list[str] | None:
         """Sync model metadata (capabilities, profile images, descriptions) into OWUI's Models table."""
         valves = self._pipe.valves
 
@@ -2488,6 +2492,8 @@ class ModelCatalogManager:
                     len(models),
                     ", ".join(sync_failures[:5]),
                 )
+                return sync_failures
+            return None
         finally:
             with contextlib.suppress(Exception):
                 await session.close()

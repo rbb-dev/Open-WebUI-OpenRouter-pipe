@@ -1917,14 +1917,16 @@ class VideoGenerationAdapter:
                 self._pipe._video_user_lock_refs[user_id] = refs
 
     def _ensure_global_semaphore(self, valves: Any) -> asyncio.Semaphore:
+        from ..pipe import _get_process_limits
+
         limit = int(valves.MAX_CONCURRENT_VIDEO_GENS)
-        cls = type(self._pipe)
+        slots = _get_process_limits().for_id(self._pipe.id)
         try:
             current_loop = asyncio.get_running_loop()
         except RuntimeError:
             current_loop = None
-        for attr in ("_video_global_semaphore",):
-            sem = getattr(cls, attr, None)
+        for attr in ("video_semaphore",):
+            sem = getattr(slots, attr, None)
             if sem is None:
                 continue
             try:
@@ -1932,14 +1934,14 @@ class VideoGenerationAdapter:
             except RuntimeError:
                 sem_loop = None
             if current_loop is not None and sem_loop is not current_loop:
-                setattr(cls, attr, None)
-        if cls._video_global_semaphore is None:
-            cls._video_global_semaphore = VideoResizableSemaphore(limit)
+                setattr(slots, attr, None)
+        if slots.video_semaphore is None:
+            slots.video_semaphore = VideoResizableSemaphore(limit)
         else:
-            if int(getattr(cls._video_global_semaphore, "_limit", limit)) != limit:
-                cast(VideoResizableSemaphore, cls._video_global_semaphore).resize(limit)
-        cls._video_global_limit = limit
-        return cls._video_global_semaphore
+            if int(getattr(slots.video_semaphore, "_limit", limit)) != limit:
+                cast(VideoResizableSemaphore, slots.video_semaphore).resize(limit)
+        slots.video_limit = limit
+        return slots.video_semaphore
 
     async def _try_acquire_user_slot(self, user_id: str, valves: Any) -> tuple[bool, asyncio.Lock]:
         limit = int(valves.MAX_CONCURRENT_VIDEO_GENS_PER_USER)

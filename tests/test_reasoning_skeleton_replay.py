@@ -18,6 +18,7 @@ import asyncio
 import copy
 import json
 import logging
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -69,13 +70,36 @@ def _valves(pipe, **changes):
     return pipe.valves.model_copy(update=settings)
 
 
+def _server_item_for_a_round(item_type: str, item_id: str) -> dict[str, Any]:
+    """One completed item of the arm named, in the shape that arm's card arm reads.
+
+    The four arms are the ones that publish a card: three named by the provider's own tool
+    names and the generic `openrouter:*` arm, which is where every other OpenRouter tool
+    lands. `image_generation_call` is not among them -- it renders markdown and emits no
+    card, so there is no position for it to take.
+    """
+    item: dict[str, Any] = {"type": item_type, "id": item_id, "status": "completed"}
+    if item_type == "openrouter:web_search":
+        item["action"] = {"sources": []}
+    elif item_type == "openrouter:web_fetch":
+        item["url"] = "https://example.com/page"
+        item["content"] = "PAGE"
+    elif item_type == "openrouter:datetime":
+        item["datetime"] = "2026-10-01T00:00:00Z"
+        item["timezone"] = "UTC"
+    else:
+        item["advice"] = f"ADVICE-{item_id}"
+    return item
+
+
 async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=None, tool_status="completed",
                    real_executor=False, signed: bool | Literal["at-completion"] = True, message_id: str | None = "m1",
                    real_row_builder=False, real_store=False,
                    chat_id: str = "c1", tool_name: str = "lookup", stop_in_round: int | None = None,
                    rows: dict[str, dict[str, Any]] | None = None, tool_result: Any = RESULT_CANARY,
                    continues_after_marker: bool = False, builtin_ask_user: bool = False,
-                   params: dict[str, Any] | None = None):
+                   params: dict[str, Any] | None = None,
+                   server_item: str = "openrouter:web_search"):
     """Run one turn. Each round is ("calls", [call ids]), which reasons, writes and calls; ("think-call", [call ids]),
     which reasons and calls without writing a word of its own; ("think-write-think-call", [call ids]), which reasons,
     writes, reasons again and calls; ("reused-thought-call", [call ids]), which re-sends the reasoning id a
@@ -93,7 +117,12 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
     streamed as text and the second closed by its own `output_item.done` -- the shape whose box belongs under its call;
     or ("call-then-text", [call ids]) and ("text-call-text", [call ids]), which keep writing after the call, the second
     splitting one sentence around it. The two "-then-text" kinds keep the round going with answer text after the thought,
-    so the box has to be published before that text rather than at the end of the round.
+    so the box has to be published before that text rather than at the end of the round. The five
+    "server-then-thought" kinds pair a thought with a server item of OpenRouter's own -- "think-delta-search",
+    "think-delta-search-then-calls" and "call-then-thought-search" stream the reasoning as text, "call-thought-done-search"
+    and "server-thought-then-call" close it with its own `output_item.done` -- and ``server_item`` names which of the
+    four card-publishing arms they run ("openrouter:web_search", "openrouter:web_fetch", "openrouter:datetime" or the
+    generic "openrouter:advisor"), item id "st-<round>".
     ``signed=False`` streams reasoning with
     no signature, which Anthropic cannot take back; ``signed="at-completion"`` streams it unsigned and signs it only in
     the completed response, as Anthropic does. ``message_id=None`` sends no message id, as an API request does;
@@ -255,6 +284,88 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
                         "arguments": json.dumps({"q": ARGUMENT_CANARY}), "status": "completed"}
                 yield {"type": "response.output_item.done", "item": call}
                 output.append(call)
+            yield {"type": "response.completed", "response": {"output": output, "usage": {}}}
+            return
+
+        if kind in ("think-delta-search", "think-delta-search-then-calls", "call-thought-done-search",
+                    "call-then-thought-search", "server-thought-then-call"):
+            # A round that runs a server tool of OpenRouter's own beside a thought. The
+            # provider's own listing is the point in every one of them, so each is written
+            # out here rather than composed from the kinds above: no other kind puts a
+            # server item between a thought and a call, and a future edit that moved the
+            # listing would neuter the rows that pin where the card lands. The four
+            # `*-search` kinds list the thought and the server item in the two orders the
+            # rows read back, with and without a call of the model's own behind them;
+            # "server-thought-then-call" is the complement -- a thought *after* the server
+            # item and *before* the call, which has to stay between the two.
+            def call_items_for(step_calls: list[str]) -> Iterator[dict[str, Any]]:
+                for call_id in step_calls:
+                    call = {"type": "function_call", "call_id": call_id, "name": tool_name,
+                            "arguments": json.dumps({"q": ARGUMENT_CANARY}), "status": "completed"}
+                    yield {"type": "response.output_item.done", "item": call}
+                    output.append(call)
+
+            if kind in ("think-delta-search", "think-delta-search-then-calls"):
+                # Reasoning the provider streams as text and never closes with its own item,
+                # then a server item of its own. The two forms of the same listing are both
+                # here, because only the closed-item form has a registration site today.
+                reasoning_id = f"rs-{index}"
+                yield {"type": "response.output_item.added", "output_index": 0,
+                       "item": {"type": "reasoning", "id": reasoning_id, "status": "in_progress"}}
+                yield {"type": "response.reasoning_text.delta", "item_id": reasoning_id,
+                       "delta": f"THOUGHT-{index} "}
+                output.append({"type": "reasoning", "id": reasoning_id, "status": "completed",
+                               "content": [{"type": "reasoning_text", "text": f"THOUGHT-{index}"}], "summary": []})
+                search = _server_item_for_a_round(server_item, f"st-{index}")
+                yield {"type": "response.output_item.done", "item": search}
+                output.append(search)
+                if kind == "think-delta-search-then-calls":
+                    for event in call_items_for(value):
+                        yield event
+                yield {"type": "response.completed", "response": {"output": output, "usage": {}}}
+                return
+
+            if kind == "call-thought-done-search":
+                # The provider's own call first, its reasoning closed by its own item, then a
+                # server item -- the shape that owes a deferral a model call, which a card
+                # for OpenRouter's own tool must not be able to settle.
+                for event in call_items_for(value):
+                    yield event
+                yield thought("")
+                search = _server_item_for_a_round(server_item, f"st-{index}")
+                yield {"type": "response.output_item.done", "item": search}
+                output.append(search)
+                yield {"type": "response.completed", "response": {"output": output, "usage": {}}}
+                return
+
+            if kind == "call-then-thought-search":
+                # The same listing with the reasoning streamed as text, which reaches no
+                # registration site of its own and so has to be caught by the card's publisher.
+                for event in call_items_for(value):
+                    yield event
+                reasoning_id = f"rs-{index}"
+                yield {"type": "response.output_item.added", "output_index": 0,
+                       "item": {"type": "reasoning", "id": reasoning_id, "status": "in_progress"}}
+                yield {"type": "response.reasoning_text.delta", "item_id": reasoning_id,
+                       "delta": f"THOUGHT-{index} "}
+                output.append({"type": "reasoning", "id": reasoning_id, "status": "completed",
+                               "content": [{"type": "reasoning_text", "text": f"THOUGHT-{index}"}], "summary": []})
+                search = _server_item_for_a_round(server_item, f"st-{index}")
+                yield {"type": "response.output_item.done", "item": search}
+                output.append(search)
+                yield {"type": "response.completed", "response": {"output": output, "usage": {}}}
+                return
+
+            # server-thought-then-call: a closed reasoning item listed after a server item and
+            # before a model call has to land between the two cards, not above the first or
+            # below the second. This is the row that rejects a counter split which lets a
+            # server card satisfy a deferral, because that puts the box under the call.
+            search = _server_item_for_a_round(server_item, f"st-{index}")
+            yield {"type": "response.output_item.done", "item": search}
+            output.append(search)
+            yield thought("")
+            for event in call_items_for(value):
+                yield event
             yield {"type": "response.completed", "response": {"output": output, "usage": {}}}
             return
 

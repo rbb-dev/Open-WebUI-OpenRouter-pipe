@@ -29,6 +29,7 @@ from starlette.responses import StreamingResponse
 
 from sqlalchemy import Table, Column, String, Boolean, DateTime, Index, MetaData, case, func
 
+from tests.pipe_limits import limits_for, slot, set_slot
 from open_webui_openrouter_pipe import (
     EncryptedStr,
     Pipe,
@@ -2032,21 +2033,21 @@ class TestConcurrencyControls:
         pipe = Pipe()
 
         # Reset class-level semaphore for test isolation
-        Pipe._global_semaphore = None
-        Pipe._semaphore_limit = 0
+        set_slot(Pipe, "request_semaphore", None)
+        set_slot(Pipe, "request_limit", 0)
 
         try:
             pipe.valves.MAX_CONCURRENT_REQUESTS = 5
             await pipe._ensure_concurrency_controls(pipe.valves)
 
-            assert Pipe._global_semaphore is not None
-            assert Pipe._semaphore_limit == 5
+            assert slot(Pipe, "request_semaphore") is not None
+            assert slot(Pipe, "request_limit") == 5
 
             # Increase limit
             pipe.valves.MAX_CONCURRENT_REQUESTS = 10
             await pipe._ensure_concurrency_controls(pipe.valves)
 
-            assert Pipe._semaphore_limit == 10
+            assert slot(Pipe, "request_limit") == 10
         finally:
             await pipe.close()
 
@@ -2056,21 +2057,21 @@ class TestConcurrencyControls:
         pipe = Pipe()
 
         # Reset class-level tool semaphore for test isolation
-        Pipe._tool_global_semaphore = None
-        Pipe._tool_global_limit = 0
+        set_slot(Pipe, "tool_semaphore", None)
+        set_slot(Pipe, "tool_limit", 0)
 
         try:
             pipe.valves.MAX_PARALLEL_TOOLS_GLOBAL = 5
             await pipe._ensure_concurrency_controls(pipe.valves)
 
-            assert Pipe._tool_global_semaphore is not None
-            assert Pipe._tool_global_limit == 5
+            assert slot(Pipe, "tool_semaphore") is not None
+            assert slot(Pipe, "tool_limit") == 5
 
             # Increase limit
             pipe.valves.MAX_PARALLEL_TOOLS_GLOBAL = 10
             await pipe._ensure_concurrency_controls(pipe.valves)
 
-            assert Pipe._tool_global_limit == 10
+            assert slot(Pipe, "tool_limit") == 10
         finally:
             await pipe.close()
 

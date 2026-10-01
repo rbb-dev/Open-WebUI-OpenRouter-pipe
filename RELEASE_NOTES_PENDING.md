@@ -48,3 +48,6 @@
   value that cannot be decrypted went out as an empty `Bearer ` and an encrypted non-`sk-` value the gate refuses went
   out working; a stored value with padding was sent with its padding. Both legs now go through the gate, so one
   misconfiguration has one answer on every leg.
+- **model icons** — a model icon is now stored the way it displays. The icon sweep applies the orientation the
+  source published before it writes the PNG, so a logo stored sideways is no longer stored sideways; an icon
+  already stored keeps its pixels until its source URL changes, which is when it is downloaded again.

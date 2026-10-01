@@ -50,17 +50,47 @@ def test_pipe_creates_nonstreaming_adapter(pipe_instance):
 
 # ============================================================================
 # _extract_chat_message_text Tests (lines 62, 66-74)
+#
+# The first row below is no longer one of them: a `message` that is not an object is
+# rejected at the gateway (B623) before the reader runs, so it now asserts the designed
+# retry-then-report behaviour instead. See its docstring.
 # ============================================================================
 
 
 @pytest.mark.asyncio
 async def test_nonstreaming_chat_message_not_dict(pipe_instance_async):
-    """Test _extract_chat_message_text with non-dict message (line 62)."""
+    """A first choice whose `message` is not an object is retried, then reported.
+
+    The reader still reads a non-object message as empty -- `_extract_chat_message_text` is
+    unchanged -- but the gateway no longer lets such a 200 reach it. B623's design decides the
+    question at the gateway, and its predicate counts a non-object `message` as nothing a
+    reader could use:
+
+        message = choice.get("message")
+        message = message if isinstance(message, dict) else {}
+
+    so `{"message": "not a dict", "finish_reason": "stop"}` falls through to the `finish_reason`
+    test and returns False, the same answer it gives the null message and the empty message
+    that B623 lists among the hollow shapes it costs the whole budget for. The property the
+    design states is "A non-streamed `/chat/completions` 200 whose first choice carries no
+    content, no tool call, no refusal, no reasoning, no images and no `finish_reason` other than
+    `stop` costs `1 + TRANSIENT_RETRY_MAX_ATTEMPTS` POSTs, publishes no `response.completed`,
+    and after the budget ends in `OPENROUTER_ERROR_TEMPLATE` naming the empty answer."
+
+    So this row asserts that property instead of the completed event it used to assert: every
+    attempt is served (`repeat=True`, or the second POST would raise `ClientConnectionError`,
+    which is also retried, and the count would come out right while the fault the turn ended on
+    was the wrong one), the budget is spent, no turn is completed, and the turn ends on the
+    empty-answer error rather than on the connection failure an unmatched POST would raise.
+
+    The contract these assertions pin in full, including the control set that must not be
+    re-billed, is in `tests/test_an_answer_less_chat_completion_is_retried_then_reported.py`.
+    """
     pipe = pipe_instance_async
     valves = pipe.valves
     session = pipe._create_http_session(valves)
 
-    # Response with message that is not a dict (will be handled as empty)
+    # A first choice whose `message` is not an object: the reader could use nothing in it.
     response_json = {
         "id": "chatcmpl-123",
         "choices": [{
@@ -70,28 +100,39 @@ async def test_nonstreaming_chat_message_not_dict(pipe_instance_async):
         "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
     }
 
+    raised: BaseException | None = None
+    events: list[dict[str, Any]] = []
     with aioresponses() as mock_http:
         mock_http.post(
             "https://openrouter.ai/api/v1/chat/completions",
             payload=response_json,
+            repeat=True,
         )
 
-        events = []
-        async for event in pipe.send_openrouter_nonstreaming_request_as_events(
-            session,
-            {"model": "openai/gpt-4o", "input": [{"role": "user", "content": "Hi"}]},
-            api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
-            endpoint_override="chat_completions",
-            valves=valves,
-        ):
-            events.append(event)
+        try:
+            async for event in pipe.send_openrouter_nonstreaming_request_as_events(
+                session,
+                {"model": "openai/gpt-4o", "input": [{"role": "user", "content": "Hi"}]},
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                endpoint_override="chat_completions",
+                valves=valves,
+            ):
+                events.append(event)
+        except BaseException as exc:  # noqa: BLE001 - the assertion is on what the turn did
+            raised = exc
+        finally:
+            await session.close()
+        posts = sum(len(calls) for calls in mock_http.requests.values())
 
-        await session.close()
-
-    # Should have a completed event
-    completed = [e for e in events if e.get("type") == "response.completed"]
-    assert len(completed) == 1
+    expected = 1 + valves.TRANSIENT_RETRY_MAX_ATTEMPTS
+    assert posts == expected, f"the 200 cost {posts} POSTs, not {expected}"
+    terminals = [e for e in events if e.get("type") in ("response.completed", "response.incomplete")]
+    assert not terminals, f"the 200 completed a turn: {[e.get('type') for e in events]}"
+    assert raised is not None, f"the turn ended without an error: {events!r}"
+    assert "nothing a reader could use" in str(raised), (
+        f"the turn ended on the wrong fault: {raised!r}"
+    )
 
 
 @pytest.mark.asyncio

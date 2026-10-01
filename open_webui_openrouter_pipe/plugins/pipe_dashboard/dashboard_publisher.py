@@ -450,7 +450,7 @@ async def _set_active_flag(client: Any, namespace: str, *, wake: bool) -> None:
             logger.debug("Failed to publish dashboard wake", exc_info=True)
 
 
-async def _write_own_slice(client: Any, worker_key: str, pipe: Any) -> None:
+async def _write_own_slice(client: Any, worker_key: str, pipe: Any) -> bool:
     try:
         payload = _collect_worker_payload(pipe)
         await client.set(
@@ -460,6 +460,8 @@ async def _write_own_slice(client: Any, worker_key: str, pipe: Any) -> None:
         )
     except Exception:
         logger.debug("Dashboard publish failed (pid=%d)", os.getpid(), exc_info=True)
+        return False
+    return True
 
 
 async def _redis_alive(pipe: Any) -> bool:
@@ -501,7 +503,7 @@ async def _build_emit_payload(
     agg_state = agg_state if agg_state is not None else {}
 
     if client is not None:
-        await _write_own_slice(client, worker_key, pipe)
+        wrote = await _write_own_slice(client, worker_key, pipe)
         worker_payloads = await _read_redis_workers(client, namespace)
         degraded = False
         read_ok = False
@@ -523,12 +525,16 @@ async def _build_emit_payload(
             read_ok = True
             agg_state["misses"] = 0
         local_pids = {(p.get("host", ""), p.get("pid", 0)) for p in worker_payloads}
+        collect_failed = False
         if (_PD_HOST_TAG, pid) not in local_pids:
             try:
                 worker_payloads.append(expand_worker_payload(_collect_worker_payload(pipe)))
             except Exception:
+                collect_failed = True
                 logger.debug("Local worker payload collect error", exc_info=True)
-        if read_ok:
+        elif not wrote:
+            collect_failed = True
+        if read_ok and not collect_failed:
             agg_state["workers"] = list(worker_payloads)
             agg_state["set_at"] = time.monotonic()
         if worker_payloads:
@@ -536,7 +542,7 @@ async def _build_emit_payload(
             worker_count = len(worker_payloads)
         else:
             payload.update(_collect_fast_safe(pipe))
-        if degraded:
+        if degraded or collect_failed:
             payload["degraded"] = True
     else:
         payload.update(_collect_fast_safe(pipe))

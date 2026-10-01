@@ -8,6 +8,7 @@ import pytest
 
 pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
 
+from tests.pipe_limits import set_slot
 from open_webui_openrouter_pipe.plugins.pipe_dashboard import dashboard_publisher as sp
 
 
@@ -42,18 +43,18 @@ def _row(started: float, done: float | None = None, pid: int = 1, user_id: str =
 def _bare_pipe() -> Mock:
     pipe = Mock()
     pipe._active_pipes_calls = 0
-    pipe._global_semaphore = None
-    pipe._semaphore_limit = 0
-    pipe._tool_global_semaphore = None
-    pipe._tool_global_limit = 0
+    set_slot(pipe, "request_semaphore", None)
+    set_slot(pipe, "request_limit", 0)
+    set_slot(pipe, "tool_semaphore", None)
+    set_slot(pipe, "tool_limit", 0)
     pipe.valves = None
     pipe._request_queue = None
     pipe._QUEUE_MAXSIZE = 1000
     pipe._log_queue = None
     pipe._session_log_manager = None
     pipe._circuit_breaker = None
-    pipe._video_global_semaphore = None
-    pipe._video_global_limit = 0
+    set_slot(pipe, "video_semaphore", None)
+    set_slot(pipe, "video_limit", 0)
     pipe._video_active_tasks = {}
     return pipe
 

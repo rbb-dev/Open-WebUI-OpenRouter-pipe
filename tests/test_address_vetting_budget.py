@@ -22,6 +22,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tests.pipe_limits import set_slot
 from open_webui_openrouter_pipe.integrations.provider_options import (
     MAX_URL_SCAN_DEPTH,
     UnvettableRequest,
@@ -212,8 +213,8 @@ async def test_the_deployment_wide_slot_is_taken_after_the_addresses_are_resolve
         async def submit(self, _payload):
             raise RuntimeError("stop here; the ordering is already recorded")
 
-    Pipe._video_global_semaphore = None
-    Pipe._video_global_limit = 0
+    set_slot(Pipe, "video_semaphore", None)
+    set_slot(Pipe, "video_limit", 0)
     pipe = Pipe()
     try:
         pipe.valves.API_KEY = EncryptedStr("test-api-key")

@@ -362,10 +362,15 @@ carries.
 
 The same applies to the install record the six filter families carry, in the row's meta
 as `openrouter_pipe:installed_by`: it is new, so a row installed by an earlier build
-carries none. Turning an `AUTO_INSTALL_*` valve off retires only the rows whose meta
-names this pipe, so a recordless row is claimed on the first refresh **on which its valve
-is on** and retired only from that refresh on. A copy an admin installed by hand keeps
-no record either, and is never retired.
+carries none. Turning an `AUTO_INSTALL_*` valve off retires the rows whose meta names
+this pipe **and the rows whose meta names an install of this pipe that Open WebUI no
+longer loads as a pipe** -- the pipe function was renamed or re-created, so its id changed
+while the rows kept the old one -- so a recordless row is claimed on the first refresh
+**on which its valve is on** and retired only from that refresh on. A copy an admin
+installed by hand keeps no record either, and is never retired. A row naming another id is
+left alone exactly while Open WebUI still loads that id as a pipe, because that is what
+makes it another live copy's row; when the question cannot be answered, the row is left
+alone as well.
 
 Switching the Fusion or Image Generation feature valve **off** is a separate decision
 from the install valve, and it reaches a recordless row whether or not it has been
@@ -384,12 +389,14 @@ canonical id back removes the row holding it and lets the next refresh install a
 one.
 
 A row stamped with a *previous* id of this pipe — the pipe function was renamed or
-re-created, so the id changed while the rows kept the old one — is not retired either, and
-nothing on the row says which install wrote it. The refresh names that row and the id it
-carries in the log, once per process, so it can be found; re-publish the model with its
-valve **on** and the row is re-claimed under this copy's id, and the valve then holds on it
-from that refresh on. A second live copy of the pipe produces the same log line, and that
-is expected: the two are the same string on the row.
+re-created, so the id changed while the rows kept the old one — is retired when its
+`AUTO_INSTALL_*` valve is off, and the refresh names that row, the id it carries and the
+valve now holding it off, so the duplicate can be found and deleted. Nothing re-claims it:
+the row stays retired, and re-publishing the model with its valve **on** installs a second
+live row beside it under a numbered id, which the refresh names in the log too. Two copies
+of the pipe installed side by side produce a different line — the row is left alone, and
+the log says the id is still loaded as a pipe — and that difference is the whole point:
+the string on the row is the same either way.
 ---
 
 ## Troubleshooting

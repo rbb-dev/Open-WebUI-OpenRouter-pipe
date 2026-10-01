@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.pipe_limits import slot, set_slot
 from open_webui_openrouter_pipe import EncryptedStr, Pipe
 from open_webui_openrouter_pipe.core.config import _PIPE_METADATA_KEY
 from open_webui_openrouter_pipe.core.errors import (
@@ -1391,8 +1392,8 @@ async def test_video_adapter_terminal_failures_persist_visible_failure(monkeypat
 
 @pytest.mark.asyncio
 async def test_video_adapter_releases_semaphore_when_submit_fails(monkeypatch):
-    Pipe._video_global_semaphore = None
-    Pipe._video_global_limit = 0
+    set_slot(Pipe, "video_semaphore", None)
+    set_slot(Pipe, "video_limit", 0)
     pipe = Pipe()
     pipe.valves.API_KEY = EncryptedStr("test-api-key")
     pipe.valves.MAX_CONCURRENT_VIDEO_GENS = 1
@@ -1474,8 +1475,8 @@ async def test_a_failing_cleanup_step_does_not_strand_the_releases_after_it():
 @pytest.mark.asyncio
 async def test_video_adapter_does_not_release_an_unacquired_global_slot(monkeypatch):
     """Cancelling while queued on the global semaphore must not mint a extra permit."""
-    Pipe._video_global_semaphore = None
-    Pipe._video_global_limit = 0
+    set_slot(Pipe, "video_semaphore", None)
+    set_slot(Pipe, "video_limit", 0)
     pipe = Pipe()
     pipe.valves.API_KEY = EncryptedStr("test-api-key")
     pipe.valves.MAX_CONCURRENT_VIDEO_GENS = 1
@@ -1488,8 +1489,8 @@ async def test_video_adapter_does_not_release_an_unacquired_global_slot(monkeypa
     try:
         await _assert_no_phantom_permit(adapter, pipe, semaphore)
     finally:
-        Pipe._video_global_semaphore = None
-        Pipe._video_global_limit = 0
+        set_slot(Pipe, "video_semaphore", None)
+        set_slot(Pipe, "video_limit", 0)
 
 
 async def _assert_no_phantom_permit(adapter, pipe, semaphore):
@@ -1550,8 +1551,8 @@ async def test_video_adapter_does_not_double_release_when_cancelled_mid_handoff(
     Over-releasing an asyncio.Semaphore mints a permanent extra permit, so the
     configured concurrency cap drifts upward for the worker's lifetime.
     """
-    Pipe._video_global_semaphore = None
-    Pipe._video_global_limit = 0
+    set_slot(Pipe, "video_semaphore", None)
+    set_slot(Pipe, "video_limit", 0)
     pipe = Pipe()
     created: list[Any] = []
     try:
@@ -1645,8 +1646,8 @@ async def test_video_adapter_does_not_double_release_when_cancelled_mid_handoff(
             bg.cancel()
         for _ in range(50):
             await asyncio.sleep(0)
-        Pipe._video_global_semaphore = None
-        Pipe._video_global_limit = 0
+        set_slot(Pipe, "video_semaphore", None)
+        set_slot(Pipe, "video_limit", 0)
         await pipe.close()
 
 

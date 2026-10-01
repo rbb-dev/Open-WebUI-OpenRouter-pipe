@@ -26,6 +26,7 @@ from ...core.config import (
 # Imports from core.errors
 from ...core.costs import chat_usage_to_responses_usage
 from ...core.errors import (
+    EmptyAnswerError,
     RequiredInternalFileError,
     UpstreamBodyUnreadable,
     _build_openrouter_api_error,
@@ -171,6 +172,28 @@ def _build_output_items(
         output.append(image_output_item)
     output.extend(tool_calls)
     return output
+
+
+def _choice_carries_an_answer(choice: Any) -> bool:
+    if not isinstance(choice, dict):
+        return False
+    message = choice.get("message")
+    message = message if isinstance(message, dict) else {}
+    content = message.get("content")
+    if isinstance(content, str) and content.strip():
+        return True
+    if isinstance(content, list) and content:
+        return True
+    for key in ("tool_calls", "images", "annotations", "reasoning_details"):
+        value = message.get(key)
+        if isinstance(value, list) and value:
+            return True
+    for key in ("refusal", "reasoning", "reasoning_content"):
+        value = message.get(key)
+        if isinstance(value, str) and value.strip():
+            return True
+    finish_reason = choice.get("finish_reason")
+    return isinstance(finish_reason, str) and finish_reason.strip() not in ("", "stop")
 
 
 class ChatCompletionsAdapter:
@@ -1188,6 +1211,12 @@ class ChatCompletionsAdapter:
                         if not (isinstance(choices, list) and choices and isinstance(choices[0], dict)):
                             raise aiohttp.ClientPayloadError(
                                 "OpenRouter returned 200 with no choices on /chat/completions"
+                            )
+                        if not _choice_carries_an_answer(choices[0]):
+                            raise EmptyAnswerError(
+                                "The model returned an empty answer (the first choice on /chat/completions carries "
+                                "nothing a reader could use)",
+                                requested_model=chat_payload.get("model"),
                             )
                         return data
 

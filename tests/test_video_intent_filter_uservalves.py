@@ -21,6 +21,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tests.pipe_limits import set_slot
 from open_webui_openrouter_pipe.filters.video_filter_renderer import (
     build_video_filter_spec,
     render_video_filter_source,

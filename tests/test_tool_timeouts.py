@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.pipe_limits import limits_for
 from open_webui_openrouter_pipe.integrations import image_catalog, video_catalog
 from aiohttp.helpers import TimerContext
 from tests._jumping_clock import event_loop_policy  # noqa: F401
@@ -1152,8 +1153,8 @@ async def test_an_ask_user_opens_at_once_while_another_request_holds_every_tool_
     # waits on a person, not on work, so its prompt must open at once and an answer 85 s into a 90 s prompt must arrive.
     pipe = pipe_instance_async
     held = asyncio.Semaphore(1)
-    monkeypatch.setattr(type(pipe), "_tool_global_semaphore", held)
-    monkeypatch.setattr(type(pipe), "_tool_global_limit", 1)
+    monkeypatch.setattr(limits_for(type(pipe)), "tool_semaphore", held)
+    monkeypatch.setattr(limits_for(type(pipe)), "tool_limit", 1)
     await held.acquire()
     trace: list[str] = []
     registry = {"ask_user": _builtin_ask_user(_answers_after(85, trace))}

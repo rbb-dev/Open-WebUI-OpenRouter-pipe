@@ -120,8 +120,15 @@ _EXPECTED: dict[str, int] = {
     # have already been selected, the delete is best-effort, and a delete that raises
     # leaves rows that the next pass, on its own interval, selects again. Suppressing it
     # does not hide a consequence the caller would otherwise report, because this pass
-    # reports nothing about a successful reap either. The count is 20.
-    "logging/session_log_manager.py": 20,
+    # reports nothing about a successful reap either.
+    # B622 then removed the last suppression on the *post-publish* delete in
+    # `_assemble_and_write_bundle`. That one is not like the reaps above it: the archive
+    # is already written and `wrote` is already true, so a delete that raises leaves both
+    # the segment rows AND the assembly lock behind a "successful" assembly, and the next
+    # pass re-acquires the turn, re-writes it and re-fails the same delete. That is the one
+    # route on this path to unbounded starvation, so it is now reported on the existing
+    # `_unreadable_archive_warnings` latch rather than swallowed. The count is 19.
+    "logging/session_log_manager.py": 19,
     # 3rd: the generic ffmpeg arm, which now stops the child it started before it
     # reports a transport fault. The suppression is load-bearing and is not a test
     # guard: PIL's `UnidentifiedImageError` subclasses `OSError`, so the common

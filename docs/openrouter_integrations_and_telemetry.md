@@ -414,7 +414,7 @@ Per-model opt-outs:
 - `disable_image_updates`, `disable_description_updates`, `disable_capability_updates`: disable specific metadata fields for the model.
 
 Operational note:
-- This sync updates Open WebUI’s Models table using Open WebUI’s own helper APIs (not raw SQL), but it is still a **write** to Open WebUI’s model metadata. Disable the valves if you want to manage model icons/capabilities manually — and note that the `web_search` and `Citations` boxes are left alone either way, so an admin’s tick or untick of either now survives every refresh and is honoured on the chat path rather than only stored.
+- This sync updates Open WebUI’s Models table using Open WebUI’s own helper APIs (not raw SQL), but it is still a **write** to Open WebUI’s model metadata. Those helpers swallow a database fault and answer that they did not save, so the pipe reads that answer: a row the helper reports as not saved is counted as a failure for that row, named in the log, and retried. Disable the valves if you want to manage model icons/capabilities manually — and note that the `web_search` and `Citations` boxes are left alone either way, so an admin’s tick or untick of either now survives every refresh and is honoured on the chat path rather than only stored.
 
 ---
 

@@ -55,6 +55,12 @@ def collect_transport_session_state(pipe: Any) -> str:
     return state
 
 
+def _limits(pipe: Any) -> Any:
+    from ...pipe import _get_process_limits
+
+    return _get_process_limits().for_id(getattr(pipe, "id", ""))
+
+
 def _safe_int(value: Any) -> int:
     try:
         return int(value)
@@ -103,10 +109,11 @@ def _semaphore_active(sem: Any, limit: int) -> int:
 
 def collect_concurrency(pipe: Any) -> dict[str, int]:
     """Read concurrency semaphore state from the pipe."""
-    sem = getattr(pipe, "_global_semaphore", None)
-    sem_limit = getattr(pipe, "_semaphore_limit", 0) or 0
-    tool_sem = getattr(pipe, "_tool_global_semaphore", None)
-    tool_limit = getattr(pipe, "_tool_global_limit", 0) or 0
+    slots = _limits(pipe)
+    sem = slots.request_semaphore
+    sem_limit = slots.request_limit or 0
+    tool_sem = slots.tool_semaphore
+    tool_limit = slots.tool_limit or 0
     # Fall back to valve config when semaphores aren't materialized yet
     if not sem_limit:
         valves = getattr(pipe, "valves", None)
@@ -131,8 +138,8 @@ def collect_queues(pipe: Any) -> dict[str, int]:
     return {
         "requests": rq.qsize() if rq else 0,
         "requests_max": _safe_int(getattr(pipe, "_QUEUE_MAXSIZE", 1000)) or 1000,
-        "waiting": _waiter_count(getattr(pipe, "_global_semaphore", None)),
-        "tool_waiting": _waiter_count(getattr(pipe, "_tool_global_semaphore", None)),
+        "waiting": _waiter_count(_limits(pipe).request_semaphore),
+        "tool_waiting": _waiter_count(_limits(pipe).tool_semaphore),
         "logs": lq.qsize() if lq else 0,
         "logs_max": _safe_int(getattr(lq, "maxsize", 0)) if lq else 0,
         "archive": archive_q.qsize() if archive_q else 0,
@@ -142,8 +149,9 @@ def collect_queues(pipe: Any) -> dict[str, int]:
 
 def collect_video_pool(pipe: Any) -> dict[str, int]:
     """Read the video-generation concurrency pool (limit + live usage)."""
-    limit = _safe_int(getattr(pipe, "_video_global_limit", 0))
-    sem = getattr(pipe, "_video_global_semaphore", None)
+    slots = _limits(pipe)
+    limit = _safe_int(slots.video_limit)
+    sem = slots.video_semaphore
     if sem is not None and limit:
         active = _semaphore_active(sem, limit)
     else:

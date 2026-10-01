@@ -351,6 +351,7 @@ def _hand_over_parked_result(
 
 
 _LIFECYCLE_REGISTRY_KEY = "_openrouter_pipe_lifecycle"
+_LIMITS_HOLDER_KEY = "_openrouter_pipe_limits"
 
 _RESTRICTION_REASON_PHRASES: dict[str, str] = {
     "not_in_catalog": "the model is not in this pipe's model list",
@@ -436,6 +437,30 @@ class _LifecycleRegistry:
         with self._lock:
             ref = self._current.get(pipe_id)
             return ref() if ref else None
+
+
+class _ProcessLimits:
+    def __init__(self) -> None:
+        self.request_semaphore: asyncio.Semaphore | None = None
+        self.request_limit: int = 0
+        self.tool_semaphore: asyncio.Semaphore | None = None
+        self.tool_limit: int = 0
+        self.video_semaphore: asyncio.Semaphore | None = None
+        self.video_limit: int = 0
+
+
+class _ProcessLimitsHolder:
+    def __init__(self) -> None:
+        self._by_pipe_id: dict[str, _ProcessLimits] = {}
+        self._lock = threading.Lock()
+
+    def for_id(self, pipe_id: str) -> _ProcessLimits:
+        with self._lock:
+            slots = self._by_pipe_id.get(pipe_id)
+            if slots is None:
+                slots = _ProcessLimits()
+                self._by_pipe_id[pipe_id] = slots
+            return slots
 
 
 _brings_tool_results = brings_tool_results
@@ -565,6 +590,14 @@ def _get_lifecycle_registry():
     return reg
 
 
+def _get_process_limits() -> _ProcessLimitsHolder:
+    holder = sys.modules.get(_LIMITS_HOLDER_KEY)
+    if holder is None:
+        holder = _ProcessLimitsHolder()
+        sys.modules[_LIMITS_HOLDER_KEY] = holder  # type: ignore[assignment]
+    return cast(_ProcessLimitsHolder, holder)
+
+
 def _tool_body_raised(exc: BaseException, fn: Any) -> bool:
     name = getattr(fn, "__name__", None)
     if not isinstance(name, str):
@@ -678,12 +711,6 @@ class Pipe:
     UserValves = UserValves
 
     _QUEUE_MAXSIZE = 1000
-    _global_semaphore: asyncio.Semaphore | None = None
-    _semaphore_limit: int = 0
-    _tool_global_semaphore: asyncio.Semaphore | None = None
-    _tool_global_limit: int = 0
-    _video_global_semaphore: asyncio.Semaphore | None = None
-    _video_global_limit: int = 0
     _TOOL_CONTEXT: ContextVar[_ToolExecutionContext | None] = ContextVar(
         "openrouter_tool_context",
         default=None,
@@ -2366,7 +2393,7 @@ class Pipe:
             if not self._enqueue_job(job):
                 self.logger.warning(
                     "Request queue full (admission bound=%s); rejecting request_id=%s",
-                    _admission_bound(type(self)._semaphore_limit or int(valves.MAX_CONCURRENT_REQUESTS), int(self._QUEUE_MAXSIZE)),
+                    _admission_bound(_get_process_limits().for_id(self.id).request_limit or int(valves.MAX_CONCURRENT_REQUESTS), int(self._QUEUE_MAXSIZE)),
                     job.request_id,
                 )
                 if referer_override_invalid and wants_stream:
@@ -3077,7 +3104,7 @@ class Pipe:
     @timed
     async def _ensure_concurrency_controls(self, valves: Pipe.Valves) -> None:
         """Lazy-initialize queue worker and semaphore with the latest valves."""
-        cls = type(self)
+        slots = _get_process_limits().for_id(self.id)
         current_loop = asyncio.get_running_loop()
 
         if self._queue_worker_lock is not None:
@@ -3131,8 +3158,8 @@ class Pipe:
                 )
                 self.logger.debug("Started request queue worker")
 
-            for attr in ("_global_semaphore", "_tool_global_semaphore"):
-                sem = getattr(cls, attr, None)
+            for attr in ("request_semaphore", "tool_semaphore"):
+                sem = getattr(slots, attr, None)
                 if sem is None:
                     continue
                 try:
@@ -3140,29 +3167,29 @@ class Pipe:
                 except RuntimeError:
                     sem_loop = None
                 if sem_loop is not current_loop:
-                    setattr(cls, attr, None)
+                    setattr(slots, attr, None)
 
             superseded = self._draining or self._closing
 
             self._apply_limit(
                 "MAX_CONCURRENT_REQUESTS",
                 valves.MAX_CONCURRENT_REQUESTS,
-                cls._global_semaphore,
-                lambda: cls._global_semaphore,
-                lambda value: setattr(cls, "_global_semaphore", value),
-                lambda: cls._semaphore_limit,
-                lambda value: setattr(cls, "_semaphore_limit", value),
+                slots.request_semaphore,
+                lambda: slots.request_semaphore,
+                lambda value: setattr(slots, "request_semaphore", value),
+                lambda: slots.request_limit,
+                lambda value: setattr(slots, "request_limit", value),
                 "request semaphore",
                 live=not superseded,
             )
             self._apply_limit(
                 "MAX_PARALLEL_TOOLS_GLOBAL",
                 valves.MAX_PARALLEL_TOOLS_GLOBAL,
-                cls._tool_global_semaphore,
-                lambda: cls._tool_global_semaphore,
-                lambda value: setattr(cls, "_tool_global_semaphore", value),
-                lambda: cls._tool_global_limit,
-                lambda value: setattr(cls, "_tool_global_limit", value),
+                slots.tool_semaphore,
+                lambda: slots.tool_semaphore,
+                lambda value: setattr(slots, "tool_semaphore", value),
+                lambda: slots.tool_limit,
+                lambda value: setattr(slots, "tool_limit", value),
                 "tool semaphore",
                 live=not superseded,
             )
@@ -3291,7 +3318,7 @@ class Pipe:
                 if job.future.cancelled():
                     queue.task_done()
                     continue
-                semaphore = type(job.pipe)._global_semaphore
+                semaphore = _get_process_limits().for_id(job.pipe.id).request_semaphore
                 if semaphore is None:
                     Pipe._put_streaming_refusal(job, _REQUEST_FAILED_DETAIL)
                     if not job.future.done():
@@ -3358,7 +3385,7 @@ class Pipe:
         if job.counter_state is not None:
             job.counter_state["tail"] = True
         if semaphore is _SEMAPHORE_NOT_GIVEN:
-            semaphore = type(self)._global_semaphore
+            semaphore = _get_process_limits().for_id(self.id).request_semaphore
         if semaphore is None:
             Pipe._put_streaming_refusal(job, _REQUEST_FAILED_DETAIL)
             if not job.future.done():
@@ -3442,7 +3469,7 @@ class Pipe:
                 tool_context = _ToolExecutionContext(
                     queue=tool_queue,
                     per_request_semaphore=per_request_tool_sem,
-                    global_semaphore=type(self)._tool_global_semaphore,
+                    global_semaphore=_get_process_limits().for_id(self.id).tool_semaphore,
                     timeout=float(per_tool_timeout),
                     batch_timeout=batch_timeout,
                     idle_timeout=idle_timeout,
@@ -4780,7 +4807,7 @@ class Pipe:
             session = self._request_sessions.get(running)
             if session is not None and not session.closed:
                 connector = session.connector
-                target = max(50, type(self)._semaphore_limit or 0)
+                target = max(50, _get_process_limits().for_id(self.id).request_limit or 0)
                 if getattr(connector, "_limit", 0) < target:
                     with contextlib.suppress(Exception):
                         connector._limit = target  # type: ignore[attr-defined]
@@ -4810,7 +4837,9 @@ class Pipe:
     ) -> aiohttp.ClientSession:
         valves = valves or self.valves
         connector = aiohttp.TCPConnector(
-            **_connector_kwargs(valves, shared=shared, semaphore_limit=self._semaphore_limit)
+            **_connector_kwargs(
+                valves, shared=shared, semaphore_limit=_get_process_limits().for_id(self.id).request_limit
+            )
         )
         self.logger.debug("HTTP timeouts: %s", http_timeout_str(valves))
         timeout = http_timeout(valves)

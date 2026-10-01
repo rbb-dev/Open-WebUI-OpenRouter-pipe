@@ -620,6 +620,7 @@ class StreamingHandler:
         streamed_tool_call_args: dict[str, _ReasoningTextBox] = {}
         streamed_tool_call_name_sent: set[str] = set()
         emitted_tool_call_items: set[str] = set()
+        emitted_model_call_items: set[str] = set()
         calls_carded_this_round: set[str] = set()
         emitted_tool_output_items: set[str] = set()
         committed_call_rows: set[str] = set()
@@ -1249,6 +1250,7 @@ class StreamingHandler:
                 arguments: str,
                 status: str = "in_progress",
                 current_text: str,
+                model_call: bool = True,
             ) -> str:
                 """Emit a function_call tool card. Returns the effective call_id (UUID-generated if input was empty).
 
@@ -1263,6 +1265,8 @@ class StreamingHandler:
                 if effective_id in emitted_tool_call_items:
                     return effective_id
                 emitted_tool_call_items.add(effective_id)
+                if model_call:
+                    emitted_model_call_items.add(effective_id)
                 calls_carded_this_round.add(effective_id)
                 emitted_response_output_items = True
                 call_item: dict[str, Any] = {
@@ -1279,7 +1283,7 @@ class StreamingHandler:
                     "output_index": call_index,
                     "item": call_item,
                 })
-                await _flush_deferred_reasoning_items(len(emitted_tool_call_items), current_text)
+                await _flush_deferred_reasoning_items(len(emitted_model_call_items), current_text)
                 return effective_id
 
             async def _emit_tool_result(
@@ -1662,6 +1666,15 @@ class StreamingHandler:
                 _close_open_reasoning_windows()
                 for reasoning_key in list(reasoning_display):
                     await _emit_reasoning_item(reasoning_key, current_text, closing=True)
+
+            async def _publish_open_reasoning_before_a_card(current_text: str) -> None:
+                if not reasoning_display:
+                    return
+                _close_open_reasoning_windows()
+                for reasoning_key in list(reasoning_display):
+                    if reasoning_key in deferred_reasoning_keys:
+                        continue
+                    await _emit_reasoning_item(reasoning_key, current_text)
 
             def _defer_reasoning_keys_after_a_call(completed: Any) -> None:
                 if not isinstance(completed, dict):
@@ -2927,12 +2940,14 @@ class StreamingHandler:
                             result_text = json.dumps({"datetime": dt_val, "timezone": tz_val}, indent=2)
                             effective_id = server_tool_call_id(item.get("id"))
                             if emitter_supplied:
+                                await _publish_open_reasoning_before_a_card(assistant_message)
                                 effective_id = await _emit_tool_start(
                                     call_id=effective_id,
                                     name="datetime",
                                     arguments="{}",
                                     status=server_tool_status(item),
                                     current_text=assistant_message,
+                                    model_call=False,
                                 )
                                 await _emit_tool_result(
                                     call_id=effective_id,
@@ -2954,12 +2969,14 @@ class StreamingHandler:
                             )
                             effective_id = server_tool_call_id(item.get("id"))
                             if emitter_supplied:
+                                await _publish_open_reasoning_before_a_card(assistant_message)
                                 effective_id = await _emit_tool_start(
                                     call_id=effective_id,
                                     name="web_search",
                                     arguments="{}",
                                     status=server_tool_status(item),
                                     current_text=assistant_message,
+                                    model_call=False,
                                 )
                                 await _emit_tool_result(
                                     call_id=effective_id,
@@ -3003,12 +3020,14 @@ class StreamingHandler:
                             args_text = json.dumps({"url": fetch_url}, ensure_ascii=False) if fetch_url else "{}"
                             effective_id = server_tool_call_id(item.get("id"))
                             if emitter_supplied:
+                                await _publish_open_reasoning_before_a_card(assistant_message)
                                 effective_id = await _emit_tool_start(
                                     call_id=effective_id,
                                     name="web_fetch",
                                     arguments=args_text,
                                     status=server_tool_status(item),
                                     current_text=assistant_message,
+                                    model_call=False,
                                 )
                                 await _emit_tool_result(
                                     call_id=effective_id,
@@ -3028,12 +3047,14 @@ class StreamingHandler:
                             server_arguments = json.dumps(server_tool_arguments(item), ensure_ascii=False)
                             effective_id = server_tool_call_id(item.get("id"))
                             if emitter_supplied:
+                                await _publish_open_reasoning_before_a_card(assistant_message)
                                 effective_id = await _emit_tool_start(
                                     call_id=effective_id,
                                     name=tool_name,
                                     arguments=server_arguments,
                                     status=server_tool_status(item),
                                     current_text=assistant_message,
+                                    model_call=False,
                                 )
                                 await _emit_tool_result(
                                     call_id=effective_id,

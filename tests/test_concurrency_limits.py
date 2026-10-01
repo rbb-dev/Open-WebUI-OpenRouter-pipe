@@ -11,6 +11,7 @@ import pytest
 
 from aioresponses import aioresponses
 
+from tests.pipe_limits import slot, set_slot, set_slots, TOOL_SEMAPHORE, TOOL_LIMIT, REQUEST_AND_TOOL_SLOTS
 import open_webui_openrouter_pipe.pipe as pipe_module
 from open_webui_openrouter_pipe import Pipe, _PipeJob
 from open_webui_openrouter_pipe.core.config import EncryptedStr
@@ -106,16 +107,16 @@ class TestRequestQueueLimits:
         pipe = pipe_instance_async
 
         cls = type(pipe)
-        original_semaphore = cls._global_semaphore
-        original_limit = cls._semaphore_limit
+        original_semaphore = slot(cls, "request_semaphore")
+        original_limit = slot(cls, "request_limit")
         blocked_task: asyncio.Task[bool] | None = None
         try:
-            cls._global_semaphore = None
-            cls._semaphore_limit = 0
+            set_slot(cls, "request_semaphore", None)
+            set_slot(cls, "request_limit", 0)
 
             valves = pipe.valves.model_copy(update={"MAX_CONCURRENT_REQUESTS": 2})
             await pipe._ensure_concurrency_controls(valves)
-            semaphore = cls._global_semaphore
+            semaphore = slot(cls, "request_semaphore")
             assert semaphore is not None
             semaphore = cast(asyncio.Semaphore, semaphore)
 
@@ -137,8 +138,8 @@ class TestRequestQueueLimits:
                 blocked_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await blocked_task
-            cls._global_semaphore = original_semaphore
-            cls._semaphore_limit = original_limit
+            set_slot(cls, "request_semaphore", original_semaphore)
+            set_slot(cls, "request_limit", original_limit)
 
 
 class TestToolSemaphore:
@@ -149,16 +150,16 @@ class TestToolSemaphore:
         """MAX_PARALLEL_TOOLS_GLOBAL blocks when all tool slots are held."""
         pipe = pipe_instance_async
         cls = type(pipe)
-        original_semaphore = cls._tool_global_semaphore
-        original_limit = cls._tool_global_limit
+        original_semaphore = slot(cls, "tool_semaphore")
+        original_limit = slot(cls, "tool_limit")
         blocked_task: asyncio.Task[bool] | None = None
         try:
-            cls._tool_global_semaphore = None
-            cls._tool_global_limit = 0
+            set_slot(cls, "tool_semaphore", None)
+            set_slot(cls, "tool_limit", 0)
 
             valves = pipe.valves.model_copy(update={"MAX_PARALLEL_TOOLS_GLOBAL": 2})
             await pipe._ensure_concurrency_controls(valves)
-            semaphore = cls._tool_global_semaphore
+            semaphore = slot(cls, "tool_semaphore")
             assert semaphore is not None
             semaphore = cast(asyncio.Semaphore, semaphore)
 
@@ -179,8 +180,8 @@ class TestToolSemaphore:
                 blocked_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await blocked_task
-            cls._tool_global_semaphore = original_semaphore
-            cls._tool_global_limit = original_limit
+            set_slot(cls, "tool_semaphore", original_semaphore)
+            set_slot(cls, "tool_limit", original_limit)
 
     @pytest.mark.asyncio
     async def test_per_request_tool_semaphore_is_configured_from_valves(
@@ -374,15 +375,15 @@ class TestToolSemaphore:
         """Increasing MAX_CONCURRENT_REQUESTS releases additional permits immediately."""
         pipe = pipe_instance_async
         cls = type(pipe)
-        original_semaphore = cls._global_semaphore
-        original_limit = cls._semaphore_limit
+        original_semaphore = slot(cls, "request_semaphore")
+        original_limit = slot(cls, "request_limit")
         try:
-            cls._global_semaphore = None
-            cls._semaphore_limit = 0
+            set_slot(cls, "request_semaphore", None)
+            set_slot(cls, "request_limit", 0)
 
             valves_small = pipe.valves.model_copy(update={"MAX_CONCURRENT_REQUESTS": 1})
             await pipe._ensure_concurrency_controls(valves_small)
-            semaphore = cls._global_semaphore
+            semaphore = slot(cls, "request_semaphore")
             assert semaphore is not None
             semaphore = cast(asyncio.Semaphore, semaphore)
 
@@ -399,5 +400,5 @@ class TestToolSemaphore:
             semaphore.release()
             semaphore.release()
         finally:
-            cls._global_semaphore = original_semaphore
-            cls._semaphore_limit = original_limit
+            set_slot(cls, "request_semaphore", original_semaphore)
+            set_slot(cls, "request_limit", original_limit)

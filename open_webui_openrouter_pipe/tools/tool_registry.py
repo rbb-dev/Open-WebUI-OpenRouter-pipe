@@ -254,7 +254,7 @@ def _build_collision_safe_tool_specs_and_registry(
       - exec_registry: mapping exposed_name -> OWUI tool cfg dict (callable/spec/etc).
       - exposed_to_origin: mapping exposed_name -> origin tool name (for passthrough execution).
     """
-    from .tool_executor import is_builtin_ask_user
+    from .tool_executor import is_builtin_ask_user, is_owui_builtin
 
     log = logger or _module_logger
     request_tool_specs = request_tool_specs or []
@@ -497,7 +497,7 @@ def _build_collision_safe_tool_specs_and_registry(
         tool_cfg = c.get("tool_cfg")
         if not isinstance(tool_cfg, dict) or tool_cfg.get("callable") is None:
             continue
-        if owui_tool_passthrough and (tool_cfg.get("direct") is True or tool_cfg.get("type") == "builtin"):
+        if owui_tool_passthrough and (tool_cfg.get("direct") is True or is_owui_builtin(tool_cfg)):
             log.debug("Skipping registry entry %s (Open WebUI runs this one).", exposed_name)
             exec_registry[exposed_name] = _owui_owned_entry(c["origin_source"], origin_name, exposed_name)
             continue

@@ -100,6 +100,7 @@ _PIPE_OFF_STAMP_META_KEY = "openrouter_pipe:switched_off_at"
 _PIPE_INSTALLED_META_KEY = "openrouter_pipe:installed_by"
 _DISPLAY_NAME_MAX_CHARS = 80
 _PIPE_OFF_LANDED_AT: dict[str, int] = {}
+_OFF_STAMP_SETTLE_ATTEMPTS = 2
 
 
 class _FilterRows(NamedTuple):
@@ -158,6 +159,19 @@ def _merged_meta(
         merged.pop(_PIPE_OFF_META_KEY, None)
         merged.pop(_PIPE_OFF_STAMP_META_KEY, None)
     return merged
+
+
+def _unconfirmed_switch_off_clause(row: Any) -> str:
+    if _switched_off_by_pipe(row) and not _pipe_owns_the_off(row):
+        return (
+            " (the pipe switched this off itself, and this pass could not confirm it; "
+            "the switch-off stamp is not durable)"
+        )
+    return ""
+
+
+def _maintained_meta(row: Any, desired_meta: dict[str, Any]) -> dict[str, Any]:
+    return _merged_meta(row, desired_meta, off_by_pipe=None if not _switch_on(row) else False)
 
 
 def _pipe_owns_the_off(row: Any) -> bool:
@@ -238,25 +252,40 @@ async def _settle_the_off_stamp(Functions, function_id, updates, landed, logger)
         return
     landed_at = int(getattr(landed, "updated_at", 0) or 0)
     _PIPE_OFF_LANDED_AT[str(function_id)] = landed_at
-    if landed_at <= int(stamp):
-        return
-    settled: list = []
-    await _write_function(
-        Functions,
-        function_id,
-        {
-            "meta": {
-                **_stored_meta(landed),
-                _PIPE_OFF_STAMP_META_KEY: landed_at,
+    row = landed
+    for _ in range(_OFF_STAMP_SETTLE_ATTEMPTS):
+        if landed_at <= int(stamp):
+            return
+        settled: list = []
+        await _write_function(
+            Functions,
+            function_id,
+            {
+                "meta": {
+                    **_stored_meta(row),
+                    _PIPE_OFF_STAMP_META_KEY: landed_at,
+                },
             },
-        },
-        f"settling the switch-off stamp on {function_id} to the second the write landed",
-        logger,
-        settle=False,
-        landed_out=settled,
-    )
-    if settled and settled[0] is not None:
-        _PIPE_OFF_LANDED_AT[str(function_id)] = int(getattr(settled[0], "updated_at", 0) or 0)
+            f"settling the switch-off stamp on {function_id} to the second the write landed",
+            logger,
+            settle=False,
+            landed_out=settled,
+        )
+        if not settled or settled[0] is None:
+            return
+        row = settled[0]
+        stamp = landed_at
+        landed_at = int(getattr(row, "updated_at", 0) or 0)
+        _PIPE_OFF_LANDED_AT[str(function_id)] = landed_at
+    if landed_at > int(stamp):
+        logger.log(
+            warn_level(_warned_stale_filter_rows, f"off_stamp:{function_id}"),
+            "The switch-off stamp on %s names second %s while Open WebUI last wrote that "
+            "row at %s.",
+            function_id,
+            stamp,
+            landed_at,
+        )
 
 
 def a_filter_write_was_refused(family_id: str = "") -> bool:
@@ -272,7 +301,7 @@ def _row_needs_update(row: Any, desired_name: str, desired_meta: dict[str, Any])
         or bool(getattr(row, "is_global", False))
         or (getattr(row, "name", "") or "") != desired_name
         or (getattr(row, "type", "") or "") != "filter"
-        or _merged_meta(row, desired_meta, off_by_pipe=False) != _meta_dict(row)
+        or _maintained_meta(row, desired_meta) != _meta_dict(row)
     )
 
 
@@ -1094,9 +1123,11 @@ class FilterManager:
                 self.logger.log(
                     warn_level(_warned_stale_filter_rows, f"admin_off:{function_id}"),
                     "%s %r is switched off in Open WebUI; the pipe keeps its code up to date "
-                    "and leaves it off. Switch it on in Workspace > Functions to get it back.",
+                    "and leaves it off. Switch it on in Workspace > Functions to get it "
+                    "back.%s",
                     log_label,
                     function_id,
+                    _unconfirmed_switch_off_clause(chosen),
                 )
             if existing_content != desired_source:
                 self._validate_before_write(desired_source, log_label)
@@ -1108,7 +1139,7 @@ class FilterManager:
                     {
                         "content": desired_source,
                         "name": desired_name,
-                        "meta": _merged_meta(row, desired_meta, off_by_pipe=False),
+                        "meta": _maintained_meta(row, desired_meta),
                         "type": "filter",
                         "is_active": _switch_on(row),
                         "is_global": False,
@@ -1127,7 +1158,7 @@ class FilterManager:
                         function_id,
                         {
                             "name": desired_name,
-                            "meta": _merged_meta(row, desired_meta, off_by_pipe=False),
+                            "meta": _maintained_meta(row, desired_meta),
                             "type": "filter",
                             "is_active": _switch_on(row),
                             "is_global": False,
@@ -2363,6 +2394,7 @@ class FilterManager:
         table = rows.all_rows
         if not table:
             return
+        live_installs: set[str] | None = None
         for valve, marker in families:
             for row in table:
                 content = getattr(row, "content", None)
@@ -2370,21 +2402,36 @@ class FilterManager:
                     continue
                 if not getattr(row, "is_active", False):
                     continue
-                if not _owned_by(row, owner):
-                    function_id = str(getattr(row, "id", "") or "")
-                    if function_id:
-                        self.logger.log(
-                            warn_level(
-                                _warned_stale_filter_rows, f"foreign_stamp:{function_id}"
-                            ),
-                            "Left the %s filter %r active: its install record names %r, not "
-                            "this copy.",
-                            valve,
-                            function_id,
-                            _installed_by(row),
-                        )
-                    continue
                 function_id = str(getattr(row, "id", "") or "")
+                if not _owned_by(row, owner):
+                    stamped = _installed_by(row)
+                    past_install = False
+                    if stamped:
+                        if live_installs is None:
+                            live_installs = await self._live_pipe_installs(Functions)
+                        past_install = live_installs is not None and stamped not in live_installs
+                    if not past_install:
+                        if function_id:
+                            self.logger.log(
+                                warn_level(
+                                    _warned_stale_filter_rows, f"foreign_stamp:{function_id}"
+                                ),
+                                "Left the %s filter %r active: its install record names %r, "
+                                "which Open WebUI still loads as a pipe.",
+                                valve,
+                                function_id,
+                                stamped,
+                            )
+                        continue
+                    self.logger.info(
+                        "Retired the %s filter %r: its install record names %r, which Open "
+                        "WebUI no longer loads as a pipe, and %s is off. Delete the row to "
+                        "remove it; the pipe will not write to it again.",
+                        valve,
+                        function_id,
+                        stamped,
+                        valve,
+                    )
                 if not function_id:
                     continue
                 if await _write_function(
@@ -2395,6 +2442,18 @@ class FilterManager:
                     self.logger,
                 ):
                     self.logger.info("Switched off %s filter %r (%s is off)", valve, function_id, valve)
+
+    async def _live_pipe_installs(self, Functions: Any) -> set[str] | None:
+        try:
+            live = await Functions.get_functions_by_type("pipe", active_only=True)
+        except Exception:
+            self.logger.warning(
+                "Cannot read which pipe functions Open WebUI has loaded, so a filter row "
+                "stamped with another install's id is left as it is rather than retired",
+                exc_info=True,
+            )
+            return None
+        return {str(getattr(row, "id", "") or "") for row in live or ()}
 
     async def _read_filter_rows(self, *, active_only: bool = False) -> list[Any] | None:
         return await self._filter_rows(active_only=active_only)
@@ -3975,8 +4034,9 @@ class Filter:
                     warn_level(_warned_stale_filter_rows, f"admin_off:{existing_id}"),
                     "Provider routing filter %r is switched off in Open WebUI; the pipe "
                     "keeps its code up to date and leaves it off. Switch it on in "
-                    "Workspace > Functions to get it back.",
+                    "Workspace > Functions to get it back.%s",
                     existing_id,
+                    _unconfirmed_switch_off_clause(existing_filters.get(slug)),
                 )
 
         if (
@@ -4094,8 +4154,9 @@ class Filter:
                         warn_level(_warned_stale_filter_rows, f"admin_off:{existing_id}"),
                         "Provider routing filter %r is switched off in Open WebUI; the pipe "
                         "keeps its code up to date and leaves it off. Switch it on in "
-                        "Workspace > Functions to get it back.",
+                        "Workspace > Functions to get it back.%s",
                         existing_id,
+                        _unconfirmed_switch_off_clause(existing),
                     )
                 if existing_content != desired_source:
                     if not _validate_or_skip(slug, desired_source):
@@ -4108,7 +4169,7 @@ class Filter:
                         {
                             "content": desired_source,
                             "name": desired_name,
-                            "meta": _merged_meta(row, desired_meta, off_by_pipe=False),
+                            "meta": _maintained_meta(row, desired_meta),
                             "is_active": _switch_on(row),
                             "is_global": False,
                         },
@@ -4127,7 +4188,7 @@ class Filter:
                         existing_id,
                         {
                             "is_active": _switch_on(row),
-                            "meta": _merged_meta(row, desired_meta, off_by_pipe=False),
+                            "meta": _maintained_meta(row, desired_meta),
                             "name": desired_name,
                             "type": "filter",
                             "is_global": False,

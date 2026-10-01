@@ -171,6 +171,7 @@ from open_webui_openrouter_pipe.plugins.pipe_dashboard.dashboard_socket import (
     emit_config_changed,
     register_socket_handler,
 )
+from tests.pipe_limits import set_slot, slot
 
 _REAL_SLEEP = asyncio.sleep
 
@@ -216,12 +217,12 @@ def _reset_socket_state():
 def _make_mock_pipe():
     pipe = Mock()
     pipe.id = "test-pipe"
-    pipe._global_semaphore = Mock()
-    pipe._global_semaphore._value = 45
-    pipe._semaphore_limit = 50
-    pipe._tool_global_semaphore = Mock()
-    pipe._tool_global_semaphore._value = 8
-    pipe._tool_global_limit = 10
+    set_slot(pipe, "request_semaphore", Mock())
+    slot(pipe, "request_semaphore")._value = 45
+    set_slot(pipe, "request_limit", 50)
+    set_slot(pipe, "tool_semaphore", Mock())
+    slot(pipe, "tool_semaphore")._value = 8
+    set_slot(pipe, "tool_limit", 10)
     pipe._request_queue = Mock()
     pipe._request_queue.qsize.return_value = 3
     pipe._QUEUE_MAXSIZE = 1000
@@ -259,8 +260,8 @@ def _make_mock_pipe():
     pipe._artifact_store = None
     pipe._plugin_registry = None
     pipe._active_pipes_calls = 0
-    pipe._video_global_semaphore = None
-    pipe._video_global_limit = 0
+    set_slot(pipe, "video_semaphore", None)
+    set_slot(pipe, "video_limit", 0)
     pipe._video_active_tasks = {}
     return pipe
 

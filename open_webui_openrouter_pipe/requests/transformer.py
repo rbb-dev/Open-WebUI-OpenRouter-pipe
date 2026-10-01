@@ -91,6 +91,7 @@ from ..models.registry import ModelFamily, supports_phase_model
 
 # Import from storage
 from ..storage.multimodal import (
+    _NO_VERDICT,
     _SNIFF_PREFIX_BYTES,
     ADDRESS_CHECK_BUDGET_SECONDS,
     ADDRESS_CHECK_SECONDS,
@@ -983,7 +984,10 @@ async def _tool_picture_address_gate(
             if seen is not None:
                 seen[url] = permitted
         if permitted is not True:
-            refused.append((url, "could not be fetched, so it was not sent", "remote_unfetched"))
+            if permitted is _NO_VERDICT:
+                refused.append((url, "could not be checked in time, so it was not sent", "uncheckable_tool_picture"))
+            else:
+                refused.append((url, "could not be fetched, so it was not sent", "remote_unfetched"))
             continue
         admitted.append(url)
     return admitted, refused
@@ -1328,6 +1332,9 @@ async def transform_messages_to_input(
         ]
         last_tool_handoff_index = tool_handoff_positions[-1] if tool_handoff_positions else -1
         person_images_this_turn = False
+        turn_images_used = 0
+        turn_images_dropped = 0
+        turn_images_index: int | None = None
         temporary_chat = is_temporary_chat(chat_id)
         memo_owner = _memo_owner_key(user_obj)
         request_memo: dict[tuple[str, str], tuple[str | None, bytes, str]] = {}
@@ -1485,6 +1492,10 @@ async def transform_messages_to_input(
             raw_content = msg.get("content", "")
             msg_id = msg.get("message_id") or _message_identifier(msg)
             msg_turn_index = turn_indices[idx]
+            if msg_turn_index != turn_images_index:
+                turn_images_used = 0
+                turn_images_dropped = 0
+                turn_images_index = msg_turn_index
             raw_tool_calls = msg.get("tool_calls")
             msg_tool_calls: list[dict[str, Any]] = (
                 list(raw_tool_calls)
@@ -2608,7 +2619,6 @@ async def transform_messages_to_input(
 
                 converted_blocks: list[dict[str, Any]] = []
                 user_images_used = 0
-                dropped_images = 0
                 refused_images: list[str] = []
                 refused_files: list[str] = []
                 status_files: list[str] = []
@@ -2662,8 +2672,8 @@ async def transform_messages_to_input(
                             elif not (latest_user_message or tool_images) and not vision_supported and image_limit > 0:
                                 deferred_vision_skips += 1
                             continue
-                        if not tool_images and user_images_used >= image_limit:
-                            dropped_images += 1
+                        if not tool_images and turn_images_used >= image_limit:
+                            turn_images_dropped += 1
                             encountered_user_images = True
                             continue
 
@@ -2752,6 +2762,7 @@ async def transform_messages_to_input(
                                 result["text"] = cleaned
                         if is_image_block and result:
                             user_images_used += 1
+                            turn_images_used += 1
                             encountered_user_images = True
                             pictures_in_request.add(_source_url_of(block))
                         converted_blocks.append(result)
@@ -2826,6 +2837,7 @@ async def transform_messages_to_input(
                         )
                         converted_blocks = fallback_blocks + converted_blocks
                         user_images_used = len(fallback_blocks)
+                        turn_images_used += len(fallback_blocks)
 
                 if latest_user_message and (user_images_used or encountered_user_images):
                     person_images_this_turn = True
@@ -2845,10 +2857,11 @@ async def transform_messages_to_input(
                     image_notices.append(
                         f"skipped {len(unreported_images)} ({'; '.join(unreported_images)})"
                     )
-                if dropped_images:
+                if turn_images_dropped and is_last_current_turn_person:
                     image_notices.append(
-                        f"dropped {dropped_images} over the limit of {image_limit}"
+                        f"dropped {turn_images_dropped} over the limit of {image_limit}"
                     )
+                    turn_images_dropped = 0
                 notices = ["Images: " + "; ".join(image_notices) + "."] if image_notices else []
                 if status_files:
                     notices.append(f"Files: skipped {len(status_files)} ({'; '.join(status_files)}).")

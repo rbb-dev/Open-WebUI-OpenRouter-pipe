@@ -198,6 +198,7 @@ _maybe_install_bundled_pipe()
 from open_webui_openrouter_pipe import EncryptedStr, Pipe
 from open_webui_openrouter_pipe.core.circuit_breaker import CircuitBreaker
 from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry, ModelFamily
+from tests.pipe_limits import reset_all_slots
 
 
 _WARN_LATCH_PREFIX = "_warned"
@@ -502,16 +503,19 @@ def _reset_auth_failure_state():
 
 
 @pytest.fixture(autouse=True)
-def _reset_video_global_semaphore():
-    """Drop the process-wide video semaphore, which is class state shared by every pipe.
+def _reset_process_semaphores():
+    """Drop the process-wide concurrency semaphores, which every pipe in the worker shares.
 
     A permit taken on one test's event loop is returned only when that loop runs the
     generation's `async with` exit. A later test on a new loop that reuses the same
     semaphore can wait for a permit that never comes back
     (`tests/test_video_generation.py` then `tests/test_api_call_video.py` hung that way).
+
+    All three pools need it, not just the video one: the slots live in a holder keyed by
+    pipe id that outlives the test that filled it, so a request or tool permit leaked here
+    hangs the next test the same way a video permit did.
     """
-    Pipe._video_global_semaphore = None
-    Pipe._video_global_limit = 0
+    reset_all_slots()
     yield
 
 

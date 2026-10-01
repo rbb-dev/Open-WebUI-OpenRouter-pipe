@@ -85,7 +85,7 @@ The pipe starts helper workers lazily:
 
 **State ownership:**
 - **Instance-level**: request queue, log queue, worker tasks, and locks are owned by each Pipe instance (prevents event loop contamination across async contexts). The plain-function tool pool belongs here as well, not to the class-level half below.
-- **Class-level**: rate-limiting semaphores (`_global_semaphore`, `_tool_global_semaphore`) are shared across all instances in the same process to enforce global concurrency limits, and are written only by a live (non-retired) instance.
+- **Process-level**: the rate-limiting semaphores (`request_semaphore`, `tool_semaphore`, `video_semaphore`, each with its limit slot beside it) are shared across every instance in the same process to enforce global concurrency limits, and are written only by a live (non-retired) instance. They are keyed by pipe id and live in a holder under a key in `sys.modules` rather than on the `Pipe` class, because a hot reload re-executes the pipe into a fresh module and builds a fresh subclass of `Pipe`: class-level slots gave each generation its own pool, so for as long as a reload overlapped the generation it replaced the worker admitted the ceiling twice. Two installed copies are two ids with two valves and stay separate.
 
 ---
 

@@ -816,6 +816,8 @@ class OpenRouterModelRegistry:
         cls._failure_counts[key] = cls._failure_counts.get(key, 0) + 1
         failures = cls._failure_counts[key]
         cls._last_errors[key] = str(exc)
+        _trim_credential_history(cls._failure_counts, key, None)
+        _trim_credential_history(cls._last_errors, key, None)
         cls._last_error = str(exc)
         cls._last_error_time = time.time()
         exponent = min(failures - 1, 5)

@@ -23,6 +23,7 @@ from typing import Any, cast
 
 import pytest
 
+from tests.pipe_limits import set_slot
 from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
 from open_webui_openrouter_pipe.filters.image_filter_renderer import (
     build_image_model_filter_spec,
@@ -3320,8 +3321,8 @@ async def _video_withheld_run(
         async def submit(self, _payload):
             raise refusal
 
-    Pipe._video_global_semaphore = None
-    Pipe._video_global_limit = 0
+    set_slot(Pipe, "video_semaphore", None)
+    set_slot(Pipe, "video_limit", 0)
     pipe = Pipe()
     pipe.valves.API_KEY = EncryptedStr("test-api-key")
     pipe.valves.MAX_CONCURRENT_VIDEO_GENS = 1

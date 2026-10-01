@@ -281,11 +281,19 @@ async def _resolved_user_obj(context: _ToolExecutionContext) -> Any:
     return user_obj
 
 
+OWUI_BUILTIN_TYPE = "builtin"
+OWUI_BUILTIN_TOOL_ID_PREFIX = "builtin:"
+
+
+def is_owui_builtin(tool_cfg: Any) -> bool:
+    return isinstance(tool_cfg, dict) and tool_cfg.get("type") == OWUI_BUILTIN_TYPE
+
+
 def is_builtin_ask_user(tool_cfg: Any) -> bool:
     return (
         isinstance(tool_cfg, dict)
-        and tool_cfg.get("type") == "builtin"
-        and tool_cfg.get("tool_id") == "builtin:ask_user"
+        and tool_cfg.get("type") == OWUI_BUILTIN_TYPE
+        and tool_cfg.get("tool_id") == f"{OWUI_BUILTIN_TOOL_ID_PREFIX}ask_user"
     )
 
 

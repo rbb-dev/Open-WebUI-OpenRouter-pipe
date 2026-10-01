@@ -46,6 +46,8 @@ _warned_archive_write_failed: dict[str, float] = {}
 
 _MAX_ARCHIVE_WARNING_LATCH_KEYS = 32
 
+_ARCHIVE_CLAIM_SUFFIX = ".openrouter-writing"
+
 # Session Log Archive Job
 
 @dataclass(slots=True)
@@ -743,6 +745,30 @@ def _archive_publish_changed_file(
     )
 
 
+class _Reservation:
+    __slots__ = ("created", "out_dir")
+
+    def __init__(self, out_dir: Path) -> None:
+        self.out_dir = out_dir
+        self.created = False
+
+    def reserve(self) -> None:
+        path = self.out_dir / _ARCHIVE_CLAIM_SUFFIX
+        with contextlib.suppress(OSError):
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            try:
+                os.write(fd, str(os.getpid()).encode("utf-8"))
+            finally:
+                os.close(fd)
+            self.created = True
+
+    def drop(self) -> None:
+        if not self.created:
+            return
+        with contextlib.suppress(OSError):
+            (self.out_dir / _ARCHIVE_CLAIM_SUFFIX).unlink()
+
+
 def _publish_archive(tmp_path: Path, out_path: Path, out_dir: Path) -> bool:
     with contextlib.suppress(OSError):
         fd = os.open(tmp_path, os.O_RDONLY)
@@ -784,13 +810,17 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
     root = Path((job.base_dir or "").strip()).expanduser()
     out_dir = _archive_out_dir(root, user_id=job.user_id, chat_id=job.chat_id)
     _claim_archive_dir(out_dir)
+    reservation = _Reservation(out_dir)
     try:
-        _write_session_log_archive_unclaimed(job, out_dir)
+        _write_session_log_archive_unclaimed(job, out_dir, reservation)
     finally:
+        reservation.drop()
         _release_archive_dir(out_dir)
 
 
-def _write_session_log_archive_unclaimed(job: _SessionLogArchiveJob, out_dir: Path) -> None:
+def _write_session_log_archive_unclaimed(
+    job: _SessionLogArchiveJob, out_dir: Path, reservation: _Reservation | None = None
+) -> None:
     if pyzipper is None:
         return
     base_dir = (job.base_dir or "").strip()
@@ -816,6 +846,9 @@ def _write_session_log_archive_unclaimed(job: _SessionLogArchiveJob, out_dir: Pa
             job.message_id,
         )
         return
+
+    if reservation is not None:
+        reservation.reserve()
 
     compression_map = {
         "stored": pyzipper.ZIP_STORED,

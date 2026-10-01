@@ -694,49 +694,53 @@ class SessionLogManager:
     @timed
     def start_workers(self) -> None:
         """Start session log writer + cleanup threads if not already running."""
-        if self._queue is None:
-            self._queue = queue.Queue(maxsize=500)
-        writer_live = bool(self._worker_thread and self._worker_thread.is_alive())
-        cleanup_live = bool(self._cleanup_thread and self._cleanup_thread.is_alive())
-        cleanup_on_a_set_event = bool(
-            self._stop_event is not None and self._stop_event.is_set() and cleanup_live
-        )
-        if self._stop_event is None or self._stop_event.is_set():
-            self._stop_event = threading.Event()
+        with self._lock:
+            if self._queue is None:
+                self._queue = queue.Queue(maxsize=500)
+            writer_live = bool(self._worker_thread and self._worker_thread.is_alive())
+            cleanup_live = bool(self._cleanup_thread and self._cleanup_thread.is_alive())
+            cleanup_on_a_set_event = bool(
+                self._stop_event is not None and self._stop_event.is_set() and cleanup_live
+            )
+            if self._stop_event is None or self._stop_event.is_set():
+                self._stop_event = threading.Event()
+            stop_event = self._stop_event
 
-        mgr_ref = weakref.ref(self)
-        if not writer_live:
-            self._worker_thread = threading.Thread(
-                target=_writer_loop,
-                args=(mgr_ref, self._stop_event, self._queue),
-                name="openrouter-session-log-writer",
-                daemon=True,
-            )
-            self._worker_thread.start()
-        if not cleanup_live or cleanup_on_a_set_event:
-            self._cleanup_thread = threading.Thread(
-                target=_cleanup_loop,
-                args=(mgr_ref, self._stop_event),
-                name="openrouter-session-log-cleanup",
-                daemon=True,
-            )
-            self._cleanup_thread.start()
+            mgr_ref = weakref.ref(self)
+            if not writer_live:
+                self._worker_thread = threading.Thread(
+                    target=_writer_loop,
+                    args=(mgr_ref, stop_event, self._queue),
+                    name="openrouter-session-log-writer",
+                    daemon=True,
+                )
+                self._worker_thread.start()
+            if not cleanup_live or cleanup_on_a_set_event:
+                self._cleanup_thread = threading.Thread(
+                    target=_cleanup_loop,
+                    args=(mgr_ref, stop_event),
+                    name="openrouter-session-log-cleanup",
+                    daemon=True,
+                )
+                self._cleanup_thread.start()
 
     @timed
     def start_assembler_worker(self) -> None:
         """Start the DB-backed session log assembler thread (multi-worker safe)."""
-        if self._assembler_thread and self._assembler_thread.is_alive():
-            return
-        if self._stop_event is None or self._stop_event.is_set():
-            self._stop_event = threading.Event()
+        with self._lock:
+            if self._assembler_thread and self._assembler_thread.is_alive():
+                return
+            if self._stop_event is None or self._stop_event.is_set():
+                self._stop_event = threading.Event()
+            stop_event = self._stop_event
 
-        self._assembler_thread = threading.Thread(
-            target=_assembler_loop,
-            args=(weakref.ref(self), self._stop_event),
-            name="openrouter-session-log-assembler",
-            daemon=True,
-        )
-        self._assembler_thread.start()
+            self._assembler_thread = threading.Thread(
+                target=_assembler_loop,
+                args=(weakref.ref(self), stop_event),
+                name="openrouter-session-log-assembler",
+                daemon=True,
+            )
+            self._assembler_thread.start()
 
     # =========================================================================
     # Archive Writing
@@ -795,8 +799,9 @@ class SessionLogManager:
         return base_dir, password.encode("utf-8"), zip_compression, zip_compresslevel
 
     def _enqueue_archive_job(self, job: Any) -> None:
-        if self._queue is None:
-            self._queue = queue.Queue(maxsize=500)
+        with self._lock:
+            if self._queue is None:
+                self._queue = queue.Queue(maxsize=500)
         if self._queue.full():
             self._warn_archive_queue_full(job)
             return
@@ -1060,12 +1065,17 @@ class SessionLogManager:
 
         backed_off = self._backoff_exclusion(lock_stale_seconds)
 
+        contended: list[tuple[str, str]] = []
+
         def _record(key: tuple[str, str], assembled: bool | Any, *, stale_arm: bool = False) -> None:
             from ..storage.owui_files import is_temporary_chat
 
             if is_temporary_chat(key[0]):
                 return
-            if assembled is not _LOCK_CONTENDED and assembled is not True and assembled is not False:
+            if assembled is _LOCK_CONTENDED:
+                contended.append(key)
+                return
+            if assembled is not True and assembled is not False:
                 return
             with self._lock:
                 if assembled:
@@ -1087,34 +1097,49 @@ class SessionLogManager:
             model, session_factory, batch_size, stale_finalize_seconds, backed_off
         )
         deadline = time.monotonic() + budget
-        for index, (terminal, turns) in enumerate(candidates):
-            if time.monotonic() >= deadline:
-                self.logger.debug(
-                    "Session log assembler pass stopped at %d of %d candidate turn(s) at its "
-                    "%.1fs wall-clock budget; the rest are offered again by the next pass",
-                    index,
-                    len(candidates),
-                    budget,
-                )
-                break
-            try:
-                if terminal:
-                    assembled = self._assemble_and_write_bundle(turns[0], turns[1], terminal=True)
-                else:
-                    assembled = self._assemble_and_write_bundle(
-                        turns[0], turns[1], terminal=False,
-                        stale_finalize_seconds=stale_finalize_seconds,
+        set_aside: list[tuple[str, str]] = []
+        while True:
+            del contended[:]
+            over_budget = False
+            for index, (terminal, turns) in enumerate(candidates):
+                if time.monotonic() >= deadline:
+                    self.logger.debug(
+                        "Session log assembler pass stopped at %d of %d candidate turn(s) at its "
+                        "%.1fs wall-clock budget; the rest are offered again by the next pass",
+                        index,
+                        len(candidates),
+                        budget,
                     )
-            except Exception:
-                self.logger.log(
-                    warn_level(self._unreadable_archive_warnings,
-                               f"session_log_assemble_failed:{turns[0]}:{turns[1]}", cooldown_s=3600.0),
-                    "Session log assembly raised for chat_id=%s message_id=%s; the assembly lock and the "
-                    "staged segments' age are handed back and the pass continues.",
-                    turns[0], turns[1], exc_info=True,
-                )
-                assembled = False
-            _record(turns, assembled, stale_arm=not terminal)
+                    over_budget = True
+                    break
+                try:
+                    if terminal:
+                        assembled = self._assemble_and_write_bundle(turns[0], turns[1], terminal=True)
+                    else:
+                        assembled = self._assemble_and_write_bundle(
+                            turns[0], turns[1], terminal=False,
+                            stale_finalize_seconds=stale_finalize_seconds,
+                        )
+                except Exception:
+                    self.logger.log(
+                        warn_level(self._unreadable_archive_warnings,
+                                   f"session_log_assemble_failed:{turns[0]}:{turns[1]}", cooldown_s=3600.0),
+                        "Session log assembly raised for chat_id=%s message_id=%s; the assembly lock and the "
+                        "staged segments' age are handed back and the pass continues.",
+                        turns[0], turns[1], exc_info=True,
+                    )
+                    assembled = False
+                _record(turns, assembled, stale_arm=not terminal)
+            if over_budget or not contended:
+                break
+            set_aside.extend(contended)
+            candidates = self._candidate_turns(
+                model,
+                session_factory,
+                batch_size,
+                stale_finalize_seconds,
+                (*backed_off, *set_aside),
+            )
 
     def _rescue_exempt(self, key: tuple[str, str]) -> bool:
         if key not in self._rescue_pending:
@@ -1984,8 +2009,24 @@ class SessionLogManager:
                 )
 
             if wrote:
-                with contextlib.suppress(Exception):
+                try:
                     self._artifact_store._delete_artifacts_sync(ids + [lock_id])  # type: ignore[union-attr]
+                except Exception:
+                    _truncate_latch(self._unreadable_archive_warnings, _MAX_DRAIN_LATCH_KEYS)
+                    self.logger.log(
+                        warn_level(
+                            self._unreadable_archive_warnings,
+                            f"session_log_published_rows_not_deleted:{chat_id}:{message_id}",
+                            cooldown_s=3600.0,
+                        ),
+                        "Session log archive published for chat_id=%s message_id=%s but its staged "
+                        "rows and assembly lock could not be deleted; they stay in the database, so the "
+                        "turn is offered again and can hold the assembler's window until a later pass "
+                        "deletes them.",
+                        chat_id,
+                        message_id,
+                        exc_info=True,
+                    )
                 return True
 
             # If writing failed, keep segments for retry and allow lock reaping.

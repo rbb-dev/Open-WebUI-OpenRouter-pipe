@@ -16,6 +16,7 @@ from unittest.mock import Mock, patch
 import pytest
 pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
 
+from tests.pipe_limits import slot, set_slot
 from open_webui_openrouter_pipe.plugins.pipe_dashboard.runtime_metrics import (
     _collect_db_stats,
     collect_fast_stats,
@@ -65,12 +66,12 @@ def _make_mock_pipe():
     # not sized, so every `waiting` / `tool_waiting` in this file used to answer 0
     # behind a swallowed `TypeError` -- the one value a broken read also produces.
     # Constructing one needs no running loop, so the sync call sites are unaffected.
-    pipe._global_semaphore = asyncio.Semaphore(50)
-    pipe._global_semaphore._value = 45
-    pipe._semaphore_limit = 50
-    pipe._tool_global_semaphore = asyncio.Semaphore(10)
-    pipe._tool_global_semaphore._value = 8
-    pipe._tool_global_limit = 10
+    set_slot(pipe, "request_semaphore", asyncio.Semaphore(50))
+    slot(pipe, "request_semaphore")._value = 45
+    set_slot(pipe, "request_limit", 50)
+    set_slot(pipe, "tool_semaphore", asyncio.Semaphore(10))
+    slot(pipe, "tool_semaphore")._value = 8
+    set_slot(pipe, "tool_limit", 10)
 
     # Queues
     pipe._request_queue = Mock()
@@ -124,8 +125,8 @@ def _make_mock_pipe():
 
     # In-flight gauge + video pool
     pipe._active_pipes_calls = 0
-    pipe._video_global_semaphore = None
-    pipe._video_global_limit = 0
+    set_slot(pipe, "video_semaphore", None)
+    set_slot(pipe, "video_limit", 0)
     pipe._video_active_tasks = {}
 
     return pipe
@@ -694,10 +695,10 @@ class TestGracefulNoneSubsystems:
 
     def test_fast_tier_none_subsystems(self):
         pipe = Mock()
-        pipe._global_semaphore = None
-        pipe._semaphore_limit = 0
-        pipe._tool_global_semaphore = None
-        pipe._tool_global_limit = 0
+        set_slot(pipe, "request_semaphore", None)
+        set_slot(pipe, "request_limit", 0)
+        set_slot(pipe, "tool_semaphore", None)
+        set_slot(pipe, "tool_limit", 0)
         pipe.valves = None  # No valves either — fallback returns 0
         pipe._request_queue = None
         pipe._QUEUE_MAXSIZE = 1000
@@ -781,10 +782,10 @@ class TestCollectWorkerPayload:
 
     def test_none_subsystems(self):
         pipe = Mock()
-        pipe._global_semaphore = None
-        pipe._semaphore_limit = 0
-        pipe._tool_global_semaphore = None
-        pipe._tool_global_limit = 0
+        set_slot(pipe, "request_semaphore", None)
+        set_slot(pipe, "request_limit", 0)
+        set_slot(pipe, "tool_semaphore", None)
+        set_slot(pipe, "tool_limit", 0)
         pipe.valves = None  # No valves — fallback returns 0
         pipe._request_queue = None
         pipe._QUEUE_MAXSIZE = 1000
@@ -965,10 +966,10 @@ class TestValveFallbackConcurrency:
 
     def test_fast_stats_reads_valve_limits(self):
         pipe = Mock()
-        pipe._global_semaphore = None
-        pipe._semaphore_limit = 0  # Not yet initialized
-        pipe._tool_global_semaphore = None
-        pipe._tool_global_limit = 0
+        set_slot(pipe, "request_semaphore", None)
+        set_slot(pipe, "request_limit", 0)  # Not yet initialized
+        set_slot(pipe, "tool_semaphore", None)
+        set_slot(pipe, "tool_limit", 0)
         pipe.valves = Mock()
         pipe.valves.MAX_CONCURRENT_REQUESTS = 50
         pipe.valves.MAX_PARALLEL_TOOLS_GLOBAL = 10
@@ -984,10 +985,10 @@ class TestValveFallbackConcurrency:
 
     def test_worker_payload_reads_valve_limits(self):
         pipe = Mock()
-        pipe._global_semaphore = None
-        pipe._semaphore_limit = 0
-        pipe._tool_global_semaphore = None
-        pipe._tool_global_limit = 0
+        set_slot(pipe, "request_semaphore", None)
+        set_slot(pipe, "request_limit", 0)
+        set_slot(pipe, "tool_semaphore", None)
+        set_slot(pipe, "tool_limit", 0)
         pipe.valves = Mock()
         pipe.valves.MAX_CONCURRENT_REQUESTS = 50
         pipe.valves.MAX_PARALLEL_TOOLS_GLOBAL = 10
@@ -1018,8 +1019,8 @@ def test_unreadable_semaphore_does_not_blank_the_whole_fast_tier(pipe_instance, 
         def _value(self):
             raise AttributeError("semaphore internals moved")
 
-    pipe._global_semaphore = _Hostile()
-    pipe._semaphore_limit = 4
+    set_slot(pipe, "request_semaphore", _Hostile())
+    set_slot(pipe, "request_limit", 4)
 
     with caplog.at_level(_logging.WARNING):
         stats = collect_fast_stats(pipe)
@@ -1079,9 +1080,6 @@ class _HostileValue:
 
 
 class _HostileVideoPipe:
-    _video_global_limit = 0
-    _video_global_semaphore = None
-
     @property
     def _video_active_tasks(self):
         raise TypeError("task map unavailable")
