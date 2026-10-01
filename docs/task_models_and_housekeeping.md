@@ -108,8 +108,17 @@ job, from the moment the task is recognised through to the reply. A task that
 fails returns a contextual card for a persisted kind and the empty string for
 every other, and the answer on screen is left exactly as the model wrote it. The refusal paths are the exception, and deliberately so: a task
 the pipe refuses before it enqueues the job — an open circuit breaker, a failed
-warmup, a missing or full request queue, a setup exception — gets the refusal
-sentence rather than a stub, for every kind. The same holds for the refusals
+warmup, a missing or full request queue, a setup exception — is refused per class,
+and never with a stub:
+
+| Class | What a pre-enqueue refusal returns |
+| --- | --- |
+| **Persisted** | the card, as for any other refusal of that kind |
+| **Content-consumed** (`context_compaction`, `context_summary`, `memory_review`) | `""`, re-derived by Open WebUI, for the reason the table above gives |
+| **Display-string**, and any other task-adapter kind | the refusal sentence |
+| A kind whose name carries `follow`, `tag` or `title` but is not one of the three persisted kinds | the stub. No kind in Open WebUI's `TASKS` enum is in this class — `title_generation`, `follow_up_generation` and `tags_generation` are all persisted and checked first — so this row is a guard kept for a future kind, and it is documented so nobody reads the arm as dead code. |
+
+The same holds for the refusals
 that happen in-request, after the job is queued: ZDR enforcement on a model with no
 ZDR endpoint, the same refusal when the endpoint list cannot be read at all, an
 endpoint-override conflict from a preset on a model forced to `/responses`, a provider

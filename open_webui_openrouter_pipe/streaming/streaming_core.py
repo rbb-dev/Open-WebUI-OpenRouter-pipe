@@ -53,7 +53,6 @@ from ..core.config import (
     _RAW_REPLAYED_SERVER_TOOLS,
     DEFAULT_STREAM_INTERRUPTED_TEMPLATE,
     NO_CONTENT_AFTER_TOOLS_FALLBACK,
-    EncryptedStr,
 )
 from ..core.context_budget import (
     apply_live_tool_output_budget,
@@ -1994,7 +1993,25 @@ class StreamingHandler:
                     dispatched_metered_chars = None
                     dispatch_overhead = _request_overhead_chars(body)
 
-                    api_key_value = EncryptedStr.decrypt(valves.API_KEY)
+                    api_key_value, api_key_error = (
+                        self._pipe._resolve_openrouter_api_key(valves)
+                    )
+                    if api_key_error:
+                        error_occurred = True
+                        assistant_message = await self._pipe._ensure_error_formatter(
+                        )._emit_templated_error(
+                            event_emitter,
+                            template=valves.AUTHENTICATION_ERROR_TEMPLATE,
+                            variables={
+                                "openrouter_code": 401,
+                                "openrouter_message": api_key_error,
+                            },
+                            log_message=f"Auth configuration error: {api_key_error}",
+                            log_level=logging.WARNING,
+                            partial_answer=assistant_message,
+                            terminal=False,
+                        )
+                        break
                     is_streaming = bool(request_payload.get("stream"))
                     if is_streaming:
                         event_iter = self._pipe.send_openrouter_streaming_request(
@@ -4631,7 +4648,7 @@ class StreamingHandler:
         if session is None:
             raise RuntimeError("HTTP session is required for non-streaming")
 
-        return await self._run_streaming_loop(
+        answer = await self._run_streaming_loop(
             body,
             valves,
             wrapped_emitter,
@@ -4649,6 +4666,18 @@ class StreamingHandler:
             retry_handoff=retry_handoff,
             emitter_supplied=emitter_supplied,
         )
+
+        from ..requests.orchestrator import _is_api_caller
+
+        notices = getattr(body, "_attachment_notices", None)
+        if (
+            _is_api_caller(metadata)
+            and isinstance(notices, list)
+            and notices
+            and isinstance(answer, str)
+        ):
+            return join_answer_and_card(answer, " ".join(notices))
+        return answer
 
 
     @timed

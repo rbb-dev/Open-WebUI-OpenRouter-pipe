@@ -7,8 +7,6 @@ Each uvicorn worker runs one async task with three modes:
    slice, reads all workers' slices from Redis, aggregates, merges the tiered
    collectors, and emits the payload to the room (local delivery only).
 2. **Publishing** — no local viewers, but another worker set the active flag:
-   write this worker's slice to ``{ns}:dashboard:worker:{pid}`` every
-   ``_PD_PUBLISH_INTERVAL`` seconds so the emitting worker can aggregate it.
 3. **Idle** — no viewers anywhere: one Redis EXISTS per ``_PD_POLL_INTERVAL``,
    woken instantly via the ``{ns}:dashboard:wake`` pub/sub channel.
 

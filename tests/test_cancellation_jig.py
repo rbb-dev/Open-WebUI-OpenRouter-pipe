@@ -121,7 +121,7 @@ def _streaming_body() -> dict:
 
 async def _build_pipe(base_url: str) -> Pipe:
     pipe = Pipe()
-    pipe.valves.API_KEY = EncryptedStr(EncryptedStr.encrypt("test-api-key"))
+    pipe.valves.API_KEY = EncryptedStr("sk-test-api-key")
     pipe.valves.BASE_URL = base_url
     return pipe
 

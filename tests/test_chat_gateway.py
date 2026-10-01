@@ -3567,16 +3567,23 @@ async def test_full_pipe_call_with_chat_completions(pipe_instance_async):
             ]},
         )
 
-        # Mock chat completions
-        sse_response = (
-            _sse({"choices": [{"delta": {"content": "Hello!"}, "finish_reason": None}]})
-            + _sse({"choices": [{"delta": {}, "finish_reason": "stop"}]})
-            + "data: [DONE]\n\n"
-        )
+        # Mock chat completions. The turn below asks for `stream: false` and this node
+        # asserts on a `dict`, so the stub is the non-streamed body for that leg -- the
+        # streamed one it registered before could not decode into a dict, and only
+        # passed because a keyless pipe refused before the request was ever sent.
         mock_http.post(
             "https://openrouter.ai/api/v1/chat/completions",
-            body=sse_response,
-            headers={"Content-Type": "text/event-stream"},
+            payload={
+                "id": "cmpl-1",
+                "object": "chat.completion",
+                "model": "openai/gpt-4o",
+                "choices": [{
+                    "index": 0,
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "Hello!"},
+                }],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
         )
 
         try:
@@ -3598,9 +3605,12 @@ async def test_full_pipe_call_with_chat_completions(pipe_instance_async):
             valves=valves,
             )
 
-            assert isinstance(result, dict)
-            choices = result.get("choices", [])
-            assert len(choices) > 0
+            # `_handle_pipe_call` hands a chat turn's non-streamed answer back as the
+            # text itself; the `dict` this asserted on was the adapter's internal shape,
+            # which the pipe never returned. The node before this one is the one that
+            # pins the `choices` list.
+            assert isinstance(result, str), f"a chat turn returned {type(result).__name__}"
+            assert result == "Hello!", f"the chat leg answered {result!r}"
         finally:
             await session.close()
 

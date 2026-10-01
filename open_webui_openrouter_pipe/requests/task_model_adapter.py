@@ -18,7 +18,6 @@ from ..api.transforms import (
     _drop_include_reasoning_for_unsupported_fallbacks,
     _filter_openrouter_request,
 )
-from ..core.config import EncryptedStr
 from ..core.costs import maybe_dump_costs_snapshot
 from ..core.errors import OpenRouterAPIError, _inline_span, is_sign_in_failure
 from ..core.logging_system import SessionLogger
@@ -192,6 +191,16 @@ class TaskModelAdapter:
         delay_seconds = 0.2
         last_error: Exception | None = None
 
+        api_key_value, api_key_error = self._pipe._resolve_openrouter_api_key(valves)
+        if api_key_error or api_key_value is None:
+            reason = api_key_error or "the key gate returned no key."
+            self.logger.warning(
+                "OpenRouter API key is unusable for task %s: %s",
+                TaskModelAdapter._task_name(task_context) or "model",
+                reason,
+            )
+            return self._pipe._task_refusal_result(task_context, reason)
+
         if session is None:
             raise RuntimeError("HTTP session is required for task model requests")
 
@@ -203,7 +212,7 @@ class TaskModelAdapter:
                 async for event in self._pipe.send_openrouter_nonstreaming_request_as_events(
                     session,
                     task_body,
-                    api_key=EncryptedStr.decrypt(valves.API_KEY),
+                    api_key=api_key_value,
                     base_url=valves.BASE_URL,
                     valves=valves,
                     endpoint_override=last_endpoint,

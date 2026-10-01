@@ -1487,7 +1487,7 @@ def test_inlet_deduplicates_warnings():
 
 
 @pytest.mark.asyncio
-async def test_filter_integration_with_pipe_direct_uploads(pipe_instance_async):
+async def test_filter_integration_with_pipe_direct_uploads(pipe_instance_async, monkeypatch):
     """Test filter output integrates correctly with Pipe processing."""
     pipe = pipe_instance_async
 
@@ -1526,6 +1526,21 @@ async def test_filter_integration_with_pipe_direct_uploads(pipe_instance_async):
     # Verify filter worked
     assert filtered_body["files"] == []
     assert "direct_uploads" in metadata.get("openrouter_pipe", {})
+
+    # The body carries a `files` entry, so the loop resolves it before the request goes
+    # out. That resolution is stubbed here rather than left to reach Open WebUI's storage:
+    # without a key the request never went out, so the loader never ran and this node
+    # passed while asserting nothing about it.
+    from unittest.mock import AsyncMock
+
+    from open_webui_openrouter_pipe.storage.owui_files import InlinedFile
+
+    pipe._file_gateway.inline_owui_file_id = AsyncMock(
+        return_value=InlinedFile(
+            data_url="data:application/pdf;base64,JVBERi0xLjQK",
+            filename="document.pdf",
+        )
+    )
 
     with aioresponses() as mock_http:
         # Mock catalog
@@ -1569,10 +1584,13 @@ async def test_filter_integration_with_pipe_direct_uploads(pipe_instance_async):
             valves=valves,
             )
 
-            assert isinstance(result, dict)
-            # Verify pipe processed the request
-            choices = result.get("choices", [])
-            assert len(choices) > 0
+            # `_handle_pipe_call` hands a chat turn's non-streamed answer back as the
+            # text itself. The `dict` this asserted on was the adapter's internal shape,
+            # which the pipe never returned: the node only passed because a keyless pipe
+            # refused before the request was sent. The point of this node is that the
+            # filter's own edits survive the call, so what is asserted is the answer.
+            assert isinstance(result, str), f"a chat turn returned {type(result).__name__}"
+            assert result == "I see the document.", f"the filter's turn answered {result!r}"
         finally:
             await session.close()
 

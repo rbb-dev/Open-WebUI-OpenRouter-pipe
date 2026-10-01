@@ -3314,7 +3314,7 @@ async def test_tool_passthrough_streaming_emits_tool_calls_event() -> None:
         )
 
         pipe = Pipe()
-        pipe.valves.API_KEY = EncryptedStr(EncryptedStr.encrypt("test-api-key"))
+        pipe.valves.API_KEY = EncryptedStr("sk-test-api-key")
         pipe.valves.TOOL_EXECUTION_MODE = "Open-WebUI"
 
         try:
@@ -4816,7 +4816,7 @@ async def test_tool_passthrough_streaming_does_not_repeat_function_name() -> Non
         )
 
         pipe = Pipe()
-        pipe.valves.API_KEY = EncryptedStr(EncryptedStr.encrypt("test-api-key"))
+        pipe.valves.API_KEY = EncryptedStr("sk-test-api-key")
         pipe.valves.TOOL_EXECUTION_MODE = "Open-WebUI"
 
         try:

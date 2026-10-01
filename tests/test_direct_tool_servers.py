@@ -77,6 +77,11 @@ async def _send_one_request(*, event_call, metadata, body, valves, extra_tools=N
     the wire -- the orchestrator, the tool registry, the collision-safe builder -- is the real code.
     """
     pipe = Pipe()
+    # A usable key, for the reason the `pipe_instance` fixtures document: every reader of
+    # `API_KEY` goes through `Pipe._resolve_openrouter_api_key`, and a keyless valve makes it
+    # refuse the request before it reaches the stubbed transport, so the assertion below would
+    # read an empty turn instead of the turn under test.
+    pipe.valves.API_KEY = EncryptedStr("sk-test-key")
     if valves is not None:
         pipe.valves.TOOL_EXECUTION_MODE = valves
     session = None

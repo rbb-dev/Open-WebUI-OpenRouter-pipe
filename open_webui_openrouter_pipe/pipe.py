@@ -488,6 +488,15 @@ def _tool_side_emitter(emitter: EventEmitter | None) -> EventEmitter | None:
     return _emit
 
 
+def _limit_named_message(text: str, *, effective: float | None, ceiling: float | None) -> str:
+    if effective and ceiling and effective > ceiling:
+        return (
+            f"{text[:-1]}; that limit is Open WebUI's ask_user question window, "
+            f"not this round's batch ceiling ({ceiling:.0f}s)."
+        )
+    return text
+
+
 def _connector_kwargs(
     valves: Any,
     *,
@@ -4336,7 +4345,8 @@ class Pipe:
         ask_user_windows = [
             self._ensure_tool_executor()._ask_user_window(item.tool_cfg, item.args) for item in batch
         ]
-        batch_timeout = context.batch_timeout
+        batch_ceiling = context.batch_timeout
+        batch_timeout = batch_ceiling
         open_windows = [window for window in ask_user_windows if window is not None]
         if batch_timeout and open_windows:
             batch_timeout = max(float(batch_timeout), *open_windows)
@@ -4362,7 +4372,11 @@ class Pipe:
         if pending:
             await self._settle_cancelled_tool_tasks(pending)
             message = (
-                f"Tool batch '{batch[0].call.get('name')}' exceeded {batch_timeout:.0f}s and was cancelled."
+                _limit_named_message(
+                    f"Tool batch '{batch[0].call.get('name')}' exceeded {batch_timeout:.0f}s and was cancelled.",
+                    effective=batch_timeout,
+                    ceiling=batch_ceiling,
+                )
                 if batch_timeout
                 else "Tool batch timed out."
             )

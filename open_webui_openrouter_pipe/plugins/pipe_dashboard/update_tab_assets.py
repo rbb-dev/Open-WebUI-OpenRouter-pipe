@@ -82,6 +82,10 @@ UPDATE_TAB_JS = """
       internal: 'Something unexpected went wrong and nothing was changed. Details are in the server log.'
     };
     function updEl(id) { return document.getElementById(id); }
+    function updPauseHint(res) {
+      if ((res.error || res.code) === 'validation_failed') { return ''; }
+      return ' (apply manually or restart to re-arm)';
+    }
     function updErrText(res) {
       var code = res.error || res.code;
       var base = UPD_ERRORS[code] || esc(String(code || 'error'));
@@ -220,8 +224,8 @@ UPDATE_TAB_JS = """
         else if (d.update_available && auto.eligible_at) { autoTxt += ' \\u2014 eligible from ' + updFmtDate(auto.eligible_at); }
         if (auto.this_worker && auto.this_worker.paused_for_version) {
           autoTxt += ' \\u2014 paused for ' + esc(String(auto.this_worker.paused_for_version))
-            + ' on this worker after ' + esc(String(auto.this_worker.code))
-            + ' (apply manually or restart to re-arm)';
+            + ' on this worker after ' + updErrText(auto.this_worker)
+            + updPauseHint(auto.this_worker);
         } else if (auto.this_worker && auto.this_worker.code) {
           autoTxt += ' \\u2014 ' + updErrText(auto.this_worker)
             + ' (' + updFmtDate(auto.this_worker.ts) + ')';

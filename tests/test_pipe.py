@@ -4295,7 +4295,7 @@ async def test_pipe_handles_job_failure(monkeypatch):
     pipe = Pipe()
 
     # Configure API key so auth succeeds
-    pipe.valves.API_KEY = EncryptedStr(EncryptedStr.encrypt("test-api-key"))
+    pipe.valves.API_KEY = EncryptedStr("sk-test-api-key")
 
     events: list[dict[str, Any]] = []
 
@@ -4376,7 +4376,7 @@ async def test_pipe_coerces_none_metadata(monkeypatch):
     pipe = Pipe()
 
     # Configure API key
-    pipe.valves.API_KEY = EncryptedStr(EncryptedStr.encrypt("test-api-key"))
+    pipe.valves.API_KEY = EncryptedStr("sk-test-api-key")
 
     # Mock HTTP with successful response
     with aioresponses() as mock_http:
@@ -4437,7 +4437,7 @@ async def test_handle_pipe_call_tolerates_metadata_model_none(monkeypatch):
     pipe = Pipe()
 
     # Configure API key
-    pipe.valves.API_KEY = EncryptedStr(EncryptedStr.encrypt("test-api-key"))
+    pipe.valves.API_KEY = EncryptedStr("sk-test-api-key")
 
     # Mock HTTP with successful response
     with aioresponses() as mock_http:
@@ -4498,7 +4498,7 @@ async def test_run_streaming_loop_tolerates_null_item(monkeypatch):
     pipe = Pipe()
 
     # Configure API key
-    pipe.valves.API_KEY = EncryptedStr(EncryptedStr.encrypt("test-api-key"))
+    pipe.valves.API_KEY = EncryptedStr("sk-test-api-key")
 
     # Build SSE response with null items
     sse_response = (
@@ -5036,7 +5036,7 @@ async def test_task_reasoning_valve_applies_only_for_owned_models(monkeypatch):
 
     pipe = Pipe()
     pipe.valves = pipe.Valves(
-        API_KEY=EncryptedStr(EncryptedStr.encrypt("test-api-key")),
+        API_KEY=EncryptedStr("sk-test-api-key"),
         TASK_MODEL_REASONING_EFFORT="high"
     )
 
@@ -5139,7 +5139,7 @@ async def test_task_reasoning_valve_skips_unowned_models(monkeypatch):
 
     pipe = Pipe()
     pipe.valves = pipe.Valves(
-        API_KEY=EncryptedStr(EncryptedStr.encrypt("test-api-key")),
+        API_KEY=EncryptedStr("sk-test-api-key"),
         TASK_MODEL_REASONING_EFFORT="high"
     )
 
@@ -5241,7 +5241,7 @@ async def test_task_models_dump_costs_when_usage_available(monkeypatch):
 
     pipe = Pipe()
     pipe.valves = pipe.Valves(
-        API_KEY=EncryptedStr(EncryptedStr.encrypt("test-api-key")),
+        API_KEY=EncryptedStr("sk-test-api-key"),
         COSTS_REDIS_DUMP=True
     )
 
@@ -5328,7 +5328,7 @@ async def test_task_models_apply_identifier_valves_to_payload(monkeypatch):
 
     pipe = Pipe()
     pipe.valves = pipe.Valves(
-        API_KEY=EncryptedStr(EncryptedStr.encrypt("test-api-key")),
+        API_KEY=EncryptedStr("sk-test-api-key"),
         SEND_END_USER_ID=True,
         SEND_SESSION_ID=True,
         SEND_CHAT_ID=True,
@@ -5462,7 +5462,7 @@ async def test_model_restricted_template_includes_filter_name():
 
     pipe = Pipe()
     pipe.valves = pipe.Valves(
-        API_KEY=EncryptedStr(EncryptedStr.encrypt("test-api-key")),
+        API_KEY=EncryptedStr("sk-test-api-key"),
         FREE_MODEL_FILTER="only",
         TOOL_CALLING_FILTER="all",
     )

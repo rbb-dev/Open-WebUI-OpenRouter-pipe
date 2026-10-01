@@ -156,7 +156,7 @@ Default to ACTING, not asking. NEVER ask when ANY holds:
 8. NEVER ask about `standing_instructions`: the user did not write it and cannot be expected to explain it.
 
 ASK only when "it"/"that" but MULTIPLE prior videos AND no positional cue AND meaningfully different options.
-Question must be: in `language`; one short sentence; 2-4 `options` strings when useful; user-friendly terms not schema fields.
+Question must be: in `language`; one short sentence; 2-4 `options` strings when useful, a few words each; user-friendly terms not schema fields.
 
 ## Step 5. Build prompt
 - use_user_prompt=true: copy latest_user_text minus meta/control phrases and placeholder tokens.

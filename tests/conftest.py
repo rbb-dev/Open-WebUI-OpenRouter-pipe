@@ -98,10 +98,20 @@ async def _cleanup_pending_pipes():
         await pipe.close()
 
 
+#: The key the two fixtures below hand a fresh `Pipe`. Every reader of `API_KEY` goes
+#: through `Pipe._resolve_openrouter_api_key`, which refuses an unset one, so a keyless
+#: fixture pipe refuses the request before it reaches the transport the test stubs --
+#: and the assertions below that stub then read an empty turn rather than the turn under
+#: test. Set on the valves rather than through `OPENROUTER_API_KEY`, which is the field's
+#: `default_factory` and therefore a thing some tests read to assert the keyless state.
+FIXTURE_API_KEY = "sk-test-key"
+
+
 @pytest.fixture
 def pipe_instance(request):
     """Return a fresh Pipe instance for tests."""
     pipe = Pipe()
+    pipe.valves.API_KEY = EncryptedStr(FIXTURE_API_KEY)
 
     def _finalize() -> None:
         _schedule_pipe_cleanup(pipe)
@@ -114,6 +124,7 @@ def pipe_instance(request):
 async def pipe_instance_async():
     """Return a fresh Pipe instance for async tests with proper cleanup."""
     pipe = Pipe()
+    pipe.valves.API_KEY = EncryptedStr(FIXTURE_API_KEY)
     yield pipe
     await pipe.close()
 
@@ -184,7 +195,7 @@ def _maybe_install_bundled_pipe() -> None:
 
 _maybe_install_bundled_pipe()
 
-from open_webui_openrouter_pipe import Pipe
+from open_webui_openrouter_pipe import EncryptedStr, Pipe
 from open_webui_openrouter_pipe.core.circuit_breaker import CircuitBreaker
 from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry, ModelFamily
 

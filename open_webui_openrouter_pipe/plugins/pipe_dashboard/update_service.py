@@ -565,6 +565,7 @@ class UpdateService:
                 "paused_for_version": version,
                 "code": paused.get("code"),
                 "ts": paused.get("ts"),
+                "message": paused.get("message", ""),
             }
         elif self._auto_last is not None:
             this_worker = dict(self._auto_last)
@@ -1529,9 +1530,10 @@ class UpdateService:
                 self._auto_last = {"code": exc.code, "ts": _now(), "message": exc.message}
                 if exc.code in _TRANSIENT_CODES:
                     return self._next_backoff(exc)
-                self._auto_skip[version] = {"code": exc.code, "ts": _now()}
+                self._auto_skip[version] = {"code": exc.code, "ts": _now(), "message": exc.message}
                 logger.warning(
-                    "update: auto-apply paused for %s on this worker after %s", version, exc.code
+                    "update: auto-apply paused for %s on this worker after %s (%s)",
+                    version, exc.code, exc.message,
                 )
                 return interval
         except asyncio.CancelledError:

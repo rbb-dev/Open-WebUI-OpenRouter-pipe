@@ -390,7 +390,7 @@ def _config_snapshot(
 
 async def _saved_values(
     pipe: Any, names: Iterable[str]
-) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     wanted = set(names)
     effective, _reset, stored, read_ok = await _effective_valves_and_state(pipe)
     if not read_ok:
@@ -398,7 +398,7 @@ async def _saved_values(
             "pipe_dashboard: the store became unreadable while echoing a completed save; "
             "the write is committed, so the echo is dropped rather than reported as a failure"
         )
-        return {}, {}, []
+        return {}, {}
     snapshot = _config_snapshot(effective, stored)
     return (
         {
@@ -414,7 +414,6 @@ async def _saved_values(
             for spec in snapshot["valves"]
             if spec["name"] in wanted and spec["secret"]
         },
-        [],
     )
 
 
@@ -446,7 +445,7 @@ async def _config_set(
     async with _config_write_lock(getattr(pipe, "id", "")):
         result, committed = await _persist_config_edit(pipe, user, args, request)
         if committed:
-            result["values"], result["secrets"], result["post_reset"] = await _saved_values(
+            result["values"], result["secrets"] = await _saved_values(
                 pipe, args["edits"]
             )
     return result

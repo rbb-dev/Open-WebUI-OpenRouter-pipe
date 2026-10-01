@@ -713,6 +713,7 @@ async def test_process_transformed_request_accepts_string_task() -> None:
     - Real HTTP request to OpenRouter API
     """
     pipe = Pipe()
+    pipe.valves.API_KEY = EncryptedStr("sk-test-key")
     valves = pipe.valves
     session = pipe._create_http_session(valves)
 

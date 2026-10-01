@@ -72,9 +72,8 @@ def normalise_model_content(value: Any) -> str:
     if isinstance(value, list):
         return _join_content_parts(value)
     if isinstance(value, dict):
-        for key in ("text", "content"):
-            if value.get(key):
-                return str(value[key])
+        part = _content_part_text(value)
+        return "" if part is None else part
     return str(value) if value is not None else ""
 
 
@@ -183,7 +182,9 @@ def _model_answer(message: dict[str, Any]) -> Any:
     return content_value
 
 
-async def read_task_model_response_json(response: Any) -> dict[str, Any]:
+async def read_task_model_response_json(
+    response: Any, *, schema_keys: frozenset[str] | None = None
+) -> dict[str, Any]:
     """Parse OWUI generate_chat_completion result into a JSON dict.
 
     Raises:
@@ -277,6 +278,8 @@ async def read_task_model_response_json(response: Any) -> dict[str, Any]:
             measured = _TASK_RESPONSE_MAX_BYTES + 1
         if measured > _TASK_RESPONSE_MAX_BYTES:
             raise TaskModelFault("task_model_response_too_large", f"{measured}")
+        if schema_keys is not None and not schema_keys & content_value.keys():
+            raise TaskModelFault("task_model_invalid_schema")
         return content_value
     if isinstance(content_value, str):
         if not content_value.strip():

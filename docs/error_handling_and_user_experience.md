@@ -18,7 +18,7 @@ There are two main error rendering paths, and a third that does not render at al
 
 1. **OpenRouter “request rejected” templates** (OpenRouter HTTP status handling and parsed provider errors).
 2. **Generic templated errors** (timeouts/connectivity/internal failures handled by `_emit_templated_error`).
-3. **API callers with no chat**, where there is nowhere to write a card: a provider rejection is returned as an HTTP error instead. The same leg carries the five pre-job refusals, which are further conditions on this path: a tripped per-user circuit breaker, warmup failure, a missing request queue, a full queue and a pre-enqueue setup failure. Each is raised locally and has no upstream status behind it, so it leaves as its own status rather than a 400 — **429** for the breaker, which is a per-entity rate limit, and **503** for the other four, which are conditions of this process rather than of one caller. Gated on a truthy `chat_id` **and** `message_id` — Open WebUI's own idiom for "is there a chat to write this into" (`main.py:1703`, `utils/middleware.py:3286`) — with `stream: false`, and never on an Anthropic Messages path (`main.py:2054-2063` re-wraps the response for the Anthropic converter, which has no error branch). The gate is a negative test on the request path, not a check for `/api/chat/completions`, so it also fires on Open WebUI's task routes. See [API callers with no chat](#c-api-callers-with-no-chat-http-error-instead-of-a-card).
+3. **API callers with no chat**, where there is nowhere to write a card: a provider rejection is returned as an HTTP error instead. The same leg carries the five pre-job refusals, which are further conditions on this path: a tripped per-user circuit breaker, warmup failure, a missing request queue, a full queue and a pre-enqueue setup failure. Each is raised locally and has no upstream status behind it, so it leaves as its own status rather than a 400 — **429** for the breaker, which is a per-entity rate limit, and **503** for the other four, which are conditions of this process rather than of one caller. Gated on a truthy `chat_id` **and** `message_id` — Open WebUI's own idiom for "is there a chat to write this into" (`main.py:1703`, `utils/middleware.py:3286`) — with `stream: false`, and never on an Anthropic Messages path (`main.py:2054-2063` re-wraps the response for the Anthropic converter, which has no error branch). The gate is a negative test on the request path, not a check for `/api/chat/completions`, so it also fires on Open WebUI's task routes. That escape is for *failures*: a turn that ran and answered, degraded but successful, stays a `200` and carries what was degraded in its body — the refused-attachment row of [API callers with no chat](#c-api-callers-with-no-chat-http-error-instead-of-a-card) is that shape. See [API callers with no chat](#c-api-callers-with-no-chat-http-error-instead-of-a-card).
 
 ### What is not an error, but is still said out loud
 
@@ -112,10 +112,12 @@ property of the conversation, not of the frame:
   appending to it, so the closing frame's content must be the whole message or the card is
   lost.
 
-The five pre-job refusals (a tripped circuit breaker, warmup, a missing stream queue, a
-full queue, and a pre-enqueue failure) never build a stream queue and so never
-install the middleware emitter: they emit straight to the channel emitter and take the
-same channel path as any other card. A caller with no chat to write that card into gets
+The five pre-job refusals (a tripped circuit breaker, warmup, a missing request queue, a
+full queue, and a pre-enqueue failure) never install the middleware emitter: four of
+them return before a stream queue is built, and the queue-full arm builds one at
+`pipe.py:2216-2226` and refuses at `2262-2279` before the dispatch worker dequeues it.
+So all five emit straight to the channel emitter and take the same channel path as any
+other card. A caller with no chat to write that card into gets
 the refusal as a status instead, carrying the same sentence as the error message: 429 for
 the breaker, 503 for the other four.
 
@@ -223,7 +225,7 @@ On the Agent tool's own API — `/api/v1/messages` — a card that survives its 
 
 ### C) API callers with no chat: HTTP error instead of a card
 
-A card is written into a chat, for a person to read. A caller with no chat to write it into has nothing to show it in, and no way to tell a failure from a success — so on that leg the rejection leaves the pipe as an HTTP error rather than as Markdown.
+A card is written into a chat, for a person to read. A caller with no chat to write it into has nothing to show it in, and no way to tell a failure from a success — so on that leg the rejection leaves the pipe as an HTTP error rather than as Markdown. The HTTP escape is not extended to a *soft* refusal: a turn that answered anyway is a success, and its one remaining channel is the body.
 
 | Condition | Result |
 | --- | --- |
@@ -231,7 +233,8 @@ A card is written into a chat, for a person to read. A caller with no chat to wr
 | No truthy `chat_id` **or** no truthy `message_id`, `stream: false`, a 200 whose body is **not a decodable JSON object** (a proxy's HTML error page, a truncated stream, `b"[1,2,3]"`), on any path except the two Anthropic Messages paths — the body is not a provider error, so it escapes the provider-error escape entirely and the orchestrator builds the envelope for it | `StreamingResponse`, `status_code: 400`, `Content-Type: application/json`, `code: 502`; `message` carries the endpoint that answered and the upstream `Content-Type`, and quotes none of the body — it is composed by the pipe, not transported from it |
 | No truthy `chat_id` **or** no truthy `message_id`, `stream: false`, no task, on any path except the two Anthropic Messages paths, and the refusal is one of the five **local admissions** — a tripped circuit breaker, warmup failure, a missing request queue, a full queue (`Server busy (503)`, including the same refusal reaching a request already waiting for a permit when the pipe is superseded) or a pre-enqueue setup failure | `StreamingResponse`, `status_code: 429` for the breaker and `503` for the other four, `Content-Type: application/json` |
 | Any truthy `chat_id` **and** `message_id` | the card, unchanged |
-| `stream: true` | the card, as a terminal error chunk with `done: true` and then the end of the stream — the escape's return value is discarded: on a streamed turn `pipe.py:1554` hands back `_stream()`, which never reads the job future, so the `StreamingResponse` the escape built is thrown away. A streamed turn is never left with an empty assistant message: an admission refusal that reaches a request already dequeued ends the stream with the card, not with nothing. The card is the whole response body there, and it keeps the provider's verbatim text by design; see [Security & Encryption](security_and_encryption.md#log-safety) |
+| A refused attachment, no truthy `chat_id` **or** no truthy `message_id`, `stream: false` | `200`, unchanged — the answer, plus the same refusal sentence the status would have carried, joined after it under `choices[0].message.content`. The aggregated `Files:` / `Images:` line is the one that is folded in: a refusal that already travels on its own error card (`chat:message:error`) is excluded from that line on purpose and is not folded in as well, so one fact is still reported once |
+| `stream: true` | the card, as a terminal error chunk with `done: true` and then the end of the stream — the escape's return value is discarded: on a streamed turn `pipe.py:2359` hands back `_stream()`, which never reads the job future, so the `StreamingResponse` the escape built is thrown away. A streamed turn is never left with an empty assistant message: an admission refusal that reaches a request already dequeued ends the stream with the card, not with nothing. The card is the whole response body there, and it keeps the provider's verbatim text by design; see [Security & Encryption](security_and_encryption.md#log-safety) |
 
 The body is the error envelope, not the upstream payload:
 

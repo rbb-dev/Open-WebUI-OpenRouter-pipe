@@ -1290,7 +1290,9 @@ def _render_purpose_built_fields_uncached(spec: VideoFilterSpec) -> list[str]:
                 'previous videos and say \\"make the last one red\\"), the chat can ask a '
                 'short clarifying question to pick the right one. This is how many such '
                 'questions the chat may ask in this conversation; once they are used up it '
-                'just goes with its best guess. Set to 0 to skip questions entirely."\n'
+                'just goes with its best guess. Set to 0 to skip questions entirely. If '
+                'the site default is 0, that wins over this setting, so the chat asks '
+                'nothing in any case however high you set it."\n'
                 '            ),\n'
                 '        )'
             )
@@ -1331,7 +1333,9 @@ def _render_purpose_built_fields_uncached(spec: VideoFilterSpec) -> list[str]:
                 'A rewritten prompt, or a best-guess turn once the clarifying question '
                 'limit is reached, shows the block in every mode except never. A turn '
                 'where the classifier changed what is sent is shown whichever mode you '
-                'pick, except never."\n'
+                'pick, except never. If the site default is never, that wins over this '
+                'setting, so the block is never shown and no preview picture is taken '
+                'however you set it here."\n'
                 '            ),\n'
                 '        )'
             )

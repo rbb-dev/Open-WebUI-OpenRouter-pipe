@@ -93,6 +93,9 @@ def _no_task_model_warn_level(chat_id: Any) -> int:
     return logging.WARNING
 
 
+_NO_OFF_POSITION = object()
+
+
 def resolve_intent_user_setting(
     metadata: Any,
     field: str,
@@ -101,6 +104,7 @@ def resolve_intent_user_setting(
     default: Any,
     *,
     coerce: Callable[[Any], Any] | None = None,
+    off_position: Any = _NO_OFF_POSITION,
 ) -> Any:
     """Prefer the per-request user value pushed by the per-model video filter
     inlet, fall back to the admin valve.
@@ -117,6 +121,9 @@ def resolve_intent_user_setting(
             useful for normalising str → enum-like values that came from
             JSON serialisation.
     """
+    admin_value = getattr(valves, admin_field, default)
+    if off_position is not _NO_OFF_POSITION and admin_value == off_position:
+        return admin_value
     if isinstance(metadata, dict):
         pipe_meta = metadata.get(_PIPE_METADATA_KEY)
         if isinstance(pipe_meta, dict):
@@ -125,7 +132,7 @@ def resolve_intent_user_setting(
                 value = intent_meta[field]
                 if value is not None:
                     return coerce(value) if coerce is not None else value
-    return getattr(valves, admin_field, default)
+    return admin_value
 
 
 def _admin_intent_floor(valves: Any, admin_field: str, default: Any) -> Any:
@@ -605,13 +612,22 @@ def validate_intent_params(
         options_raw = clar_raw.get("options")
         options: list[str] | None = None
         if isinstance(options_raw, list):
-            options = [
-                str(opt)[:_CLARIFICATION_MAX_OPTION_LEN]
-                for opt in options_raw[:_CLARIFICATION_MAX_OPTIONS]
-                if isinstance(opt, str)
-            ]
+            options = []
+            truncated = False
+            for opt in options_raw[:_CLARIFICATION_MAX_OPTIONS]:
+                if not isinstance(opt, str):
+                    continue
+                if len(opt) <= _CLARIFICATION_MAX_OPTION_LEN:
+                    options.append(opt)
+                    continue
+                head = opt[:_CLARIFICATION_MAX_OPTION_LEN]
+                cut = head.rfind(" ")
+                options.append((head[:cut] if cut > 0 else head).rstrip())
+                truncated = True
             if len(options) < len(options_raw):
                 downgrades.append("clarification_options_dropped")
+            if needs and truncated:
+                downgrades.append("clarification_options_truncated")
         clar_reason = str(clar_raw.get("reason") or "").strip()
         if needs and len(question) > _CLARIFICATION_QUESTION_MAX_LEN:
             question = question[:_CLARIFICATION_QUESTION_MAX_LEN].rstrip()
@@ -929,7 +945,7 @@ async def resolve_intent(
         )
         max_clar_raw = resolve_intent_user_setting(
             metadata, "max_clarifications",
-            valves, "VIDEO_INTENT_MAX_CLARIFICATIONS", 1,
+            valves, "VIDEO_INTENT_MAX_CLARIFICATIONS", 1, off_position=0,
         )
         try:
             max_clar = max(0, min(3, int(max_clar_raw)))
@@ -1002,6 +1018,7 @@ async def resolve_intent(
             outcome=_outcome,
             attempts_per_candidate=2,
             repair_messages=_video_intent_repair_turns,
+            schema_keys=frozenset(INTENT_JSON_SCHEMA["required"]),
         )
         _latency_ms = int((time.monotonic() - _t0) * 1000)
 
@@ -1255,6 +1272,9 @@ _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
     "clarification_options_dropped": (
         "Some of the suggested answers to the question were left out."
     ),
+    "clarification_options_truncated": (
+        "One of the suggested answers was too long, so it was shortened."
+    ),
     "clarification_question_truncated": "The question was too long and was shortened.",
     "clarification_question_empty": (
         "A clarifying question was planned but came back empty, so none was asked."
@@ -1295,6 +1315,12 @@ def _user_facing_downgrade_message(code: str) -> str:
 
 
 _CLARIFICATION_CAPPED_CODE = "clarification_capped_max_reached"
+
+_CLARIFICATION_CARD_CODES = (
+    "clarification_options_dropped",
+    "clarification_options_truncated",
+    "clarification_question_truncated",
+)
 
 
 def _prompt_text_was_rewritten(
@@ -1438,6 +1464,10 @@ def render_clarification_message(intent: VideoIntentResult) -> str:
         lines.append("")
         for i, opt in enumerate(intent.clarification.options, start=1):
             lines.append(f"{i}. **{_flatten_to_one_line(opt)}**")
+    for code in intent.downgrades:
+        if code in _CLARIFICATION_CARD_CODES:
+            lines.append(f"⚠️ {_user_facing_downgrade_message(code)}")
+    if intent.clarification.options:
         lines.append("")
         count = len(intent.clarification.options)
         choices = ", ".join(f"`{n}`" for n in range(1, count + 1))

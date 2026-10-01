@@ -312,6 +312,11 @@ _NAMES_CONTENT: tuple[int, str, str | None] = (0, "", None)
 _LOCATOR_RE = re.compile(r"^(?!data:)[A-Za-z][A-Za-z0-9+.\-]*:")
 
 
+def _names_a_locator(value: str) -> bool:
+    colon = value.find(":")
+    return colon >= 0 and _LOCATOR_RE.match(value[: colon + 1]) is not None
+
+
 def _is_base64_parameter(header: str) -> bool:
     return any(p.strip().lower() == "base64" for p in header.partition(":")[2].split(";")[1:])
 
@@ -336,7 +341,7 @@ def _payload_bytes(value: Any) -> tuple[int, str, str | None] | None:
             if header.startswith("data:"):
                 media_type = header[len("data:") :].split(";", 1)[0].strip().lower()
                 payload = raw
-        elif _LOCATOR_RE.match(value):
+        elif _names_a_locator(value):
             return _NAMES_CONTENT
         else:
             raw = value

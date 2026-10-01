@@ -688,7 +688,7 @@ class ToolExecutor:
             if breaker is not None and not breaker.tool_allows(
                 context.user_id, tool_type, tool_name
             ):
-                breaker_skips.append((tool_type, call.get("name")))
+                breaker_skips.append((tool_type, tool_name))
                 await _append_and_notify(index, call, self._build_tool_output(
                     call,
                     f"Tool '{call.get('name')}' skipped due to repeated failures.",

@@ -152,6 +152,10 @@ async def ensure_image_catalog_loaded(
             continue
 
         if getattr(valves, "ENABLE_OPENROUTER_IMAGE_GENERATION", False):
+            if OpenRouterModelRegistry.adopt_image_contract_target(_contract_target(valves)):
+                logger.info(
+                    "Image contract cache dropped: the base URL or the API key changed."
+                )
             stale_models, stale_contracts = _image_catalog_stale(
                 cache_seconds=cache_seconds, wants_filters=wants_filters, api_key=api_key,
                 valves=valves,
@@ -202,11 +206,6 @@ async def ensure_image_catalog_loaded(
 
                 if wants_filters and _image_contract_sweep_in_progress():
                     continue
-
-                if OpenRouterModelRegistry.adopt_image_contract_target(_contract_target(valves)):
-                    logger.info(
-                        "Image contract cache dropped: the base URL or the API key changed."
-                    )
 
                 account_changed = not OpenRouterModelRegistry.image_accounts_match(api_key)
                 repair = OpenRouterModelRegistry.image_contract_retry_pending()

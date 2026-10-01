@@ -981,7 +981,6 @@ class SessionLogManager:
                 request_id,
             )
             base_dir, zip_password, zip_compression, zip_compresslevel = archive_settings
-            meta_message_id, meta_task = _split_archive_key(message_id)
             fallback_message_id = message_id if surrogate_in_play else f"{message_id}.{request_id}"
             meta_message_id, meta_task = _split_archive_key(message_id)
             self._enqueue_archive_job(
@@ -1071,7 +1070,10 @@ class SessionLogManager:
             with self._lock:
                 if assembled:
                     self._rescue_pending.pop(key, None)
-                if assembled or self._rescue_exempt(key) or key in self._capture_exempt:
+                capture_exempt = key in self._capture_exempt
+                if capture_exempt:
+                    self._capture_exempt.discard(key)
+                if assembled or self._rescue_exempt(key) or capture_exempt:
                     self._assembler_recent_failures.pop(key, None)
                     self._assembly_failure_stale_arm.discard(key)
                 else:

@@ -217,6 +217,19 @@ REQUEST_VALIDATED_IPS: ContextVar[dict[tuple[str, int | None], list[str] | None]
     ContextVar("request_validated_ips", default=None)
 )
 
+_request_remote_limit_mb: ContextVar[list[int] | None] = ContextVar(
+    "request_remote_limit_mb", default=None
+)
+
+
+@asynccontextmanager
+async def remote_file_limit_scope() -> AsyncIterator[None]:
+    token = _request_remote_limit_mb.set([])
+    try:
+        yield
+    finally:
+        _request_remote_limit_mb.reset(token)
+
 
 def _pipe_pool(
     handler: Any, attr: str, workers: int, prefix: str
@@ -1780,20 +1793,29 @@ class MultimodalHandler:
         Returns:
             Effective file size limit in MB
         """
+        memo = _request_remote_limit_mb.get()
+        if memo:
+            return memo[0]
         base_limit_mb = self.valves.REMOTE_FILE_MAX_SIZE_MB
         rag_enabled, rag_limit_mb = await _read_rag_file_constraints()
         if not rag_enabled or rag_limit_mb is None:
             return base_limit_mb
 
         if base_limit_mb > rag_limit_mb:
-            return rag_limit_mb
+            return self._remember_remote_limit_mb(memo, rag_limit_mb)
 
         if (
             base_limit_mb == _REMOTE_FILE_MAX_SIZE_DEFAULT_MB
             and rag_limit_mb > base_limit_mb
         ):
-            return rag_limit_mb
-        return base_limit_mb
+            return self._remember_remote_limit_mb(memo, rag_limit_mb)
+        return self._remember_remote_limit_mb(memo, base_limit_mb)
+
+    @staticmethod
+    def _remember_remote_limit_mb(memo: list[int] | None, limit_mb: int) -> int:
+        if memo is not None and not memo:
+            memo.append(limit_mb)
+        return limit_mb
 
     @timed
     async def _fetch_image_as_data_url(self, url: str) -> str | None:

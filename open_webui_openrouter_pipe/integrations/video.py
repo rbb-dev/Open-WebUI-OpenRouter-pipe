@@ -980,6 +980,7 @@ class VideoGenerationAdapter:
                         resolve_intent_user_setting(
                             metadata, "confirm_mode",
                             valves, "VIDEO_INTENT_CONFIRM_MODE", "on_reference",
+                            off_position="never",
                         )
                         or "on_reference"
                     )

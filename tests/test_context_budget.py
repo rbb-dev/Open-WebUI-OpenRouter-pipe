@@ -6,6 +6,7 @@ import base64
 import json
 import logging
 import re
+import time
 from typing import Any, cast
 
 import pytest
@@ -17,6 +18,8 @@ from open_webui_openrouter_pipe.core.context_budget import (
     _CHARS_PER_TOKEN_HEURISTIC,
     _decode_window,
     _payload_windows,
+    _payload_bytes,
+    _NAMES_CONTENT,
     apply_live_tool_output_budget,
     apply_replay_tool_output_budget,
     _LIVE_OMISSION_PREFIX,
@@ -2781,3 +2784,19 @@ def test_the_ratchet_keeps_the_tightest_sample_of_the_turn() -> None:
         "a ratio measured for one model was applied to another"
     )
     assert effective_chars_per_token({}, "m") is None
+
+
+# T651: classifying a value as a locator read the whole value.
+#
+# `_payload_bytes` asked `_LOCATOR_RE` about the entire string. The pattern answers
+# "scheme, then colon" and `:` is not in `[A-Za-z0-9+.\-]`, so the greedy run can only
+# ever stop at the FIRST colon -- everything a longer match could have proved was
+# already decided before the run passed it. The cost, though, followed the length of the
+# value: a base64 attachment is scheme-legal for megabytes, and the three callers of
+# `_payload_bytes` (the replay sanitize pass, the live budget and the priced-char pass)
+# all run on the event loop.
+#
+# `_TODAYS_LOCATOR_RE` is transcribed here on purpose: the rows below are about a
+# classification reaching the SAME verdict by reading less, so the whole-value answer
+# they are compared against must not itself move with the production pattern.
+_TODAYS_LOCATOR_RE = re.compile(r"^(?!data:)[A-Za-z][A-Za-z0-9+.\-]*:")

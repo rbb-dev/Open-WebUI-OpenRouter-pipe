@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 import pytest_asyncio
 
-from open_webui_openrouter_pipe import Pipe
+from open_webui_openrouter_pipe import EncryptedStr, Pipe
 from open_webui_openrouter_pipe.core.config import NO_CONTENT_AFTER_TOOLS_FALLBACK, _PIPE_METADATA_KEY, Valves
 from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
 from open_webui_openrouter_pipe.core.fusion_defaults import (
@@ -42,6 +42,10 @@ async def orchestrator_and_pipe():
     from open_webui_openrouter_pipe.requests.orchestrator import RequestOrchestrator
 
     pipe = Pipe()
+    # A usable key: every reader of `API_KEY` goes through
+    # `Pipe._resolve_openrouter_api_key`, which refuses an unset one, so a keyless pipe
+    # refuses the member call before it reaches the transport these arms stub.
+    pipe.valves.API_KEY = EncryptedStr("sk-test-key")
     logger = logging.getLogger("test_fusion_engine")
     logger.setLevel(logging.DEBUG)
     orchestrator = RequestOrchestrator(pipe, logger)
@@ -175,6 +179,12 @@ def _prepare_pipe(pipe):
 
 
 def _invocation(orchestrator, pipe, valves, *, messages=None, enforced=None, catalog=None):
+    # The single funnel for every valve this file builds. The member leg reads `API_KEY`
+    # through `Pipe._resolve_openrouter_api_key`, which refuses an unset one, so a
+    # keyless valve refuses the call before it reaches the transport these arms stub --
+    # and this file builds its valves with `Valves(...)` rather than from the fixture's.
+    if not str(valves.API_KEY or "").strip():
+        object.__setattr__(valves, "API_KEY", EncryptedStr("sk-test-key"))
     return FusionInnerInvocation(
         orchestrator=orchestrator,
         messages=messages or [{"role": "user", "content": "What is OpenRouter?"}],
@@ -234,7 +244,14 @@ class TestRunFusionMemberReentry:
             from open_webui_openrouter_pipe.models.registry import ModelFamily
             monkeypatch.setattr(ModelFamily, "supports",
                                 classmethod(lambda cls, cap, m: cap == "function_calling"))
-        valves = valves or Valves()
+        # A usable key by default: the member leg reads `API_KEY` through
+        # `Pipe._resolve_openrouter_api_key`, which refuses an unset one, so a keyless
+        # valve refuses the call before it reaches the transport these arms stub. Applied
+        # to a caller-supplied valve too, which is what keeps every arm of this class on
+        # the same footing whatever it built its own `Valves(...)` from.
+        valves = valves if valves is not None else Valves()
+        if not str(valves.API_KEY or "").strip():
+            object.__setattr__(valves, "API_KEY", EncryptedStr("sk-test-key"))
         inv = _invocation(orchestrator, pipe, valves,
                           enforced=enforced, catalog=catalog)
         if registry is not None:

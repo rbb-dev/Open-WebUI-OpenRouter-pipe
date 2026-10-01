@@ -22,6 +22,7 @@ import logging
 import re
 import time
 from collections.abc import Callable, Iterable
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 
 from ..core.config import (
@@ -310,6 +311,7 @@ def _is_video_gen_filter(content: Any) -> bool:
     return _is_filter_carrying(content, _OPENROUTER_VIDEO_GEN_FILTER_MARKER)
 
 
+@lru_cache(maxsize=32)
 def _offered_web_tools(content: str) -> frozenset[str] | None:
     try:
         tree = ast.parse(content)

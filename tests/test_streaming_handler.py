@@ -34,7 +34,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from open_webui_openrouter_pipe import Pipe, ResponsesBody, _ToolExecutionContext
+from open_webui_openrouter_pipe import EncryptedStr, Pipe, ResponsesBody, _ToolExecutionContext
 from open_webui_openrouter_pipe.core.config import EncryptedStr
 from open_webui_openrouter_pipe.core.errors import (
     OpenRouterAPIError,
@@ -6797,6 +6797,10 @@ async def test_unbounded_queue_handles_large_event_burst(monkeypatch):
     - SSE parsing broke (no content)
     """
     pipe = Pipe()
+    # A usable key: the loop reads `API_KEY` through the gate, which refuses an unset
+    # one, so without it the run stops at the refusal and the usage frame this asserts
+    # on never arrives.
+    pipe.valves.API_KEY = EncryptedStr("sk-test-key")
 
     # Verify defaults are unbounded
     assert pipe.valves.STREAMING_CHUNK_QUEUE_MAXSIZE == 0

@@ -13,6 +13,8 @@ The transforms bridge Open WebUI's expectations with OpenRouter's API variants.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import logging
 from collections.abc import Awaitable, Callable, Iterator
@@ -369,6 +371,7 @@ class ResponsesBody(BaseModel):
         if "messages" in completions_dict:
             sanitized_params.pop("messages", None)
             replayed_reasoning_refs: list[tuple[str, str]] = []
+            attachment_notices: list[str] = []
             if transformer_context is None:
                 raise RuntimeError(
                     "ResponsesBody.from_completions requires a transformer_context (usually the Pipe instance) "
@@ -402,9 +405,12 @@ class ResponsesBody(BaseModel):
                 valves=transformer_valves or getattr(transformer_owner, "valves", None),
                 capability_model_id=capability_model_id,
                 ask_user_names=ask_user_names,
+                attachment_notices=attachment_notices,
             )
             if replayed_reasoning_refs:
                 sanitized_params["_replayed_reasoning_refs"] = replayed_reasoning_refs
+            if attachment_notices:
+                sanitized_params["_attachment_notices"] = attachment_notices
 
         merged_params = {
             **sanitized_params,
@@ -833,6 +839,35 @@ def _replay_payload_is_present(value: Any) -> bool:
     return False
 
 
+def _input_audio_from_string(value: str) -> dict[str, Any] | None:
+    from ..requests.transformer import _map_audio_format
+
+    stripped = value.strip()
+    if not stripped:
+        return None
+    if stripped[:5].lower() == "data:":
+        head, _, payload = stripped.partition(",")
+        mime = head[5:].split(";", 1)[0].strip()
+        if not mime.startswith("audio/"):
+            return None
+        audio_format = _map_audio_format(mime)
+        if audio_format is None:
+            return None
+        return {
+            "type": "input_audio",
+            "input_audio": {"data": "".join(payload.split()), "format": audio_format},
+        }
+    cleaned = "".join(stripped.split())
+    try:
+        base64.b64decode(cleaned, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    return {
+        "type": "input_audio",
+        "input_audio": {"data": cleaned, "format": _map_audio_format(None)},
+    }
+
+
 def _image_file_payload(block: dict[str, Any]) -> dict[str, Any] | None:
     file_id = block.get("file_id")
     if not isinstance(file_id, str) or not file_id.strip():
@@ -1125,6 +1160,10 @@ def _responses_input_to_chat_messages(
                             audio = block.get("input_audio")
                             if isinstance(audio, dict):
                                 blocks_out.append({"type": "input_audio", "input_audio": dict(audio)})
+                            elif isinstance(audio, str):
+                                converted = _input_audio_from_string(audio)
+                                if converted is not None:
+                                    blocks_out.append(converted)
                             continue
                         if btype == "video_url":
                             video_url = block.get("video_url")

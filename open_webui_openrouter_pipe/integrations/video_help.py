@@ -928,7 +928,8 @@ _INTENT_KNOB_DESCRIPTIONS: dict[str, str] = {
     "Clarifying question limit": (
         "How many short questions this chat may ask in total when it cannot tell which "
         "earlier video you mean; once they are used up it picks one and gets on with it. "
-        "0 asks none."
+        "0 asks none. At the administrator's 0 that wins over this setting, so the chat "
+        "asks none in any case."
     ),
     "Which frame to use from previous video": (
         "Which still is taken from the earlier clip when it is reused as a starting "
@@ -940,7 +941,8 @@ _INTENT_KNOB_DESCRIPTIONS: dict[str, str] = {
     ),
     "Show what was reused": (
         "When to show the thumbnail naming what was reused. It appears while the clip "
-        "is being made, so a wrong pick can be stopped before the generation finishes."
+        "is being made, so a wrong pick can be stopped before the generation finishes. "
+        "At the administrator's never, that wins over this setting and nothing is shown."
     ),
 }
 

@@ -61,6 +61,10 @@ def _over_ceiling_reason(what: str, max_decoded_bytes: int) -> str:
     )
 
 
+def _own_decoded(blob: str) -> int:
+    return (len(blob.rstrip("=")) // 4) * 3
+
+
 _IMAGE_BODY_EXCERPT_CHARS = 200
 
 
@@ -121,11 +125,17 @@ def _image_stream_text(event: dict[str, Any], state: dict[str, Any]) -> str:
 
 
 def _image_stream_completed(event: dict[str, Any], state: dict[str, Any]) -> str:
-    entry: dict[str, Any] = {"b64_json": event.get("b64_json")}
-    media_type = event.get("media_type")
-    if isinstance(media_type, str) and media_type:
-        entry["media_type"] = media_type
-    state["data"].append(entry)
+    blob = event.get("b64_json")
+    own = _own_decoded(blob) if isinstance(blob, str) and blob else 0
+    if state["over_ceiling_seen"] or 0 < state["max_decoded_bytes"] < own:
+        state["over_ceiling_seen"] = True
+        state["data"].append({"_over_ceiling": True, "decoded": own})
+    else:
+        entry: dict[str, Any] = {"b64_json": blob}
+        media_type = event.get("media_type")
+        if isinstance(media_type, str) and media_type:
+            entry["media_type"] = media_type
+        state["data"].append(entry)
     usage = event.get("usage")
     if isinstance(usage, dict):
         state["usage"] = usage
@@ -341,6 +351,7 @@ class OpenRouterImageClient:
             state: dict[str, Any] = {
                 "data": [], "usage": None, "previews": 0, "drawing": False, "warning": "",
                 "stream_broken": False,
+                "max_decoded_bytes": max_decoded_bytes, "over_ceiling_seen": False,
             }
             if resp.content_type == _IMAGE_SSE_CONTENT_TYPE:
                 try:
@@ -388,11 +399,23 @@ class OpenRouterImageClient:
             if not isinstance(entry, dict):
                 rejected.append(clamp_text(f"an entry of type {type(entry).__name__} carried no image"))
                 continue
+            if entry.get("_over_ceiling"):
+                own_decoded = int(entry["decoded"])
+                over_ceiling += 1
+                if 0 < max_decoded_bytes < own_decoded:
+                    over_ceiling_own += 1
+                latched = True
+                rejected.append(
+                    clamp_text(
+                        _over_ceiling_reason(f"entry {index + 1} of {len(entries)}", max_decoded_bytes)
+                    )
+                )
+                continue
             blob = entry.get("b64_json")
             if not isinstance(blob, str) or not blob:
                 rejected.append(clamp_text(f"an entry with keys {sorted(entry)} carried no inline base64"))
                 continue
-            own_decoded = (len(blob.rstrip("=")) // 4) * 3
+            own_decoded = _own_decoded(blob)
             if latched or 0 < max_decoded_bytes < decoded_total + own_decoded:
                 over_ceiling += 1
                 if 0 < max_decoded_bytes < own_decoded:

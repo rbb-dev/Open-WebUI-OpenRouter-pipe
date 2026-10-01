@@ -183,6 +183,8 @@ const STORE_UNREADABLE="the stored configuration could not be read from the data
 const STORE_UNREADABLE_TEXT="Your settings are still stored and have not been changed, but the stored configuration could not be read — restore the database, then reload.";
 const STORE_UNREADABLE_KEY="the stored configuration could not be read from the database: it is encrypted with a different WEBUI_SECRET_KEY";
 const STORE_UNREADABLE_KEY_TEXT="Your settings are still stored and have not been changed, but they are encrypted with a different WEBUI_SECRET_KEY — restore the key, then reload, and they will appear again.";
+const STORE_WRITE_REFUSED="the database refused the write";
+const STORE_WRITE_REFUSED_TEXT="Saving settings failed: the database refused the write, so nothing was saved. Your edits are still here and nothing on the stored row changed — fix the database, then save again.";
 function storeUnreadableText(d){if(typeof d!=="string")return "";if(d.indexOf(STORE_UNREADABLE_KEY)===0)return STORE_UNREADABLE_KEY_TEXT;if(d===STORE_UNREADABLE)return STORE_UNREADABLE_TEXT;return "";}
 function storeTextOr(t,d){const s=storeUnreadableText(d);return s||t;}
 const edits={}; const invalid=new Set();
@@ -442,6 +444,7 @@ function refuseSave(btn, names, detail, err){
   if(btn){btn.disabled=false;btn.textContent="Save "+names.length;}
   if(detail===STORE_UNREADABLE) showConflict(STORE_UNREADABLE_TEXT);
   else if(typeof detail==="string"&&detail.indexOf(STORE_UNREADABLE_KEY)===0) showConflict(STORE_UNREADABLE_KEY_TEXT);
+  else if(typeof detail==="string"&&detail.indexOf(STORE_WRITE_REFUSED)===0){ showStoreWriteRefused(); toast("Save failed: nothing was saved — "+detail); }
   else if(err) toast("Save failed: nothing was saved — "+(detail||err));
   else if(detail) toast("Save failed: nothing was saved — "+(typeof detail==="string"?detail:"the server rejected the request"));
   else showConflict();
@@ -476,7 +479,7 @@ function commitSave(){
     if(SEL&&byName[SEL])renderDetail(byName[SEL]); buildTree();
     if(clashed){ showConflict(conflictText(clashed)); reportHeight(); return; }
     const savedN=(typeof r.saved==="number")?r.saved:names.length;
-    toast("Saved "+savedN+" setting"+(savedN>1?"s":"")); reportHeight();
+    hideConflict(); toast("Saved "+savedN+" setting"+(savedN>1?"s":"")); reportHeight();
   }).catch(()=>{ inflightSave=false; if(btn){btn.disabled=false;btn.textContent="Save "+names.length;} toast("Save failed"); });
 }
 function toast(msg){ const t=$("#toast"); t.textContent=msg; t.classList.add("show"); clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove("show"),2600); }
@@ -503,11 +506,15 @@ function showConflict(msg){
   reportHeight();
 }
 function hideConflict(){ const c=$("#conflict"); if(c){c.style.display="none";c.innerHTML="";} }
-function showUnreadable(){
+function showStoreNote(msg){
   const c=$("#conflict"); if(!c)return;
   c.style.display="flex";
-  c.innerHTML='<span>The stored configuration could not be read, so these are not the saved values. Saving is disabled until it can be read again; the reason is in the server log.</span>';
+  c.innerHTML='<span>'+esc(msg)+'</span>';
   reportHeight();
+}
+function showStoreWriteRefused(){ showStoreNote(STORE_WRITE_REFUSED_TEXT); }
+function showUnreadable(){
+  showStoreNote("The stored configuration could not be read, so these are not the saved values. Saving is disabled until it can be read again; the reason is in the server log.");
 }
 function renderResetNote(rs){ const rn=$("#resetnote"); if(rn)rn.textContent=rs.length?("reset to default: "+rs.join(", ")):""; }
 function paintDriftNote(dn,r){

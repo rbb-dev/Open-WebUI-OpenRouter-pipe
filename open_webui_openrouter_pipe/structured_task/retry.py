@@ -153,6 +153,7 @@ async def call_with_candidates(
     outcome: dict[str, Any] | None = None,
     attempts_per_candidate: int = 2,
     repair_messages: Callable[[str], list[dict[str, Any]]] | None = None,
+    schema_keys: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """Loop candidates calling the task model; return first success.
 
@@ -182,7 +183,7 @@ async def call_with_candidates(
     async def _attempt(fd: dict[str, Any]) -> Any:
         response = await invoke(fd)
         seen_output.append(_response_text(response))
-        params = await read_task_model_response_json(response)
+        params = await read_task_model_response_json(response, schema_keys=schema_keys)
         if not isinstance(params, dict):
             raise TaskModelFault("task_model_invalid_schema")
         return params
