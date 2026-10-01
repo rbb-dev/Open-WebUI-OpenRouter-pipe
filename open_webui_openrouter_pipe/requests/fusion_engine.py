@@ -57,6 +57,7 @@ def _member_refused_before_send() -> str:
 
 
 _LOG_DRAIN_TIMEOUT_SECONDS = 1.0
+_GENERATION_COMPLETE_DISPATCH_TIMEOUT_SECONDS = 5.0
 
 
 async def _drop_member_log_buffer(rid: str) -> None:
@@ -65,6 +66,14 @@ async def _drop_member_log_buffer(rid: str) -> None:
         with contextlib.suppress(Exception, asyncio.CancelledError):
             await asyncio.wait_for(queue.join(), _LOG_DRAIN_TIMEOUT_SECONDS)
     SessionLogger.release(rid)
+
+
+async def _settle_member_dispatch(sink: dict[str, Any]) -> None:
+    pending = sink.pop("generation_complete_dispatch", None)
+    if pending is None:
+        return
+    with contextlib.suppress(Exception, asyncio.CancelledError):
+        await asyncio.wait_for(pending, _GENERATION_COMPLETE_DISPATCH_TIMEOUT_SECONDS)
 
 
 def _inner_metadata(metadata: Any) -> dict[str, Any]:
@@ -341,6 +350,8 @@ async def run_fusion_member(
                 worker.cancel()
             await asyncio.gather(*ctx.workers, return_exceptions=True)
         await asyncio.shield(_drop_member_log_buffer(inner_rid))
+        await _settle_member_dispatch(sink)
+        pipe._generation_complete_dispatched.discard(inner_rid)
 
 
 def build_inner_valves(valves: Any, *, max_tool_calls: int) -> Any:

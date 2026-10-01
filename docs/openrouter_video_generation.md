@@ -11,8 +11,8 @@ to disable it, set that valve to `False` in Admin → Functions → OpenRouter
 pipe → Valves. That also deactivates every installed per-model video
 filter row on the next `pipes()` call; `AUTO_INSTALL_VIDEO_FILTERS` is the
 install valve for that family. Turning it back on re-activates a filter the
-pipe itself switched off whose family's install valve is still on; a row that
-valve has retired stays off until that valve comes back on. The rows are
+pipe itself switched off whose family's install valve, `AUTO_INSTALL_VIDEO_FILTERS`, is still on; a
+row that valve has retired stays off until that valve comes back on. The rows are
 identified by their source, so a copy you made by hand of one of these
 filters' source is switched off too.
 
@@ -2151,7 +2151,7 @@ Functions → OpenRouter pipe → Valves; the per-model filter ones live on each
 
 | Valve | Default | Range | Purpose |
 |-------|---------|-------|---------|
-| `ENABLE_VIDEO_GENERATION` | `True` | bool | Master kill switch. False removes all video models from `pipes()` output and deactivates all installed per-model video filter rows at the next model-list refresh; the rows are identified by their source, so a hand-made copy of one of these filters' source is switched off too. `AUTO_INSTALL_VIDEO_FILTERS` is the install valve for that family. Turning it back on re-activates a filter the pipe itself switched off whose family's install valve is still on; a row that valve has retired stays off until that valve comes back on. |
+| `ENABLE_VIDEO_GENERATION` | `True` | bool | Master kill switch. False removes all video models from `pipes()` output and deactivates all installed per-model video filter rows at the next model-list refresh; the rows are identified by their source, so a hand-made copy of one of these filters' source is switched off too. `AUTO_INSTALL_VIDEO_FILTERS` is the install valve for that family. Turning it back on re-activates a filter the pipe itself switched off whose family's install valve, `AUTO_INSTALL_VIDEO_FILTERS`, is still on; a row that valve has retired stays off until that valve comes back on. |
 | `AUTO_INSTALL_VIDEO_FILTERS` | `True` | bool | Install per-model filter rows in OWUI Functions table on `pipes()`. A model whose catalogue entry publishes no video contract is left as it is: any filter it already has is kept, and none is installed for it, and the same holds for a model whose install this pass could not write. With this off, an installed row whose stored source is out of date is logged but never rewritten, so every fix to that filter stays undelivered until it is on. Turning this off retires the rows the pipe installed for it - switched off, not deleted, so their settings survive - and turning it back on brings them back; a copy an admin installed by hand carries no such record and is left alone. |
 | `AUTO_ATTACH_VIDEO_FILTERS` | `True` | bool | Attach each filter to its corresponding video model row. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next catalog fetch. |
 | `AUTO_DEFAULT_VIDEO_FILTERS` | `True` | bool | Keep per-model filter enabled by default per chat (**re-asserted on every catalog metadata sync** — admins who manually disable a filter will see it re-defaulted on the next sync; set to `False` to opt out). A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next catalog fetch. |

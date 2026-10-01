@@ -100,8 +100,8 @@ def _restorer(
 def _attempt_owned_key(key: str, pipe_id: str) -> bool:
     return (
         key == f"function_{pipe_id}"
-        or key == FUNCTION_ID
-        or key.startswith(f"{FUNCTION_ID}.")
+        or key == pipe_id
+        or key.startswith(f"{pipe_id}.")
     )
 
 
@@ -1039,11 +1039,6 @@ class UpdateService:
                 logger.warning(
                     "update: manifest merge was refused (cosmetic); content is persisted"
                 )
-            if request is not None:
-                import open_webui.utils.plugin as owp
-
-                owp.get_functions_cache(request)[pipe_id] = instance
-                owp.get_function_contents_cache(request)[pipe_id] = final
             row = await self._row()
             await publish_function_updated(
                 pipe_id,
@@ -1051,6 +1046,11 @@ class UpdateService:
                 request,
                 {"type": getattr(row, "type", None), "name": getattr(row, "name", None)},
             )
+            if request is not None:
+                import open_webui.utils.plugin as owp
+
+                owp.get_functions_cache(request)[pipe_id] = instance
+                owp.get_function_contents_cache(request)[pipe_id] = final
         except BaseException as exc:
             restore()
             logger.warning(

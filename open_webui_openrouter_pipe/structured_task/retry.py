@@ -198,10 +198,10 @@ async def call_with_candidates(
             logger.log(
                 warn_level(
                     _warned_task_candidate,
-                    f"{model_id}:{type(exc).__name__}",
+                    f"{model_id}:{_fault_code(exc)}",
                     cooldown_s=_TASK_CANDIDATE_WARN_COOLDOWN_S,
                 ),
-                "structured_task candidate '%s' failed: %s", model_id, type(exc).__name__,
+                "structured_task candidate '%s' failed: %s", model_id, _fault_code(exc),
             )
             continue
         for attempt in range(1, max(1, attempts_per_candidate) + 1):
@@ -242,10 +242,10 @@ async def call_with_candidates(
                 logger.log(
                     warn_level(
                         _warned_task_candidate,
-                        f"{model_id}:{type(exc).__name__}",
+                        f"{model_id}:{_fault_code(exc)}",
                         cooldown_s=_TASK_CANDIDATE_WARN_COOLDOWN_S,
                     ),
-                    "structured_task candidate '%s' failed: %s", model_id, type(exc).__name__,
+                    "structured_task candidate '%s' failed: %s", model_id, _fault_code(exc),
                 )
             if not _is_correctable(attempt_error):
                 last_error = attempt_error

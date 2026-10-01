@@ -32,6 +32,13 @@ EXPECTED_LATCHES = {
     "_warned_bzip2_compresslevel",
     "_warned_chat_chunk_parse",
     "_warned_collectors",
+    # The shutdown-drain report's own table. It used to arm
+    # `_unreadable_archive_warnings`, whose budget is the assembler's per-turn fault
+    # window: the drain adds a fresh key per bounded stop, so every stop evicted live
+    # fault latches and the next occurrence of each re-warned at WARNING. It is a dict
+    # with an hour's cooldown, keyed per stop, so it re-arms per stop rather than
+    # latching forever -- the same shape as the dead-manager table beside it.
+    "_warned_drain_incomplete",
     "_warned_dropped_video_param",
     # One latch for both reasons a frame_plan entry can fail to materialise: a frame
     # over the VIDEO_FRAME_IMAGE_MAX_BYTES byte budget, and one the extractors could

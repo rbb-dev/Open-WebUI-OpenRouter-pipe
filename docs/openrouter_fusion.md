@@ -283,7 +283,10 @@ streaming panel deltas, the cards simply fill in at completion as before.
   the valve holds and the turn is refused with the endpoint-conflict card, because Fusion on `/chat/completions` returns a
   flattened text transcript with no structured events. The pin is kept and the request does not run. On the internal backend the panel runs
   inside the pipe and the fusion model never reaches OpenRouter, so there is no endpoint conflict to refuse and the
-  turn runs the panel.
+  turn runs the panel — *unless* the turn has opted out or is a housekeeping task request: with no panel to run, the
+  model does reach OpenRouter and the pin refuses it with the same card. Both of those turns are described under
+  [Engine backends](#engine-backends), where the per-request `{"id": "fusion", "enabled": false}` entry and the
+  task requests that never deliberate are set out.
 - No effect on **Direct Connections** — Open WebUI does not deliver in-chat embeds on that path. A valve-pinned Fusion model is still refused there with the endpoint-conflict card, as it is anywhere else on the hosted backend.
 - Automatic on the fusion models — `openrouter/fusion`, `openrouter/fusion-flash` and their `:tag` / `@preset/…` forms — whenever Fusion is enabled: the master `ENABLE_OPENROUTER_FUSION` switch is on, the model is a fusion model, the turn is not a Direct Connection, **and** the turn's Fusion entry is not `enabled: false`. The master switch turns it off along with the rest of Fusion, and so does the per-request opt-out — a chat whose Fusion entry is disabled gets no panel and no panel socket. Non-fusion models are never affected.
 

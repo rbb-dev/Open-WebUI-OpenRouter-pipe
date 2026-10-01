@@ -82,6 +82,17 @@ def _task_failure_note_notified(key: str) -> None:
         _warned_task_failure.popitem(last=False)
 
 
+def _task_failure_claim(key: str) -> bool:
+    if key in _warned_task_failure:
+        return False
+    _task_failure_note_notified(key)
+    return True
+
+
+def _task_failure_release(key: str) -> None:
+    _warned_task_failure.pop(key, None)
+
+
 class TaskModelAdapter:
     """Adapter for housekeeping task model requests.
 
@@ -290,15 +301,17 @@ class TaskModelAdapter:
             str((owui_metadata or {}).get("chat_id") or "") or str(identifier_user_id or ""),
         )
         log_key = latch_key or "<not retained>"
-        if latch_key and _task_failure_was_notified(latch_key):
+        if latch_key and not _task_failure_claim(latch_key):
             self.logger.debug("task-failure toast suppressed: %s task=%s", log_key, task_type)
         else:
             delivered = await self._pipe._event_emitter_handler._emit_notification(
                 event_emitter, card, level="warning"
             )
             if delivered and latch_key:
-                _task_failure_note_notified(latch_key)
+                pass
             else:
+                if latch_key:
+                    _task_failure_release(latch_key)
                 self.logger.debug(
                     "task-failure toast not delivered; latch left open: %s", log_key
                 )

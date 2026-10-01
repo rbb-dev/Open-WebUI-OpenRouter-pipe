@@ -1752,8 +1752,9 @@ class FilterManager:
             self.logger.warning(
                 "OpenRouter Web Tools filter %r still offered %s, which this pipe has switched off. Its code was "
                 "replaced with the pipe's current version for the tools it still offers (%s); its name, settings "
-                "and on/off state are kept, and any hand edit in its code is gone. Switching the tool back on does "
-                "not add it back.",
+                "and on/off state are kept, and any hand edit in its code is gone. While AUTO_INSTALL_WEB_TOOLS_FILTER "
+                "is off, switching the tool back on does not add it back; with it on, the next model-list "
+                "refresh rewrites the row from the current valve set.",
                 row_id,
                 ", ".join(sorted(dropped)),
                 ", ".join(sorted(offered - dropped)) or "none",

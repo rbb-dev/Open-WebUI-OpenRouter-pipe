@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 from typing import Any, ClassVar
 
 from pydantic import Field
@@ -32,7 +33,7 @@ from .http_routes import (
     register_action_route,
     set_pipe_getter,
 )
-from .session_tracker import _ST_SWEEP_INTERVAL, SessionTracker
+from .session_tracker import _ST_SWEEP_INTERVAL, _ST_SWEEP_JITTER_S, SessionTracker
 from .update_service import DEFAULT_REPO
 from .usage_store import UsageStore
 
@@ -277,7 +278,7 @@ class PipeDashboardPlugin(PluginBase):
     async def _sweep_loop(self) -> None:
         while True:
             try:
-                await asyncio.sleep(_ST_SWEEP_INTERVAL)
+                await asyncio.sleep(_ST_SWEEP_INTERVAL + random.uniform(0.0, _ST_SWEEP_JITTER_S))
                 try:
                     self._stored_usage_row = await self._read_stored_usage_row()
                 except Exception:

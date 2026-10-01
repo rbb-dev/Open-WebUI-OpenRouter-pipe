@@ -79,7 +79,16 @@ _EXPECTED: dict[str, int] = {
     # `CancelledError` because the caller's own task may be cancelled while it waits, and
     # a release that must happen on every path cannot raise out of the cancellation that
     # is already unwinding the turn.
-    "requests/fusion_engine.py": 1,
+    # 2nd: the member's own `generation_complete` dispatch, which the member awaits
+    # (bounded, five seconds) before it releases its own `on_generation_complete` mark.
+    # The mark is only correct if the dispatch that writes it has already run: on a
+    # cancelled member the dispatch is shielded inside the streaming loop, so its `add`
+    # can otherwise land after the release and leave the id in a process-lifetime set for
+    # the life of the worker. It also swallows `CancelledError` because the member's own
+    # `finally` runs while the cancellation is unwinding, and the release that follows
+    # must happen on that path too -- the close is the better answer to a cross-loop
+    # close than a second orphan.
+    "requests/fusion_engine.py": 2,
     # 7th: the cost snapshot, now one guarded helper reached from all three exits. A job
     # OpenRouter has already billed for is recorded whatever the pipe does with the
     # bytes, and a storage error while recording it must not replace the failure the
@@ -237,6 +246,17 @@ _EXPECTED: dict[str, int] = {
     # admin's own template already failed to render, and the generic card below it is the answer if the
     # fallback fails too -- letting it out would replace the failure being reported with a template error.
     "streaming/event_emitter.py": 1,
+    # 1st: the close of a vetted transport whose connector belongs to a different event
+    # loop, in `_retire_vetted_session`. Measured rather than assumed: with one pooled
+    # keep-alive connection the cross-loop `session.close()` raises `RuntimeError` ("got
+    # Future ... attached to a different loop") only AFTER the teardown has already
+    # happened -- `session.closed=True`, `connector.closed=True`, the pool drained -- so
+    # the raise is noise about work that succeeded. Letting it out instead put a visible
+    # `RuntimeError` on a request path (`_acquire_vetted`), for every address-gated
+    # download on the new loop, which is strictly worse than the leak the branch was
+    # closing. The loop-mismatch guard above it is what stops the close from running at
+    # all against a foreign connector that still has an in-flight request on it.
+    "storage/multimodal.py": 1,
     # 1st: the roster task teardown above, whose only failure mode is a second
     # cancellation arriving while the loop is already unwinding.
     # 3rd: the loop-limit note's write of `{"error": {"content": …}}` to the saved chat row, so the

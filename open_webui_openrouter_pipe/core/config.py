@@ -1057,7 +1057,10 @@ class Valves(BaseModel):
             "renders only from /responses and on /chat/completions returns a flattened text "
             "transcript with no structured events. On the internal backend the Fusion panel "
             "runs in the pipe and the model never reaches OpenRouter, so there is no conflict to refuse "
-            "and the turn runs."
+            "and the turn runs — unless the request carries "
+            "`{\"id\": \"fusion\", \"enabled\": false}`, or is a housekeeping task request (a chat "
+            "title, summary or tags): with no panel to run, the model does reach OpenRouter and the pin "
+            "refuses it with the same endpoint-conflict card."
         ),
     )
     FORCE_RESPONSES_MODELS: str = Field(
@@ -2380,7 +2383,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     AUTO_INSTALL_WEB_TOOLS_FILTER: bool = Field(
         default=True,
         description=(
-            "Automatically install/update the OpenRouter Web Tools filter function in Open WebUI. When off, the pipe neither installs nor updates it, except that a web tool switched off on the pipe is taken out of every Web Tools filter this pipe maintains (one it installed, or one carrying no install record): that filter's code is replaced with the pipe's current version for the tools it still offers (hand edits in it are lost), and a warning is logged. Switching the tool back on does not add it back to that stored code, which is rewritten only while the tool is off."
+            "Automatically install/update the OpenRouter Web Tools filter function in Open WebUI. When off, the pipe neither installs nor updates it, except that a web tool switched off on the pipe is taken out of every Web Tools filter this pipe maintains (one it installed, or one carrying no install record): that filter's code is replaced with the pipe's current version for the tools it still offers (hand edits in it are lost), and a warning is logged. Switching the tool back on does not add it back to that stored code, which is rewritten only while the tool is off. With it on — the default — the next model-list refresh rewrites the row this pipe maintains from the current valve set, so the tool comes back there; another copy the repair touched keeps it out until an admin switches it on in the Functions list."
             + " With every web tool off, every Web Tools filter is switched off that this "
             "pipe installed or that carries no install record, and one you switch off "
             "yourself there stays off until you switch it on again. The row's on/off "
@@ -2649,7 +2652,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "With the fallback taken, the correction naming the host that keeps the file "
             "is a precondition too, so while TELL_USERS_ABOUT_THE_FILE_HOST is on a chat "
             "that will not accept it gets the request failed and an error naming the host "
-            "that took the file. The 300s upload budget is shared across the turn's "
+            "the file was on its way to. The 300s upload budget is shared across the turn's "
             "attachments rather than given to the first one, so a slow first upload does "
             "not spend the time the ones behind it were going to get."
         ),

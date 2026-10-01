@@ -196,7 +196,8 @@ then let the HTTP client resolve the name again:
 - Turning `ENABLE_SSRF_PROTECTION` back on takes effect on the next hop, which is the
   next request or the rest of a redirect chain already under way. The transport is
   REBUILT when the valve changes: the retired session is never handed to a new hop and
-  is closed as soon as its last in-flight hop releases it, so a settings change never
+  is closed as soon as its last in-flight hop releases it, and is closed when the pipe
+  retires it, on the loop swap as well as the valve flip, so a settings change never
   truncates a download already under way, and a new connection pool, a new address cache
   and a new resolver are created together. Clearing the address cache alone was not
   enough, because a keep-alive connection opened while the gate was off is reused

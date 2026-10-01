@@ -233,6 +233,7 @@ function setEdit(v,val){
 const isClearStaged=n=>n in edits&&edits[n]===null;
 function stageClear(v){ edits[v.name]=null; updateBar(); renderDetail(v); buildTree(); }
 function encodeEdits(){ const out={}; Object.keys(edits).forEach(n=>{out[n]=edits[n]===null?null:edits[n];}); return out; }
+function encodeBase(){ const out={}; Object.keys(edits).forEach(n=>{ const v=byName[n]; out[n]=v&&v.secret?!!v.secret_set:baseline[n]; }); return out; }
 function updateBar(){
   const n=Object.keys(edits).length;
   $("#dirtyN").textContent=n;
@@ -449,29 +450,44 @@ function commitSave(){
   if(configUnreadable)return;
   const names=Object.keys(edits); if(!names.length)return;
   inflightSave=true;
-  const payload=encodeEdits();
+  const payload={edits:encodeEdits(),base:encodeBase()};
   const btn=$("#mSave"); if(btn){btn.disabled=true;btn.textContent="Saving\u2026";}
-  callAction("config_set",{edits:payload,rev:REV}).then(resp=>{
+  callAction("config_set",{...payload,rev:REV}).then(resp=>{
     const r=resp&&resp.result;
     if(!resp||resp.error||!r){ refuseSave(btn,names,(resp&&resp.detail)||null,(resp&&resp.error)?resp.error:null); return; }
     if(r.unreadable){ inflightSave=false; $("#modal").classList.remove("show"); if(btn){btn.disabled=false;btn.textContent="Save "+names.length;} showConflict(storeUnreadableText(r.unreadable)); return; }
-    if(r.conflict){ inflightSave=false; $("#modal").classList.remove("show"); if(btn){btn.disabled=false;btn.textContent="Save "+names.length;} if(r.config_unreadable){configUnreadable=true;showUnreadable();updateBar();return;} refuseSave(btn,names,null,null); return; }
+    const clashed=(r.conflict&&Array.isArray(r.conflicts)&&r.conflicts.length)?r.conflicts:null;
+    if(r.conflict&&!clashed){
+      inflightSave=false; $("#modal").classList.remove("show"); if(btn){btn.disabled=false;btn.textContent="Save "+names.length;}
+      if(r.config_unreadable){configUnreadable=true;showUnreadable();updateBar();return;}
+      refuseSave(btn,names,null,null); return;
+    }
     const vals=(r.values&&typeof r.values==="object")?r.values:{};
     const notSaved=Array.isArray(r.not_saved)?r.not_saved:[];
     const sec=(r.secrets&&typeof r.secrets==="object")?r.secrets:{};
-    names.forEach(n=>{ const v=byName[n]; if(v&&v.secret){const fl=sec[n]; if(fl){v.secret_set=!!fl.set;v.secret_stored=!!fl.stored;} else {v.secret_set=(edits[n]===null&&v.secret_stored)?v.secret_set:(edits[n]!==null&&notSaved.indexOf(n)<0);}} else if(v){baseline[n]=Object.prototype.hasOwnProperty.call(vals,n)?vals[n]:edits[n];} delete edits[n]; });
+    names.forEach(n=>{ const v=byName[n];
+      if(clashed&&clashed.indexOf(n)>=0){ if(v&&v.secret){v.secret_set=(edits[n]!==null);} revalidate(n); return; }
+      if(v&&v.secret){const fl=sec[n]; if(fl){v.secret_set=!!fl.set;v.secret_stored=!!fl.stored;} else {v.secret_set=(edits[n]===null&&v.secret_stored)?v.secret_set:(edits[n]!==null&&notSaved.indexOf(n)<0);}} else if(v){baseline[n]=Object.prototype.hasOwnProperty.call(vals,n)?vals[n]:edits[n];} delete edits[n]; });
     if(r.rev!=null){REV=r.rev;lastSeenRev=r.rev;}
     inflightSave=false;
     paintDriftNote($("#driftnote"),{drift:driftCache,reset:r.reset});
     renderResetNote(r.reset||[]);
     invalid.clear(); $("#modal").classList.remove("show"); updateBar();
     if(SEL&&byName[SEL])renderDetail(byName[SEL]); buildTree();
+    if(clashed){ showConflict(conflictText(clashed)); reportHeight(); return; }
     const savedN=(typeof r.saved==="number")?r.saved:names.length;
     toast("Saved "+savedN+" setting"+(savedN>1?"s":"")); reportHeight();
   }).catch(()=>{ inflightSave=false; if(btn){btn.disabled=false;btn.textContent="Save "+names.length;} toast("Save failed"); });
 }
 function toast(msg){ const t=$("#toast"); t.textContent=msg; t.classList.add("show"); clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove("show"),2600); }
 
+function conflictText(names){
+  if(!Array.isArray(names)||!names.length)return null;
+  const titles=names.map(n=>{ const v=byName[n]; return v?(v.title||n)+" ("+n+")":n; });
+  return titles.length===1
+    ? ("Another administrator changed "+titles[0]+" while you were editing, so your change to it was not saved. Everything else you edited was saved.")
+    : ("Another administrator changed "+titles.slice(0,-1).join(", ")+" and "+titles[titles.length-1]+" while you were editing, so your changes to them were not saved. Everything else you edited was saved.");
+}
 function showConflict(msg){
   const c=$("#conflict"); if(!c)return;
   c.style.display="flex";

@@ -75,10 +75,10 @@ def _report_drain_incomplete(
         return
     mgr = mgr_ref()
     if mgr is not None:
-        _truncate_latch(mgr._unreadable_archive_warnings, _MAX_DRAIN_LATCH_KEYS)
+        _truncate_latch(_warned_drain_incomplete, _MAX_DRAIN_LATCH_KEYS)
         mgr.logger.log(
             warn_level(
-                mgr._unreadable_archive_warnings,
+                _warned_drain_incomplete,
                 f"session_log_shutdown_drain_incomplete:{time.monotonic_ns()}",
                 cooldown_s=3600.0,
             ),
@@ -222,6 +222,7 @@ _EXCLUDED_KEY_SEP = "\x1f"
 _MAX_DRAIN_LATCH_KEYS = 32
 
 _DEAD_MANAGER_DRAIN_WARNINGS: dict[str, float] = {}
+_warned_drain_incomplete: dict[str, float] = {}
 
 _INCOMPLETE_MARKER_PREFIX = "Session log finalized as incomplete"
 _INCOMPLETE_MARKER_FUNC = "_assemble_and_write_bundle"

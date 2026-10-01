@@ -39,10 +39,8 @@ def _mock_registry(**attrs):
     reg = Mock()
     reg._models = attrs.pop("models", [])
     reg._specs = attrs.pop("specs", {})
-    reg._consecutive_failures = attrs.pop("failures", 0)
-    reg._failure_counts = attrs.pop("failure_counts", None) or {
-        "only-account": reg._consecutive_failures
-    }
+    failures = attrs.pop("failures", 0)
+    reg._failure_counts = attrs.pop("failure_counts", None) or {"only-account": failures}
     reg._last_fetch = attrs.pop("last_fetch", 0.0)
     reg._last_error = attrs.pop("last_error", None)
     reg._last_error_time = attrs.pop("last_error_time", 0.0)

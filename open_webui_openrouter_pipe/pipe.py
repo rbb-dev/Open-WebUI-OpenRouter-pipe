@@ -496,6 +496,8 @@ _warned_plugin_dispatch: set[str] = set()
 _warned_pipes_maintenance: set[str] = set()
 
 _WEB_TOOLS_REPAIR_COOLDOWN_S = 300.0
+_WEB_TOOLS_REPAIR_ABANDONED_LIMIT = 3
+_WEB_TOOLS_REPAIR_RETRY_FLOOR_S = 30.0
 _LEGACY_VIDEO_FILTER_ID = "openrouter_video_openrouter_video"
 _WARMUP_RETRY_SECONDS = 300.0
 _REDIS_RETRY_SECONDS = 300.0
@@ -656,6 +658,8 @@ class Pipe:
 
         self._web_tools_repair_task: asyncio.Task | None = None
         self._web_tools_repair_started: float | None = None
+        self._web_tools_repair_abandoned: int = 0
+        self._web_tools_repair_retry_after: float | None = None
         self._request_queue: asyncio.Queue[_PipeJob] | None = None
         self._queue_worker_task: asyncio.Task | None = None
         self._queue_worker_lock: asyncio.Lock | None = None
@@ -1719,6 +1723,9 @@ class Pipe:
         started = self._web_tools_repair_started
         if started is not None and now - started < _WEB_TOOLS_REPAIR_COOLDOWN_S:
             return
+        retry_after = self._web_tools_repair_retry_after
+        if retry_after is not None and now < retry_after:
+            return
         self._web_tools_repair_task = _detached_task(
             asyncio.get_running_loop(), self._guarded_web_tools_repair(), "openrouter-web-tools-repair",
         )
@@ -1727,7 +1734,14 @@ class Pipe:
         try:
             ok = await self._keep_web_tools_filters_in_step()
         except Exception:  # noqa: BLE001 - an unfinished pass must not arm the cooldown
+            self._web_tools_repair_abandoned += 1
+            if self._web_tools_repair_abandoned >= _WEB_TOOLS_REPAIR_ABANDONED_LIMIT:
+                self._web_tools_repair_retry_after = (
+                    time.monotonic() + _WEB_TOOLS_REPAIR_RETRY_FLOOR_S
+                )
             return False
+        self._web_tools_repair_abandoned = 0
+        self._web_tools_repair_retry_after = None
         self._web_tools_repair_started = time.monotonic()
         return ok
 

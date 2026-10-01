@@ -4175,7 +4175,7 @@ class StreamingHandler:
             )
             if not handed_back_for_retry:
                 try:
-                    await asyncio.shield(
+                    dispatch = asyncio.ensure_future(
                         self._pipe._dispatch_generation_complete(
                             total_usage if isinstance(total_usage, dict) else None,
                             generation_status,
@@ -4184,6 +4184,9 @@ class StreamingHandler:
                             task=None,
                         )
                     )
+                    if outcome_sink is not None:
+                        outcome_sink["generation_complete_dispatch"] = dispatch
+                    await asyncio.shield(dispatch)
                 except (asyncio.CancelledError, Exception):
                     self.logger.debug("generation-complete dispatch failed", exc_info=True)
 

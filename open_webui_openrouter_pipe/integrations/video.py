@@ -456,8 +456,8 @@ _A_COPY_MAY_ALREADY_BE_THERE = (
 )
 
 _COULD_NOT_SAY_IT_FIRST = (
-    "Your attachment has to be uploaded to a public file host before a video model can "
-    "read it, and this chat could not be told that before it happened, because {cause}. "
+    "Your attachment has to be uploaded to {host} before a video model can read it, and "
+    "this chat could not be told that before it happened, because {cause}. "
     "Nothing was uploaded. Reload the chat and send it again."
 )
 
@@ -2691,7 +2691,9 @@ class VideoGenerationAdapter:
                 "or give FILE_HOST_NOTICE a sentence to send.",
                 cause,
             )
-            raise VideoGenerationError(_COULD_NOT_SAY_IT_FIRST.format(cause=cause))
+            raise VideoGenerationError(
+                _COULD_NOT_SAY_IT_FIRST.format(cause=cause, host=host)
+            )
         return planned
 
     async def _emit_file_host_notice(

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import contextlib
 import contextvars
 import functools
 import io
@@ -1551,17 +1552,18 @@ class MultimodalHandler:
         if transport is None or transport.session.closed:
             return
         bound = transport.loop
+        bound_is_here = True
         if bound is not None and not bound.is_closed():
             try:
-                if bound is not asyncio.get_running_loop():
-                    return
+                bound_is_here = bound is asyncio.get_running_loop()
             except RuntimeError:
-                return
-        if transport.holders:
+                bound_is_here = True
+        if transport.holders or not bound_is_here:
             transport.retired = True
             self._vetted_draining = transport
             return
-        await transport.session.close()
+        with contextlib.suppress(Exception):
+            await transport.session.close()
 
     async def _release_vetted(self, transport: _VettedTransport) -> None:
         if transport.holders > 0:

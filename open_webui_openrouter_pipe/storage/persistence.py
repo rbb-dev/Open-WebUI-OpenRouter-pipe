@@ -377,6 +377,8 @@ class ReplyMemory:
         self._logger = logger
         self._evict_warn: dict[str, float] = {}
         self._evict_latch = threading.Lock()
+        self._unheld_warn: dict[str, float] = {}
+        self._unheld_latch = threading.Lock()
 
     def _key(self, chat_id: Any, message_id: Any) -> tuple[Any, Any, Any]:
         return (self._user_id(), chat_id, message_id)
@@ -466,7 +468,11 @@ class ReplyMemory:
         for row, payload, payload_bytes in sized:
             key = self._key(row.get("chat_id"), row.get("message_id"))
             if key not in self._replies:
-                logging.getLogger(__name__).warning(
+                with self._unheld_latch:
+                    level = warn_level(self._unheld_warn, "reply-not-held", cooldown_s=300.0)
+                _logger = self._logger or logging.getLogger(__name__)
+                _logger.log(
+                    level,
                     "A row was offered to a reply the memory no longer holds and was dropped: "
                     "chat_id=%s message_id=%s id=%s item_type=%s",
                     row.get("chat_id"),

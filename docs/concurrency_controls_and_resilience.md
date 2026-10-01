@@ -21,7 +21,7 @@ Across a loop swap (a test runner that calls `asyncio.run` twice, a supervisor t
 
 ## HTTP client pool (one per event loop)
 
-Outbound requests share a single `aiohttp.ClientSession` per event loop rather than building one per request, so a reply no longer repeats DNS and a TLS handshake and a streamed reply reuses its connection across its own round trips. The session is closed when the pipe shuts down, and a session left behind by a dead event loop is retired rather than reused. It is pooled per event loop because a connector is bound to the loop that created it.
+Outbound requests share a single `aiohttp.ClientSession` per event loop rather than building one per request, so a reply no longer repeats DNS and a TLS handshake and a streamed reply reuses its connection across its own round trips. The session is closed when the pipe shuts down, and a session left behind by a loop that is no longer the running one is retired and closed at shutdown, whether that loop is dead or still alive. It is pooled per event loop because a connector is bound to the loop that created it.
 
 The pool is not a second admission control. Its per-host limit is unlimited, and its total connection limit follows the concurrency limit actually in force — `MAX_CONCURRENT_REQUESTS` — upward, live, on the pooled session, so a raise can never be admitted by the semaphore and then refused by the connector. A **lowering** narrows only the semaphore; the connector's own ceiling is deliberately left where it is, because the jobs already in flight keep running and the wait for a connection is bounded by `HTTP_CONNECT_TIMEOUT_SECONDS` rather than by the semaphore. In both directions the semaphore is the gate, and the connector is not one.
 

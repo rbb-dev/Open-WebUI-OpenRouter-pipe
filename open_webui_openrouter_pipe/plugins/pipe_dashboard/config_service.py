@@ -184,7 +184,11 @@ def _is_clear_edit(fld: Any, value: Any, current: dict[str, Any]) -> bool:
 
 
 class _ClientMessage(RuntimeError):
-    pass
+    status = 500
+
+
+class _ClientInput(_ClientMessage):
+    status = 400
 
 
 async def _raw_valve_column(pipe_id: str) -> Any:

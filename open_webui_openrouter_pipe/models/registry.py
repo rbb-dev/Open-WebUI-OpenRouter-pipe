@@ -427,7 +427,6 @@ class OpenRouterModelRegistry:
         weakref.WeakKeyDictionary()
     )
     _next_refresh_after: float = 0.0
-    _consecutive_failures: int = 0
     _failure_counts: ClassVar[dict[str, int]] = {}
     _last_errors: ClassVar[dict[str, str]] = {}
     _last_error: str | None = None
@@ -798,31 +797,25 @@ class OpenRouterModelRegistry:
         ModelFamily.set_dynamic_specs(specs)
 
     @classmethod
-    def _record_refresh_success(cls, cache_seconds: int, api_key: str | None = None) -> None:
+    def _record_refresh_success(cls, cache_seconds: int, api_key: str) -> None:
         """Reset refresh backoff bookkeeping after a successful catalog fetch."""
         now = time.time()
         cls._last_fetch = now
         cls._next_refresh_after = now + max(5, cache_seconds)
-        cls._consecutive_failures = 0
-        if api_key:
-            cls._failure_counts.pop(_fingerprint(api_key), None)
-            cls._last_errors.pop(_fingerprint(api_key), None)
+        cls._failure_counts.pop(_fingerprint(api_key), None)
+        cls._last_errors.pop(_fingerprint(api_key), None)
         cls._last_error = None
         cls._last_error_time = 0.0
 
     @classmethod
     def _record_refresh_failure(
-        cls, exc: Exception, cache_seconds: int, api_key: str | None = None
+        cls, exc: Exception, cache_seconds: int, api_key: str
     ) -> float:
         """Increase backoff delay and track the most recent catalog error."""
-        if api_key:
-            key = _fingerprint(api_key)
-            cls._failure_counts[key] = cls._failure_counts.get(key, 0) + 1
-            failures = cls._failure_counts[key]
-            cls._last_errors[key] = str(exc)
-        else:
-            failures = cls._consecutive_failures + 1
-        cls._consecutive_failures = failures
+        key = _fingerprint(api_key)
+        cls._failure_counts[key] = cls._failure_counts.get(key, 0) + 1
+        failures = cls._failure_counts[key]
+        cls._last_errors[key] = str(exc)
         cls._last_error = str(exc)
         cls._last_error_time = time.time()
         exponent = min(failures - 1, 5)

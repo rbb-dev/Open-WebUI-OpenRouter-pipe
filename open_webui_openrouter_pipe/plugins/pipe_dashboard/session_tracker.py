@@ -29,6 +29,7 @@ _ST_RECENT_CAP = 300
 _ST_RECENT_MAX_AGE_S = 10800.0
 _ST_ABANDON_S = 7200.0
 _ST_SWEEP_INTERVAL = 300
+_ST_SWEEP_JITTER_S = 60.0
 _ST_STREAM_STAMP_COALESCE_S = 5.0
 
 _ST_STATUS_MAP = {"ok": "completed", "failed": "failed", "cancelled": "cancelled"}

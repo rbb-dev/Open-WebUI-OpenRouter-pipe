@@ -613,7 +613,6 @@ def _reset_model_registry():
     reg._name_map = None
     reg._lock = asyncio.Lock()
     reg._next_refresh_after = 0.0
-    reg._consecutive_failures = 0
     reg._failure_counts = {}
     reg._last_errors = {}
     reg._last_error = None

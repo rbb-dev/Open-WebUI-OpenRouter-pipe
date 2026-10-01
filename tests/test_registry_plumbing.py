@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 import logging
 import time
@@ -58,7 +59,6 @@ def reset_registry():
     reg._last_fetch = 0
     reg._lock = asyncio.Lock()
     reg._next_refresh_after = 0
-    reg._consecutive_failures = 0
     reg._failure_counts = {}
     reg._last_errors = {}
     reg._last_error = None
