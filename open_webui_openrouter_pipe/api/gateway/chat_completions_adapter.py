@@ -825,6 +825,7 @@ class ChatCompletionsAdapter:
                     truncating_reason = "max_output_tokens"
 
         first_chunk_received = False
+        done = False
         async with _count_failed_call(self._pipe, breaker_key):
             async for attempt in retryer:
                 with attempt:
@@ -858,6 +859,7 @@ class ChatCompletionsAdapter:
                         tool_calls_completed = False
                         truncating_reason = None
                         latest_usage = {}
+                        done = False
 
                     await self._inline_internal_chat_files(chat_payload, effective_valves, user=user)
 
@@ -1064,12 +1066,16 @@ class ChatCompletionsAdapter:
             tool_calls=tool_call_items,
         )
 
+        terminal_usage = ChatCompletionsAdapter._chat_usage_to_responses_usage(latest_usage)
+        if not done and not terminal_usage:
+            terminal_usage = {"incomplete_usage": True}
+
         if truncating_reason is not None:
             yield {
                 "type": "response.completed",
                 "response": {
                     "output": output,
-                    "usage": ChatCompletionsAdapter._chat_usage_to_responses_usage(latest_usage),
+                    "usage": terminal_usage,
                     "status": "incomplete",
                     "incomplete_details": {"reason": truncating_reason},
                 },
@@ -1079,7 +1085,7 @@ class ChatCompletionsAdapter:
             "type": "response.completed",
             "response": {
                 "output": output,
-                "usage": ChatCompletionsAdapter._chat_usage_to_responses_usage(latest_usage),
+                "usage": terminal_usage,
             },
         }
 

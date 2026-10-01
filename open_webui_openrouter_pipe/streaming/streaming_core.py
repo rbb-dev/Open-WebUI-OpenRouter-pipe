@@ -1070,6 +1070,19 @@ class StreamingHandler:
                         seeded_output_items = stored_items
                 return seeded_output_items
 
+            def _unjoined_segment(text: str, earlier_items: list[dict[str, Any]]) -> str:
+                if not text.startswith("\n"):
+                    return text
+                for entry in earlier_items:
+                    if entry.get("type") != "message":
+                        continue
+                    joined = "".join(
+                        str(part.get("text") or "") for part in entry.get("content") or []
+                    )
+                    if joined.strip():
+                        return text[1:]
+                return text
+
             def _flush_recorded_message(current_text: str) -> dict[str, Any] | None:
                 nonlocal recorded_message_chars, open_message_id
                 pending = current_text[recorded_message_chars:]
@@ -1077,6 +1090,7 @@ class StreamingHandler:
                 open_message_id = None
                 if not pending:
                     return None
+                pending = _unjoined_segment(pending, emitted_output_items)
                 recorded_message_chars = len(current_text)
                 item = {
                     "type": "message",
@@ -1121,6 +1135,7 @@ class StreamingHandler:
                             item["status"] = owui_call_status(result_status_by_call_id.get(call_id))
                     resolved.append(item)
                 trailing = current_text[recorded_message_chars:]
+                trailing = _unjoined_segment(trailing, resolved)
                 if trailing:
                     resolved.append({
                         "type": "message",
@@ -1958,8 +1973,8 @@ class StreamingHandler:
                         await _warn_if_futile(_replay_budget)
                         await _report_omissions(_replay_budget, _REPLAY_DROPPED_OPENING)
                         input_is_sanitized = True
-                    api_model_override = getattr(body, "api_model", None)
-                    model_for_cache = api_model_override if isinstance(api_model_override, str) else body.model
+                    dispatched_model_id = budget_model_id(body)
+                    model_for_cache = dispatched_model_id
                     items = getattr(body, "input", None)
                     if isinstance(items, list):
                         tools_list = getattr(body, "tools", None)
@@ -1970,9 +1985,9 @@ class StreamingHandler:
                             tools=tools_list if isinstance(tools_list, list) else None,
                         )
                     request_payload = body.model_dump(exclude_none=True)
-                    if api_model_override:
-                        request_payload["model"] = api_model_override
-                        request_payload.pop("api_model", None)
+                    if dispatched_model_id:
+                        request_payload["model"] = dispatched_model_id
+                    request_payload.pop("api_model", None)
                     _apply_identifier_valves_to_payload(
                         request_payload,
                         valves=valves,
@@ -1989,7 +2004,6 @@ class StreamingHandler:
                     _apply_disable_native_websearch_to_payload(request_payload, logger=self.logger)
                     _apply_provider_routing_params_to_payload(request_payload, logger=self.logger)
                     _strip_disable_model_settings_params(request_payload)
-                    dispatched_model_id = budget_model_id(body)
                     dispatched_metered_chars = None
                     dispatch_overhead = _request_overhead_chars(body)
 

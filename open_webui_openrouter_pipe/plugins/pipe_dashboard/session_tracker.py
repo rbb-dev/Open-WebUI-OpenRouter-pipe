@@ -292,7 +292,13 @@ class SessionTracker:
         ]
         if not candidates:
             return
-        parent = max(candidates, key=lambda item: item.get("started") or 0.0)
+        started = entry.get("started") or 0.0
+        at_or_before = [c for c in candidates if (c.get("started") or 0.0) <= started]
+        parent = (
+            max(at_or_before, key=lambda item: item.get("started") or 0.0)
+            if at_or_before
+            else min(candidates, key=lambda item: item.get("started") or 0.0)
+        )
         parent["task_cost"] = float(parent.get("task_cost") or 0.0) + cost
 
     def _trim_recent_locked(self) -> None:

@@ -22,6 +22,7 @@ from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.storage import persistence as persistence_mod
 from open_webui_openrouter_pipe.storage.persistence import (
     ArtifactStore,
+    ArtifactStoreUnavailable,
     generate_item_id,
     normalize_persisted_item,
     _encode_crockford,
@@ -1900,15 +1901,16 @@ async def test_db_persist_drop_logs_error_with_types(pipe_instance, monkeypatch,
 
     monkeypatch.setattr(store, "_prepare_rows_for_storage", _explode)
     rows = [{"item_type": "function_call", "chat_id": "c", "payload": {}}]
-    with caplog.at_level(_logging.ERROR):
+    with caplog.at_level(_logging.WARNING):
         result = await store._db_persist(rows)
     assert result == []
     records = [
         r for r in caplog.records
-        if r.levelno >= _logging.ERROR and "Artifact persist failed" in r.getMessage()
+        if r.levelno >= _logging.WARNING and "could not be sealed for storage" in r.getMessage()
     ]
     assert records
     assert "function_call" in records[0].getMessage()
+    assert "1 row(s)" in records[0].getMessage()
 
 
 def test_try_acquire_lock_sync_unserializable_payload_returns_false(pipe_instance):
@@ -1926,10 +1928,10 @@ async def test_db_persist_drop_still_records_breaker_failure(pipe_instance, monk
     _install_fake_store(pipe_instance)
     store = pipe_instance._artifact_store
 
-    def _explode(_rows):
-        raise RuntimeError("serialize failed")
+    async def _unavailable(rows, user_id=""):
+        raise ArtifactStoreUnavailable("artifact store is not configured")
 
-    monkeypatch.setattr(store, "_prepare_rows_for_storage", _explode)
+    monkeypatch.setattr(store, "_db_persist_direct", _unavailable)
     recorded = Mock()
     monkeypatch.setattr(store, "_record_db_failure", recorded)
     from open_webui_openrouter_pipe.core.logging_system import SessionLogger

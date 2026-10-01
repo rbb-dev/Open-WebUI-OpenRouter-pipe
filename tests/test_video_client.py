@@ -19,11 +19,14 @@ import aiohttp
 import pytest
 from aioresponses import CallbackResult, aioresponses
 
+from open_webui_openrouter_pipe.core.errors import (
+    OpenRouterAPIError,
+    UpstreamBodyUnreadable,
+)
 from open_webui_openrouter_pipe.integrations.video_client import (
     OpenRouterVideoClient,
     extension_for_video_mime,
 )
-from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
 from open_webui_openrouter_pipe.integrations.video_types import VideoGenerationError
 
 BASE = "https://openrouter.ai/api/v1"
@@ -93,12 +96,21 @@ async def test_submit_raises_with_the_providers_message_on_an_error_status():
 
 @pytest.mark.asyncio
 async def test_submit_rejects_a_non_object_response():
+    """A 200 that decodes to something other than an object is not OpenRouter's answer.
+
+    `UpstreamBodyUnreadable` and not `VideoGenerationError`: a body that arrived whole and
+    is not a document is the network path's, so the video leg's caller has to be able to
+    tell it apart from a fault OpenRouter reported, which is what the breaker exemption on
+    this leg is decided on.
+    """
     async with aiohttp.ClientSession() as session:
         client = await _client(session)
         with aioresponses() as http:
             http.post(f"{BASE}/videos", payload=["not", "an", "object"])
-            with pytest.raises(VideoGenerationError):
+            with pytest.raises(UpstreamBodyUnreadable) as excinfo:
                 await client.submit({"model": "test/video"})
+    assert f"{BASE}/videos" in excinfo.value.endpoint
+    assert excinfo.value.content_type == "application/json"
 
 
 @pytest.mark.asyncio

@@ -10312,7 +10312,7 @@ async def _persist(manager, valve_obj, chat_id="c", message_id="m"):
         request_id="r",
         log_events=[{"created": 1.0, "message": "hi"}],
         terminal=True,
-        status="ok",
+        status="complete",
     )
 
 

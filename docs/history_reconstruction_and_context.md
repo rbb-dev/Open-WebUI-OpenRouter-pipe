@@ -59,7 +59,7 @@ Messages with `role` of `system` or `developer` are preserved as separate messag
 
 ## 3. User messages (content blocks → `input_*`)
 
-User messages are converted into a single `type: "message"` item with a `content` list. The pipe transforms certain known block types; unknown block types pass through unchanged, except that a network or internal-storage URL they carry is treated as untrusted input and the block is dropped.
+User messages are converted into a single `type: "message"` item with a `content` list. The pipe transforms certain known block types; unknown block types pass through unchanged, except that a network or internal-storage URL they carry is treated as untrusted input and the block is dropped. That is the live arm (`requests/transformer.py`). The `/chat/completions` conversion leg (`_responses_input_to_chat_messages`) has its own rule, and it is a different one: its strict arm — the only arm production reaches, since no caller passes `allow_unknown_fields` — drops a block whose type it does not enumerate and names nothing, because a block it cannot read is not evidence of a void attachment. The permissive arm, reached by no production caller, forwards such a block as itself; that fidelity is its contract, and the two arms are not made to agree.
 
 ### 3.1 Text
 Open WebUI may provide user content as a string or as block objects. Text is normalized into:

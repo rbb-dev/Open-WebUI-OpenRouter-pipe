@@ -31,6 +31,10 @@ from open_webui_openrouter_pipe.streaming.event_emitter import EventEmitterHandl
 
 BASE = "https://openrouter.ai/api/v1"
 
+#: A chat caller. A caller with neither id gets the machine envelope rather than a card, so a
+#: row about how the *card* renders has to name itself as one.
+_CHAT_CALLER = {"chat_id": "c1", "message_id": "m1"}
+
 
 def monkeypatch_client(adapter: ImageGenerationAdapter, client: Any) -> None:
     object.__setattr__(adapter, "_client", lambda *_a, **_k: client)
@@ -310,11 +314,11 @@ async def test_a_turn_with_an_image_and_no_caption_is_reported_not_raised():
         api_model_id="m/x",
     )
 
-    assert "ImageGenerationError" not in content, (
+    assert "ImageGenerationError" not in cast(str, content), (
         "the user reads this; a class name prefixed onto the message is a stack-trace leak, "
         f"not an explanation. got {content!r}"
     )
-    assert isinstance(content, str) and "prompt" in content, (
+    assert isinstance(content, str) and "prompt" in cast(str, content), (
         "attaching an image with no caption is the ordinary way into image editing; it must "
         f"not escape as an exception. got {content!r}"
     )
@@ -344,7 +348,7 @@ async def test_a_transport_failure_never_renders_a_dangling_reason(exc, monkeypa
         valves=_StubValves("sk-x"),
         session=None,
         event_emitter=_Emitter(),
-        metadata={},
+        metadata=_CHAT_CALLER,
         user=None,
         request=object(),
         user_obj=object(),
@@ -352,7 +356,7 @@ async def test_a_transport_failure_never_renders_a_dangling_reason(exc, monkeypa
         api_model_id="m/x",
     )
 
-    reason = content.split("\n\n")[-1].strip()
+    reason = str(cast(Any, content)).split("\n\n")[-1].strip()
     assert reason and not reason.endswith(":"), (
         f"several aiohttp/asyncio failures have an empty str(); rendered {content!r}"
     )
@@ -454,7 +458,7 @@ async def test_the_configured_ceiling_reaches_the_client_from_the_valve():
                 valves=valves,
             )
 
-    assert "BASE64_MAX_SIZE_MB" in content, (
+    assert "BASE64_MAX_SIZE_MB" in cast(str, content), (
         "the valve's ceiling must reach the decode site; a hardcoded default would let a "
         "tightened valve be ignored"
     )

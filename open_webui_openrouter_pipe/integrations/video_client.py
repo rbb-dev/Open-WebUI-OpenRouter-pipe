@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import aiohttp
@@ -11,7 +12,7 @@ from ..core.config import (
     _OPENROUTER_TITLE,
     _apply_owui_forward_user_headers,
 )
-from ..core.errors import _build_openrouter_api_error
+from ..core.errors import UpstreamBodyUnreadable, _build_openrouter_api_error
 from ..core.utils import _DEFAULT_VALVES, http_timeout
 from ..requests.debug import (
     _debug_print_error_response,
@@ -21,6 +22,41 @@ from ..requests.debug import (
 from .video_types import VideoGenerationError
 
 _VIDEO_CATALOG_TIMEOUT_SECONDS = 15
+
+_VIDEO_BODY_EXCERPT_CHARS = 200
+
+
+def _video_body_not_an_object(resp: Any, payload: Any, endpoint: str) -> UpstreamBodyUnreadable:
+    return UpstreamBodyUnreadable(
+        endpoint=endpoint,
+        body_excerpt=repr(payload)[:_VIDEO_BODY_EXCERPT_CHARS],
+        content_type=getattr(resp, "content_type", None),
+    )
+
+
+async def _decode_video_json_body(resp: Any, endpoint: str, logger: Any) -> Any:
+    try:
+        return await resp.json()
+    except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError):
+        raise
+    except Exception:
+        logger.debug(
+            "OpenRouter video response was not decodable JSON; falling back to text",
+            exc_info=True,
+        )
+        text = ""
+        try:
+            text = await resp.text()
+            return json.loads(text)
+        except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError):
+            raise
+        except Exception as exc:
+            raise UpstreamBodyUnreadable(
+                endpoint=endpoint,
+                body_excerpt=text[:_VIDEO_BODY_EXCERPT_CHARS],
+                content_type=getattr(resp, "content_type", None),
+            ) from exc
+
 
 _VIDEO_MIME_EXTENSIONS: dict[str, str] = {
     "video/webm": ".webm",
@@ -164,10 +200,10 @@ class OpenRouterVideoClient:
                     body,
                     requested_model=str(payload.get("model") or "") or None,
                 )
-            data = await resp.json()
+            data = await _decode_video_json_body(resp, url, self._logger)
         _debug_print_response(data, logger=self._logger)
         if not isinstance(data, dict):
-            raise VideoGenerationError("OpenRouter video generation returned an invalid response.")
+            raise _video_body_not_an_object(resp, data, url)
         return data
 
     async def status(self, job_id: str, polling_url: Any = None) -> dict[str, Any]:
@@ -185,8 +221,8 @@ class OpenRouterVideoClient:
                     resp.reason or "",
                     body,
                 )
-            data = await resp.json()
+            data = await _decode_video_json_body(resp, url, self._logger)
         _debug_print_response(data, logger=self._logger)
         if not isinstance(data, dict):
-            raise VideoGenerationError("OpenRouter video status returned an invalid response.")
+            raise _video_body_not_an_object(resp, data, url)
         return data

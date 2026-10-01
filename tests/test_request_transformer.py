@@ -1732,127 +1732,15 @@ class TestEdgeCases:
 
 
 class TestToolOutputPruning:
-    """Unit tests for _prune_tool_output function behavior."""
+    """What the retention window does to a tool round's own result.
 
-    @pytest.mark.asyncio
-    async def test_prune_tool_output_below_min_length(self, pipe_instance):
-        """Tool output below minimum length is not pruned."""
-        short_output = "X" * (_TOOL_OUTPUT_PRUNE_MIN_LENGTH - 1)
-
-        messages = [
-            {"role": "user", "content": "Turn 0"},
-            {"role": "tool", "tool_call_id": "call_1", "content": short_output},
-            {"role": "user", "content": "Turn 1"},
-            {"role": "user", "content": "Turn 2"},
-        ]
-
-        result = await transform_messages_to_input(
-            pipe_instance,
-            messages,
-            pruning_turns=1
-        )
-
-        tool_output = next((r for r in result if r.get("type") == "function_call_output"), None)
-        assert tool_output is not None
-        assert "[tool output pruned:" not in tool_output["output"]
-
-    @pytest.mark.asyncio
-    async def test_direct_tool_output_not_pruned_regardless_of_size(self, pipe_instance):
-        """Direct tool outputs are preserved regardless of size (pruning is marker-based)."""
-        # Create output with distinct head and tail
-        head_content = "HEAD" * 100  # 400 chars
-        middle_content = "M" * 1000
-        tail_content = "TAIL" * 50  # 200 chars
-        long_output = head_content + middle_content + tail_content
-
-        messages = [
-            {"role": "user", "content": "Turn 0"},
-            {"role": "tool", "tool_call_id": "call_1", "content": long_output},
-            {"role": "user", "content": "Turn 1"},
-            {"role": "user", "content": "Turn 2"},
-        ]
-
-        result = await transform_messages_to_input(
-            pipe_instance,
-            messages,
-            pruning_turns=1
-        )
-
-        tool_output = next((r for r in result if r.get("type") == "function_call_output"), None)
-        assert tool_output is not None
-        # Direct tool messages are NOT pruned
-        assert tool_output["output"] == long_output
-        # Verify content is preserved
-        assert "HEAD" in tool_output["output"]
-        assert "TAIL" in tool_output["output"]
-
-    @pytest.mark.asyncio
-    async def test_direct_tool_large_output_preserved(self, pipe_instance):
-        """Large direct tool output is fully preserved."""
-        long_output = "X" * (_TOOL_OUTPUT_PRUNE_MIN_LENGTH + 500)
-
-        messages = [
-            {"role": "user", "content": "Turn 0"},
-            {"role": "tool", "tool_call_id": "call_1", "content": long_output},
-            {"role": "user", "content": "Turn 1"},
-            {"role": "user", "content": "Turn 2"},
-        ]
-
-        result = await transform_messages_to_input(
-            pipe_instance,
-            messages,
-            pruning_turns=1
-        )
-
-        tool_output = next((r for r in result if r.get("type") == "function_call_output"), None)
-        assert tool_output is not None
-        # Full output is preserved for direct tool messages
-        assert len(tool_output["output"]) == len(long_output)
-        assert tool_output["output"] == long_output
-
-    @pytest.mark.asyncio
-    async def test_turn_computation_with_tool_messages(self, pipe_instance):
-        """Tool messages are associated with their turn correctly."""
-        long_output = "X" * (_TOOL_OUTPUT_PRUNE_MIN_LENGTH + 100)
-
-        messages = [
-            {"role": "user", "content": "Turn 0"},
-            {"role": "tool", "tool_call_id": "call_1", "content": long_output},
-            {"role": "user", "content": "Turn 1"},
-        ]
-
-        result = await transform_messages_to_input(
-            pipe_instance,
-            messages,
-            pruning_turns=1
-        )
-
-        tool_output = next((r for r in result if r.get("type") == "function_call_output"), None)
-        assert tool_output is not None
-        # Tool output is present and complete
-        assert tool_output["output"] == long_output
-
-    @pytest.mark.asyncio
-    async def test_prune_non_function_call_output_ignored(self, pipe_instance):
-        """Non-function_call_output items are not pruned."""
-        long_text = "X" * (_TOOL_OUTPUT_PRUNE_MIN_LENGTH + 100)
-
-        messages = [
-            {"role": "user", "content": f"Turn 0: {long_text}"},
-            {"role": "user", "content": "Turn 1"},
-            {"role": "user", "content": "Turn 2"},
-        ]
-
-        result = await transform_messages_to_input(
-            pipe_instance,
-            messages,
-            pruning_turns=1
-        )
-
-        # User messages should not be pruned
-        user_msg = result[0]
-        assert "[tool output pruned:" not in user_msg["content"][0]["text"]
-
+    Pruning is decided by turn age and nothing else. A round's marker, and whether the
+    result arrived as a `tool` message or was replayed from an artifact, is not consulted:
+    `docs/valves_and_configuration_atlas.md` already says so, and these arms are what
+    keep that sentence true. Each arm sets `PERSIST_TOOL_RESULTS` explicitly and puts the
+    round on a turn the window actually covers, so the pruning predicate is the only
+    thing left that can decide the assertion.
+    """
 
 # =============================================================================
 # Marker-Based Artifact Replay Tests

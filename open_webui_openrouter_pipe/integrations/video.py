@@ -27,7 +27,11 @@ import aiohttp
 from ..api.gateway.responses_adapter import _record_failed_call
 from ..core.config import _PIPE_METADATA_KEY, Valves, _select_openrouter_http_referer
 from ..core.costs import maybe_dump_costs_snapshot
-from ..core.errors import OpenRouterAPIError, RequiredInternalFileError
+from ..core.errors import (
+    OpenRouterAPIError,
+    RequiredInternalFileError,
+    UpstreamBodyUnreadable,
+)
 from ..core.utils import (
     _clean_str,
     _csv_set,
@@ -1184,6 +1188,26 @@ class VideoGenerationAdapter:
                 api_model_id=api_model_id,
                 partial_answer=disclosure_block,
             )
+        except UpstreamBodyUnreadable as exc:
+            self._count_a_failed_start(
+                submitted and not lifecycle_transferred,
+                outcome_sink,
+                breaker_key,
+                provider_document=False,
+            )
+            self.logger.warning(
+                "Video generation body was not an OpenRouter document (job_id=%s): %s", job_id, exc
+            )
+            if not withheld_record_written:
+                disclosure_block = self._with_the_withheld_record(disclosure_block, withheld)
+            content = self._build_failure_content(
+                job_id=job_id, model_id=api_model_id, reason=exc.evidence()
+            )
+            if disclosure_block:
+                content = disclosure_block + "\n" + content
+            await self._emit_status(event_emitter, _VIDEO_GENERATION_FAILED_STATUS, done=True)
+            await self._emit_completion(event_emitter, content)
+            return content
         except Exception as exc:
             self._count_a_failed_start(submitted and not lifecycle_transferred, outcome_sink, breaker_key)
             self.logger.exception("Video generation request failed (job_id=%s)", job_id)
@@ -1229,11 +1253,16 @@ class VideoGenerationAdapter:
             outcome_sink["error_occurred"] = result.failed or not result.file_id
 
     def _count_a_failed_start(
-        self, sent_to_openrouter: bool, outcome_sink: dict[str, Any] | None, breaker_key: str | None
+        self,
+        sent_to_openrouter: bool,
+        outcome_sink: dict[str, Any] | None,
+        breaker_key: str | None,
+        *,
+        provider_document: bool = True,
     ) -> None:
         if outcome_sink is not None:
             outcome_sink["error_occurred"] = True
-        if sent_to_openrouter:
+        if sent_to_openrouter and provider_document:
             _record_failed_call(self._pipe, breaker_key)
 
     async def _cleanup_step(
@@ -1604,6 +1633,39 @@ class VideoGenerationAdapter:
                 job_id=job_id,
                 file_id=file_id,
                 failed=failed,
+                elapsed=elapsed,
+                model_id=api_model_id,
+                output_mime=output_mime,
+            )
+        except UpstreamBodyUnreadable as exc:
+            self.logger.warning(
+                "Video lifecycle body was not an OpenRouter document (job_id=%s): %s", job_id, exc
+            )
+            failed = True
+            elapsed = max(0.0, time.monotonic() - started_at)
+            reason = exc.evidence()
+            content = self._build_failure_content(job_id=job_id, model_id=api_model_id, reason=reason)
+            if disclosure_block:
+                content = disclosure_block + "\n" + content
+            description = _VIDEO_GENERATION_FAILED_STATUS
+            await self._emit_status(event_emitter, description, done=True)
+            await self._record_what_it_cost(
+                usage=usage,
+                billing=billing,
+                valves=valves,
+                user_id=user_id,
+                api_model_id=api_model_id,
+                user_obj=user_obj,
+                chat_id=chat_id,
+                message_id=message_id,
+            )
+            return VideoLifecycleResult(
+                content=content,
+                status_description=description,
+                usage=usage,
+                job_id=job_id,
+                file_id=file_id,
+                failed=True,
                 elapsed=elapsed,
                 model_id=api_model_id,
                 output_mime=output_mime,

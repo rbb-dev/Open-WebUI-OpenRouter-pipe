@@ -191,9 +191,7 @@ def _sanitize_request_input(pipe: Pipe, body: ResponsesBody) -> BudgetOutcome | 
     if not isinstance(items, list):
         return None
     original_items = items
-    target_model = getattr(body, "api_model", None)
-    if not (isinstance(target_model, str) and target_model.strip()):
-        target_model = str(getattr(body, "model", "") or "")
+    target_model = budget_model_id(body)
     if _is_anthropic_model_id(target_model):
         items = _strip_unreplayable_anthropic_reasoning(items)
     sanitized = _filter_replayable_input_items(items, logger=pipe.logger)

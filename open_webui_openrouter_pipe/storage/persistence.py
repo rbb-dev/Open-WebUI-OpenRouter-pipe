@@ -730,6 +730,14 @@ class ArtifactStore:
         self._breaker_window_seconds = self.valves.BREAKER_WINDOW_SECONDS
         self._db_breakers: dict[str, deque[float]] = defaultdict(deque)
         self._db_sweep_after: float = 0.0
+        self._db_refusal_warn: dict[str, float] = {}
+
+    def _breaker_entry(self, verb: str, user_id: str) -> int:
+        return warn_level(
+            self._db_refusal_warn,
+            f"{verb}:{user_id}",
+            cooldown_s=300.0,
+        )
 
     def _sweep_db_breakers(self, now: float, *, force: bool = False) -> None:
         if not force and now < self._db_sweep_after:
@@ -1838,6 +1846,16 @@ class ArtifactStore:
             held_memory.rearm()
             return held
         if is_temporary_chat(rows[0].get("chat_id")):
+            if not held_memory.is_open(rows[0].get("chat_id"), rows[0].get("message_id")):
+                self.logger.debug(
+                    "Temporary chat row dropped: its reply is closed and holds nothing "
+                    "(chat_id=%s message_id=%s id=%s item_type=%s)",
+                    rows[0].get("chat_id"),
+                    rows[0].get("message_id"),
+                    rows[0].get("id"),
+                    rows[0].get("item_type"),
+                )
+                return []
             held = await asyncio.to_thread(self._reply_memory.hold, rows)
             self._reply_memory.rearm()
             return held
@@ -1847,7 +1865,11 @@ class ArtifactStore:
         context = self._TOOL_CONTEXT.get() if self._TOOL_CONTEXT else None
         user_id = SessionLogger.user_id.get() or ""
         if not self._db_breaker_allows(user_id):
-            self.logger.warning("DB writes disabled for user_id=%s due to repeated failures", user_id)
+            self.logger.log(
+                self._breaker_entry("writes", user_id),
+                "DB writes disabled for user_id=%s due to repeated failures",
+                user_id,
+            )
             if self._emit_notification:
                 await self._emit_notification(
                     context.event_emitter if context else None,
@@ -1865,6 +1887,26 @@ class ArtifactStore:
 
         try:
             await self._seal_rows(rows)
+        except Exception as exc:
+            self.logger.warning(
+                "Artifact rows could not be sealed for storage (%d row(s), types=%s); "
+                "nothing reached the database and this is not charged to the database "
+                "breaker: %s",
+                len(rows),
+                sorted({str(r.get("item_type")) for r in rows if isinstance(r, dict)}),
+                exc,
+                exc_info=True,
+            )
+            if self._emit_notification:
+                await self._emit_notification(
+                    context.event_emitter if context else None,
+                    "Some stored items for this turn could not be prepared for storage; "
+                    "they will be missing from later turns.",
+                    level="warning",
+                )
+            return []
+
+        try:
             if self._redis_active():
                 queued = await self._redis_enqueue_rows(rows)
                 self._reset_db_failure(user_id)
@@ -2164,7 +2206,11 @@ class ArtifactStore:
 
         user_id = SessionLogger.user_id.get() or ""
         if not self._db_breaker_allows(user_id):
-            self.logger.warning("DB reads disabled for user_id=%s due to repeated failures", user_id)
+            self.logger.log(
+                self._breaker_entry("reads", user_id),
+                "DB reads disabled for user_id=%s due to repeated failures",
+                user_id,
+            )
             context = self._TOOL_CONTEXT.get() if self._TOOL_CONTEXT else None
             if self._emit_notification:
                 await self._emit_notification(
@@ -2299,7 +2345,11 @@ class ArtifactStore:
 
         user_id = SessionLogger.user_id.get() or ""
         if not self._db_breaker_allows(user_id):
-            self.logger.warning("DB deletes disabled for user_id=%s due to repeated failures", user_id)
+            self.logger.log(
+                self._breaker_entry("deletes", user_id),
+                "DB deletes disabled for user_id=%s due to repeated failures",
+                user_id,
+            )
             return False
 
         loop = asyncio.get_running_loop()

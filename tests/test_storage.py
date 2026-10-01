@@ -36,104 +36,6 @@ from open_webui_openrouter_pipe.storage.persistence import (
 )
 
 
-class _In:
-    """A stand-in for SQLAlchemy's ``col.in_(...)``, which ``~`` negates into ``NOT IN``."""
-
-    def __init__(self, name: str, values: list[Any], negated: bool = False) -> None:
-        self.name = name
-        self.values = values
-        self.negated = negated
-
-    def __invert__(self) -> "_In":
-        return _In(self.name, self.values, not self.negated)
-
-
-class _Field:
-    def __init__(self, name: str) -> None:
-        self.name = name
-    def __hash__(self) -> int:
-        return hash(self.name)
-
-
-    def __eq__(self, other):
-        return ("eq", self.name, other)
-
-    def __lt__(self, other):
-        return ("lt", self.name, other)
-
-    def in_(self, values):
-        return _In(self.name, list(values))
-
-    def startswith(self, prefix):
-        return ("startswith", self.name, prefix)
-
-
-class _FakeModel:
-    id = _Field("id")
-    chat_id = _Field("chat_id")
-    message_id = _Field("message_id")
-    model_id = _Field("model_id")
-    item_type = _Field("item_type")
-    payload = _Field("payload")
-    is_encrypted = _Field("is_encrypted")
-    created_at = _Field("created_at")
-
-    def __init__(self, **kwargs: Any) -> None:
-        for key, value in kwargs.items():
-            setattr(self, key, value)
-
-
-class _FakeQuery:
-    def __init__(self, rows: list[_FakeModel]) -> None:
-        self._rows = rows
-        self._filters: list[tuple[str, str, Any]] = []
-
-    def filter(self, condition):
-        self._filters.append(condition)
-        return self
-
-    def _match(self, row: _FakeModel, condition: Any) -> bool:
-        if isinstance(condition, _In):
-            current = getattr(row, condition.name, None)
-            return current in condition.values if not condition.negated else current not in condition.values
-        op, name, value = condition
-        current = getattr(row, name, None)
-        if op == "eq":
-            return current == value
-        if op == "in":
-            return current in value
-        if op == "lt":
-            return current < value
-        if op == "startswith":
-            return isinstance(current, str) and current.startswith(value)
-        return False
-
-    def _apply(self) -> list[_FakeModel]:
-        return [row for row in self._rows if all(self._match(row, cond) for cond in self._filters)]
-
-    def all(self):
-        return self._apply()
-
-    def one(self):
-        ids = [getattr(row, "id", None) for row in self._apply()]
-        present = [row_id for row_id in ids if row_id is not None]
-        return (min(present), max(present)) if present else (None, None)
-
-    def update(self, values, synchronize_session: bool = False):
-        rows = self._apply()
-        for row in rows:
-            for field, val in values.items():
-                if isinstance(field, _Field):
-                    setattr(row, field.name, val)
-        return len(rows)
-
-    def delete(self, synchronize_session: bool = False):
-        rows = self._apply()
-        for row in rows:
-            self._rows.remove(row)
-        return len(rows)
-
-
 class _FakeSession:
     def __init__(self, rows: list[_FakeModel], fail_on_update: bool = False) -> None:
         self._rows = rows
@@ -163,26 +65,6 @@ class _FakeSession:
             query.update = _fail_update
         return query
 
-
-def _install_fake_store(pipe: Pipe) -> list[_FakeModel]:
-    rows: list[_FakeModel] = []
-    store = pipe._artifact_store
-    store_any = cast(Any, store)
-    store_any._item_model = _FakeModel
-    store_any._session_factory = lambda: _FakeSession(rows)
-    store_any._artifact_table_name = "response_items_test"
-    store_any._db_executor = ThreadPoolExecutor(max_workers=1)
-    return rows
-
-
-def _make_row(chat_id: str, message_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "chat_id": chat_id,
-        "message_id": message_id,
-        "model_id": "model",
-        "item_type": payload.get("type", "unknown"),
-        "payload": payload,
-    }
 
 
 # -----------------------------------------------------------------------------
@@ -1623,37 +1505,6 @@ def test_ensure_artifact_store_lz4_warning(pipe_instance, monkeypatch, caplog):
 # Init Artifact Store Tests
 # -----------------------------------------------------------------------------
 
-
-@contextlib.contextmanager
-def _install_internal_db(engine, schema: str | None = None):
-    saved_internal = sys.modules.get("open_webui.internal")
-    saved_db = sys.modules.get("open_webui.internal.db")
-
-    internal_pkg = types.ModuleType("open_webui.internal")
-    db_mod = types.ModuleType("open_webui.internal.db")
-    setattr(db_mod, "engine", engine)
-    setattr(db_mod, "ENGINE", engine)
-    if schema is not None:
-
-        class _Base:
-            metadata = types.SimpleNamespace(schema=schema)
-
-        setattr(db_mod, "Base", _Base)
-
-    setattr(internal_pkg, "db", db_mod)
-    sys.modules["open_webui.internal"] = internal_pkg
-    sys.modules["open_webui.internal.db"] = db_mod
-    try:
-        yield
-    finally:
-        if saved_internal is not None:
-            sys.modules["open_webui.internal"] = saved_internal
-        else:
-            sys.modules.pop("open_webui.internal", None)
-        if saved_db is not None:
-            sys.modules["open_webui.internal.db"] = saved_db
-        else:
-            sys.modules.pop("open_webui.internal.db", None)
 
 
 def test_init_artifact_store_missing_pipe_id(pipe_instance):

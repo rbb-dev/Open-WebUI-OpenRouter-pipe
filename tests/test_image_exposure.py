@@ -486,6 +486,7 @@ async def test_a_typed_link_goes_through_the_same_gate_as_every_other_fetched_ur
 
     assert handler.seen == [link], "the gate has to actually be asked about this link"
     assert not posts, "a refused link must stop the request, not generate without it"
+    assert isinstance(content, str), content
     assert "https" in content
 
 

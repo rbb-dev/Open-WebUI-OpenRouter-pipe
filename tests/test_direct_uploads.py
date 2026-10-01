@@ -33,19 +33,6 @@ def _mp3_like_base64() -> str:
     return base64.b64encode(payload).decode("ascii")
 
 
-def _sse(data: dict) -> str:
-    """Format a dict as an SSE data line."""
-    return f"data: {json.dumps(data)}\n\n"
-
-
-def _make_responses_sse(content: str = "OK") -> str:
-    """Create a Responses API SSE streaming response."""
-    return (
-        f'data: {{"type":"response.output_text.delta","delta":"{content}"}}\n\n'
-        + 'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":5,"output_tokens":3}}}\n\n'
-    )
-
-
 def _make_chat_sse(content: str = "OK") -> str:
     """Create a Chat Completions SSE streaming response."""
     return (
@@ -53,35 +40,6 @@ def _make_chat_sse(content: str = "OK") -> str:
         + _sse({"choices": [{"delta": {}, "finish_reason": "stop"}]})
         + "data: [DONE]\n\n"
     )
-
-
-def _make_json_response(content: str = "OK") -> dict:
-    """Create a Responses API JSON non-streaming response."""
-    return {
-        "id": "resp_123",
-        "output": [
-            {
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": content}],
-            }
-        ],
-        "usage": {"input_tokens": 10, "output_tokens": 5},
-    }
-
-
-def _make_chat_json_response(content: str = "OK") -> dict:
-    """Create a Chat Completions JSON non-streaming response."""
-    return {
-        "id": "chatcmpl_123",
-        "choices": [
-            {
-                "message": {"role": "assistant", "content": content},
-                "finish_reason": "stop",
-            }
-        ],
-        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
-    }
 
 
 @pytest.mark.asyncio

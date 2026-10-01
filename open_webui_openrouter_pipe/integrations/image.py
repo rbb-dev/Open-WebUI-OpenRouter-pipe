@@ -8,6 +8,8 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from starlette.responses import StreamingResponse
+
 from ..api.gateway.responses_adapter import _record_failed_call
 from ..core.config import (
     _PIPE_METADATA_KEY,
@@ -16,6 +18,7 @@ from ..core.config import (
     _select_openrouter_http_referer,
 )
 from ..core.costs import maybe_dump_costs_snapshot
+from ..core.error_formatter import _admission_error_response
 from ..core.errors import OpenRouterAPIError, UpstreamBodyUnreadable
 from ..core.logging_system import SessionLogger
 from ..core.utils import clamp_text, summarise_names
@@ -23,6 +26,7 @@ from ..core.warn_latch import warn_level
 from ..filters.image_filter_renderer import IMAGE_KNOB_TITLES
 from ..models.registry import _contract_target, _fingerprint
 from ..requests.fusion_engine import latest_user_text
+from ..requests.orchestrator import _is_api_caller
 from ..storage.multimodal import (
     _NO_VERDICT,
     _PAYLOAD_ALLOWLIST_REFUSAL,
@@ -1186,7 +1190,7 @@ class ImageGenerationAdapter:
         api_model_id: str,
         outcome_sink: dict[str, Any] | None = None,
         breaker_key: str | None = None,
-    ) -> str:
+    ) -> str | StreamingResponse:
         outcome: _Outcome = {"usage": None, "reported": False, "costed": False, "sent": False, "delivered": False, "degraded": False, "provider_document": True}
         try:
             content = await self._generate(
@@ -1234,9 +1238,17 @@ class ImageGenerationAdapter:
             self._logger.exception("Image generation failed for %r", api_model_id)
             await self._close_status(event_emitter)
             await self._settle(outcome, valves, user, metadata, user_obj, api_model_id)
-            content = await self._emit_failure(
-                event_emitter, str(exc).strip() or type(exc).__name__
+            machine_envelope = (
+                _admission_error_response(500, "Image generation failed.", request=request)
+                if _is_api_caller(metadata)
+                else None
             )
+            if machine_envelope is not None:
+                content = machine_envelope
+            else:
+                content = await self._emit_failure(
+                    event_emitter, str(exc).strip() or type(exc).__name__
+                )
         self._settle_request(outcome, outcome_sink, breaker_key)
         return content
 

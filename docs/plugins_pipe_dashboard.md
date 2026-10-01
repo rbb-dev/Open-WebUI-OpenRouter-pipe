@@ -70,7 +70,7 @@ The Live tab shows the in-flight and recently-completed requests across every wo
 - A status badge: `queued`, `streaming`, `tool:<name>`, `completed`, `failed`, or `cancelled`.
 - Elapsed time, tool success and failure counts, tokens (in → cached → out), cost, and the worker PID.
 
-Cost updates live as the request runs; the completed row shows the final cost. Task-model calls — titles, tags, follow-ups — fold their cost into their parent chat's row.
+Cost updates live as the request runs; the completed row shows the final cost. Task-model calls — titles, tags, follow-ups — fold their cost into their parent chat's row: the turn that was already running when the task started.
 
 Completed rows stay visible, dimmed, for the **Keep completed** window (5 minutes to 3 hours, default 10 minutes), set in the table itself.
 

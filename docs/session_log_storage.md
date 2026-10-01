@@ -29,7 +29,7 @@ A reply that may hand a call back -- in Open-WebUI mode, or in Pipeline mode for
   - `ids` (`user_id`, `session_id`, `chat_id`, `message_id`) — `api` / `api-<request_id>` for an API call
   - `request_id` (a representative internal per-request key used for in-memory buffering)
   - `request_ids` (optional; sorted unique list of per-request identifiers found in the bundled events)
-  - `status` (optional; how the turn ended — `complete`, `error`, `cancelled` or `needs_tool`; **absent** when no terminal segment recorded one and no earlier pass recorded one for that archive)
+  - `status` (optional; how the turn ended — `complete`, `error`, `cancelled` or `needs_tool`; **absent** when no terminal segment recorded one and no earlier pass recorded one for that archive). Of those four, `needs_tool` is the only one that is **not terminal**: it is the value that says the turn handed a call back and is still mid-loop, which is exactly what the terminal-segment precedence rule below exists to avoid recording. The dashboard spells the same outcomes differently, and the mapping runs both ways: an archive's `complete` is Live's `completed` and Usage's `ok`, an archive's `error` is `failed`, and `cancelled` is `cancelled` in both. Live rows additionally carry `queued`, `streaming` and `tool:<name>` while a turn is still in flight, and those three never reach an archive.
   - `reason` (optional; the cause, from the same segment as `status`; absent when empty)
   - `log_format` (`jsonl`, `text`, or `both`)
   - `terminal` (`true` when the pass that wrote this archive had a terminal segment for the turn; `false` when it sealed the turn as incomplete. A later pass reads it, so a segment that lands after the turn finished is merged without sealing the turn again)

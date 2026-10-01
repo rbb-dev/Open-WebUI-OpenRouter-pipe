@@ -2727,20 +2727,6 @@ from unittest.mock import Mock, patch
 from open_webui_openrouter_pipe import Pipe
 
 
-def _make_existing_model(model_id: str, *, meta: dict, params: dict | None = None):
-    from open_webui.models.models import ModelMeta
-
-    return SimpleNamespace(
-        id=model_id,
-        base_model_id=None,
-        name="Example",
-        meta=ModelMeta(**meta),
-        params={"reasoning_tags": False, **(params or {})},
-        access_grants=[],
-        is_active=True,
-    )
-
-
 @pytest.mark.asyncio
 async def test_disable_model_metadata_sync_skips_all_updates(pipe_instance_async) -> None:
     pipe = pipe_instance_async

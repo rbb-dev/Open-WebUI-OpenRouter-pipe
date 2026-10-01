@@ -358,8 +358,6 @@ async def test_execute_function_calls_with_context_idle_timeout():
         await pipe.close()
 
 
-
-
 @pytest.mark.asyncio
 async def test_idle_timeout_returns_failed_output_and_continues():
     """Idle timeout returns failed outputs for all timed-out tools (no exception)."""
@@ -2678,24 +2676,6 @@ class _DummyWorker:
     _can_batch_tool_calls = ToolExecutor._can_batch_tool_calls
     _args_reference_call = ToolExecutor._args_reference_call
     _cancelled_tool_output = ToolExecutor._cancelled_tool_output
-
-
-def _make_queued(
-    loop: asyncio.AbstractEventLoop,
-    call_id: str,
-    name: str,
-    *,
-    allow_batch: bool = True,
-    args: dict[str, Any] | None = None,
-) -> _QueuedToolCall:
-    """Create a _QueuedToolCall for testing."""
-    return _QueuedToolCall(
-        call={"name": name, "call_id": call_id},
-        tool_cfg={},
-        args=args or {},
-        future=loop.create_future(),
-        allow_batch=allow_batch,
-    )
 
 
 def _make_context(

@@ -363,11 +363,11 @@ class ReasoningConfigManager:
         responses_body: ResponsesBody,
     ) -> bool:
         """Strip replayed thinking blocks and retry when an Anthropic provider rejects a stale thinking-block signature on a 400."""
+        from ..requests.sanitizer import budget_model_id
+
         if getattr(error, "status", None) != 400:
             return False
-        target_model = getattr(responses_body, "api_model", None)
-        if not (isinstance(target_model, str) and target_model.strip()):
-            target_model = str(getattr(responses_body, "model", "") or "")
+        target_model = budget_model_id(responses_body)
         if not _is_anthropic_model_id(target_model):
             return False
         message_candidates = [
