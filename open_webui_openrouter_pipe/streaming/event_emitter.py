@@ -24,7 +24,7 @@ from ..core.utils import (
     citation_access_stamp,
     join_answer_and_card,
 )
-from ..storage.owui_files import is_channel_chat
+from ..storage.owui_files import is_channel_chat, loggable_session_id
 
 _PIPE_GENERATED_TEMPLATE_KEYS = frozenset({
     "body_excerpt",
@@ -410,7 +410,7 @@ class EventEmitterHandler:
         context = {
             "error_id": error_id,
             "timestamp": datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z"),
-            "session_id": SessionLogger.session_id.get() or "",
+            "session_id": loggable_session_id(SessionLogger.session_id.get()),
             "user_id": SessionLogger.user_id.get() or "",
             "support_email": self.valves.SUPPORT_EMAIL,
             "support_url": self.valves.SUPPORT_URL,

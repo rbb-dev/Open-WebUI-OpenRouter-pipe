@@ -9,7 +9,9 @@ socket.io removes members on disconnect and deletes the empty room.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import os
 from typing import Any
 
 from ...core.warn_latch import warn_level
@@ -30,6 +32,15 @@ DASHBOARD_EVENT = "openrouter:pipe_dashboard"
 SUB_EVENT = "openrouter:pipe_dashboard:sub"
 DENIED_EVENT = "openrouter:pipe_dashboard:denied"
 CONFIG_EVENT = "openrouter:pipe_dashboard:config"
+
+_config_change_n = 0
+
+
+def new_config_change() -> str:
+    global _config_change_n
+    _config_change_n += 1
+    return f"{os.getpid()}-{_config_change_n}"
+
 
 _registered = False
 _resync = False
@@ -118,7 +129,7 @@ async def _pipe_dashboard_sub(sid: str, _data: Any = None) -> None:
     _resync = True
 
 
-async def emit_config_changed(rev: Any) -> bool:
+async def emit_config_changed(rev: Any, change: str | None = None) -> bool:
     try:
         from open_webui.socket.main import sio
     except ImportError:
@@ -130,34 +141,46 @@ async def emit_config_changed(rev: Any) -> bool:
             exc_info=True,
         )
         return False
+    if change is None:
+        change = new_config_change()
     try:
-        await sio.emit(CONFIG_EVENT, {"rev": rev}, room=VIEWERS_ROOM)
+        await sio.emit(CONFIG_EVENT, {"rev": rev, "change": change}, room=VIEWERS_ROOM)
         return True
     except Exception:
         logger.debug("pipe_dashboard config emit failed", exc_info=True)
         return False
 
 
-async def read_config_rev(pipe_id: str) -> Any:
+def config_state_digest(valves: Any) -> str | None:
+    if not isinstance(valves, str) or not valves:
+        return None
+    return hashlib.sha256(valves.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+async def read_config_rev(pipe_id: str) -> tuple[Any, str | None]:
     try:
         from open_webui.internal.db import get_async_db_context
         from open_webui.models.functions import Function
         from sqlalchemy import select
 
         async with get_async_db_context() as db:
-            result = await db.execute(select(Function.updated_at).filter_by(id=pipe_id))
-            rev = result.scalar_one_or_none()
+            result = await db.execute(
+                select(Function.updated_at, Function.valves).filter_by(id=pipe_id)
+            )
+            row = result.one_or_none()
     except Exception:
         logger.debug("pipe_dashboard config rev read failed", exc_info=True)
-        return None
-    if rev is None:
+        return None, None
+    if row is None:
         logger.debug("pipe_dashboard config rev unavailable for %s", pipe_id)
-        return None
-    return rev
+        return None, None
+    rev, valves = row
+    return rev, config_state_digest(valves)
 
 
-async def _emit_config_rev(pipe_id: str) -> None:
-    await emit_config_changed(await read_config_rev(pipe_id))
+async def _emit_config_rev(pipe_id: str, change: str | None = None) -> None:
+    rev, _state = await read_config_rev(pipe_id)
+    await emit_config_changed(rev, change)
 
 
 _pending_emits: set[Any] = set()
@@ -181,8 +204,9 @@ class _ValveEventSink:
             return
         if not await _socket_dashboard_enabled(pipe):
             await _evict_every_viewer()
+        change = (getattr(event, "data", None) or {}).get("pipe_config_change")
         try:
-            task = asyncio.create_task(_emit_config_rev(pipe_id))
+            task = asyncio.create_task(_emit_config_rev(pipe_id, change))
             _pending_emits.add(task)
             task.add_done_callback(_pending_emits.discard)
         except RuntimeError:
@@ -240,9 +264,11 @@ async def _publish_function_event(
         return False
 
 
-async def publish_valves_changed(pipe_id: str, actor: Any, request: Any = None) -> bool:
+async def publish_valves_changed(
+    pipe_id: str, actor: Any, request: Any = None, data: dict | None = None
+) -> bool:
     return await _publish_function_event(
-        "FUNCTION_VALVES_UPDATED", pipe_id, actor, request, None
+        "FUNCTION_VALVES_UPDATED", pipe_id, actor, request, data
     )
 
 

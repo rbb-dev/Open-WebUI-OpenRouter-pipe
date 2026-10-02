@@ -266,6 +266,16 @@
   plugins as `ctx.pipe._http_session`. Nothing else changes: no valve, no timeout, and nothing
   in the package read a cookie before or reads one now. Operator-configured gateways and
   catalog icon hosts were not probed.
+- **Temporary Chat error cards and records** — a Temporary Chat's socket id no longer appears in its error card or in
+  the log records the fix names. Open WebUI mints a temporary chat's id by prefixing the browser's own socket id, and
+  that id is what `/api/tasks/chat/{chat_id}` and `…/stop` resolve back to the socket and then to the owning user as
+  their ownership check — so printing it on a card, or in the operator's own log line, handed out a live handle rather
+  than a correlation string. `session_id` is now withheld on a `temporary:` or `local:` chat across every error path
+  (the templated card, the provider-rejection card, the non-streamed auth card, the card returned to an API caller with
+  no emitter, and the three queue-backlog warnings at both `WARNING` and the demoted `DEBUG` repeat), reduced to the
+  empty string rather than hashed or truncated. `error_id` remains the correlation handle and `user_id` is not
+  withheld — it is the account GUID, present in every chat. A saved chat and a `channel:` chat are byte-identical to
+  before, and a channel card still withholds the ids while the operator's channel log line still carries them.
 - **session log storage** — an archive written under the pre-digest path component is now found and merged by the
   next assembly pass for that turn, which keeps the outcome the older archive recorded and republishes the merged
   turn under the digest name. Only when the older file's `meta.json` names that turn's exact `ids`, so an archive

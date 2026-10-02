@@ -23,6 +23,7 @@ import pytest
 
 from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.core.config import EncryptedStr
+from open_webui_openrouter_pipe.core.errors import RemoteDownloadRefused
 
 PNG_BYTES = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
@@ -114,12 +115,11 @@ async def test_a_stream_over_the_size_cap_is_aborted(pipe_instance_async, tmp_pa
     transport([b"x" * 600, b"x" * 600], {"content-type": "video/mp4"})
     dest = tmp_path / "out.bin"
 
-    result = await _download(pipe_instance_async, tmp_path, max_size_bytes=1000)
+    with pytest.raises(
+        RemoteDownloadRefused, match="the download is larger than the configured size limit"
+    ):
+        await _download(pipe_instance_async, tmp_path, max_size_bytes=1000)
 
-    assert result is None, (
-        "a 1200-byte body was accepted under a 1000-byte cap; REMOTE_VIDEO_MAX_SIZE_MB "
-        "is not being enforced"
-    )
     written = dest.stat().st_size if dest.exists() else 0
     assert written <= 1000, (
         f"{written} bytes reached disk under a 1000-byte cap. The download was refused "
@@ -134,9 +134,10 @@ async def test_a_declared_content_length_over_the_cap_is_refused_before_the_body
     """The cheap check: refuse before downloading anything at all."""
     transport([b"x" * 10], {"content-type": "video/mp4", "content-length": "999999"})
 
-    result = await _download(pipe_instance_async, tmp_path, max_size_bytes=1000)
-
-    assert result is None, "a Content-Length far over the cap was downloaded anyway"
+    with pytest.raises(
+        RemoteDownloadRefused, match="the download is larger than the configured size limit"
+    ):
+        await _download(pipe_instance_async, tmp_path, max_size_bytes=1000)
 
 
 @pytest.mark.asyncio
@@ -179,14 +180,12 @@ async def test_a_mime_outside_the_allowlist_is_refused(
     """VIDEO_OUTPUT_MIME_ALLOWLIST decides what may be persisted and served back."""
     transport([b"x" * 10], {"content-type": "application/x-msdownload"})
 
-    result = await _download(
-        pipe_instance_async, tmp_path, mime_allowlist={"video/mp4", "video/webm"}
-    )
-
-    assert result is None, (
-        "a MIME outside the allowlist was accepted; VIDEO_OUTPUT_MIME_ALLOWLIST is not "
-        "being enforced"
-    )
+    with pytest.raises(
+        RemoteDownloadRefused, match="the download's media type is not in the allowlist"
+    ):
+        await _download(
+            pipe_instance_async, tmp_path, mime_allowlist={"video/mp4", "video/webm"}
+        )
 
 
 @pytest.mark.asyncio
@@ -262,12 +261,10 @@ async def test_bytes_outside_the_allowlist_are_refused_whatever_the_header_says(
     """The control. Without it the two above are satisfied by deleting the check."""
     transport([b"MZ\x90\x00" + b"\x00" * 40], {"content-type": "binary/octet-stream"})
 
-    result = await _download(pipe_instance_async, tmp_path, mime_allowlist={"image/png"})
-
-    assert result is None, (
-        "an unrecognised payload declared as a generic type was accepted; sniffing now "
-        "widens the allowlist instead of resolving against it"
-    )
+    with pytest.raises(
+        RemoteDownloadRefused, match="the download's media type is not in the allowlist"
+    ):
+        await _download(pipe_instance_async, tmp_path, mime_allowlist={"image/png"})
 
 
 @pytest.mark.asyncio
@@ -622,12 +619,10 @@ async def test_a_container_the_operator_excluded_is_not_relabelled_as_mp4(
     """
     transport([_ftyp(major, compatible)], {"content-type": declared})
 
-    result = await _download(pipe_instance_async, tmp_path, mime_allowlist={"video/mp4"})
-
-    assert result is None, (
-        f"{declared} was accepted against a video/mp4-only allowlist; the sniffer is "
-        "relabelling it rather than identifying it"
-    )
+    with pytest.raises(
+        RemoteDownloadRefused, match="the download's media type is not in the allowlist"
+    ):
+        await _download(pipe_instance_async, tmp_path, mime_allowlist={"video/mp4"})
 
 
 @pytest.mark.asyncio
@@ -797,12 +792,10 @@ async def test_an_unnameable_container_does_not_overrule_an_honest_declaration(
     """
     transport([_ftyp(b"zzzz")], {"content-type": "video/quicktime"})
 
-    result = await _download(pipe_instance_async, tmp_path, mime_allowlist={"video/mp4"})
-
-    assert result is None, (
-        "a container nobody could name was promoted to video/mp4 over a committal "
-        "declaration the operator had excluded"
-    )
+    with pytest.raises(
+        RemoteDownloadRefused, match="the download's media type is not in the allowlist"
+    ):
+        await _download(pipe_instance_async, tmp_path, mime_allowlist={"video/mp4"})
 
 
 @pytest.mark.asyncio

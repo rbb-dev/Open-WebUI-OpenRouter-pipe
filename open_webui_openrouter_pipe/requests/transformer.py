@@ -434,7 +434,7 @@ def _resolve_inline_type(
         return head, ImageRefusal("not identifiable as an image", cause, subject=subject)
     if resolved != declared:
         return f"data:{resolved};base64,{body}", None
-    if split_from and len(split_from) == len(head) + 1 + len(body):
+    if split_from:
         return split_from, None
     return f"{head},{body}", None
 

@@ -1919,6 +1919,18 @@ class FilterManager:
             if not _pipe_owns_the_off(row):
                 continue
             if not _claimable_by(row, owner):
+                function_id = str(getattr(row, "id", "") or "")
+                if function_id:
+                    self.logger.log(
+                        warn_level(
+                            _warned_stale_filter_rows, f"foreign_install_record:{function_id}"
+                        ),
+                        "Left the %s filter %r switched off: its install record names %r, "
+                        "not this copy.",
+                        log_label,
+                        function_id,
+                        _installed_by(row),
+                    )
                 continue
             if marker in retired_valves and owner and _installed_by(row) == owner:
                 continue

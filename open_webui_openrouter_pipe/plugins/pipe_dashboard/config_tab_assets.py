@@ -178,7 +178,7 @@ const $=s=>CFGROOT.querySelector(s);
 const el=(t,c,h)=>{const e=document.createElement(t);if(c)e.className=c;if(h!=null)e.innerHTML=h;return e;};
 const esc=s=>(s==null?"":String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 const ICON={"Connection & Routing":"🔌","Models & Catalog":"🧠","Files & Media":"🖼️","Filters & Integrations":"🧩","Tools":"🛠️","Reasoning & Thinking":"💭","Prompt Caching":"⚡","Streaming & Performance":"📡","Reliability":"🛡️","Security":"🔒","Storage":"💾","Usage & Status":"📊","Error Messages":"⚠️","Logging":"📝","Plugins":"🔌"};
-let VALVES=[],byName={},baseline={},REV=null,lastSeenRev=null,inflightSave=false,driftCache=null,configUnreadable=false;
+let VALVES=[],byName={},baseline={},REV=null,lastSeenRev=null,lastChange=null,lastState=null,inflightSave=false,driftCache=null,configUnreadable=false;
 const STORE_UNREADABLE="the stored configuration could not be read from the database";
 const STORE_UNREADABLE_TEXT="Your settings are still stored and have not been changed, but the stored configuration could not be read — restore the database, then reload.";
 const STORE_UNREADABLE_KEY="the stored configuration could not be read from the database: it is encrypted with a different WEBUI_SECRET_KEY";
@@ -475,6 +475,7 @@ function commitSave(){
       if(clashed&&clashed.indexOf(n)>=0){ if(v&&v.secret){v.secret_set=(edits[n]!==null);} revalidate(n); return; }
       if(v&&v.secret){const fl=sec[n]; if(fl){v.secret_set=!!fl.set;v.secret_stored=!!fl.stored;} else {v.secret_set=(edits[n]===null&&v.secret_stored)?v.secret_set:(edits[n]!==null&&notSaved.indexOf(n)<0);}} else if(v){baseline[n]=Object.prototype.hasOwnProperty.call(vals,n)?vals[n]:edits[n];} delete edits[n]; });
     if(r.rev!=null){REV=r.rev;lastSeenRev=r.rev;}
+    if(r.change!=null){lastChange=r.change;lastState=null;}
     inflightSave=false;
     paintDriftNote($("#driftnote"),{drift:driftCache,reset:r.reset});
     renderResetNote(r.reset||[]);
@@ -569,8 +570,13 @@ $("#save").onclick=openReview;
 $("#discard").onclick=()=>{ if(!Object.keys(edits).length)return; Object.keys(edits).forEach(n=>delete edits[n]); invalid.clear(); updateBar(); if(SEL)renderDetail(byName[SEL]); buildTree(); toast("Discarded all changes"); };
 updateBar();
 cfgFetch=loadConfig;
-cfgOnEvent=function(rev){
-  if(inflightSave||rev==null||REV==null||rev<=REV||rev<=lastSeenRev)return;
+cfgOnEvent=function(rev,change,state){
+  if(inflightSave||rev==null||REV==null)return;
+  if(change!=null&&(change===lastChange||rev<REV||rev<lastSeenRev))return;
+  if(change!=null){lastChange=change;lastState=null;}
+  if(change==null&&state!=null&&lastState==null){lastState=state;return;}
+  if(change==null&&(rev<=REV||rev<=lastSeenRev)&&(state==null||state===lastState))return;
+  if(change==null&&state!=null)lastState=state;
   lastSeenRev=rev;
   if(Object.keys(edits).length===0)quietReload();
   else showConflict();

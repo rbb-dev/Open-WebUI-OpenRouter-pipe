@@ -469,6 +469,7 @@ class SessionLogManager:
     """
 
     _FAULT_LATCHES = (
+        "_listing_fault_warnings",
         "_unreadable_archive_warnings",
         "_stale_filter_warnings",
         "_read_fault_warnings",
@@ -516,6 +517,7 @@ class SessionLogManager:
         self._unreadable_archive_attempts: dict[str, int] = {}
         self._stale_filter_warnings: dict[str, float] = {}
         self._read_fault_warnings: dict[str, float] = {}
+        self._listing_fault_warnings: dict[str, float] = {}
         self._captured_turns: set[str] = set()
         self._captured_row_ids: dict[str, str] = {}
         self._capture_exempt: set[tuple[str, str]] = set()
@@ -1259,6 +1261,13 @@ class SessionLogManager:
         )]
         return turns
 
+    def _warn_store_fault(self, cause: str, message: str, exc: Exception) -> None:
+        self.logger.log(
+            warn_level(self._listing_fault_warnings, cause, cooldown_s=3600.0),
+            message,
+            exc_info=exc,
+        )
+
     @timed
     def _cleanup_stale_segments(
         self,
@@ -1280,9 +1289,12 @@ class SessionLogManager:
                     .all()
                 )
                 ids = [row[0] for row in rows if row and isinstance(row[0], str)]
-        except Exception as exc:
-            self.logger.debug(
-                "Stale segment cleanup skipped — %s: %s", type(exc).__name__, exc, exc_info=True
+        except Exception as exc:  # noqa: BLE001
+            self._warn_store_fault(
+                "session_log_stale_segment_reap_failed",
+                "Session log stale segment reap could not read the store; staged rows past the "
+                "retention window are not reaped on this pass.",
+                exc,
             )
             return
         if ids and self._artifact_store:
@@ -1307,8 +1319,14 @@ class SessionLogManager:
                     .all()
                 )
                 ids = [row[0] for row in rows if row and isinstance(row[0], str)]
-        except Exception as exc:
-            self.logger.debug("Stale lock cleanup skipped — %s: %s", type(exc).__name__, exc, exc_info=True)
+        except Exception as exc:  # noqa: BLE001
+            self._warn_store_fault(
+                "session_log_stale_lock_reap_failed",
+                "Session log stale lock reap could not read the store; an expired assembly lock is "
+                "not reclaimed on this pass, so the turn it holds stays set aside until its row "
+                "ages out.",
+                exc,
+            )
             return
         if ids and self._artifact_store:
             with contextlib.suppress(Exception):
@@ -1344,8 +1362,14 @@ class SessionLogManager:
                         .all()
                     )
                 offered, held = _window_rows(rows, exclude, is_temporary_chat, limit)
-            except Exception as exc:
-                self.logger.debug("Terminal message listing skipped — %s: %s", type(exc).__name__, exc, exc_info=True)
+            except Exception as exc:  # noqa: BLE001
+                self._warn_store_fault(
+                    "session_log_terminal_listing_failed",
+                    "Session log terminal listing could not read the store; no finished turn is "
+                    "offered on this pass, staged segments are kept for a later one, and the next "
+                    "pass retries.",
+                    exc,
+                )
                 return []
             if len(rows) < _page or len(offered) >= int(limit):
                 break
@@ -1396,8 +1420,14 @@ class SessionLogManager:
                         .all()
                     )
                 offered, held = _window_rows(rows, set_aside, is_temporary_chat, limit)
-            except Exception as exc:
-                self.logger.debug("Stale message listing skipped — %s: %s", type(exc).__name__, exc, exc_info=True)
+            except Exception as exc:  # noqa: BLE001
+                self._warn_store_fault(
+                    "session_log_stale_listing_failed",
+                    "Session log stale listing could not read the store; no stranded turn is sealed "
+                    "incomplete on this pass, staged segments are kept for a later one, and the "
+                    "next pass retries.",
+                    exc,
+                )
                 return []
             if len(rows) < _page or len(offered) >= int(limit):
                 break

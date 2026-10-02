@@ -39,6 +39,7 @@ from ..core.error_formatter import (
 )
 from ..core.errors import (
     OpenRouterAPIError,
+    RemoteDownloadRefused,
     RequiredInternalFileError,
     UpstreamBodyUnreadable,
     is_sign_in_failure,
@@ -1547,6 +1548,8 @@ class VideoGenerationAdapter:
         output_mime = ""
         description = ""
         downloads: list[DownloadedVideo] = []
+        refused_by_policy = 0
+        download_faults = 0
         tmp_dir: Path | None = None
         try:
             await self._emit_status(event_emitter, "Video generation job accepted.", done=False, progress=5)
@@ -1589,19 +1592,28 @@ class VideoGenerationAdapter:
                 refused: dict[str, str] = {}
                 for index in range(outputs):
                     tmp_path = tmp_dir / f"job-{job_id}-{index}.bin"
-                    download_result = await self._pipe._multimodal_handler._download_remote_url_streaming(
-                        client.content_url(job_id, index=index),
-                        tmp_path,
-                        chunk_size=int(valves.VIDEO_DOWNLOAD_CHUNK_SIZE),
-                        max_size_bytes=max_bytes,
-                        mime_allowlist=allowed_mimes,
-                        extra_headers=bearer,
-                        trusted_base_url=valves.BASE_URL,
-                        refused=refused,
-                    )
+                    refused_by_gate = False
+                    download_result: dict[str, Any] | None = None
+                    try:
+                        download_result = await self._pipe._multimodal_handler._download_remote_url_streaming(
+                            client.content_url(job_id, index=index),
+                            tmp_path,
+                            chunk_size=int(valves.VIDEO_DOWNLOAD_CHUNK_SIZE),
+                            max_size_bytes=max_bytes,
+                            mime_allowlist=allowed_mimes,
+                            extra_headers=bearer,
+                            trusted_base_url=valves.BASE_URL,
+                            refused=refused,
+                        )
+                    except RemoteDownloadRefused:
+                        refused_by_gate = True
                     if not download_result:
                         with contextlib.suppress(Exception):
                             tmp_path.unlink(missing_ok=True)
+                        if refused_by_gate:
+                            refused_by_policy += 1
+                        else:
+                            download_faults += 1
                         if downloads:
                             self.logger.warning(
                                 "Video job %s reported %d outputs but clip %d could not be "
@@ -1796,7 +1808,8 @@ class VideoGenerationAdapter:
         except Exception as exc:
             self.logger.exception("Video lifecycle failed (job_id=%s)", job_id)
             failed = True
-            _record_failed_call(self._pipe, breaker_key)
+            if not (refused_by_policy and not download_faults):
+                _record_failed_call(self._pipe, breaker_key)
             elapsed = max(0.0, time.monotonic() - started_at)
             reason = str(exc) or exc.__class__.__name__
             content = self._build_failure_content(job_id=job_id, model_id=api_model_id, reason=reason)

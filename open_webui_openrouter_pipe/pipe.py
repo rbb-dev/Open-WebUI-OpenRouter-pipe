@@ -3608,7 +3608,11 @@ class Pipe:
                             job.future.set_result(result)
                         else:
                             deferred_result = result
-                    if not job.task and outcome.get("error_occurred") is False:
+                    if (
+                        not job.task
+                        and outcome.get("error_occurred") is False
+                        and outcome.get("answer_delivered") is not False
+                    ):
                         self._circuit_breaker.reset(job.user_id)
                     completed = True
                 finally:
@@ -4632,7 +4636,7 @@ class Pipe:
         if breaker is not None and not breaker.tool_allows(
             context.user_id, tool_type, gate_name
         ):
-            await self._ensure_tool_executor()._notify_tool_breaker(context, tool_type, item.call.get("name"))
+            await self._ensure_tool_executor()._notify_tool_breaker(context, tool_type, gate_name)
             return (
                 "skipped",
                 f"Tool '{item.call.get('name')}' temporarily disabled due to repeated errors.",

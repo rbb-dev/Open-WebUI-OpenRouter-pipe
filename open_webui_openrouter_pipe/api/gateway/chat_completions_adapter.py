@@ -43,6 +43,7 @@ from ...requests.debug import (
 
 # Imports from storage
 from ...storage.owui_files import (
+    loggable_session_id,
     names_an_owui_file_path,
 )
 from ...storage.persistence import generate_item_id
@@ -1380,7 +1381,7 @@ class ChatCompletionsAdapter:
                     level,
                     "Chat-completions pump queue backlog high: %d items (session=%s)",
                     qsize,
-                    SessionLogger.session_id.get() or "unknown",
+                    loggable_session_id(SessionLogger.session_id.get()) or "unknown",
                 )
 
         if endpoint == "chat_completions":

@@ -1388,9 +1388,13 @@ card rather than the fallback.
 
 ## Output rendering and message format
 
-A picture that arrives on the chat route is saved to Open WebUI's file
-store and shown inline, exactly as one from a dedicated image model is.
-Both end at the same stored file and the same message. Anything larger
+Two routes can carry a generated picture into a message, and they do
+not store it the same way. A picture that arrives on the chat route is
+saved to Open WebUI's file store and shown inline, exactly as one from
+a dedicated image model is; a picture that arrives on the dedicated
+image route is stored and delivered the same way, and every rule below
+that says where a picture is kept says which of the two routes it is
+about. Anything larger
 than `BASE64_MAX_SIZE_MB` is rejected rather than stored, and the same
 now holds of a tool's picture, which is left out of its round and named on
 the turn whose round carries it. An entry in a generated-image reply that is
@@ -1403,18 +1407,33 @@ is resolved from the bytes wherever the bytes identify themselves, the
 declaration decides only where they say nothing and the head could still be
 a container — a head that is positively not a picture is refused whatever it
 declares itself to be — and an entry that resolves
-to no storable image type is not materialised as a picture at all. In a
-temporary, legacy-temporary or channel chat there is no row to hold the
-file, so nothing is stored there at all: the picture stays in the
-message itself, as its own `data:` URL where the provider sent the bytes
-and as the provider's own link where it sent a URL, and it is rendered
-the same way. This is stricter than Open WebUI's own chat path, which
-uploads in a temporary chat and only declines the link
+to no storable image type is not materialised as a picture at all.
+
+On the chat route, a temporary, legacy-temporary or channel chat has no
+row to hold the file, so nothing is stored there at all: the picture
+stays in the message itself, as its own `data:` URL where the provider
+sent the bytes and as the provider's own link where it sent a URL, and
+it is rendered the same way. On the chat route this is stricter than
+Open WebUI's own chat path, which uploads in a temporary chat and only
+declines the link
 (`.external/open-webui/backend/open_webui/routers/images.py:520`); a
 deployment that turns on Open WebUI's
 `ENABLE_CHAT_RESPONSE_BASE64_IMAGE_URL_CONVERSION` (off by default, and
-never set by the pipe) will still convert a long inline picture into a
-stored file one layer up.
+never set by the pipe) will still convert a long inline picture on the
+chat route into a stored file one layer up.
+
+The dedicated image route stores in every one of those chats, and in a
+call that carries no chat at all. The provider's answer there is base64
+bytes rather than a link, so there is nothing to inline and nothing to
+fall back to: the bytes go to Open WebUI's file store the way Open
+WebUI's own image path puts them there, as a row in the `Files` table in
+whatever chat the call is handed, the `chat_files` link is declined
+rather than attempted, and
+the reply carries `/api/v1/files/{id}/content` like any other stored
+picture. The stored row carries a `message_id` only where a linkable
+`chat_id` or `channel_id` sits beside it, so a temporary,
+legacy-temporary or chatless call gets a row with no message id (see
+[Persistence, Encryption and Storage](persistence_encryption_and_storage.md)).
 
 The rendered message looks like:
 
@@ -1422,7 +1441,7 @@ The rendered message looks like:
 ![Generated image](/api/v1/files/01HX2K3D5N4P9F8GZQ2WV3R5BC/content)
 ```
 
-and, where nothing was stored, like this:
+and, on the chat route where nothing was stored, like this:
 
 ```markdown
 ![Generated image](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...)
@@ -1442,14 +1461,21 @@ gap: three generated, two stored, is `1` and `2` — never `2` and `3`.
 The count of what could not be saved is reported in the same message, on the line below the images; the labels count what is shown.
 
 OWUI displays the image inline with a download/copy/view-fullsize
-context menu. In a saved chat the file is registered in OWUI's `Files`
-table linked to the chat, surviving page reload. In a chat with no row
-to hold it there is no such file: the picture travels inside the
-message, so it is shown and redrawn from the message for as long as
-Open WebUI keeps that message, and it is not in the `Files` table at
-all. A call that carries no `chat_id` at all — the plain API route — is
-the same case, and its picture comes back inline rather than as a
-`/api/v1/files/.../content` link.
+context menu.
+
+In a saved chat the file is registered in OWUI's `Files` table linked
+to the chat, surviving page reload.
+
+On the chat route, a chat with no row to hold it has no such file: the
+picture travels inside the message, so it is shown and redrawn from the
+message for as long as Open WebUI keeps that message, and it is not in
+the `Files` table at all.
+
+On the chat route, a call that carries no `chat_id` at all — the plain
+API route — is the same case, and its picture comes back inline rather
+than as a `/api/v1/files/.../content` link. On the dedicated image route
+neither case applies: a chatless call there still gets a `Files` row and
+still comes back as a `/api/v1/files/.../content` link.
 
 ---
 

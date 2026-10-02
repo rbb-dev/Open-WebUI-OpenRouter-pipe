@@ -1692,10 +1692,10 @@ def _build_dashboard_shell(dash_id: str) -> str:
         setLive();
         $(ID + '-error').style.display = 'none';
         updateDashboard(data);
-        if (cfgLoaded && data.cfgRev != null) cfgOnEvent(data.cfgRev);
+        if (cfgLoaded && data.cfgRev != null) cfgOnEvent(data.cfgRev,null,data.cfgState);
       }});
       sock.on("{CONFIG_EVENT}", function(d) {{
-        if (cfgLoaded && d && d.rev != null) cfgOnEvent(d.rev);
+        if (cfgLoaded && d && d.rev != null) cfgOnEvent(d.rev, d.change);
       }});
       sock.on("{DENIED_EVENT}", function() {{
         try {{ if (sock) sock.disconnect(); }} catch (e) {{}}

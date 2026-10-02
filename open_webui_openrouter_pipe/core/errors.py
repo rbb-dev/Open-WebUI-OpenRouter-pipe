@@ -152,6 +152,12 @@ class UpstreamBodyUnreadable(RuntimeError):
         return _fenced_block(self.body_excerpt[:200])
 
 
+class RemoteDownloadRefused(RuntimeError):
+    def __init__(self, *, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 class FileUnavailableError(RequiredInternalFileError, ValueError):
     pass
 

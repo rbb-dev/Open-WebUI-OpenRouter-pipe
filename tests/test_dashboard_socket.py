@@ -96,11 +96,12 @@ async def _build(rows, *, content="# source\\n" + "y" * 200_000):
             Function.__table__.insert(),
             [
                 {
-                    "id": row_id, "user_id": "u", "name": row_id, "type": "pipe",
+                    "id": row[0], "user_id": "u", "name": row[0], "type": "pipe",
                     "content": content, "is_active": True, "is_global": False,
-                    "updated_at": rev, "created_at": 1,
+                    "updated_at": row[1], "created_at": 1,
+                    "valves": row[2] if len(row) > 2 else "cipher-" + row[0],
                 }
-                for row_id, rev in rows
+                for row in rows
             ],
         )
 
@@ -1057,11 +1058,21 @@ class TestConfigChangeNotification:
         mock_sio.emit = AsyncMock()
         _install_socket_stub(monkeypatch, sio=mock_sio)
         assert await emit_config_changed(1234) is True
-        mock_sio.emit.assert_awaited_once_with(CONFIG_EVENT, {"rev": 1234}, room=VIEWERS_ROOM)
+        emitted = mock_sio.emit.await_args.args[1]
+        assert emitted["rev"] == 1234
+        assert isinstance(emitted["change"], str) and emitted["change"], (
+            f"the announcement carries no change identity, so the tab's guard has "
+            f"nothing to compare: {emitted}"
+        )
+        assert mock_sio.emit.await_args.kwargs == {"room": VIEWERS_ROOM}, (
+            f"the announcement left the viewers room or asked for an ignore_queue: "
+            f"{mock_sio.emit.await_args}"
+        )
+        assert mock_sio.emit.await_count == 1
 
     @pytest.mark.asyncio
     async def test_sink_emits_for_matching_valve_event(self, monkeypatch):
-        monkeypatch.setattr(dashboard_socket, "read_config_rev", AsyncMock(return_value=999))
+        monkeypatch.setattr(dashboard_socket, "read_config_rev", AsyncMock(return_value=(999, None)))
         spy = AsyncMock()
         monkeypatch.setattr(dashboard_socket, "emit_config_changed", spy)
         pipe = Mock()
@@ -1070,7 +1081,7 @@ class TestConfigChangeNotification:
         event = types.SimpleNamespace(event="function.valves_updated", subject={"id": "test-pipe"})
         await dashboard_socket._ValveEventSink().handle_event({}, event)
         await asyncio.sleep(0)
-        spy.assert_awaited_once_with(999)
+        spy.assert_awaited_once_with(999, None)
 
     @pytest.mark.asyncio
     async def test_sink_ignores_other_event(self, monkeypatch):
@@ -1108,11 +1119,12 @@ class TestConfigChangeNotification:
 
     @pytest.mark.asyncio
     async def test_publisher_payload_carries_cfg_rev(self, monkeypatch):
-        monkeypatch.setattr(dashboard_publisher, "read_config_rev", AsyncMock(return_value=555))
+        monkeypatch.setattr(
+            dashboard_publisher, "read_config_rev", AsyncMock(return_value=(555, "d1"))
+        )
         pipe = _make_mock_pipe()
         payload = await _build_emit_payload(pipe, None, "ns", "wk", 0, {})
         assert payload["cfgRev"] == 555
-
 
 class TestReadConfigRev:
     """The config revision the whole config tab notices changes by.
@@ -1175,11 +1187,12 @@ class TestReadConfigRev:
             async def main():
                 engine = await _build([("openrouter", {rev}), ("other", 9999)])
                 try:
-                    assert await ds.read_config_rev("openrouter") == {rev}, (
-                        "the row's own updated_at is not what the tab was told"
-                    )
+                    got, _digest = await ds.read_config_rev("openrouter")
                 finally:
                     await engine.dispose()
+                assert got == {rev}, (
+                    "the row's own updated_at is not what the tab was told"
+                )
                 assert len(emitted) == 1, f"expected one statement, got {{emitted!r}}"
                 statement, parameters = emitted[0]
                 assert "openrouter" in str(parameters), (
@@ -1189,9 +1202,9 @@ class TestReadConfigRev:
                 assert "9999" not in str(parameters), (
                     f"another function's revision was read: {{parameters!r}}"
                 )
-                assert _projection(statement) == "function.updated_at", (
-                    f"the revision read selected {{_projection(statement)!r}} rather "
-                    f"than the one column it needs: {{statement!r}}"
+                assert _projection(statement) == "function.updated_at, function.valves", (
+                    f"the read selected {{_projection(statement)!r}} rather than the two "
+                    f"columns it needs: {{statement!r}}"
                 )
 
             asyncio.run(main())
@@ -1206,7 +1219,7 @@ class TestReadConfigRev:
             async def main():
                 engine = await _build([("other", 9999)])
                 try:
-                    assert await ds.read_config_rev("openrouter") is None
+                    assert await ds.read_config_rev("openrouter") == (None, None)
                 finally:
                     await engine.dispose()
 
@@ -1220,7 +1233,7 @@ class TestReadConfigRev:
             """
             async def main():
                 async with _raising():
-                    assert await ds.read_config_rev("openrouter") is None
+                    assert await ds.read_config_rev("openrouter") == (None, None)
 
             asyncio.run(main())
             """

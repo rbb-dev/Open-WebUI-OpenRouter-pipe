@@ -5552,6 +5552,14 @@ def test_a_reply_that_reported_no_counts_gets_no_counts_on_the_line(pipe_instanc
     )
 
 
+def _atlas_row(valve: str) -> str:
+    """One pipe valve's row in the atlas, its notes column included."""
+    for line in _atlas().splitlines():
+        if line.startswith(f"| `{valve}` |"):
+            return line
+    raise AssertionError(f"the atlas has no `{valve}` row, so nothing here would be read")
+
+
 _ROOT = Path(__file__).resolve().parents[1]
 
 

@@ -53,6 +53,7 @@ from ..core.config import (
     _select_openrouter_http_referer,
 )
 from ..core.errors import (
+    RemoteDownloadRefused,
     _classify_retryable_http_error,
     _read_rag_file_constraints,
     _RetryableHTTPStatusError,
@@ -1123,7 +1124,7 @@ class MultimodalHandler:
         if not is_http_or_https_url(url):
             if refused is not None:
                 refused[url] = "not_http"
-            return None
+            raise RemoteDownloadRefused(reason="the link is not an http or https URL")
         if trusted_base_url is not None and _same_origin(url, trusted_base_url):
             if not self._is_insecure_http_allowed(url):
                 self.logger.error(
@@ -1132,7 +1133,9 @@ class MultimodalHandler:
                 )
                 if refused is not None:
                     refused[url] = "blocked_by_policy"
-                return None
+                raise RemoteDownloadRefused(
+                    reason="the pipe's own download policy refused the link (address gate or insecure-HTTP policy)"
+                )
             self.logger.debug("Skipping the address policy for the admin's own base URL origin")
             request_url, pin_headers, pin_extensions = url, {}, {}
         else:
@@ -1144,7 +1147,9 @@ class MultimodalHandler:
                 )
                 if refused is not None:
                     refused[url] = "blocked_by_policy"
-                return None
+                raise RemoteDownloadRefused(
+                    reason="the pipe's own download policy refused the link (address gate or insecure-HTTP policy)"
+                )
             request_url, pin_headers, pin_extensions = pinned
 
         max_retries = self.valves.REMOTE_DOWNLOAD_MAX_RETRIES
@@ -1238,7 +1243,9 @@ class MultimodalHandler:
                                     )
                                     if refused is not None:
                                         refused[url] = "too_large"
-                                    return None
+                                    raise RemoteDownloadRefused(
+                                        reason="the download is larger than the configured size limit"
+                                    )
                             except ValueError:
                                 pass
 
@@ -1260,7 +1267,9 @@ class MultimodalHandler:
                                     )
                                     if refused is not None:
                                         refused[url] = "too_large"
-                                    return None
+                                    raise RemoteDownloadRefused(
+                                        reason="the download is larger than the configured size limit"
+                                    )
                                 if len(sniff_buffer) < _SNIFF_PREFIX_BYTES:
                                     sniff_buffer.extend(
                                         chunk[: _SNIFF_PREFIX_BYTES - len(sniff_buffer)]
@@ -1281,7 +1290,9 @@ class MultimodalHandler:
                                 )
                                 if refused is not None:
                                     refused[url] = "mime_not_allowed"
-                                return None
+                                raise RemoteDownloadRefused(
+                                    reason="the download's media type is not in the allowlist"
+                                )
 
                     if attempt > 1:
                         self.logger.info(
@@ -1295,6 +1306,8 @@ class MultimodalHandler:
                         "url": url,
                         "size_bytes": written,
                     }
+        except RemoteDownloadRefused:
+            raise
         except Exception:
             elapsed = time.perf_counter() - start_time
             self.logger.exception(

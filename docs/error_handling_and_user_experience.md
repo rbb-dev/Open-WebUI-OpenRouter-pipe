@@ -137,9 +137,22 @@ template: an admin's custom template gets the same answer, and there is no valve
 the ids back. `error_id`, the model, the provider, `openrouter_code`, `status_code`, the
 limits and the rate or balance fields still render, so the card still says what failed.
 
+**A temporary chat's card is reduced by one key, and for a different reason.** A
+`temporary:` or `local:` chat's `session_id` is withheld on the same terms, and the rest
+of the card is untouched: the reduction is by one key rather than by thirteen, and it is
+not there because the audience is shared. Open WebUI mints a temporary chat's id by
+prefixing the browser's own socket id, so the value is a live session handle rather than a
+label — the `/api/tasks/chat/{chat_id}` routes resolve the chat id back to it and use the
+user it resolves to as the ownership check — and a card that printed it would hand out a
+capability rather than a correlation string. `user_id` is *not* withheld there: it is the
+Open WebUI account GUID, present in every chat, and it is not a session handle. The
+operator's own log line is withheld the same way, so on a temporary chat `error_id` is
+the only handle either side has.
+
 A template author therefore does have to write one thing differently for a channel: a
 line whose placeholder came out empty is omitted, so a line that exists only to show the
-session id or the flagged excerpt simply is not there in a room. A card that ends early,
+session id or the flagged excerpt simply is not there in a room. The same is true of a
+line that exists only to show the session id on a temporary chat. A card that ends early,
 or that relies on the `Error: ` prefix being visible, also reads differently in a channel
 than in a saved chat. Nothing else about the routing changes.
 
@@ -151,7 +164,9 @@ For templated errors, the pipe generates:
 - `error_id`: 16 hex characters (`secrets.token_hex(8)`)
 - `timestamp`: ISO 8601 UTC timestamp
 - `session_id` and `user_id` (when available) — withheld from a card that reaches a channel, because every
-  member of the room would otherwise read them
+  member of the room would otherwise read them. `session_id` alone is also withheld on a temporary chat, where
+  it is the browser's own socket id and therefore a live session handle; `user_id` is not, and still renders
+  there
 - `support_email` and `support_url` (from valves `SUPPORT_EMAIL` and `SUPPORT_URL`)
 
 Operator logs include the `error_id`, and templates can include it in user-facing text for support correlation. On a
@@ -301,6 +316,10 @@ Minimal example:
 ### Variables available to most templates
 The pipe always provides these for `_emit_templated_error` templates:
 - `error_id`, `timestamp`, `session_id`, `user_id`, `support_email`, `support_url`
+
+`session_id` is always one of them, and on a temporary chat it is supplied as the empty
+string, so a line guarded with `{{#if session_id}}` is left out there rather than
+rendering an empty field.
 
 It then merges in per-error variables (for example `status_code`, `reason`, `timeout_seconds`, `error_type`).
 
@@ -466,7 +485,7 @@ does not fence the value is unaffected. The same holds for `{raw_body}`, `{flagg
 
 1. Ask the user for the `error_id` displayed in the UI.
 2. Search backend logs for `[{error_id}]`.
-3. Use `session_id` and `user_id` (when available) to correlate with other telemetry (Redis cost snapshots, session log archives, etc.). On a channel those two are withheld from the card the reader sees, so the `error_id` is the handle to start from there; the ids are still in the operator's log line, which the card's audience never sees.
+3. Use `session_id` and `user_id` (when available) to correlate with other telemetry (Redis cost snapshots, session log archives, etc.). On a channel those two are withheld from the card the reader sees, so the `error_id` is the handle to start from there; the ids are still in the operator's log line, which the card's audience never sees. On a temporary chat `session_id` is withheld from the card **and** from the operator's log line, because it is the browser's own socket id and a live session handle, so there `error_id` is the only handle and there is nowhere else to look; `user_id` is still on the record.
 
 ### Reading a WARNING that repeats
 
@@ -478,7 +497,11 @@ report). Every occurrence of each is logged; the repeats are at `DEBUG` rather t
 `WARNING`, so raise the level to see them. The first of each is always at `WARNING` —
 that line is the only evidence the condition is active — so **one such line does not
 mean the condition has cleared**: check for a later `DEBUG` with the same text before
-concluding the database came back.
+concluding the database came back. Not every repeating warning uses that 300-second
+window: the session log assembler's per-turn faults, and now the four store reads on its
+pass, warn once per cause and repeat at `DEBUG` on an hour's cooldown, so a line from
+that family is worth an hour of silence before you conclude anything from its absence.
+The first line of each still arrives, so a still-active fault is never invisible.
 
 The filter-installer's `OpenRouter <family> filter ensure failed` lines for Web Tools,
 Image Gen, Fusion and Direct Uploads keep the same contract without the cooldown: a

@@ -36,6 +36,7 @@ pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
 from open_webui_openrouter_pipe.plugins.pipe_dashboard.usage_store import (
     USAGE_ROW_FIELDS,
     UsageStore,
+    _usage_model_columns,
 )
 from open_webui_openrouter_pipe.storage.persistence import ArtifactStore
 from open_webui_openrouter_pipe.plugins.pipe_dashboard.usage_queries import query_usage_stats

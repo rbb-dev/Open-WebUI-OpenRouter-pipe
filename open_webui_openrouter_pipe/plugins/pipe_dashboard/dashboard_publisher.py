@@ -592,7 +592,9 @@ async def _build_emit_payload(
         health = payload.get("health")
         if isinstance(health, dict):
             health["redis_connected"] = await _redis_alive(pipe)
-        slow_state["cfg_rev"] = await read_config_rev(getattr(pipe, "id", ""))
+        cfg_rev, cfg_state = await read_config_rev(getattr(pipe, "id", ""))
+        slow_state["cfg_rev"] = cfg_rev
+        slow_state["cfg_state"] = cfg_state
 
     slow_due = tick == 0 or now - slow_state.get("slow_sent_at", 0.0) >= _PD_SLOW_EVERY * _PD_PUBLISH_INTERVAL
     if slow_due:
@@ -642,6 +644,7 @@ async def _build_emit_payload(
             payload.update(cached)
 
     payload["cfgRev"] = slow_state.get("cfg_rev")
+    payload["cfgState"] = slow_state.get("cfg_state")
     return payload
 
 

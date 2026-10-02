@@ -492,7 +492,7 @@ async def test_config_set_emits_config_changed_on_save(monkeypatch, fake_functio
     result = await actions.ACTIONS["config_set"].handler(
         _config_pipe(), _user(), {"edits": {"MAX_CONCURRENT_REQUESTS": 250}, "rev": 1000}
     )
-    spy.assert_awaited_once_with(result["rev"])
+    spy.assert_awaited_once_with(result["rev"], result["change"])
 
 
 @pytest.mark.asyncio

@@ -31,7 +31,7 @@ from typing import Any, NamedTuple
 from fastapi import BackgroundTasks, Request, UploadFile
 from starlette.datastructures import Headers
 
-from ..core.config import _INTERNAL_FILE_ID_PATTERN
+from ..core.config import _INTERNAL_FILE_ID_PATTERN, OWUI_CHAT_ID
 from ..core.errors import FileUnavailableError, RequiredInternalFileError
 from ..core.timing_logger import timed
 from ..core.url_scheme import (
@@ -379,6 +379,10 @@ def chat_latch_key(chat_id: Any) -> str:
 
 def loggable_chat_id(chat_id: Any) -> str:
     return "<not retained>" if is_temporary_chat(chat_id) else str(chat_id or "")
+
+
+def loggable_session_id(session_id: Any) -> str:
+    return "" if is_temporary_chat(OWUI_CHAT_ID.get()) else str(session_id or "")
 
 
 def channel_id_for_chat(chat_id: Any) -> str | None:

@@ -15,6 +15,7 @@ import importlib.metadata
 import json
 import logging
 import os
+import subprocess
 import sys
 import time
 from collections.abc import Callable
@@ -68,6 +69,7 @@ _TRANSIENT_CODES = frozenset(
         "update_in_progress",
         "storage_unavailable",
         "row_unreadable",
+        "deps_failed",
     }
 )
 
@@ -681,7 +683,22 @@ class UpdateService:
                 pipe_id, content=content
             )
         except Exception as exc:
+            loader_reached_exec = (
+                sys.modules.get(f"function_{pipe_id}") is not before.get(f"function_{pipe_id}")
+            )
             _restore_module_state(before, before_meta_path, pipe_id)
+            if isinstance(exc, subprocess.CalledProcessError) and not loader_reached_exec:
+                logger.warning(
+                    "update: the new bundle's requirements could not be installed, so its "
+                    "code was never executed and the previous version keeps serving",
+                    exc_info=True,
+                )
+                raise UpdateError(
+                    "deps_failed",
+                    "the new release's requirements (the Python packages its header lists) "
+                    "could not be installed on this worker, so its code was never run; the "
+                    "pipe still runs the previous version and nothing was changed",
+                ) from exc
             if was_active:
                 try:
                     repaired = await self._functions().update_function_by_id(

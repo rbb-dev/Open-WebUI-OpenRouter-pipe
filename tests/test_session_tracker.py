@@ -16,6 +16,7 @@ from open_webui_openrouter_pipe.plugins.pipe_dashboard.session_tracker import (
     SessionTracker,
     _usage_numbers,
 )
+from open_webui_openrouter_pipe.plugins.pipe_dashboard.usage_store import USAGE_ROW_FIELDS
 
 
 def _usage(**over: Any) -> dict[str, Any]:
@@ -180,6 +181,15 @@ def test_db_row_mapping():
     assert row["retries"] == 1
     assert row["duration_ms"] >= 0
     assert row["worker_pid"] > 0
+    written: set[str] = set(row)
+    declared: set[str] = set(USAGE_ROW_FIELDS)
+    assert written == declared, (
+        "db_row is the writer and USAGE_ROW_FIELDS is what it must write, key for key: "
+        "a name the projection added and this row forgot is persisted as NULL forever, "
+        "and a name only this row has raises out of the row loop, so the whole batch is "
+        f"held for retry. only in the row {sorted(written - declared)}, "
+        f"never written {sorted(declared - written)}"
+    )
 
 
 def test_sweep_abandons_stale_sessions():

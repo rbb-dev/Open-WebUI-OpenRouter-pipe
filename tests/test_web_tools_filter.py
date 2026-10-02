@@ -598,6 +598,15 @@ def _fusion_row(functions: _FunctionsTable, row_id: str, *, marked: bool, update
     )
 
 
+_ATLAS_LINES = _ATLAS.read_text(encoding="utf-8").splitlines()
+
+
+def _atlas_row(valve: str) -> str:
+    rows = [line for line in _ATLAS_LINES if re.match(rf"^\|\s*`{valve}`\s*\|", line)]
+    assert len(rows) == 1, f"{valve}: {len(rows)} atlas rows, expected exactly one"
+    return rows[0]
+
+
 def _valve_descriptions() -> dict[str, str]:
     """Every ``Field(description=...)`` in config.py, read without importing the module.
 

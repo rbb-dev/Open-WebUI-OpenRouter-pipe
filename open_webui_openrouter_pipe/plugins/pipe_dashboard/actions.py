@@ -31,6 +31,7 @@ from .config_service import (
 )
 from .dashboard_socket import (
     emit_config_changed,
+    new_config_change,
     publish_valves_changed,
     read_config_rev,
 )
@@ -351,7 +352,7 @@ async def _usage_stats(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
 
 async def _current_config_rev(pipe: Any) -> Any:
     """Return the function's stored ``updated_at``, or None."""
-    rev = await read_config_rev(getattr(pipe, "id", ""))
+    rev, _state = await read_config_rev(getattr(pipe, "id", ""))
     if rev is None:
         logger.warning(
             "pipe_dashboard: the stored function row could not be read, so the "
@@ -587,12 +588,16 @@ async def _write_config_edits(
         raise _ClientMessage("the database refused the write, so nothing was saved")
     rev = getattr(result, "updated_at", None)
     await _release_config_lease(lease)
-    await emit_config_changed(rev)
-    await publish_valves_changed(getattr(pipe, "id", ""), user, request)
+    change = new_config_change()
+    await emit_config_changed(rev, change)
+    await publish_valves_changed(
+        getattr(pipe, "id", ""), user, request, data={"pipe_config_change": change}
+    )
     payload: dict[str, Any] = {
         "saved": len(edits) - len(not_saved - cleared),
         "not_saved": sorted(not_saved - cleared),
         "rev": rev,
+        "change": change,
         "reset": dropped,
         "post_reset": [],
         "values": {},

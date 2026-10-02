@@ -106,7 +106,8 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # `open_webui.models.functions` for itself. `_current_config_rev` asked
 # `Functions.get_function_by_id` for one integer and got the whole stored function row
 # back, `content` -- the installed bundle source -- included; it now goes through
-# `read_config_rev`, which already holds the narrow `select(Function.updated_at)` and
+# `read_config_rev`, which already holds the narrow
+# `select(Function.updated_at, Function.valves)` and
 # its own lazy imports of `open_webui.internal.db` and `open_webui.models.functions`.
 # Nothing became less guarded: the seam is still inside a try that answers `None`, and
 # the pin on that `None` is `test_a_row_open_webui_cannot_read_blocks_the_write`.

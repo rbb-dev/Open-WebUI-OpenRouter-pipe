@@ -33,7 +33,11 @@ from yarl import URL
 
 from open_webui_openrouter_pipe import ModelFamily, Pipe
 from open_webui_openrouter_pipe.core.config import _select_openrouter_http_referer
-from open_webui_openrouter_pipe.core.errors import RequiredInternalFileError, StatusMessages
+from open_webui_openrouter_pipe.core.errors import (
+    RemoteDownloadRefused,
+    RequiredInternalFileError,
+    StatusMessages,
+)
 from open_webui_openrouter_pipe.core.url_scheme import (
     HTTP_SCHEMES,
     is_cleartext_http_url,
@@ -417,7 +421,8 @@ async def test_both_downloaders_admit_the_same_schemes(
     monkeypatch.setattr(pipe._multimodal_handler, "_prepare_pinned_request", _spy)
     call = getattr(pipe._multimodal_handler, entry)
     if entry == "_download_remote_url_streaming":
-        assert await call(url, tmp_path / "out.bin") is None
+        with pytest.raises(RemoteDownloadRefused):
+            await call(url, tmp_path / "out.bin")
     else:
         assert await call(url) is None
 

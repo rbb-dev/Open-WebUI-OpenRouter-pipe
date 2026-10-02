@@ -209,8 +209,11 @@ def test_config_live_update_wiring():
 
     html = _build_dashboard_shell("dash-v2")
     assert 'sock.on("openrouter:pipe_dashboard:config"' in html
-    assert "if (cfgLoaded && data.cfgRev != null) cfgOnEvent(data.cfgRev)" in html
-    assert re.search(r"cfgOnEvent\s*=\s*function\(rev\)", CONFIG_TAB_JS)
+    assert (
+        "if (cfgLoaded && data.cfgRev != null) cfgOnEvent(data.cfgRev,null,data.cfgState)"
+        in html
+    )
+    assert re.search(r"cfgOnEvent\s*=\s*function\(rev,change,state\)", CONFIG_TAB_JS)
     assert not re.search(r"\b(var|let|const|function)\s+cfgOnEvent\b", CONFIG_TAB_JS)
     assert "rev<=REV" in CONFIG_TAB_JS and "rev<=lastSeenRev" in CONFIG_TAB_JS
     assert "function quietReload(" in html

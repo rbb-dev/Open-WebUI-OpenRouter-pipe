@@ -438,6 +438,15 @@ _NOT_A_WARN_LATCH = {
         "repeat of a report already made. Both arms still log unconditionally, so a "
         "database that keeps failing is reported every time"
     ),
+    (
+        "update_service.py",
+        "isinstance(exc, subprocess.CalledProcessError) and (not loader_reached_exec)",
+    ): (
+        "classifies WHICH failure this is, not whether it has been said before: a package "
+        "install that failed before the loader bound the module is a different fault from "
+        "a release whose own code did not load, and the two are reported by two different "
+        "arms that each log their own thing unconditionally. There is no latch here at all"
+    ),
 }
 
 # The same rule for the EXPRESSION form -- `level if seen else other` inside a .log()

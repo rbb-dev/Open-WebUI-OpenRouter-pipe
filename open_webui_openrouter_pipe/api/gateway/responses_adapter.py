@@ -49,6 +49,7 @@ from ...requests.debug import (
     _debug_print_request,
     _debug_print_response,
 )
+from ...storage.owui_files import loggable_session_id
 from ...streaming.nagle_coalescer import (
     _MAX_DRAIN_PER_CYCLE,
     NagleCoalescer,
@@ -628,7 +629,7 @@ class ResponsesAdapter:
                                 level,
                                 "Chunk queue backlog high: %d items (session=%s)",
                                 chunk_queue.qsize(),
-                                SessionLogger.session_id.get() or "unknown",
+                                loggable_session_id(SessionLogger.session_id.get()) or "unknown",
                             )
                     try:
                         if seq is None:
@@ -720,7 +721,7 @@ class ResponsesAdapter:
                             level,
                             "Event queue backlog high: %d items (session=%s)",
                             event_queue.qsize(),
-                            SessionLogger.session_id.get() or "unknown",
+                            loggable_session_id(SessionLogger.session_id.get()) or "unknown",
                         )
 
                 if seq is None:

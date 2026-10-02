@@ -187,7 +187,9 @@ def config_rev_reader(monkeypatch):
 
     `actions._current_config_rev` reads one integer -- the stored `updated_at` -- and it
     reads it through `read_config_rev`, whose SELECT projects `function.updated_at` and
-    nothing else. `read_config_rev` closes over `open_webui.internal.db`, which no
+    the stored `function.valves` row (the digest of the latter is what the Config tab's
+    live-update guard consults when an announcement carries no change identity) and
+    nothing wider. `read_config_rev` closes over `open_webui.internal.db`, which no
     in-process test installs, so an unpatched Config-tab test sees `None`, every save
     looks stale, and every save takes the conflict arm.
 
@@ -205,8 +207,8 @@ def config_rev_reader(monkeypatch):
     def _install(rev: Any) -> None:
         from open_webui_openrouter_pipe.plugins.pipe_dashboard import actions
 
-        async def _read(pipe_id: str) -> Any:
-            return rev() if callable(rev) else rev
+        async def _read(pipe_id: str) -> tuple[Any, str | None]:
+            return (rev() if callable(rev) else rev), None
 
         monkeypatch.setattr(actions, "read_config_rev", _read, raising=False)
 

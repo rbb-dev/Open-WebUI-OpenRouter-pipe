@@ -690,6 +690,7 @@ class StreamingHandler:
         assistant_len_before_tool_loops = 0
         has_actionable_continuation = False
         session_log_reason: str = ""
+        answer_truncated: str = ""
 
         raw_tools = tools or {}
         tool_registry: dict[str, dict[str, Any]] = {}
@@ -2118,6 +2119,7 @@ class StreamingHandler:
                 outcome_sink["error_occurred"] = error_occurred
                 outcome_sink["was_cancelled"] = was_cancelled
                 outcome_sink["reason"] = session_log_reason or None
+                outcome_sink["answer_truncated"] = answer_truncated or None
 
             final_response: dict[str, Any] | None = None
             _finalise_cancelled: BaseException | None = None
@@ -3364,6 +3366,7 @@ class StreamingHandler:
 
                 if final_response is None:
                     error_occurred = not fusion_inner_call
+                    answer_truncated = _STREAM_INTERRUPTED_REASON
                     if not fusion_inner_call:
                         session_log_reason = _STREAM_INTERRUPTED_REASON
                     if fusion_inner_call:
@@ -3426,11 +3429,7 @@ class StreamingHandler:
                         )
                     if reason:
                         warning_msg = f"{warning_msg} Reason: {reason}."
-                    await self._pipe._event_emitter_handler._emit_notification(
-                        event_emitter,
-                        warning_msg,
-                        level="warning",
-                    )
+                    await _emit_budget_notice(warning_msg)
 
                 raw_usage = final_response.get("usage") or {}
                 usage = dict(raw_usage) if isinstance(raw_usage, dict) else {}
@@ -4430,6 +4429,23 @@ class StreamingHandler:
                 session_log_reason = _FUSION_PANEL_FAILURE_REASON
 
             terminal = bool(was_cancelled or error_occurred or not handed_back) and not handed_back_for_retry
+
+            answer_delivered = bool(
+                assistant_message.strip()
+                or emitted_response_output_items
+                or emitted_output_items
+            )
+            if outcome_sink is not None:
+                outcome_sink["answer_delivered"] = answer_delivered
+
+            if (
+                terminal
+                and not error_occurred
+                and not was_cancelled
+                and not fusion_inner_call
+                and not answer_delivered
+            ):
+                error_occurred = True
 
             generation_status = _generation_status(
                 was_cancelled, error_occurred, fusion_no_usable_member

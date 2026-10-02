@@ -101,6 +101,7 @@ class FusionMemberResult(NamedTuple):
     fail_reason: str | None
     sources: tuple[dict[str, str], ...] = ()
     notices: tuple[str, ...] = ()
+    truncated: str | None = None
 
 
 class FusionCollector:
@@ -326,11 +327,14 @@ async def run_fusion_member(
         reason = sink.get("reason") if failed else None
         if failed and not isinstance(reason, str):
             reason = _member_faulted_after_send() if faulted else "the model returned no answer"
+        truncated = sink.get("answer_truncated")
+        truncated = truncated if isinstance(truncated, str) and truncated else None
         return FusionMemberResult(
             model=model, content=content, usage=collector.usage,
             failed=failed, fail_reason=reason if isinstance(reason, str) else None,
             sources=tuple(collector.sources),
             notices=tuple(collector.notices),
+            truncated=truncated,
         )
     except asyncio.CancelledError:
         raise
@@ -498,16 +502,22 @@ def synthesis_degrade_note(result: FusionMemberResult) -> str:
     return f"*(final answer cut off: {reason})*"
 
 
+def _member_draft(res: FusionMemberResult) -> str:
+    if res.truncated:
+        return f"{res.content}\n\n*(cut off before it finished: {res.truncated})*"
+    return degrade_note(res) if res.failed else res.content
+
+
 def build_judge_input(question: str, results: list[FusionMemberResult]) -> list[dict[str, Any]]:
     blocks: list[str] = []
     for res in results:
-        if res.failed:
+        if res.failed and not res.truncated:
             blocks.append(
                 f"## PANEL ANSWER — model id: {res.model}\n\n"
                 f"model {res.model} failed: {res.fail_reason or 'no usable answer'}"
             )
         else:
-            blocks.append(f"## PANEL ANSWER — model id: {res.model}\n\n{res.content}")
+            blocks.append(f"## PANEL ANSWER — model id: {res.model}\n\n{_member_draft(res)}")
     payload = (
         f"# USER QUESTION\n\n{question}\n\n# PANEL ANSWERS\n\n" + "\n\n".join(blocks)
     )
@@ -517,13 +527,13 @@ def build_judge_input(question: str, results: list[FusionMemberResult]) -> list[
 def build_synthesis_material(results: list[FusionMemberResult], analysis: dict[str, Any] | None) -> str:
     blocks: list[str] = []
     for res in results:
-        if res.failed:
+        if res.failed and not res.truncated:
             blocks.append(
                 f"### DRAFT — internal model id: {res.model}\n\n"
                 f"model {res.model} failed: {res.fail_reason or 'no usable answer'}"
             )
         else:
-            blocks.append(f"### DRAFT — internal model id: {res.model}\n\n{res.content}")
+            blocks.append(f"### DRAFT — internal model id: {res.model}\n\n{_member_draft(res)}")
     analysis_text = json.dumps(analysis, ensure_ascii=False) if analysis else "(absent)"
     return (
         "[BACKGROUND MATERIAL — prepared before this turn; not visible to the user]\n\n"
@@ -650,7 +660,7 @@ async def run_internal_fusion(
                     total_usage = merge_usage_stats(total_usage, payload.usage)
                 for notice in _fresh_notices(member_model, payload):
                     yield notice
-                content = degrade_note(payload) if payload.failed else payload.content
+                content = _member_draft(payload)
                 yield {"type": "response.fusion_call.panel.completed", "output_index": 0,
                        "item_id": item_id, "model": member_model, "content": content}
 
@@ -743,7 +753,7 @@ async def run_internal_fusion(
         done_item: dict[str, Any] = {
             "id": item_id, "type": "openrouter:fusion", "status": "completed",
             "responses": [
-                {"model": r.model, "content": degrade_note(r) if r.failed else r.content}
+                {"model": r.model, "content": _member_draft(r)}
                 for r in ordered
             ],
         }
