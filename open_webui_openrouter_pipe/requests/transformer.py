@@ -1189,7 +1189,11 @@ async def transform_messages_to_input(
     messages: list[dict[str, Any]],
     chat_id: str | None = None,
     openwebui_model_id: str | None = None,
-    artifact_loader: Callable[[str | None, str | None, list[str]], Awaitable[dict[str, dict[str, Any]]]] | None = None,
+    artifact_loader: Callable[
+        [str | None, str | None, list[str]],
+        Awaitable[dict[str, dict[str, Any]] | tuple[dict[str, dict[str, Any]], dict[str, str]]],
+    ]
+    | None = None,
     pruning_turns: int = 0,
     replayed_reasoning_refs: list[tuple[str, str]] | None = None,
     user_obj: Any | None = None,
@@ -1465,6 +1469,7 @@ async def transform_messages_to_input(
             return segments
 
         artifact_groups: dict[str | None, dict[str, dict]] = {}
+        artifact_producers: dict[str | None, dict[str, str]] = {}
         if artifact_loader and chat_id and openwebui_model_id:
             wanted_by_group: dict[str | None, list[str]] = {}
             for entry_index, entry in enumerate(messages):
@@ -1484,15 +1489,20 @@ async def transform_messages_to_input(
                 gate: asyncio.Semaphore,
                 load_group_id: str | None,
                 load_group_markers: list[str],
-            ) -> tuple[str | None, dict[str, dict]]:
+            ) -> tuple[str | None, dict[str, dict], dict[str, str]]:
                 async with gate:
                     try:
-                        return load_group_id, await artifact_loader(
+                        loaded = await artifact_loader(
                             chat_id, load_group_id, load_group_markers
                         )
+                        if isinstance(loaded, tuple):
+                            payloads, producers = loaded
+                        else:
+                            payloads, producers = loaded, {}
+                        return load_group_id, payloads, producers
                     except Exception:
                         logger.warning("Artifact loader failed for chat_id=%s message_id=%s", _chat_log_subject(chat_id), load_group_id, exc_info=True)
-                        return load_group_id, {}
+                        return load_group_id, {}, {}
 
             pending_groups = [
                 (group_id, group_markers)
@@ -1501,10 +1511,11 @@ async def transform_messages_to_input(
             ]
             if pending_groups:
                 gate = asyncio.Semaphore(_ARTIFACT_GROUP_CONCURRENCY)
-                for group_id, loaded in await asyncio.gather(
+                for group_id, loaded, producers in await asyncio.gather(
                     *(_load_group(gate, gid, markers) for gid, markers in pending_groups)
                 ):
                     artifact_groups[group_id] = loaded
+                    artifact_producers[group_id] = producers
 
         address_deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
         normalized_rows: dict[int, Any] = {}
@@ -3073,6 +3084,7 @@ async def transform_messages_to_input(
                 markers = [seg["marker"] for seg in segments if seg.get("type") == "marker"]
 
                 db_artifacts: dict[str, dict] = {}
+                group_producers: dict[str, str] = {}
                 replayable: dict[str, dict[str, Any]] = {}
                 orphaned_call_ids: set[str] = set()
                 orphaned_output_ids: set[str] = set()
@@ -3080,6 +3092,7 @@ async def transform_messages_to_input(
                 orphaned_output_markers: set[str] = set()
                 if artifact_loader and chat_id and openwebui_model_id and markers:
                     batch = artifact_groups.get(msg_id) or {}
+                    group_producers = artifact_producers.get(msg_id) or {}
                     db_artifacts = {marker: batch[marker] for marker in markers if marker in batch}
                     for marker, row in db_artifacts.items():
                         normalized = _normalized_row(row)
@@ -3118,6 +3131,21 @@ async def transform_messages_to_input(
                         if artifact_payload is None:
                             missing_artifact_markers.append(segment["marker"])
                             continue
+                        if artifact_payload.get("type") == "reasoning":
+                            row_producer = group_producers.get(segment["marker"])
+                            if (
+                                isinstance(row_producer, str)
+                                and row_producer.strip()
+                                and str(row_producer) != str(target_model_id)
+                            ):
+                                pipe.logger.debug(
+                                    "Dropping stored reasoning artifact %s: produced by %s, this "
+                                    "request is answered by %s",
+                                    segment["marker"],
+                                    row_producer,
+                                    target_model_id,
+                                )
+                                continue
                         if (
                             artifact_payload.get("type") == "reasoning"
                             and replayed_reasoning_refs is not None

@@ -6,6 +6,7 @@ Audio files can be routed to /responses or /chat/completions based on format all
 # pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 from __future__ import annotations
 
+import ast
 import base64
 import json
 import sys

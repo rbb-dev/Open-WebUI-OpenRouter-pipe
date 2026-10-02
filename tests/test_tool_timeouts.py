@@ -24,6 +24,7 @@ import logging
 import math
 import re
 import sysconfig
+import threading
 import time as _real_time
 import typing
 from pathlib import Path
@@ -699,26 +700,31 @@ def _takes(seconds: float, name: str, trace: list):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("order", "lookup_card_at"),
-    [(("lookup", "render"), 5.0), (("render", "lookup"), 250.0)],
+    ("order", "lookup_saw"),
+    [(("lookup", "render"), ["lookup"]), (("render", "lookup"), ["lookup", "render"])],
     ids=["fast-call-first", "fast-call-second"],
 )
 async def test_a_tool_card_waits_only_for_the_calls_before_it_in_the_round(
-    pipe_instance_async, monkeypatch, order, lookup_card_at
+    pipe_instance_async, monkeypatch, order, lookup_saw
 ):
     # A call's card is emitted once that call and every call BEFORE it in the round have finished -- cards
     # follow call order. What it must not do is wait for a slower call that comes after it.
+    #
+    # Restated on WHICH CALLS HAD FINISHED rather than on the simulated second they finished at, because the
+    # clock this loop answers `time()` with is real monotonic time plus its own skew: a loop thread that waits
+    # a hundredth of a second to be scheduled is charged for the wait as though the tool had taken that long,
+    # and this row is run on a machine shared with about seventy other agents. Which calls had finished is the
+    # property, and it is also the stronger of the two forms -- it tells "the card fired after the slow call"
+    # apart from "the card fired at 250.0001s", which the timing form could not.
     trace: list[str] = []
     registry = {
         "lookup": _entry(_takes(5, "lookup", trace), tool_type="function", name="lookup"),
         "render": _entry(_takes(250, "render", trace), tool_type="function", name="render"),
     }
-    cards: dict[str, float] = {}
-    loop = asyncio.get_running_loop()
-    started = loop.time()
+    cards: dict[str, list[str]] = {}
 
     async def on_complete(call, _result):
-        cards[str(call.get("name"))] = round((loop.time() - started) / SCALE, 1)
+        cards[str(call.get("name"))] = list(trace)
 
     await _run(
         pipe_instance_async, monkeypatch, registry,
@@ -727,8 +733,8 @@ async def test_a_tool_card_waits_only_for_the_calls_before_it_in_the_round(
     )
 
     assert trace == ["lookup", "render"], trace
-    assert cards["lookup"] == lookup_card_at, cards
-    assert cards["render"] == 250.0, cards
+    assert cards["lookup"] == lookup_saw, cards
+    assert cards["render"] == ["lookup", "render"], cards
 
 
 # --- the default limits leave room for long tools --------------------------------------------------------------------

@@ -104,6 +104,16 @@ def _append_text_field(item: dict, key: str, value: str) -> None:
     item[key] = text
 
 
+def _merge_summary_fragment(held: str, seen: str) -> str:
+    if not held:
+        return seen.strip()
+    if held.startswith(seen):
+        return held
+    if seen.startswith(held):
+        return seen
+    return held + seen
+
+
 def _reasoning_detail_key(
     detail: dict[str, Any],
     order_length: int,
@@ -471,7 +481,10 @@ class ChatCompletionsAdapter:
             elif dtype == "reasoning.summary":
                 next_summary = detail.get("summary")
                 if isinstance(next_summary, str) and next_summary.strip():
-                    merged["summary"] = next_summary
+                    held_summary = merged.get("summary")
+                    merged["summary"] = _merge_summary_fragment(
+                        held_summary if isinstance(held_summary, str) else "", next_summary
+                    )
             elif dtype == "reasoning.encrypted":
                 prev_data = merged.get("data")
                 next_data = detail.get("data")
@@ -595,7 +608,9 @@ class ChatCompletionsAdapter:
                         if isinstance(summary, str) and summary.strip() and detail_key is not None:
                             if detail_key not in reasoning_summary_parts:
                                 reasoning_summary_order.append(detail_key)
-                            reasoning_summary_parts[detail_key] = summary.strip()
+                            reasoning_summary_parts[detail_key] = _merge_summary_fragment(
+                                reasoning_summary_parts.get(detail_key, ""), summary
+                            )
                             delivered_any = True
                             yield {
                                 "type": "response.reasoning_summary_text.done",
@@ -690,7 +705,9 @@ class ChatCompletionsAdapter:
                             if isinstance(summary, str) and summary.strip():
                                 if detail_key not in reasoning_summary_parts:
                                     reasoning_summary_order.append(detail_key)
-                                reasoning_summary_parts[detail_key] = summary.strip()
+                                reasoning_summary_parts[detail_key] = _merge_summary_fragment(
+                                    reasoning_summary_parts.get(detail_key, ""), summary
+                                )
                                 delivered_any = True
                                 yield {
                                     "type": "response.reasoning_summary_text.done",

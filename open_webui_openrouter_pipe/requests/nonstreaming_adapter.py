@@ -221,12 +221,18 @@ class NonStreamingAdapter:
                             reasoning_text_parts.append(text)
                             yield {"type": "response.reasoning_text.delta", "item_id": reasoning_item_id, "delta": text}
                     elif rtype == "reasoning.summary":
+                        from ..api.gateway.chat_completions_adapter import (
+                            _merge_summary_fragment,
+                        )
+
                         summary = entry.get("summary")
                         detail_key = _chat_reasoning_detail_key(entry, len(reasoning_summary_order))
                         if isinstance(summary, str) and summary.strip() and detail_key is not None:
                             if detail_key not in reasoning_summary_parts:
                                 reasoning_summary_order.append(detail_key)
-                            reasoning_summary_parts[detail_key] = summary.strip()
+                            reasoning_summary_parts[detail_key] = _merge_summary_fragment(
+                                reasoning_summary_parts.get(detail_key, ""), summary
+                            )
                             yield {
                                 "type": "response.reasoning_summary_text.done",
                                 "item_id": reasoning_item_id,

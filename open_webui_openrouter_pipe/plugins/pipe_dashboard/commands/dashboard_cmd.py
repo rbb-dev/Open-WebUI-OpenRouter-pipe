@@ -462,7 +462,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
     </div>
 
     <div class="footer-legend">
-      <b>+t</b> cost incl. folded task-model requests &middot; <b>&#10003; / &#10007; / &#8856;</b> tools succeeded / failed / skipped (live sessions)
+      <b>+t</b> cost incl. folded task-model requests &middot; <b>&#10003; / &#10007; / &#8856;</b> tools succeeded / failed / skipped
     </div>
     <div class="footer" id="{sid}-footer"></div>
   </div>
@@ -639,12 +639,13 @@ def _build_dashboard_shell(dash_id: str) -> str:
     function tok3(tin, tcached, tout) {{
       return esc(fmtTok(tin)) + ' \\u2192 ' + esc(fmtTok(tcached)) + ' \\u2192 ' + esc(fmtTok(tout));
     }}
-    function toolsCell(total, failed) {{
-      total = total || 0; failed = failed || 0;
+    function toolsCell(total, failed, skipped) {{
+      total = total || 0; failed = failed || 0; skipped = skipped || 0;
       if (!total) return '\\u2014';
-      var ok = total - failed; if (ok < 0) ok = 0;
+      var ok = total - failed - skipped; if (ok < 0) ok = 0;
       var s = esc(String(ok)) + ' \\u2713';
       if (failed) s += ' <span style="color:#ef4444;">' + esc(String(failed)) + ' \\u2717</span>';
+      if (skipped) s += ' <span style="color:#f59e0b;">' + esc(String(skipped)) + ' \\u2298</span>';
       return s;
     }}
     function sessBadge(row) {{
@@ -767,7 +768,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
       return '<tr><td class="name" title="' + esc(r.model_id) + '">' + esc(name) + '</td>' +
         '<td class="r">' + esc(String(r.sessions)) + '</td>' +
         '<td class="r">' + tok3(r.tokens_in, r.tokens_cached, r.tokens_out) + '</td>' +
-        '<td class="r">' + toolsCell(r.tools, r.tools_failed) + '</td>' +
+        '<td class="r">' + toolsCell(r.tools, r.tools_failed, r.tools_skipped) + '</td>' +
         '<td class="r">' + esc(fmtCost(r.cost)) + '</td>' +
         '<td class="r">' + esc(fmtCost(r.avg_cost)) + '</td>' +
         '<td><div style="height:6px;border-radius:3px;background:rgba(99,102,241,0.18);position:relative;min-width:90px;"><i style="position:absolute;left:0;top:0;bottom:0;border-radius:3px;background:#6366f1;width:' + Math.min(100, r.share_pct || 0) + '%;"></i></div></td></tr>';
@@ -778,7 +779,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
       return '<tr><td class="name">' + esc(r.user_name || '?') + '</td>' +
         '<td class="r">' + esc(String(r.sessions)) + '</td>' +
         '<td class="r">' + tok3(r.tokens_in, r.tokens_cached, r.tokens_out) + '</td>' +
-        '<td class="r">' + toolsCell(r.tools, r.tools_failed) + '</td>' +
+        '<td class="r">' + toolsCell(r.tools, r.tools_failed, r.tools_skipped) + '</td>' +
         '<td class="r">' + esc(fmtCost(r.cost)) + '</td>' +
         '<td class="r">' + esc(last) + '</td></tr>';
     }}
@@ -824,16 +825,17 @@ def _build_dashboard_shell(dash_id: str) -> str:
         return o;
       }},
       footerRow: function(rows) {{
-        var s = 0, ti = 0, tc = 0, to = 0, tl = 0, tlf = 0, co = 0;
+        var s = 0, ti = 0, tc = 0, to = 0, tl = 0, tlf = 0, tsk = 0, co = 0;
         for (var i = 0; i < rows.length; i++) {{
           var r = rows[i];
           s += r.sessions || 0; ti += r.tokens_in || 0; tc += r.tokens_cached || 0;
-          to += r.tokens_out || 0; tl += r.tools || 0; tlf += r.tools_failed || 0; co += r.cost || 0;
+          to += r.tokens_out || 0; tl += r.tools || 0; tlf += r.tools_failed || 0;
+          tsk += r.tools_skipped || 0; co += r.cost || 0;
         }}
         return '<tr class="tot-row"><td class="name">Totals</td>' +
           '<td class="r">' + esc(String(s)) + '</td>' +
           '<td class="r">' + tok3(ti, tc, to) + '</td>' +
-          '<td class="r">' + toolsCell(tl, tlf) + '</td>' +
+          '<td class="r">' + toolsCell(tl, tlf, tsk) + '</td>' +
           '<td class="r">' + esc(fmtCost(co)) + '</td>' +
           '<td class="r">\\u2014</td></tr>';
       }},

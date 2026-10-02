@@ -1328,6 +1328,7 @@ class RequestOrchestrator:
                 else functools.partial(
                     self._pipe._artifact_store._db_fetch,
                     reply_id=__metadata__.get("message_id"),
+                    with_producers=True,
                 )
             ),
             pruning_turns=valves.TOOL_OUTPUT_RETENTION_TURNS,

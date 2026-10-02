@@ -19,15 +19,24 @@ Inputs (high level):
   - `openwebui_model_id`
   - `artifact_loader(chat_id, message_id, ulids)` (async) — called once per rebuild rather than
     once per message: the markers of every message sharing a `message_id` are gathered first and
-    asked for together, so a history whose messages carry no id at all costs one call. `message_id`
-    scopes the store's own SELECT, so it is never widened: a history whose messages carry distinct
-    ids costs one call per id, each asking only for its own group. A saved-chat history is the
-    second shape, not the first: every rebuilt message is keyed by its id
-    (`utils/middleware.py:2221`, `models/chat_messages.py:386`), so it costs one call per distinct
-    `message_id` — a sixteen-turn chat, sixteen calls. Those calls are issued **together**, in
-    bounded batches, so their cost tracks the slowest group rather than their sum; the batches are
-    capped at a fixed constant, so a longer history adds work rather than overlap. The id-less
-    shape above is the API caller's, not the replayed path's.
+    asked for together. **The replayed path is the id-less shape.** `load_messages_from_db` builds
+    each message from `MESSAGE_REPLAY_KEYS`, which includes `id` and `model`
+    (`utils/middleware.py:2221`, `models/chat_messages.py:386`), but `process_messages_with_output`
+    pops both before the pipe runs (`utils/middleware.py:2296-2298`) — and the `output`-bearing
+    assistant branch replaces the dict wholesale through `convert_output_to_messages`, which writes
+    neither. Both of its callers (`process_chat_payload` at `:2523`, `drain_approved_tool_calls` at
+    `:3574`) run before `chat_completion_handler` (`main.py:1666-1671`), so no saved chat reaches
+    `pipe.pipe(body=form_data)` carrying either key. Every message therefore groups under the same
+    key and a saved chat of any length costs **one** call, not one per turn.
+    `tests/test_b591_the_replayed_path_is_the_id_less_shape.py` drives the real host function and
+    pins this; re-check it first on any Open WebUI upgrade.
+    The id-carrying shape is the pipe's **own** OpenAI-compatible gateway
+    (`api/gateway/chat_completions_adapter.py:168`), where an external caller supplies messages that
+    keep their own ids. There `message_id` scopes the store's own SELECT, so it is never widened:
+    a history carrying distinct ids costs one call per id, each asking only for its own group.
+    Those calls are issued **together** under a fixed concurrency ceiling
+    (`_ARTIFACT_GROUP_CONCURRENCY`), so their cost tracks the slowest group rather than their sum,
+    and a longer history adds work rather than overlap.
 - Retention/pruning:
   - `pruning_turns` (from `TOOL_OUTPUT_RETENTION_TURNS`)
   - `replayed_reasoning_refs` (for the `PERSIST_REASONING_TOKENS="next_reply"` and `"disabled"` cleanup)
@@ -145,8 +154,10 @@ place that knows which lines it owns; leaving it to the strip would mean the str
 
 For each marker segment:
 - the pipe looks up the referenced persisted artifact payload (via `artifact_loader` when available;
-  the lookups are batched across the whole rebuild, one call per distinct `message_id` rather than one
-  per message, and those calls are issued together in bounded batches rather than one after another),
+  the lookups are batched across the whole rebuild — on Open WebUI's replayed path, whose messages
+  arrive without ids, that is a single call for the whole history rather than one per message; on the
+  pipe's own id-carrying gateway it is one call per distinct `message_id` rather than one per message,
+  and those calls are issued together under a fixed concurrency ceiling rather than one after another),
 - normalizes it to the schema expected by upstream (`normalize_persisted_item`) — once per marker, and the orphan guard below is run over exactly the payloads that normalization **kept**, not over the raw rows. A row the normalizer rejects is therefore not an artifact the guard ever sees: its own output is left orphaned and is dropped and named in the transformer's own `missing calls` warning, while a marker with no row at all stays the separate `missing_artifact_markers` case. A row the normalizer gives a minted `call_id` to is paired against that minted id, so a call and its output stored without ids cannot pair;
 - and appends it directly into the `input` array as a structured item.
 
@@ -332,8 +343,13 @@ On `/chat/completions` a replayed reasoning item rides on the assistant message 
 `reasoning_details`, matching Open WebUI's `convert_output_to_messages(raw=True)`. A message that names a
 different `model` has its whole `reasoning_details` block dropped before the request is built, the way Open WebUI
 does at `utils/middleware.py:2516-2521`; a message that names no model, or a blank one, keeps it, because the
-pipe's own gateway puts `model` on the chunk and never on the message and a missing id cannot be attributed. That replayed block is
-byte-identical to the concatenation of the streamed `reasoning.text` deltas: never that run plus the terminal
+pipe's own gateway puts `model` on the chunk and never on the message and a missing id cannot be attributed.
+**On Open WebUI 0.11.4's replayed path that host guard cannot fire**: `process_messages_with_output` pops
+`model` from every message before the pipe runs (`utils/middleware.py:2296-2298`), so the message-level
+`same_model` predicate always takes its absent-means-unknown arm there. It is load-bearing on the pipe's own
+OpenAI-compatible gateway, where the caller supplies its own messages; on a saved chat the **stored row's** guard
+(the next paragraph) is the one that carries the rule. That replayed block is
+byte-identical to the concatenation of the streamed `reasoning.text` deltas plus every `reasoning.summary` fragment the provider sent for each of its keys: never that run plus the terminal
 `message.reasoning_details` echo a provider may close the stream with, which carries the same bytes a second time.
 
 The `Chats` write at the end of a turn reads `annotations` and `reasoning_details` off **every** round of the
@@ -343,8 +359,22 @@ would store only the third. The per-round scan sits on the path that completes a
 for a retry never fills it and still writes nothing over the winning attempt's message.
 
 The anchors are internal ordering metadata, and they are stripped from every item the pipe sends — including a
-turn-opener, not only reasoning — so none of the five keys in `REASONING_ANCHOR_KEYS` is ever part of a
+turn-opener, not only reasoning — so none of the keys in `REASONING_ANCHOR_KEYS` is ever part of a
 request.
+
+A stored `reasoning` row is also withheld **whole** when the store records that another model produced it:
+never per detail block, never with its summary kept and only its signature removed. A partly filtered reasoning
+sequence is exactly what a provider rejects, so the row either replays intact or not at all. The producer is
+the row's own `model_id` column, carried out of the store's read beside the payload and never inside it, and the
+predicate is the message-level one from §6.1: a non-blank producer that differs from the model answering this
+request withholds; an absent or blank one replays, because cannot-attribute-then-keep is the safe direction (a
+dropped signature costs one reasoning block, a wrong one costs the turn). A row withheld this way is **not**
+added to `replayed_reasoning_refs`, because that list is the delete queue and the row is not dead — the person
+switches back and it is good. Rows written before the column was read back have no producer and keep replaying.
+
+This is the pipe compensating for a host behaviour rather than mirroring it, and deliberately so. Open WebUI
+0.11.4's own `strip_reasoning_details` guard (§6.1) is unreachable on the replayed path, and the store is the
+only component that still knows which model signed a block. The value never reaches the wire.
 
 ### 6.2 An answer continued across more than one request
 

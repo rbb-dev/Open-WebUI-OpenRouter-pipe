@@ -944,15 +944,7 @@ def test_the_real_tree_has_no_two_definitions_under_one_key():
     the tree it is pointed at no longer collapses -- which is what EXEMPT and
     VETTING_FETCH_SITES are indexed by.
     """
-    offenders: dict[str, list[int]] = {}
-    for path, _source, tree in _real_files():
-        seen: dict[str, list[int]] = {}
-        for node, chain in _function_index(tree).items():
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                seen.setdefault("::".join([_rel(path), *chain]), []).append(node.lineno)
-        for key, lines in seen.items():
-            if len(lines) > 1 and not _is_a_property_pair(tree, lines):
-                offenders[key] = sorted(lines)
+    offenders = _duplicate_keys(_real_files())
 
     assert not offenders, (
         "these keys name more than one function definition, so an EXEMPT reason or a "
@@ -975,6 +967,63 @@ def _is_a_property_pair(tree: ast.Module, lines: list[int]) -> bool:
     }
     marks = [decorated.get(line, []) for line in lines]
     return all(marks) and any("property" in "".join(m) for m in marks)
+
+
+def _is_an_overload_set(tree: ast.Module, lines: list[int]) -> bool:
+    """A PEP 484 `@overload` set: N signature stubs and one implementation, one key.
+
+    The same residual as the property pair above, and excluded for the same reason plus a
+    stronger one. A getter and a setter are two bodies that could disagree; an overload
+    stub has the body `...` and no statements at all, so there is nothing in it for a
+    fetch site, an EXEMPT reason or a vetting verdict to cover. Only the implementation
+    can issue a request, and only the implementation is a definition with behaviour -- so
+    the collision this census exists to catch cannot arise here.
+
+    The tree has exactly one such set, `ArtifactStore._db_fetch`, whose two stubs pin the
+    `with_producers: Literal[...]` split that keeps `_db_fetch`'s thirteen test callers
+    type-checking: without the overloads pyright reports 13 errors, every one of them a
+    test reading `.get` off a union it cannot narrow. Dropping the stubs to satisfy this
+    check would trade a type error on every caller for one structural exemption here.
+
+    Every stub must be decorated `@overload` AND have the `...` body, so a real second
+    definition that merely borrowed the decorator is still reported.
+    """
+    nodes = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.lineno in lines
+    ]
+    if len(nodes) != len(lines) or len(nodes) < 2:
+        return False
+    stubs = [node for node in nodes if "overload" in " ".join(ast.unparse(d) for d in node.decorator_list)]
+    bodies = [node for node in nodes if node not in stubs]
+    if not stubs or len(bodies) != 1 or bodies[0].lineno != max(lines):
+        return False
+    return all(
+        len(node.body) == 1
+        and isinstance(node.body[0], ast.Expr)
+        and isinstance(node.body[0].value, ast.Constant)
+        and node.body[0].value.value is Ellipsis
+        for node in stubs
+    )
+
+
+def _duplicate_keys(files: tuple[tuple[Path, str, ast.Module], ...]) -> dict[str, list[int]]:
+    """The keys `test_the_real_tree_has_no_two_definitions_under_one_key` fails on."""
+    offenders: dict[str, list[int]] = {}
+    for path, _source, tree in files:
+        seen: dict[str, list[int]] = {}
+        for node, chain in _function_index(tree).items():
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                seen.setdefault("::".join([_rel(path), *chain]), []).append(node.lineno)
+        for key, lines in seen.items():
+            if (
+                len(lines) > 1
+                and not _is_a_property_pair(tree, lines)
+                and not _is_an_overload_set(tree, lines)
+            ):
+                offenders[key] = sorted(lines)
+    return offenders
 
 
 def test_a_websocket_upgrade_is_a_fetch_site_like_every_other_verb():

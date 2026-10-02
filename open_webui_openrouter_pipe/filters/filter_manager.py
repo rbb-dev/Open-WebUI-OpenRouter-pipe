@@ -2854,7 +2854,7 @@ __KEEP_WHAT_STILL_FITS__
         )
         DIRECT_FILE_MIME_ALLOWLIST: str = Field(
             default="application/pdf,text/plain,text/markdown,application/json,text/csv",
-            description="Comma-separated MIME allowlist for diverted direct generic files. The pattern is matched with `fnmatch` against the declared type, so a wildcard admits declared values that are not media types at all; an attachment whose type is not a media type is refused before the request is sent.",
+            description="Comma-separated MIME allowlist for diverted direct generic files. The pattern is matched with `fnmatch` against the declared type, so a wildcard admits declared values that are not media types at all; Non-allowlisted types are fail-open: the item stays on the normal OWUI RAG/Knowledge path instead.",
         )
         DIRECT_AUDIO_MIME_ALLOWLIST: str = Field(
             default="audio/*",
@@ -2862,7 +2862,7 @@ __KEEP_WHAT_STILL_FITS__
         )
         DIRECT_VIDEO_MIME_ALLOWLIST: str = Field(
             default="video/mp4,video/mpeg,video/quicktime,video/webm",
-            description="Comma-separated MIME allowlist for diverted direct video files. The pattern is matched with `fnmatch` against the declared type, so a wildcard admits declared values that are not media types at all; such an attachment is not sent at all -- it is refused before the request leaves the pipe and the turn carries the `Direct Upload Issue` card.",
+            description="Comma-separated MIME allowlist for diverted direct video files. The pattern is matched with `fnmatch` against the declared type, so a wildcard admits declared values that are not media types at all; Non-allowlisted types are fail-open: the item stays on the normal OWUI RAG/Knowledge path instead.",
         )
         DIRECT_AUDIO_FORMAT_ALLOWLIST: str = Field(
             default="wav,mp3,aiff,aac,ogg,flac,m4a,pcm16,pcm24",

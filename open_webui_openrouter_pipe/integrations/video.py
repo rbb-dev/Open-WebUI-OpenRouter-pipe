@@ -57,9 +57,11 @@ from ..storage.multimodal import (
     _address_verdict,
 )
 from ..storage.owui_files import (
+    NO_CHAT_ID_KEY,
     PUBLISHING_NEEDS_OWNERSHIP,
     InlineFileTooLargeError,
     authorize_file_publication,
+    chat_latch_key,
     declared_file_size,
     get_file_by_id,
     infer_file_mime_type,
@@ -139,8 +141,6 @@ _INTENT_NOTIFIED_WINDOW = 300
 _INTENT_CHAT_COUNT_WINDOW = 300
 
 _INTENT_BREAKER_SWEEP_INTERVAL_SECONDS = 60.0
-
-_INTENT_NO_CHAT_ID_KEY = "__no_chat_id__"
 
 _DEFAULT_FRAME_MAX_BYTES = int(Valves.model_fields["VIDEO_FRAME_IMAGE_MAX_BYTES"].default)
 
@@ -968,7 +968,7 @@ class VideoGenerationAdapter:
                                 "breaker tripped",
                                 intent_result.failure_reason or "<unknown>",
                             )
-                        latch_key = self._intent_latch_key(chat_id)
+                        latch_key = chat_latch_key(chat_id)
                         log_key = self._intent_notice_key(chat_id) or "<not retained>"
                         if self._intent_was_failure_notified(latch_key):
                             self.logger.debug(
@@ -1084,7 +1084,7 @@ class VideoGenerationAdapter:
                         "video_intent classifier failed (degrade-open): %s", exc, exc_info=True
                     )
                     self._intent_record_failure(user_id if isinstance(user_id, str) else "")
-                    latch_key = self._intent_latch_key(chat_id)
+                    latch_key = chat_latch_key(chat_id)
                     log_key = self._intent_notice_key(chat_id) or "<not retained>"
                     already = self._intent_was_failure_notified(latch_key)
                     if not already:
@@ -3300,16 +3300,9 @@ class VideoGenerationAdapter:
             now + _INTENT_BREAKER_SWEEP_INTERVAL_SECONDS,
         )
 
-    def _intent_latch_key(self, chat_id: Any) -> str:
-        if not isinstance(chat_id, str) or not chat_id:
-            return _INTENT_NO_CHAT_ID_KEY
-        if is_temporary_chat(chat_id):
-            return ""
-        return chat_id
-
     def _intent_notice_key(self, chat_id: Any) -> str:
-        key = self._intent_latch_key(chat_id)
-        return "" if key == _INTENT_NO_CHAT_ID_KEY else key
+        key = chat_latch_key(chat_id)
+        return "" if key == NO_CHAT_ID_KEY else key
 
     def _intent_was_failure_notified(self, chat_key: str) -> bool:
         if not chat_key or is_temporary_chat(chat_key):

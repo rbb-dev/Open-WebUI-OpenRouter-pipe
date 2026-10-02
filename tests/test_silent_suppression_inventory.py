@@ -263,7 +263,15 @@ _EXPECTED: dict[str, int] = {
     # discarded job, with a profiler bookkeeping error; `_stream`'s also swallows
     # `CancelledError` for the same reason its neighbours do, since a turn being torn
     # down must not raise out of its own teardown.
-    "pipe.py": 42,
+    # 43rd: the per-edge `setattr(owner, attr, None)` in `_do_close`'s back-reference
+    # clear. The loop drops the seven edges the pipe's own collaborators hold back to it,
+    # and every owner is one this constructor just built, so an attribute that cannot be
+    # set means the collaborator is not the shape the loop names. Failing to clear one
+    # leaves the pipe reachable through its own attributes and only a gc pass reclaims it;
+    # failing to clear it loudly would abort the rest of the loop and leave the other six
+    # edges standing, which is the worse of the two. The clear runs on the teardown path,
+    # after every drain has already finished, so a raise here has nothing left to protect.
+    "pipe.py": 43,
     # 4th (B724): the done-callback's `suppress(asyncio.CancelledError, Exception)` around
     # `task.exception()` in `_schedule_redis_valve_drain_on`'s `_settle`, which releases
     # the Redis valve's ownership latch when a scheduled drain ends however it ends. The

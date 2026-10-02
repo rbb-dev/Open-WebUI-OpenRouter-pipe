@@ -27,7 +27,7 @@ from open_webui_openrouter_pipe.filters.filter_manager import (
     _meta_dict,
 )
 from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
-
+from open_webui.models import functions as _owui_functions
 
 def _load_filter_from_source(source: str, module_name: str) -> ModuleType:
     """Load filter source string as a module.

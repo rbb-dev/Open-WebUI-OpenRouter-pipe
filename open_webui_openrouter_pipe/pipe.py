@@ -3094,6 +3094,20 @@ class Pipe:
                 await self._cleanup_task
             self._cleanup_task = None
 
+        for owner_attr, edge_attrs in (
+            ("_event_emitter_handler", ("_pipe", "_valves_owner")),
+            ("_streaming_handler", ("_pipe", "_valves_owner")),
+            ("_file_gateway", ("_valves_owner",)),
+            ("_multimodal_handler", ("_valves_owner",)),
+            ("_artifact_store", ("_valves_owner",)),
+        ):
+            owner = getattr(self, owner_attr, None)
+            if owner is None:
+                continue
+            for edge_attr in edge_attrs:
+                with contextlib.suppress(Exception):
+                    setattr(owner, edge_attr, None)
+
         catalog_mgr = getattr(self, "_catalog_manager", None)
         if catalog_mgr is not None:
             with contextlib.suppress(Exception):

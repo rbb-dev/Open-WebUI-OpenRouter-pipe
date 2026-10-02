@@ -976,10 +976,10 @@ def _is_template_valve(name: Any) -> bool:
 
 
 _ADMIN_OFF_STAYS_OFF = (
-    " A filter you switch off yourself in Open WebUI's Functions list stays off: the "
+    " A filter switched off by hand in Open WebUI's Functions list stays off: the "
     "pipe keeps its code up to date but never switches it back on. The one exception is "
     "a write Open WebUI itself refused, which the pipe retries until it lands; once it "
-    "lands the retry stops, so a filter you switch off after that stays off."
+    "lands the retry stops, so a filter switched off after that stays off."
     " A row an earlier install of this pipe wrote — the pipe function was renamed or "
     "re-created, so its record names an id Open WebUI no longer loads as a pipe — is "
     "retired too."
@@ -989,7 +989,7 @@ _PIPE_OFF_COMES_BACK = (
     "feature again."
 )
 _ROUTING_ADMIN_OFF_STAYS_OFF = (
-    " A filter you switch off yourself in Open WebUI's Functions list stays off: the "
+    " A filter switched off by hand in Open WebUI's Functions list stays off: the "
     "pipe keeps its code up to date but never switches it back on, or when the model "
     "is listed again. A write Open WebUI itself refused is the one thing the pipe does "
     "retry, and only until it lands."
@@ -998,9 +998,10 @@ _ROUTING_ADMIN_OFF_STAYS_OFF = (
     "retired too."
 )
 _ROUTING_ADMIN_RE_ENABLED_STAYS_ON = (
-    " An entry you switch back on in the same list while its model is still listed "
-    "stays on, and the pipe stops writing to it: no switching off, no re-stamping. "
-    "Take the model out of the routing lists and the pipe retires the entry again."
+    " An entry switched back on by hand in the same list while its model is still "
+    "listed stays on, and the pipe stops writing to it: no switching off, no "
+    "re-stamping. Take the model out of the routing lists and the pipe retires the "
+    "entry again."
 )
 
 
@@ -2212,7 +2213,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         ge=1,
         le=50,
         description=(
-            "Number of failures one user may accumulate before their requests are refused, a failing tool is skipped, or their database reads and writes are skipped; raise it for fewer trips in noisy environments. A request failure is a failed chat call to OpenRouter (an error reply; a connection that cannot be opened, drops or times out; an error reported inside a response; or a stream that stops before its final event). A request counts once however many attempts it took: a 429, a 5xx, a 408 that names the provider-timeout kind, or that failure reported inside a response before anything has been shown is retried first, up to TRANSIENT_RETRY_MAX_ATTEMPTS extra tries, and the request is a single failure whichever attempt gave up on it. A /responses failure that AUTO_FALLBACK_CHAT_COMPLETIONS repairs on /chat/completions is the one exception and is not counted at all: that one strike is taken back as soon as the fallback is decided, and the user's other failures in the window are left standing. A body carrying a content decision is the exception and is never retried, whatever status it arrived on. An internal Fusion run is one such request: its panel, judge and final-answer calls each spend nothing, and the run spends one failure of its own when no panel model answered, whatever the panel's size and however many of those calls failed. A generation on a picture-only image model or a video model that fails after it was sent to OpenRouter is also a request failure, counted once, except a generation whose response arrived whole and was not an OpenRouter document (a body a proxy, CDN or WAF rewrote, or one that is not a JSON object at all): that is not a failure of the request and never counts toward the limit. Request and database failures count within BREAKER_WINDOW_SECONDS. Raising or lowering the setting mid-session re-reads the failures already recorded: it does not discard them, and a lowered setting applies from the next request without evicting anything. Request failures clear when a request ends without an error (for a picture-only image model or a video model, only once its result is delivered whole; a stream that breaks after the finished image arrived is a delivered result and a failed call, counted once and clearing nothing, and for an internal Fusion run, only if a panel model answered); a request the user stops clears no request failures. Housekeeping tasks such as title generation neither count nor clear; Open WebUI's merge-responses task counts but never clears. Database failures also clear when a database operation succeeds. A fault in the artifact cache refill after a successful read is neither counted nor reported as a lost round: the rows are returned, the window still clears, and a WARNING names the cache rather than the database. A fault sealing rows for storage on the way to the database is likewise neither counted nor blamed on it: nothing reached the database, the round is dropped, and a WARNING names the seal and the affected row count. The request breaker never refuses a request whose last message is a tool result, or is Open WebUI's own message that comes right after a tool result and hands the model a tool's images; a question or picture the user sends is refused like any other request. The exemption is from the refusal only: a request like that that fails still counts against the limit, and one that ends without an error still clears the count. Each tool counts its failures in a row: errors it raises, per-call timeouts, running calls cut off by TOOL_BATCH_TIMEOUT_SECONDS, and calls whose tool server cannot be reached or answers with an HTTP error status; an ask_user timeout and a call to an MCP tool whose session has closed do not count. The count belongs to the tool the call resolved to, so a name the model padded with surrounding whitespace is the same tool and spends the same budget. A SystemExit, KeyboardInterrupt or GeneratorExit from a tool is shown as failed but is not a failure of that tool: it signals the process rather than the tool, and it never adds to the count or clears it. An error the tool reports in a result it returns normally is shown as failed but neither adds to the count nor clears it, whether the judgement is made by Open WebUI's own classifier or by the pipe's copy of it A tool the breaker has taken out of service for a call it refuses before the batch is queued is announced once per round, however many such calls that round asked for; a call it takes out of service after the batch was queued is announced for that call alone. A rejected credential is a separate mechanism this valve does not govern: a 401, or a 403 that names no kind and carries no content decision, arms a fixed 60-second pause on that user's background tasks rather than a failure this valve records, and neither this valve nor BREAKER_WINDOW_SECONDS has any say in it. That pause is one timestamp rather than a count - no setting changes its length, a request that succeeds does not clear it, and another rejected credential re-arms it - and while it holds, that user's Open WebUI background tasks are refused, each with `OpenRouter access is temporarily disabled after an authentication failure.`, whereas their chat requests are not refused and reach the model as usual. The dashboard's `Auth` row is how many users are inside that pause at once."
+            "Number of failures one user may accumulate before their requests are refused, a failing tool is skipped, or their database reads and writes are skipped; raise it for fewer trips in noisy environments. A request failure is a failed chat call to OpenRouter (an error reply; a connection that cannot be opened, drops or times out; an error reported inside a response; or a stream that stops before its final event). A request counts once however many attempts it took: a 429, a 5xx, a 408 that names the provider-timeout kind, or that failure reported inside a response before anything has been shown is retried first, up to TRANSIENT_RETRY_MAX_ATTEMPTS extra tries, and the request is a single failure whichever attempt gave up on it. A /responses failure that AUTO_FALLBACK_CHAT_COMPLETIONS repairs on /chat/completions is the one exception and is not counted at all: that one strike is taken back as soon as the fallback is decided, and the user's other failures in the window are left standing. A body carrying a content decision is the exception and is never retried, whatever status it arrived on. An internal Fusion run is one such request: its panel, judge and final-answer calls each spend nothing, and the run spends one failure of its own when no panel model answered, whatever the panel's size and however many of those calls failed. A generation on a picture-only image model or a video model that fails after it was sent to OpenRouter is also a request failure, counted once, except a generation whose response arrived whole and was not an OpenRouter document (a body a proxy, CDN or WAF rewrote, or one that is not a JSON object at all): that is not a failure of the request and never counts toward the limit. Request and database failures count within BREAKER_WINDOW_SECONDS. Raising or lowering the setting mid-session re-reads the failures already recorded: it does not discard them, and a lowered setting applies from the next request without evicting anything. Request failures clear when a request ends without an error (for a picture-only image model or a video model, only once its result is delivered whole; a stream that breaks after the finished image arrived is a delivered result and a failed call, counted once and clearing nothing, and for an internal Fusion run, only if a panel model answered); a request the user stops clears no request failures. Housekeeping tasks such as title generation neither count nor clear; Open WebUI's merge-responses task counts but never clears. Database failures also clear when a database operation succeeds. A fault in the artifact cache refill after a successful read is neither counted nor reported as a lost round: the rows are returned, the window still clears, and a WARNING names the cache rather than the database. A fault sealing rows for storage on the way to the database is likewise neither counted nor blamed on it: nothing reached the database, the round is dropped, and a WARNING names the seal and the affected row count. The request breaker never refuses a request whose last message is a tool result, or is Open WebUI's own message that comes right after a tool result and hands the model a tool's images; a question or picture the user sends is refused like any other request. The exemption is from the refusal only: a request like that that fails still counts against the limit, and one that ends without an error still clears the count. Each tool counts its failures in a row: errors it raises, per-call timeouts, running calls cut off by TOOL_BATCH_TIMEOUT_SECONDS, and calls whose tool server cannot be reached or answers with an HTTP error status; an ask_user timeout and a call to an MCP tool whose session has closed do not count. The count belongs to the tool the call resolved to, so a name the model padded with surrounding whitespace is the same tool and spends the same budget. A SystemExit, KeyboardInterrupt or GeneratorExit from a tool is shown as failed but is not a failure of that tool: it signals the process rather than the tool, and it never adds to the count or clears it. An error the tool reports in a result it returns normally is shown as failed but neither adds to the count nor clears it, whether the judgement is made by Open WebUI's own classifier or by the pipe's copy of it A tool the breaker has taken out of service for a call it refuses before the batch is queued is announced once per round, however many such calls that round asked for; a call it takes out of service after the batch was queued is announced for that call alone. A call the breaker itself refuses is not a failure of that tool: it is never counted, and it never extends the window either, so the tool is offered again `BREAKER_WINDOW_SECONDS` after its last real failure rather than after the last time the model asked for it. A rejected credential is a separate mechanism this valve does not govern: a 401, or a 403 that names no kind and carries no content decision, arms a fixed 60-second pause on that user's background tasks rather than a failure this valve records, and neither this valve nor BREAKER_WINDOW_SECONDS has any say in it. That pause is one timestamp rather than a count - no setting changes its length, a request that succeeds does not clear it, and another rejected credential re-arms it - and while it holds, that user's Open WebUI background tasks are refused, each with `OpenRouter access is temporarily disabled after an authentication failure.`, whereas their chat requests are not refused and reach the model as usual. The dashboard's `Auth` row is how many users are inside that pause at once."
         ),
     )
     BREAKER_WINDOW_SECONDS: int = Field(
@@ -2460,11 +2461,12 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "Video models are judged by OpenRouter's ZDR list like any other model, so a ZDR-only picker "
             "excludes them unless OpenRouter lists a ZDR endpoint for them."
             + _PIPE_OFF_COMES_BACK
+            + _ADMIN_OFF_STAYS_OFF
             + " Turning it off deactivates all installed per-model video filter rows on the next model-list refresh;"
             + " AUTO_INSTALL_VIDEO_FILTERS is the install valve for that family. Turning it back on re-activates"
             + " the ones still in the catalogue that the pipe itself switched off, while that valve is on;"
             + " with that valve off its retirement governs, and the rows stay off until it comes back on."
-            + " The rows are identified by their source, so a copy you made by hand of one of these"
+            + " The rows are identified by their source, so a copy made by hand of one of these"
             + " filters' source is switched off too."
         ),
     )
@@ -2474,11 +2476,12 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         description=(
             "Automatically install/update the OpenRouter Web Tools filter function in Open WebUI. When off, the pipe neither installs nor updates it, except that a web tool switched off on the pipe is taken out of every Web Tools filter this pipe maintains (one it installed, or one carrying no install record): that filter's code is replaced with the pipe's current version for the tools it still offers (hand edits in it are lost), and a warning is logged. Switching the tool back on does not add it back to that stored code, which is rewritten only while the tool is off. With it on — the default — the next model-list refresh rewrites the row this pipe maintains from the current valve set, so the tool comes back there; another copy the repair touched keeps it out until an admin switches it on in the Functions list."
             + " With every web tool off, every Web Tools filter is switched off that this "
-            "pipe installed or that carries no install record, and one you switch off "
-            "yourself there stays off until you switch it on again. The row's on/off "
+            "pipe installed or that carries no install record, and one switched off by "
+            "hand there stays off until it is switched on again. The row's on/off "
             "state is the other half of the same switch and moves on its own: with this "
             "valve off as well, a row the pipe switched off is switched back on as soon "
-            "as any web tool is on again, whether the pipe installed that row or you did."
+            "as any web tool is on again, whether the pipe installed that row or an "
+            "admin did."
             " A filter the pipe cannot read is reported as unrepaired, and the pass is "
             "retried once per five-minute window until the row is updated or removed."
             + _PIPE_OFF_COMES_BACK
@@ -2603,6 +2606,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         description=(
             "Master switch for OpenRouter Fusion support. When enabled, the pipe installs the 'OpenRouter Fusion' filter and attaches it to the fusion models automatically."
             + _PIPE_OFF_COMES_BACK
+            + _ADMIN_OFF_STAYS_OFF
             + " Turning it off deactivates the installed filter on the next model-list refresh,"
             + " and a `{\"id\": \"fusion\"}` plugin entry the request already carries is removed"
             + " before anything is sent - on any model and either engine - so an entry a filter"
@@ -3068,6 +3072,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         description=(
             "When enabled, automatically installs/updates the companion OpenRouter Direct Uploads filter function in Open WebUI. "
             "This is required for AUTO_ATTACH_DIRECT_UPLOADS_FILTER when the filter hasn't been installed manually."
+            + _PIPE_OFF_COMES_BACK
             + _ADMIN_OFF_STAYS_OFF
         ),
     )

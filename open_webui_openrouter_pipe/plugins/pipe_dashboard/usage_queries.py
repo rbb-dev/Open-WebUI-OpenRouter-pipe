@@ -34,8 +34,15 @@ def _new_acc() -> dict[str, float]:
     return {
         "sessions": 0, "failed": 0, "cancelled": 0, "retried": 0,
         "tokens_in": 0, "tokens_out": 0, "tokens_reasoning": 0, "tokens_cached": 0,
-        "cost": 0.0, "task_cost": 0.0, "tools": 0, "tools_failed": 0, "savings": 0.0,
+        "cost": 0.0, "task_cost": 0.0, "tools": 0, "tools_failed": 0,
+        "tools_skipped": 0, "savings": 0.0,
     }
+
+
+def _tools_sum(model: Any) -> Any:
+    from sqlalchemy import func
+
+    return func.coalesce(model.tools_ok, 0) + func.coalesce(model.tools_failed, 0) + func.coalesce(model.tools_skipped, 0)
 
 
 def _int(value: Any) -> int:
@@ -93,8 +100,9 @@ def _window_cards(model: Any, session: Any, lo: Any, hi: Any, counted: Any) -> d
         func.sum(func.coalesce(model.tokens_cached, 0)),
         func.sum(func.coalesce(model.cost, 0.0)),
         func.sum(case((model.kind == "task", func.coalesce(model.cost, 0.0)), else_=0.0)),
-        func.sum(func.coalesce(model.tools_ok, 0) + func.coalesce(model.tools_failed, 0)),
+        func.sum(_tools_sum(model)),
         func.sum(func.coalesce(model.tools_failed, 0)),
+        func.sum(func.coalesce(model.tools_skipped, 0)),
         func.sum(func.coalesce(model.cache_savings, 0.0)),
     ).where(model.ts >= lo, counted)
     if hi is not None:
@@ -113,7 +121,8 @@ def _window_cards(model: Any, session: Any, lo: Any, hi: Any, counted: Any) -> d
     acc["task_cost"] = _float(row[9])
     acc["tools"] = _int(row[10])
     acc["tools_failed"] = _int(row[11])
-    acc["savings"] = _float(row[12])
+    acc["tools_skipped"] = _int(row[12])
+    acc["savings"] = _float(row[13])
     return acc
 
 
@@ -150,7 +159,7 @@ def _window_buckets(
             func.sum(func.coalesce(model.cost, 0.0)),
             func.sum(case((_is_chat_row(model), 1), else_=0)),
             func.sum(case((and_(_is_chat_row(model), model.status == "failed"), 1), else_=0)),
-            func.sum(func.coalesce(model.tools_ok, 0) + func.coalesce(model.tools_failed, 0)),
+            func.sum(_tools_sum(model)),
             func.sum(func.coalesce(model.tokens_in, 0)),
             func.sum(func.coalesce(model.tokens_cached, 0)),
         )
@@ -186,8 +195,9 @@ def _window_models(model: Any, session: Any, lo: Any, counted: Any) -> list[dict
             func.sum(func.coalesce(model.tokens_in, 0)),
             func.sum(func.coalesce(model.tokens_cached, 0)),
             func.sum(func.coalesce(model.tokens_out, 0)),
-            func.sum(func.coalesce(model.tools_ok, 0) + func.coalesce(model.tools_failed, 0)),
+            func.sum(_tools_sum(model)),
             func.sum(func.coalesce(model.tools_failed, 0)),
+            func.sum(func.coalesce(model.tools_skipped, 0)),
             func.sum(func.coalesce(model.cost, 0.0)),
         )
         .where(model.ts >= lo, counted)
@@ -203,7 +213,8 @@ def _window_models(model: Any, session: Any, lo: Any, counted: Any) -> list[dict
             "tokens_out": _int(row[5]),
             "tools": _int(row[6]),
             "tools_failed": _int(row[7]),
-            "cost": _float(row[8]),
+            "tools_skipped": _int(row[8]),
+            "cost": _float(row[9]),
         }
         for row in session.execute(stmt)
     ]
@@ -242,8 +253,9 @@ def _window_users(model: Any, session: Any, lo: Any, counted: Any) -> list[dict[
             func.sum(func.coalesce(model.tokens_in, 0)),
             func.sum(func.coalesce(model.tokens_cached, 0)),
             func.sum(func.coalesce(model.tokens_out, 0)),
-            func.sum(func.coalesce(model.tools_ok, 0) + func.coalesce(model.tools_failed, 0)),
+            func.sum(_tools_sum(model)),
             func.sum(func.coalesce(model.tools_failed, 0)),
+            func.sum(func.coalesce(model.tools_skipped, 0)),
             func.sum(func.coalesce(model.cost, 0.0)),
             func.max(model.ts),
         )
@@ -263,8 +275,9 @@ def _window_users(model: Any, session: Any, lo: Any, counted: Any) -> list[dict[
                 "tokens_out": _int(row[4]),
                 "tools": _int(row[5]),
                 "tools_failed": _int(row[6]),
-                "cost": _float(row[7]),
-                "last_active": _epoch_or_zero(row[8]),
+                "tools_skipped": _int(row[7]),
+                "cost": _float(row[8]),
+                "last_active": _epoch_or_zero(row[9]),
             }
         )
     return out
@@ -292,7 +305,11 @@ def _cards(acc: dict[str, float]) -> dict[str, Any]:
             "avg_per_session": round(acc["cost"] / sessions, 6) if sessions else 0.0,
             "task_portion": round(acc["task_cost"], 6),
         },
-        "tools": {"count": int(acc["tools"]), "failed": int(acc["tools_failed"])},
+        "tools": {
+            "count": int(acc["tools"]),
+            "failed": int(acc["tools_failed"]),
+            "skipped": int(acc["tools_skipped"]),
+        },
         "errors": {"rate": round(acc["failed"] / sessions, 4) if sessions else 0.0},
         "cached": {
             "pct": round(acc["tokens_cached"] / tin, 4) if tin else 0.0,
@@ -323,7 +340,7 @@ def query_usage_stats(
         totals_q = session.query(
             func.sum(case((model.kind == "task", 0), else_=1)), func.min(model.ts),
             func.sum(model.tokens_in), func.sum(model.tokens_cached), func.sum(model.tokens_out),
-            func.sum(func.coalesce(model.tools_ok, 0) + func.coalesce(model.tools_failed, 0)),
+            func.sum(_tools_sum(model)),
             func.sum(model.cost),
         )
         if not include_tasks:
@@ -356,6 +373,7 @@ def query_usage_stats(
             "tokens_out": agg["tokens_out"],
             "tools": agg["tools"],
             "tools_failed": agg["tools_failed"],
+            "tools_skipped": agg["tools_skipped"],
             "cost": round(agg["cost"], 6),
             "avg_cost": round(agg["cost"] / sessions, 6) if sessions else 0.0,
             "share_pct": round(agg["cost"] / total_cost_window * 100, 1) if total_cost_window else 0.0,
@@ -370,6 +388,7 @@ def query_usage_stats(
         "tokens_out": u["tokens_out"],
         "tools": u["tools"],
         "tools_failed": u["tools_failed"],
+        "tools_skipped": u["tools_skipped"],
         "cost": round(u["cost"], 6),
         "last_active": int(u["last_active"]) or None,
     } for u in sorted(grouped_users, key=lambda u: -u["cost"])]

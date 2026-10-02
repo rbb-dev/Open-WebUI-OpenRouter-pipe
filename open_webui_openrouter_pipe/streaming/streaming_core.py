@@ -684,6 +684,7 @@ class StreamingHandler:
         reasoning_stream_active = False
         active_reasoning_item_id: str | None = None
         reasoning_stream_buffers: dict[str, _ReasoningTextBox] = {}
+        reasoning_summary_consumed: dict[str, str] = {}
         reasoning_stream_completed: set[str] = set()
         reasoning_display: dict[str, dict[str, Any]] = {}
         round_saw_function_call = 0
@@ -1126,7 +1127,6 @@ class StreamingHandler:
 
             async def _record_output_item(item: dict[str, Any], current_text: str) -> None:
                 await _capture_seeded_output()
-                _flush_recorded_message(current_text)
                 recorded = copy.deepcopy(item)
                 item_id = recorded.get("id")
                 if item_id:
@@ -1134,6 +1134,7 @@ class StreamingHandler:
                         if existing.get("id") == item_id:
                             emitted_output_items[index] = recorded
                             return
+                _flush_recorded_message(current_text)
                 emitted_output_items.append(recorded)
 
             def _terminal_output_items(current_text: str) -> list[dict[str, Any]]:
@@ -1580,11 +1581,20 @@ class StreamingHandler:
                                 fragments.append(text_val)
                 return "".join(fragments)
 
-            def _append_reasoning_text(key: str, incoming: str, *, allow_misaligned: bool) -> str:
+            def _append_reasoning_text(
+                key: str, incoming: str, *, allow_misaligned: bool, consumed: str = ""
+            ) -> str:
                 """Coalesce cumulative/snapshot reasoning payloads into a single stream without replay."""
                 candidate = (incoming or "")
                 if not candidate:
                     return ""
+                if consumed:
+                    if candidate == consumed or consumed.startswith(candidate):
+                        return ""
+                    if candidate.startswith(consumed):
+                        candidate = candidate[len(consumed) :]
+                        if not candidate:
+                            return ""
                 box = reasoning_stream_buffers.get(key)
                 if box is None or box.length == 0:
                     append = candidate
@@ -1615,6 +1625,24 @@ class StreamingHandler:
                         reasoning_stream_buffers[key] = box
                     box.add(append)
                 return append
+
+            def _append_summary_tail(key: str, raw_text: str) -> str:
+                consumed = reasoning_summary_consumed.get(key, "")
+                if not consumed or not raw_text.startswith(consumed) or len(raw_text) <= len(consumed):
+                    return ""
+                tail = raw_text[len(consumed) :]
+                title_match = re.findall(r"\*\*(.+?)\*\*", tail)
+                title = title_match[-1].strip() if title_match else "Thinking…"
+                content = re.sub(r"\*\*(.+?)\*\*", "", tail).strip()
+                summary = title if not content else f"{title}\n{content}"
+                normalized_summary = _normalize_surrogate_chunk(summary, "reasoning") if summary else ""
+                if not normalized_summary:
+                    return ""
+                box = reasoning_stream_buffers.get(key)
+                delivered = box.text() if box is not None else ""
+                return _append_reasoning_text(
+                    key, delivered + normalized_summary, allow_misaligned=False
+                )
 
             def _reasoning_display_state(key: str) -> dict[str, Any]:
                 state = reasoning_display.get(key)
@@ -1710,7 +1738,6 @@ class StreamingHandler:
                     "ended_at": time.time(),
                     "duration": duration,
                 }
-                await _publish_pending_message(current_text)
                 await _record_output_item(reasoning_item, current_text)
                 reasoning_index = _output_index(reasoning_item)
                 tail = text[published:]
@@ -2052,6 +2079,7 @@ class StreamingHandler:
                     await _close_and_emit_reasoning_items(assistant_message)
                     active_reasoning_item_id = None
                     reasoning_stream_buffers.pop("__reasoning__", None)
+                    reasoning_summary_consumed.pop("__reasoning__", None)
                     reasoning_stream_completed.discard("__reasoning__")
                     reasoning_display.pop("__reasoning__", None)
                     calls_in_this_round = 0
@@ -2510,11 +2538,11 @@ class StreamingHandler:
 
                     # --- Emit reasoning summary once done -----------------------
                     if etype == "response.reasoning_summary_text.done":
-                        text = (event.get("text") or "").strip()
-                        if text:
-                            title_match = re.findall(r"\*\*(.+?)\*\*", text)
+                        raw_text = (event.get("text") or "").strip()
+                        if raw_text:
+                            title_match = re.findall(r"\*\*(.+?)\*\*", raw_text)
                             title = title_match[-1].strip() if title_match else "Thinking…"
-                            content = re.sub(r"\*\*(.+?)\*\*", "", text).strip()
+                            content = re.sub(r"\*\*(.+?)\*\*", "", raw_text).strip()
                             summary = title if not content else f"{title}\n{content}"
                             if event_emitter:
                                 note_model_activity()
@@ -2530,7 +2558,10 @@ class StreamingHandler:
                                             normalized_summary,
                                             allow_misaligned=False,
                                         )
+                                    if not append:
+                                        append = _append_summary_tail(key, raw_text)
                                     if append:
+                                        reasoning_summary_consumed[key] = raw_text
                                         note_generation_activity()
                                         reasoning_stream_active = True
                                         display_state = _reasoning_display_state(key)
@@ -3132,6 +3163,7 @@ class StreamingHandler:
                                     key,
                                     normalized_snapshot,
                                     allow_misaligned=True,
+                                    consumed=reasoning_summary_consumed.get(key, ""),
                                 )
                             if append:
                                 reasoning_stream_active = True

@@ -437,6 +437,7 @@ class SessionTracker:
             "tokens_cached": int(entry.get("tcached") or 0),
             "tools_ok": counts["tools_ok"],
             "tools_failed": counts["tools_failed"],
+            "tools_skipped": counts["tools_skipped"],
             "retries": int(entry.get("retries") or 0),
             "cost": float(entry.get("cost") or 0.0),
             "cache_savings": float(entry.get("savings") or 0.0),

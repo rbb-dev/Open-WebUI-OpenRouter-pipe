@@ -31,7 +31,7 @@ from collections import OrderedDict, defaultdict, deque
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 # External dependencies
 from cryptography.fernet import Fernet, InvalidToken
@@ -362,6 +362,39 @@ def _copy_payload(value: Any) -> Any:
     return value
 
 
+def _payload_is_json_native(value: Any) -> bool:
+    seen: set[int] = set()
+    stack: list[Any] = [value]
+    while stack:
+        node = stack.pop()
+        node_type = type(node)
+        if node is None or node_type in (bool, int, float, str):
+            continue
+        if node_type is dict:
+            if id(node) in seen:
+                return False
+            seen.add(id(node))
+            for key, item in node.items():
+                if type(key) is not str:
+                    return False
+                stack.append(item)
+            continue
+        if node_type is list:
+            if id(node) in seen:
+                return False
+            seen.add(id(node))
+            stack.extend(node)
+            continue
+        return False
+    return True
+
+
+def _load_result(
+    payloads: dict[str, dict], producers: dict[str, str], with_producers: bool
+) -> dict[str, dict] | tuple[dict[str, dict], dict[str, str]]:
+    return (payloads, producers) if with_producers else payloads
+
+
 # ArtifactStore Class
 
 
@@ -472,7 +505,12 @@ class ReplyMemory:
         return self._key(chat_id, message_id) in self._replies
 
     def hold(self, rows: list[dict[str, Any]]) -> list[str]:
-        prepared = [(row, json.loads(json.dumps(row.get("payload"), default=str))) for row in rows]
+        prepared = [
+            (row, _copy_payload(payload) if _payload_is_json_native(payload)
+             else json.loads(json.dumps(payload, default=str)))
+            for row in rows
+            for payload in (row.get("payload"),)
+        ]
         sized = [(row, payload, _retained_bytes(payload)) for row, payload in prepared]
         with self._lock:
             return self._hold(sized)
@@ -2186,6 +2224,8 @@ class ArtifactStore:
         item_ids: list[str],
         sealed: set[str] | None = None,
         unreadable: dict[str, str] | None = None,
+        *,
+        producers: dict[str, str] | None = None,
     ) -> dict[str, dict]:
         """Synchronously fetch persisted artifacts for ``chat_id``."""
         if not item_ids or not self._item_model or not self._session_factory:
@@ -2258,7 +2298,32 @@ class ArtifactStore:
                     sealed.add(row.id)
             if isinstance(payload, dict):
                 results[row.id] = payload
+                model_id = getattr(row, "model_id", None)
+                if producers is not None and isinstance(model_id, str):
+                    producers[row.id] = model_id
         return results
+
+    @overload
+    async def _db_fetch(
+        self,
+        chat_id: str | None,
+        message_id: str | None,
+        item_ids: list[str],
+        *,
+        reply_id: str | None = None,
+        with_producers: Literal[False] = False,
+    ) -> dict[str, dict]: ...
+
+    @overload
+    async def _db_fetch(
+        self,
+        chat_id: str | None,
+        message_id: str | None,
+        item_ids: list[str],
+        *,
+        reply_id: str | None = None,
+        with_producers: Literal[True],
+    ) -> tuple[dict[str, dict], dict[str, str]]: ...
 
     @timed
     async def _db_fetch(
@@ -2268,16 +2333,26 @@ class ArtifactStore:
         item_ids: list[str],
         *,
         reply_id: str | None = None,
-    ) -> dict[str, dict]:
+        with_producers: bool = False,
+    ) -> dict[str, dict] | tuple[dict[str, dict], dict[str, str]]:
         """Fetch artifacts with Redis cache + retries."""
         if not (chat_id and item_ids):
-            return {}
+            return _load_result({}, {}, with_producers)
         if is_temporary_chat(chat_id):
-            return await asyncio.to_thread(self._reply_memory.read, chat_id, reply_id, item_ids)
+            return _load_result(
+                await asyncio.to_thread(self._reply_memory.read, chat_id, reply_id, item_ids),
+                {},
+                with_producers,
+            )
 
+        producers: dict[str, str] = {}
+        wanted: dict[str, str] | None = producers if with_producers else None
         cached: dict[str, dict] = {}
         if self._redis_enabled:
-            cached = await self._redis_fetch_rows(chat_id, item_ids, message_id=message_id)
+            cached = await self._redis_fetch_rows(
+                chat_id, item_ids, message_id=message_id,
+                **({} if wanted is None else {"producers": wanted}),
+            )
             cache_hit_ids = list(cached)
             missing_ids = [item_id for item_id in item_ids if item_id not in cached]
         else:
@@ -2287,7 +2362,7 @@ class ArtifactStore:
         unreadable: dict[str, str] = {}
         if not missing_ids:
             await self._touch_cached(chat_id, message_id, list(cached))
-            return cached
+            return _load_result(cached, producers, with_producers)
 
         if not self._artifact_store_ready():
             self.logger.warning(
@@ -2301,7 +2376,7 @@ class ArtifactStore:
                     "Earlier tool results could not be loaded, so the model did not receive them.",
                     level="warning",
                 )
-            return cached
+            return _load_result(cached, producers, with_producers)
 
         from open_webui_openrouter_pipe.core.logging_system import SessionLogger
 
@@ -2319,12 +2394,13 @@ class ArtifactStore:
                     "DB ops skipped due to repeated errors.",
                     level="warning",
                 )
-            return cached
+            return _load_result(cached, producers, with_producers)
 
         try:
             sealed: set[str] = set()
             fetched = await self._db_fetch_direct(
-                chat_id, message_id, missing_ids, sealed, unreadable
+                chat_id, message_id, missing_ids, sealed, unreadable,
+                **({} if wanted is None else {"producers": wanted}),
             )
         except Exception as exc:
             self._record_db_failure(user_id)
@@ -2369,7 +2445,7 @@ class ArtifactStore:
         if unreadable:
             await self._note_unreadable_rows(unreadable)
         await self._touch_cached(chat_id, message_id, cache_hit_ids)
-        return cached
+        return _load_result(cached, producers, with_producers)
 
     async def _note_unreadable_rows(self, unreadable: dict[str, str]) -> None:
         context = self._TOOL_CONTEXT.get() if self._TOOL_CONTEXT else None
@@ -2396,6 +2472,8 @@ class ArtifactStore:
         item_ids: list[str],
         sealed: set[str] | None = None,
         unreadable: dict[str, str] | None = None,
+        *,
+        producers: dict[str, str] | None = None,
     ) -> dict[str, dict]:
         retryer = AsyncRetrying(
             stop=stop_after_attempt(3),
@@ -2407,7 +2485,8 @@ class ArtifactStore:
         async for attempt in retryer:
             with attempt:
                 fetch_call = functools.partial(
-                    self._db_fetch_sync, chat_id, message_id, item_ids, sealed, unreadable
+                    self._db_fetch_sync, chat_id, message_id, item_ids, sealed, unreadable,
+                    **({} if producers is None else {"producers": producers}),
                 )
                 return await loop.run_in_executor(self._db_executor, fetch_call)
         return {}
@@ -3045,6 +3124,7 @@ class ArtifactStore:
         item_ids: list[str],
         *,
         message_id: str | None = None,
+        producers: dict[str, str] | None = None,
     ) -> dict[str, dict[str, Any]]:
         if not (self._redis_enabled and self._redis_client and chat_id and item_ids):
             return {}
@@ -3066,8 +3146,11 @@ class ArtifactStore:
         except Exception as exc:
             self.logger.warning("Redis read failed, falling back to DB: %s", exc, exc_info=True)
             return {}
+        row_producers: dict[str, str] = {}
         cached, encrypted_rows = await asyncio.to_thread(
-            self._cached_rows_from_values, id_lookup, values, message_id
+            functools.partial(
+                self._cached_rows_from_values, id_lookup, values, message_id, row_producers
+            )
         )
         decrypted: dict[str, dict[str, Any]] = {}
         if encrypted_rows:
@@ -3075,6 +3158,8 @@ class ArtifactStore:
         for item_id, payload in decrypted.items():
             if isinstance(payload, dict):
                 cached[item_id] = payload
+        if producers is not None and row_producers:
+            producers.update(row_producers)
         return cached
 
     def _cached_rows_from_values(
@@ -3082,6 +3167,7 @@ class ArtifactStore:
         id_lookup: list[str],
         values: Any,
         message_id: str | None,
+        producers: dict[str, str] | None = None,
     ) -> tuple[dict[str, dict[str, Any]], list[tuple[str, Any]]]:
         cached: dict[str, dict[str, Any]] = {}
         encrypted_rows: list[tuple[str, Any]] = []
@@ -3114,6 +3200,9 @@ class ArtifactStore:
                 payload = None
             if isinstance(payload, dict):
                 cached[item_id] = payload
+                model_id = row_data.get("model_id") if isinstance(row_data, dict) else None
+                if producers is not None and isinstance(model_id, str):
+                    producers[item_id] = model_id
         return cached, encrypted_rows
 
     def _decrypt_many(

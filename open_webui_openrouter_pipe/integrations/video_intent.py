@@ -29,7 +29,7 @@ from ..core.utils import (
     _serialize_kind_marker,
 )
 from ..requests.fusion_engine import latest_user_text
-from ..storage.owui_files import is_temporary_chat
+from ..storage.owui_files import chat_latch_key
 from ..structured_task import (
     build_response_format_for_model,
     call_with_candidates,
@@ -67,17 +67,11 @@ VIDEO_MODEL_MARKER = "videomodel"
 
 _NO_TASK_MODEL_LATCH_WINDOW = 300
 
-_NO_TASK_MODEL_NO_CHAT_KEY = "__no_chat_id__"
-
 _warned_no_task_model: OrderedDict[str, None] = OrderedDict()
 
 
 def _no_task_model_latch_key(chat_id: Any) -> str:
-    if not isinstance(chat_id, str) or not chat_id:
-        return _NO_TASK_MODEL_NO_CHAT_KEY
-    if is_temporary_chat(chat_id):
-        return ""
-    return chat_id
+    return chat_latch_key(chat_id)
 
 
 def _no_task_model_warn_level(chat_id: Any) -> int:

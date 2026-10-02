@@ -307,7 +307,11 @@ class ResponsesBody(BaseModel):
         *,
         user_obj: Any | None = None,
         event_emitter: Callable | None = None,
-        artifact_loader: Callable[[str | None, str | None, list[str]], Awaitable[dict[str, dict[str, Any]]]] | None = None,
+        artifact_loader: Callable[
+            [str | None, str | None, list[str]],
+            Awaitable[dict[str, dict[str, Any]] | tuple[dict[str, dict[str, Any]], dict[str, str]]],
+        ]
+        | None = None,
         pruning_turns: int = 0,
         transformer_context: Any | None = None,
         transformer_valves: Pipe.Valves | None = None,

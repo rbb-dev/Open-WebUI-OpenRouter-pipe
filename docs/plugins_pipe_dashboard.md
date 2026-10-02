@@ -19,7 +19,7 @@ Selecting the **Pipe Dashboard** model in Open WebUI turns the chat box into an 
 
 The dashboard is part of the pipe's plugin system, which ships off. Two valves switch it on, in order:
 
-1. `ENABLE_PLUGIN_SYSTEM` — the master switch for the plugin system (default: off). Set it on before any plugin loads. The action route reads it from the persisted valve row on every request, so committing it off closes the route on every worker without a restart, and a row the store will not hand back refuses rather than serving the in-memory copy.
+1. `ENABLE_PLUGIN_SYSTEM` — the master switch for the plugin system (default: off). Set it on before any plugin loads. It is a core pipe valve, so it lives in Open WebUI's Workspace > Functions and not in this dashboard's Config tab — which the same switch closes. The action route reads it from the persisted valve row on every request, so committing it off closes the route on every worker without a restart, and a row the store will not hand back refuses rather than serving the in-memory copy.
 2. `PIPE_DASHBOARD_ENABLE` — adds the Pipe Dashboard model to the selector. Read from the persisted valve row on every request, for the same reason.
 
 Three admin valves control the feature. They appear in Open WebUI's Settings once the plugin system is enabled.
@@ -27,7 +27,7 @@ Three admin valves control the feature. They appear in Open WebUI's Settings onc
 | Valve | Type | Default | What it does |
 |-------|------|---------|--------------|
 | `PIPE_DASHBOARD_ENABLE` | bool | `False` | Shows or hides the Pipe Dashboard model in the model selector, and closes the console behind it: with it off the action route answers 404, new dashboard subscriptions are refused, and viewers already watching are dropped so the live feed stops. The dashboard's own row in Open WebUI's Models table is switched off and on with this valve as well, and claims the off in its metadata, so Settings -> Models and Settings -> Interface never list it as enabled while every gate behind it answers 404. Read from the stored row at the model list, the route, the subscription and the emit, so a toggle takes effect on the very next request on every worker, with no restart -- including on workers that never served a chat; a row the store will not hand back refuses rather than serving the worker's in-memory copy. A row that cannot be read is treated as off, and so is a row that omits the key: the Config-tab writer drops any field equal to its declared default, and that default is `False`. Viewers already connected are evicted as part of the same switch, from the dashboard's own Config tab as well as from Open WebUI's function editor. |
-| `PIPE_DASHBOARD_USAGE_COLLECT` | bool | `False` | Records one usage entry per completed request (user, model, tokens, tools, cost) to power the Usage tab. Read from the stored settings at write time: turning it on starts recording without a restart, and so does turning it off -- on every worker, including one that has served no request, and for the background sweep's rows as well as the request path's. A stored configuration that cannot be read at all counts as off, as does one that does not carry the key. |
+| `PIPE_DASHBOARD_USAGE_COLLECT` | bool | `False` | Records one usage entry per completed request (user, model, tokens, tool success/failure/skip counts, cost) to power the Usage tab. Read from the stored settings at write time: turning it on starts recording without a restart, and so does turning it off -- on every worker, including one that has served no request, and for the background sweep's rows as well as the request path's. A stored configuration that cannot be read at all counts as off, as does one that does not carry the key. |
 | `PIPE_DASHBOARD_USAGE_RETENTION_DAYS` | int | `30` | How long usage records are kept. A background purge removes older records. Read live, from the stored valve row rather than the worker's in-memory copy, so the purge and the Usage tab always report the same window, falling back to this default when they cannot be read at all. |
 
 ---
@@ -87,11 +87,11 @@ The Usage tab needs `PIPE_DASHBOARD_USAGE_COLLECT` on. Without it, the tab shows
 
 With collection on, the tab presents:
 
-- **Metric cards** — Sessions, Tokens, Cost, Tools, Errors, and Cached input, each with a change chip against the previous period of equal length and a per-bucket sparkline. On Errors and Cached input the sparkline plots the card's own rate — the bucket's error rate and the bucket's cached-input percentage — so the line and the headline are the same quantity; a bucket with no sessions in it plots 0%.
+- **Metric cards** — Sessions, Tokens, Cost, Tools, Errors, and Cached input, each with a change chip against the previous period of equal length and a per-bucket sparkline. On Errors and Cached input the sparkline plots the card's own rate — the bucket's error rate and the bucket's cached-input percentage — so the line and the headline are the same quantity; a bucket with no sessions in it plots 0%. The Tools card counts every tool call the pipe ran, succeeded, failed **or skipped**, and carries the skip figure separately so it can be read without subtracting: a skipped call is a wait, not an error, so it never enters the error rate.
 - **Resource cards** — live CPU, Memory, and Disk.
 - **Usage trend** — a chart with two lines per bucket: tokens (left axis) and cost (right axis), with a hover tooltip and a timezone-aware range caption.
 - **By model** — cost share per model. Each task-model appears as its own `model (tasks)` row with its own cost.
-- **By user** — sorted by cost, showing the top 10 with an "N others" roll-up. Search and column-sort reach every user, including those inside the roll-up. A pinned **Totals** row at the bottom sums the visible rows (sessions, tokens, tools, cost).
+- **By user** — sorted by cost, showing the top 10 with an "N others" roll-up. Search and column-sort reach every user, including those inside the roll-up. A pinned **Totals** row at the bottom sums the visible rows (sessions, tokens, tools, cost), tools including the skipped calls the per-user rows each show.
 
 Select a range: 1h, 6h, 24h, 7d, or 30d. Ranges longer than the retention window are disabled. A footnote shows the collection-start date, the retention window, and the record count.
 

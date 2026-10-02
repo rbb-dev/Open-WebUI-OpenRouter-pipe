@@ -107,6 +107,7 @@ REASONING_FOLLOWING_ORDINAL_KEY = "_anchor_following_call_ordinal"
 REASONING_PRECEDING_ORDINAL_KEY = "_anchor_preceding_call_ordinal"
 REASONING_TEXT_ORDINAL_KEY = "_anchor_text_ordinal"
 REASONING_FOLLOWING_SERVER_ITEM_KEY = "_anchor_following_server_item"
+_ROW_MODEL_KEY = "_row_model"
 TOOL_ROUND_SKELETON_KEY = "_anchor_tool_round_skeleton"
 PIPE_ONLY_TOOL_ROUND_KEY = "_anchor_pipe_only_tool_round"
 BUILTIN_ASK_USER_ROUND_KEY = "_anchor_builtin_ask_user"
@@ -128,6 +129,7 @@ REASONING_ANCHOR_KEYS = (
     REASONING_PRECEDING_ORDINAL_KEY,
     REASONING_TEXT_ORDINAL_KEY,
     REASONING_FOLLOWING_SERVER_ITEM_KEY,
+    _ROW_MODEL_KEY,
 )
 
 

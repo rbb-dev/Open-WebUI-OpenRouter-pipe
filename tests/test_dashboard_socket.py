@@ -87,9 +87,7 @@ class _FunctionModel(pydantic.BaseModel):
 
 
 async def _build(rows, *, content="# source\\n" + "y" * 200_000):
-    import tempfile
-
-    path = os.path.join(tempfile.mkdtemp(), "function.db")
+    path = os.path.join(os.environ["ORPIPE_PROBE_TMPDIR"], "function.db")
     engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -1153,7 +1151,7 @@ class TestReadConfigRev:
     """
 
     @staticmethod
-    def _run(body: str) -> None:
+    def _run(tmp_path, body: str) -> None:
         import os
         import subprocess
         import textwrap
@@ -1166,7 +1164,8 @@ class TestReadConfigRev:
             capture_output=True,
             text=True,
             cwd=str(project_root),
-            env={**os.environ, "PYTHONPATH": str(project_root), "WEBUI_SECRET_KEY": "probe"},
+            env={**os.environ, "PYTHONPATH": str(project_root), "WEBUI_SECRET_KEY": "probe",
+                 "ORPIPE_PROBE_TMPDIR": str(tmp_path)},
             timeout=300,
             check=False,
         )
@@ -1176,7 +1175,7 @@ class TestReadConfigRev:
         )
 
     @pytest.mark.parametrize("rev", [1717171717, 1828282828])
-    def test_it_returns_the_rows_updated_at(self, rev):
+    def test_it_returns_the_rows_updated_at(self, tmp_path, rev):
         """Two revisions, because one is satisfied by returning that constant.
 
         Verified: with a single case, replacing the body with `return 1717171717`
@@ -1186,6 +1185,7 @@ class TestReadConfigRev:
         the column list rather than on the value, which is the point.
         """
         self._run(
+            tmp_path,
             f"""
             async def main():
                 engine = await _build([("openrouter", {rev}), ("other", 9999)])
@@ -1213,9 +1213,10 @@ class TestReadConfigRev:
             """
         )
 
-    def test_it_is_none_when_the_row_is_missing(self):
+    def test_it_is_none_when_the_row_is_missing(self, tmp_path):
         """Needed alongside the case above: alone, either is satisfied by a constant."""
         self._run(
+            tmp_path,
             """
             async def main():
                 engine = await _build([("other", 9999)])
@@ -1228,8 +1229,9 @@ class TestReadConfigRev:
             """
         )
 
-    def test_it_is_none_when_the_lookup_raises(self):
+    def test_it_is_none_when_the_lookup_raises(self, tmp_path):
         self._run(
+            tmp_path,
             """
             async def main():
                 async with _raising():

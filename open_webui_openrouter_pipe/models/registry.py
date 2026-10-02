@@ -424,6 +424,7 @@ class OpenRouterModelRegistry:
     _last_error: str | None = None
     _last_error_time: float = 0.0
     _name_map: ClassVar[dict[str, str] | None] = None
+    _enriched_cache: ClassVar[Any] = None
     _chat_content_digest: str = ""
     _video_content_digest: str = ""
     _image_content_digest: str = ""
@@ -518,6 +519,7 @@ class OpenRouterModelRegistry:
         cls._zdr_model_ids = cls._zdr_roster_for(api_key)
         for norm_id, spec in cls._specs.items():
             cls._stamp_zdr_capable(spec, norm_id, cls._zdr_model_ids, cls._specs)
+        cls._enriched_cache = None
 
     @classmethod
     def _catalog_lock(cls) -> asyncio.Lock:
@@ -941,8 +943,14 @@ class OpenRouterModelRegistry:
         }
 
     @classmethod
-    def list_models(cls) -> list[dict[str, Any]]:
-        """Return a shallow copy of the cached catalog."""
+    def _enriched_models(cls) -> list[dict[str, Any]]:
+        cached = cls._enriched_cache
+        if (
+            cached is not None
+            and cached[0] is cls._models
+            and cached[1] is cls._specs
+        ):
+            return cached[2]
         enriched: list[dict[str, Any]] = []
         for model in cls._models:
             item = dict(model)
@@ -952,7 +960,19 @@ class OpenRouterModelRegistry:
             if spec and "zdr_capable" in spec:
                 item["zdr_capable"] = spec["zdr_capable"]
             enriched.append(item)
+        cls._enriched_cache = (cls._models, cls._specs, enriched)
         return enriched
+
+    @classmethod
+    def list_models(cls) -> list[dict[str, Any]]:
+        published: list[dict[str, Any]] = []
+        for item in cls._enriched_models():
+            copy = dict(item)
+            capabilities = copy.get("capabilities")
+            if isinstance(capabilities, dict):
+                copy["capabilities"] = dict(capabilities)
+            published.append(copy)
+        return published
 
     _last_video_fetch: float = 0.0
     _last_video_attempt: float = 0.0

@@ -89,7 +89,7 @@ def test_usage_tab_markers():
                    "-us-refresh", "Auto-refresh", "usScheduleRefresh",
                    "tok3(r.tokens_in, r.tokens_cached, r.tokens_out)",
                    "cached input tokens shown in the middle",
-                   "fmtTok(cards.tokens.cached)", "toolsCell(r.tools, r.tools_failed)"):
+                   "fmtTok(cards.tokens.cached)", "toolsCell(r.tools, r.tools_failed, r.tools_skipped)"):
         assert marker in html
 
 
