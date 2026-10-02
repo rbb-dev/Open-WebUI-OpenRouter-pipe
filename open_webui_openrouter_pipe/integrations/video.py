@@ -109,6 +109,8 @@ from .video_intent import (
     should_emit_confirmation_footer,
 )
 from .video_types import (
+    _MAX_INPUT_REFERENCES,
+    _MAX_PASSTHROUGH_URLS,
     DownloadedVideo,
     VideoGenerationError,
     VideoGenerationStalled,
@@ -123,8 +125,6 @@ _warned_video_provider_keys: set[str] = set()
 _warned_reference_scope: set[str] = set()
 
 _warned_reference_scope_entry: set[str] = set()
-
-_MAX_PASSTHROUGH_URLS = 16
 
 _MAX_PROBE_ATTEMPTS_PER_FILE = 2
 
@@ -617,8 +617,6 @@ _WITHHELD_BLOCK_REGION_RE = re.compile(
 )
 
 _WITHHELD_RECORD = "> **Not sent with this video:** {items}\n"
-
-_MAX_INPUT_REFERENCES = 16
 
 _OVER_REFERENCE_COUNT = (
     f"only the first {_MAX_INPUT_REFERENCES} attachments in one request are sent as "

@@ -43,6 +43,7 @@ from open_webui_openrouter_pipe.filters.filter_manager import (
     _offered_web_tools,
 )
 from open_webui_openrouter_pipe.models.registry import ModelFamily, OpenRouterModelRegistry
+from tests.vetting_helpers import owui_source
 
 _STANDALONE_PATH = Path(__file__).resolve().parents[1] / "filters" / "openrouter_web_tools.py"
 

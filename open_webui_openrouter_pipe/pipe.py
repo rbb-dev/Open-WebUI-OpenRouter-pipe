@@ -129,6 +129,7 @@ except ImportError:
 from .api.gateway.responses_adapter import _drop_backlog_latch, _FailureCharge
 from .core.circuit_breaker import CircuitBreaker
 from .core.config import (
+    _DIRECT_UPLOADS_FILTER_MARKER,
     _OPENROUTER_CATEGORIES,
     _OPENROUTER_TITLE,
     _PIPE_RUNTIME_ID,
@@ -1152,6 +1153,42 @@ class Pipe:
         if isinstance(blob, Mapping):
             return json.dumps(blob, sort_keys=True, default=str)
         return ""
+
+    async def _stored_direct_uploads_valves(self) -> tuple[dict[str, Any], bool]:
+        try:
+            from open_webui.models.functions import Functions
+
+            rows = await _await_if_needed(
+                Functions.get_functions_by_type("filter", active_only=False)
+            )
+            from .filters.filter_manager import _newest_marked_row
+
+            picked = _newest_marked_row(
+                rows,
+                _DIRECT_UPLOADS_FILTER_MARKER,
+                owner=self.id,
+                tie_break_id=True,
+            )
+            row_id = str(getattr(picked, "id", "") or "")
+            if not row_id:
+                return {}, True
+            stored = await _await_if_needed(Functions.get_function_valves_by_id(row_id))
+        except Exception:
+            self.logger.log(
+                warn_level(_warned_user_valves, "direct_uploads_row"),
+                "Could not read the stored Direct Uploads filter valves; the direct "
+                "audio format gate refuses rather than trusting the request metadata",
+                exc_info=True,
+            )
+            return {}, False
+        if not isinstance(stored, Mapping):
+            self.logger.log(
+                warn_level(_warned_user_valves, "direct_uploads_row"),
+                "The stored Direct Uploads filter valves are not a mapping; the direct "
+                "audio format gate refuses rather than trusting the request metadata",
+            )
+            return {}, False
+        return dict(stored), True
 
     async def _read_user_valves(self, __user__: dict[str, Any]) -> tuple[Any, list[str]]:
         """The one place a request turns `__user__` into (UserValves, rejected).

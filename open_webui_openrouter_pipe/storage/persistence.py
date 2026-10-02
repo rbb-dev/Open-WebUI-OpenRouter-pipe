@@ -3277,6 +3277,70 @@ class ArtifactStore:
         )
         return (None, None) if row is None else (row[0], row[1])
 
+    def _retired_artifact_tables(self) -> list[str]:
+        if not (self._artifact_table_name and self._item_model and self._engine):
+            return []
+        schema = self._item_model.__table__.schema
+        prefix = self._artifact_table_name.rsplit("_", 1)[0] + "_"
+        try:
+            names = sa_inspect(self._engine).get_table_names(schema=schema)
+        except Exception:
+            self.logger.warning(
+                "Retired artifact table lookup failed; no retired table is swept on this pass",
+                exc_info=True,
+            )
+            return []
+        return [
+            name
+            for name in names
+            if name != self._artifact_table_name
+            and name.startswith(prefix)
+            and re.fullmatch(r"[0-9a-f]{8}", name[len(prefix):])
+        ]
+
+    def _purge_retired_table(self, name: str, cutoff: datetime.datetime) -> None:
+        engine = self._engine
+        session_factory = self._session_factory
+        item_model = self._item_model
+        if not (engine and session_factory and item_model):
+            return
+        schema = item_model.__table__.schema
+        try:
+            if not sa_inspect(engine).has_table(name, schema=schema):
+                return
+            metadata = MetaData()
+            table = Table(name, metadata, autoload_with=engine, schema=schema)
+            model = type(
+                f"RetiredItem_{name.rsplit('_', 1)[-1][:8]}",
+                (declarative_base(metadata=metadata),),
+                {"__table__": table},
+            )
+            with _db_session(session_factory) as session:
+                removed = (
+                    session.query(model)
+                    .filter(self._artifact_retention_filter(model, cutoff))
+                    .delete(synchronize_session=False)
+                )
+                left_by_temporary_chats = sum(
+                    session.query(model)
+                    .filter(*_temporary_chat_chat_id_conditions(model.chat_id, prefix))
+                    .delete(synchronize_session=False)
+                    for prefix in temporary_chat_prefixes()
+                )
+                session.commit()
+            self.logger.info(
+                "Swept retired artifact table %s: removed %s row(s) past %s and %s row(s) "
+                "left by temporary chats",
+                name,
+                removed,
+                cutoff,
+                left_by_temporary_chats,
+            )
+        except Exception:
+            self.logger.warning(
+                "Sweeping retired artifact table %s failed", name, exc_info=True
+            )
+
     @timed
     def _cleanup_sync(self, cutoff: datetime.datetime) -> None:
         if not (self._session_factory and self._item_model):
@@ -3307,6 +3371,15 @@ class ArtifactStore:
                     ulid_lo,
                     ulid_hi,
                 )
+        if self._artifact_key_unreadable:
+            self.logger.info(
+                "ARTIFACT_ENCRYPTION_KEY cannot be read, so no retired artifact table is "
+                "swept on this pass: with the unreadable-key table name this worker cannot "
+                "tell its own retired tables from another configuration's"
+            )
+        else:
+            for retired_table in self._retired_artifact_tables():
+                self._purge_retired_table(retired_table, cutoff)
 
 
     def _db_breaker_allows(self, user_id: str) -> bool:

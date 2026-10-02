@@ -155,6 +155,17 @@ def collect_model_registry(pipe: Any = None) -> dict[str, Any]:
     }
 
 
+def _summed_figure(values: Any) -> int:
+    total = 0
+    try:
+        for value in values.values():
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                total += value
+    except (AttributeError, TypeError, RuntimeError):
+        return 0
+    return total
+
+
 def collect_medium_stats(pipe: Pipe) -> dict[str, Any]:
     """Model catalog health + system health indicators."""
     stats: dict[str, Any] = {}
@@ -206,11 +217,16 @@ def collect_medium_stats(pipe: Pipe) -> dict[str, Any]:
 
     log_buffers = 0
     log_events = 0
+    log_bytes_buffered = 0
+    log_records_shed = 0
     try:
         from ...core.logging_system import SessionLogger
 
-        log_buffers = len(SessionLogger.logs)
-        log_events = sum(len(dq) for dq in SessionLogger.logs.values())
+        with SessionLogger._state_lock:
+            log_buffers = len(SessionLogger.logs)
+            log_events = sum(len(dq) for dq in SessionLogger.logs.values())
+            log_bytes_buffered = _summed_figure(SessionLogger.log_bytes)
+            log_records_shed = _summed_figure(SessionLogger.log_records_shed)
     except (ImportError, AttributeError, RuntimeError):
         pass
 
@@ -223,6 +239,8 @@ def collect_medium_stats(pipe: Pipe) -> dict[str, Any]:
         "log_worker": log_worker,
         "log_buffers": log_buffers,
         "log_events_buffered": log_events,
+        "log_bytes_buffered": log_bytes_buffered,
+        "log_records_shed": log_records_shed,
         "redis_enabled": getattr(pipe, "_redis_enabled", False),
         "redis_connected": getattr(pipe, "_redis_client", None) is not None,
     }

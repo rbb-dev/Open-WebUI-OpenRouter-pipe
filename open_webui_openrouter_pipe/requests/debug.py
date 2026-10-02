@@ -13,7 +13,7 @@ import json
 import logging
 from typing import Any
 
-from ..core.logging_system import SessionLogger
+from ..core.logging_system import SessionLogger, bounded_log_record_text
 
 
 def _debug_print_request(
@@ -40,10 +40,16 @@ def _debug_print_request(
                 redacted_headers[key] = f"{token[:10]}..." if len(token) > 10 else "***"
             elif lowered in forwarded:
                 redacted_headers[key] = "***"
-        logger.debug("OpenRouter request headers: %s", json.dumps(redacted_headers, indent=2))
+        logger.debug(
+            "OpenRouter request headers: %s",
+            bounded_log_record_text(json.dumps(redacted_headers, indent=2)),
+        )
         if payload is not None:
             redacted_payload = _redact_payload_blobs(payload)
-            logger.debug("OpenRouter request payload: %s", json.dumps(redacted_payload, indent=2))
+            logger.debug(
+                "OpenRouter request payload: %s",
+                bounded_log_record_text(json.dumps(redacted_payload, indent=2)),
+            )
     except Exception:
         # Never allow debug logging helpers to break request handling.
         logger.debug("OpenRouter request debug logging failed", exc_info=True)
@@ -57,7 +63,10 @@ def _debug_print_response(payload: Any, *, logger: logging.Logger) -> None:
         return
     try:
         redacted = _redact_payload_blobs(payload) if isinstance(payload, dict) else payload
-        logger.debug("OpenRouter response payload: %s", json.dumps(redacted, indent=2, ensure_ascii=False))
+        logger.debug(
+            "OpenRouter response payload: %s",
+            bounded_log_record_text(json.dumps(redacted, indent=2, ensure_ascii=False)),
+        )
     except Exception:
         logger.debug("OpenRouter response debug logging failed", exc_info=True)
 
@@ -113,7 +122,10 @@ async def _debug_print_error_response(resp: Any, *, logger: logging.Logger) -> s
             "url": str(getattr(resp, "url", "")),
             "body": _scrubbed_error_body(text),
         }
-        logger.debug("OpenRouter error response: %s", json.dumps(payload, indent=2, ensure_ascii=False))
+        logger.debug(
+            "OpenRouter error response: %s",
+            bounded_log_record_text(json.dumps(payload, indent=2, ensure_ascii=False)),
+        )
         return text
     except Exception:
         logger.debug("OpenRouter error response debug logging failed", exc_info=True)

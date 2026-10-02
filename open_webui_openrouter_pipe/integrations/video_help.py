@@ -4,8 +4,12 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from .image_help import OPENROUTER_PRICING
-from .image_types import PROVIDER_OPTIONS_DESCRIPTION
-from .video_types import VIDEO_REQ_KEY_DESCRIPTION
+from .image_types import PROVIDER_OPTIONS_DESCRIPTION, format_modality_kinds
+from .video_types import (
+    _MAX_INPUT_REFERENCES,
+    _MAX_PASSTHROUGH_URLS,
+    VIDEO_REQ_KEY_DESCRIPTION,
+)
 
 if TYPE_CHECKING:
     from ..filters.video_filter_renderer import VideoFilterSpec
@@ -1038,15 +1042,6 @@ def _format_frames_capability(supported_frames: Any) -> str:
     return csv
 
 
-_INPUT_KIND_WORDS = {
-    "text": "a written prompt",
-    "image": "an image",
-    "audio": "an audio track",
-    "video": "a video clip",
-    "file": "a document",
-}
-
-
 def _help_input_kinds(model: dict[str, Any]) -> list[str]:
     declared = model.get("input_modalities")
     if not isinstance(declared, list):
@@ -1058,17 +1053,7 @@ def _help_input_kinds(model: dict[str, Any]) -> list[str]:
 
 
 def _format_accepted_inputs(model: dict[str, Any]) -> str:
-    kinds = _help_input_kinds(model)
-    if not kinds:
-        return "not published"
-    known = [_INPUT_KIND_WORDS[kind] for kind in _INPUT_KIND_WORDS if kind in kinds]
-    extra = sorted(kind for kind in kinds if kind not in _INPUT_KIND_WORDS)
-    words = known + [f"`{kind}`" for kind in extra]
-    if not words:
-        return "not published"
-    if len(words) == 1:
-        return words[0]
-    return f"{', '.join(words[:-1])} and {words[-1]}"
+    return format_modality_kinds(_help_input_kinds(model))
 
 
 _UNDECLARED_CAPABILITY = "not published; the control is offered and the model's own default applies"
@@ -1140,6 +1125,10 @@ def _render_template(
         f"{data['best_known_for']}\n\n"
         "**Output capabilities**\n"
         f"- Accepted inputs: {accepted}\n"
+        f"- Reference attachments: at most {_MAX_INPUT_REFERENCES} in one request; "
+        "the rest are named in the chat as not sent\n"
+        f"- Reference links: at most {_MAX_PASSTHROUGH_URLS} of them are forwarded in "
+        "one request; the rest are named in the chat as not sent\n"
         f"- Durations: {durations}\n"
         f"- Aspect ratios: {aspects}\n"
         f"- Resolutions: {resolutions}\n"
@@ -1198,6 +1187,10 @@ def _render_catalog_fallback(model_id: str, model: dict[str, Any]) -> str:
     description = raw_description if isinstance(raw_description, str) else ""
     frames = _format_frames_capability(model.get("supported_frame_images"))
     accepted = _format_accepted_inputs(model)
+    ceiling = (
+        f" At most {_MAX_INPUT_REFERENCES} in one request are sent as references; "
+        "the rest are named in the chat as not sent."
+    )
     zdr = _zdr_capability_sentence(model_id)
     params = _format_csv(model.get("allowed_passthrough_parameters")) or "none listed"
     ratios = _format_csv(model.get("supported_aspect_ratios")) or "model default"
@@ -1206,7 +1199,7 @@ def _render_catalog_fallback(model_id: str, model: dict[str, Any]) -> str:
     return (
         f"### {display}\n\n"
         f"Capability: {description.strip() or 'OpenRouter video generation model.'}\n\n"
-        f"Accepted inputs: {accepted}.\n\n"
+        f"Accepted inputs: {accepted}.{ceiling}\n\n"
         f"Frame controls: {frames}.\n\n"
         "Useful prompt patterns: Describe subject, action, setting, camera "
         "movement, visual style, and constraints in one clear shot.\n\n"

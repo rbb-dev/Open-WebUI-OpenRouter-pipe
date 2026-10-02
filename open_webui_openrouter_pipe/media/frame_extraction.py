@@ -613,15 +613,6 @@ async def _pictures_own_length(meta: VideoMetadata, path: Path) -> float:
     return video_s
 
 
-async def _container_length_is_the_pictures(meta: VideoMetadata, path: Path) -> bool:
-    if meta.duration_is_stream or not meta.has_audio:
-        return True
-    video_s = await _video_track_seconds(path)
-    if video_s is None:
-        return True
-    return meta.duration_seconds - video_s <= _TRACK_LENGTH_TOLERANCE_S
-
-
 # -----------------------------------------------------------------------------
 # Frame extraction
 # -----------------------------------------------------------------------------

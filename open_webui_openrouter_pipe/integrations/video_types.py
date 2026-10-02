@@ -9,6 +9,10 @@ VIDEO_REQ_KEY_DESCRIPTION = (
     "it blank unless your provider has told you what to send."
 )
 
+_MAX_INPUT_REFERENCES = 16
+
+_MAX_PASSTHROUGH_URLS = 16
+
 
 class VideoGenerationError(RuntimeError):
     pass

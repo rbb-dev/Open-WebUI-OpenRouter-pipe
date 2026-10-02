@@ -3451,12 +3451,12 @@ class TestAnnotationsAndReasoning:
 
 
 class TestMarkdownImagesNonString:
-    """Tests for _markdown_images_from_text with non-string input (line 183)."""
+    """Tests the live span scanner with non-string input (`markdown_image_spans`)."""
 
     @pytest.mark.asyncio
     async def test_assistant_non_string_content_for_markdown_extraction(self, pipe_instance):
         """Non-string content for markdown image extraction returns empty list."""
-        # This tests line 183: if not isinstance(text, str): return []
+        # This tests `markdown_image_spans` (core/config.py): if not isinstance(text, str): return []
         messages = [
             {"role": "assistant", "content": 12345}  # Non-string content
         ]

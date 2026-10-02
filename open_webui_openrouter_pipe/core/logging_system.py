@@ -49,6 +49,17 @@ _MAX_ARCHIVE_WARNING_LATCH_KEYS = 32
 
 _ARCHIVE_CLAIM_SUFFIX = ".openrouter-writing"
 
+
+_LOG_RECORD_MAX_CHARS = 16_384
+
+
+def bounded_log_record_text(text: str, limit: int = _LOG_RECORD_MAX_CHARS) -> str:
+    if len(text) <= limit:
+        return text
+    omitted = len(text) - limit
+    return f"{text[:limit]}\n...(truncated: {omitted:,} characters omitted)..."
+
+
 # Session Log Archive Job
 
 @dataclass(slots=True)
@@ -326,11 +337,19 @@ class SessionLogger:
     process_log_level: int = resolve_level(os.getenv("GLOBAL_LOG_LEVEL"), logging.INFO)
     SESSION_LOG_MAX_LINES: int = 20000
     logs: ClassVar[dict[str, deque[dict[str, Any]]]] = {}
+    log_bytes: ClassVar[dict[str, int]] = {}
+    log_records_shed: ClassVar[dict[str, int]] = {}
     _session_last_seen: ClassVar[dict[str, float]] = {}
     log_queue: asyncio.Queue[logging.LogRecord] | None = None
     _main_loop: asyncio.AbstractEventLoop | None = None
     _state_lock = threading.Lock()
     _console_formatter = logging.Formatter("%(asctime)s.%(msecs)03d | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d - %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+
+    @staticmethod
+    def _held_chars(event: Any) -> int:
+        if not isinstance(event, dict):
+            return 0
+        return len(str(event.get("message") or ""))
 
     @staticmethod
     def _classify_event_type(message: str) -> str:
@@ -618,10 +637,22 @@ class SessionLogger:
                     if buffer is None:
                         buffer = deque(maxlen=cap)
                         cls.logs[request_id] = buffer
+                        cls.log_bytes[request_id] = 0
+                        cls.log_records_shed.setdefault(request_id, 0)
                     elif buffer.maxlen != cap:
                         buffer = deque(buffer, maxlen=cap)
                         cls.logs[request_id] = buffer
+                        cls.log_bytes[request_id] = sum(cls._held_chars(e) for e in buffer)
+                    size = cls._held_chars(event)
+                    if len(buffer) == buffer.maxlen:
+                        cls.log_bytes[request_id] = (
+                            cls.log_bytes.get(request_id, 0) - cls._held_chars(buffer[0])
+                        )
+                        cls.log_records_shed[request_id] = (
+                            cls.log_records_shed.get(request_id, 0) + 1
+                        )
                     buffer.append(event)
+                    cls.log_bytes[request_id] = cls.log_bytes.get(request_id, 0) + size
                     cls._session_last_seen[request_id] = time.time()
         except Exception:  # noqa: BLE001 - never raise from logging hooks
             # Never raise from logging hooks.
@@ -636,6 +667,8 @@ class SessionLogger:
             for sid in stale:
                 cls.logs.pop(sid, None)
                 cls._session_last_seen.pop(sid, None)
+                cls.log_bytes.pop(sid, None)
+                cls.log_records_shed.pop(sid, None)
 
     @classmethod
     def release(cls, request_id: str | None) -> None:
@@ -644,6 +677,8 @@ class SessionLogger:
         with cls._state_lock:
             cls.logs.pop(request_id, None)
             cls._session_last_seen.pop(request_id, None)
+            cls.log_bytes.pop(request_id, None)
+            cls.log_records_shed.pop(request_id, None)
 
 
 # Session Log Archive Writer

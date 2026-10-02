@@ -110,7 +110,15 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # its own lazy imports of `open_webui.internal.db` and `open_webui.models.functions`.
 # Nothing became less guarded: the seam is still inside a try that answers `None`, and
 # the pin on that `None` is `test_a_row_open_webui_cannot_read_blocks_the_write`.
-_EXPECTED_OWUI_IMPORTS = (25, 96)
+# 96 -> 97 (T494): `Pipe._stored_direct_uploads_valves` reads the Direct Uploads filter's
+# stored valve row on the rare path where the audio format gate needs it, and imports
+# `open_webui.models.functions` lazily inside the read for the same contract every other
+# lazy reader here keeps: the import is function-local, so a host that cannot supply the
+# functions table refuses the turn through the method's own `except` rather than making
+# the pipe fail to import. This scan walks `open_webui_openrouter_pipe` only, so the
+# matching test-side import (`test_a_cleared_direct_audio_allowlist_is_not_an_absent_one.py`,
+# which installs an empty `Functions` on the same lazy module) is deliberately not counted.
+_EXPECTED_OWUI_IMPORTS = (25, 97)
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),

@@ -27,9 +27,11 @@ import logging
 import socket
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, TypeVar, cast
 
+import pytest
 import pytest_asyncio
 from aiohttp import web
 
@@ -37,6 +39,32 @@ from open_webui_openrouter_pipe.storage.multimodal import MultimodalHandler
 
 # conftest._STUB_PUBLIC_IP: the address every non-loopback name resolves to in tests.
 STUB_PUBLIC_IP = "93.184.216.34"
+
+OWUI_SOURCE_ROOT = Path(__file__).resolve().parents[1] / ".external" / "open-webui"
+_OWUI_SOURCE_REASON = (
+    "Open WebUI's pinned source is not checked out at "
+    f"{OWUI_SOURCE_ROOT} (.external/open-webui); this test reads the host's own code, so "
+    "there is nothing to compare against. See TODO T548."
+)
+
+
+def owui_source(*parts: str) -> Path:
+    """A path inside Open WebUI's pinned source, or skip saying which tree is missing.
+
+    `.external/` is gitignored, so it is absent on a fresh checkout and on any CI run that
+    has not fetched the pin. A reader that reaches for the tree without asking first does
+    not skip: a `Path.glob` over a directory that is not there reads as empty, and a bare
+    `assert is_dir()` reads as a failure. Both make the same test mean two different things
+    depending on whether the tree happened to be there.
+
+    Call it where the path is BUILT, not where it is read: a module-level call is itself a
+    collection error, which interrupts collection and stops every other test in the run.
+    """
+    path = OWUI_SOURCE_ROOT.joinpath(*parts)
+    if not OWUI_SOURCE_ROOT.is_dir():
+        pytest.skip(_OWUI_SOURCE_REASON)
+    return path
+
 
 logger = logging.getLogger(__name__)
 _T178_CAUSE = "on this development host, WSL's port mirroring (T178)"
@@ -229,40 +257,6 @@ def single_san_cert(name: str, into: Any) -> dict[str, Any]:
 
 
 @contextmanager
-def _socket_resolution_only():
-    """Make aiohttp resolve through `socket.getaddrinfo`, so staged DNS is seen.
-
-    With the production dependency set installed, `aiodns` is present and aiohttp's
-    `DefaultResolver` is `AsyncResolver`, which asks c-ares directly and never calls
-    `socket.getaddrinfo`. Every DNS staging helper below patches `getaddrinfo`, so under
-    production dependencies the staging silently does nothing and the test performs a real
-    lookup of a name that does not exist. That is how two rebind guards passed for months
-    in a lean environment and failed the moment CI installed the full set.
-
-    Forcing the threaded resolver does not weaken what these tests prove: the control
-    session still re-resolves, which is the behaviour being contrasted with the vetted
-    transport's single gated lookup.
-    """
-    import aiohttp.connector as _connector
-    import aiohttp.resolver as _resolver
-
-    threaded = _resolver.ThreadedResolver
-    saved_resolver = _resolver.DefaultResolver
-    saved_connector = getattr(_connector, "DefaultResolver", None)
-    _resolver.DefaultResolver = threaded
-    # `aiohttp.connector` binds its own reference at import, and patching only the public
-    # module leaves the connector still building an AsyncResolver. Reached via setattr
-    # because it is a private re-export that pyright refuses to see as an attribute.
-    setattr(_connector, "DefaultResolver", threaded)  # noqa: B010
-    try:
-        yield
-    finally:
-        _resolver.DefaultResolver = saved_resolver
-        if saved_connector is not None:
-            setattr(_connector, "DefaultResolver", saved_connector)  # noqa: B010
-
-
-@contextmanager
 def rebinding_dns(name: str, answers: list[str]):
     """`name` resolves to a different address on each successive lookup.
 
@@ -289,8 +283,7 @@ def rebinding_dns(name: str, answers: list[str]):
 
     _socket.getaddrinfo = _resolve
     try:
-        with _socket_resolution_only():
-            yield
+        yield
     finally:
         _socket.getaddrinfo = installed
 
@@ -316,8 +309,7 @@ def dns_answering(name: str, addresses: list[str]):
 
     _socket.getaddrinfo = _resolve
     try:
-        with _socket_resolution_only():
-            yield
+        yield
     finally:
         _socket.getaddrinfo = installed
 

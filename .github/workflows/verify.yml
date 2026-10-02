@@ -139,6 +139,48 @@ jobs:
         with:
           name: verified-bundles-${{ github.run_id }}
 
+      # The host source this pipe runs inside, at the pinned tag, so the readers of it
+      # check the bytes they claim to check. After the checkout, for the same reason the
+      # bundles are downloaded after it. Nothing is committed and nothing is vendored:
+      # `.gitignore` keeps the tree untracked, and the pin is the same 0.11.4 the floor
+      # already names. Shallow because only the tag's content is ever read.
+      #
+      # Sparse to `backend` and `src`, and BOTH are needed: `test_browser_tool_failures_count.py`
+      # reads the frontend's `src/lib/apis/index.ts` and `src/routes/+layout.svelte`, so a
+      # backend-only checkout would leave that reader skipping for the wrong reason.
+      #
+      # Enforced, not advisory: a green cell means these readers ran, so a checkout that
+      # silently failed cannot report as a passing build.
+      - name: Check out Open WebUI at the pinned tag
+        uses: actions/checkout@v4
+        with:
+          repository: open-webui/open-webui
+          ref: v0.11.4
+          path: .external/open-webui
+          sparse-checkout: |
+            backend
+            src
+          sparse-checkout-cone-mode: false
+          fetch-depth: 1
+
+      - name: Require the pinned Open WebUI source
+        run: |
+          set -euo pipefail
+          for required in \
+            .external/open-webui/backend/open_webui/utils/filter.py \
+            .external/open-webui/backend/open_webui/utils/misc.py \
+            .external/open-webui/backend/open_webui/models/functions.py \
+            .external/open-webui/backend/open_webui/socket/main.py \
+            .external/open-webui/src/lib/apis/index.ts \
+          ; do
+            if [ ! -e "$required" ]; then
+              echo "::error::the pinned Open WebUI source is missing $required; the" \
+                   "tests that read the host source would have skipped" >&2
+              exit 1
+            fi
+          done
+          echo "the pinned Open WebUI source is in place"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:

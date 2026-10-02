@@ -55,6 +55,30 @@ Optional:
 - Install `open_webui` in the venv if you are running integration-style experiments locally. Unit tests in this repo do not require a full Open WebUI installation.
 - Install `ruff` or `flake8` if you use a linter locally.
 
+### Open WebUI's pinned source (`.external/`)
+
+Some tests read Open WebUI's own code rather than a transcription of it, and they read it
+from `.external/open-webui`, which is gitignored. CI checks the pinned tag into that path
+before the suite runs:
+
+```bash
+git clone --depth 1 --branch v0.11.4 https://github.com/open-webui/open-webui .external/open-webui
+```
+
+The pin is `v0.11.4`, the same version the test extra installs from PyPI. The clone is
+shallow and CI asks for `backend` and `src` only -- the frontend is not optional, because
+`tests/test_browser_tool_failures_count.py` reads `src/lib/apis/index.ts`.
+
+Without the tree those readers **skip**, naming the missing path, rather than failing:
+`tests/vetting_helpers.py::owui_source` is the one place that says so, and
+`tests/test_owui_source_guards.py` holds every reader of `.external/` to declaring it, so a
+checkout that has not fetched the pin is a smaller suite and never a different one. No
+reader does its work at module scope either: a module-level read is a *collection* error,
+which interrupts the run before any test executes.
+
+Do not `pip download open-webui==0.11.4` and unzip it instead. A wheel carries no
+`src/lib`, so the frontend readers would still skip while the fix looked complete.
+
 ### Pytest bootstrap behavior
 
 `pytest` is configured via `pytest.ini` to load `open_webui_openrouter_pipe/pytest_bootstrap.py` before test collection. This bootstrap:
@@ -64,7 +88,9 @@ Optional:
 
 You do not need to import any bootstrap module in individual test files.
 
-A probe subprocess that imports the real `open_webui` must be given its own `DATA_DIR`: the import builds a chromadb store under it, so a probe that inherits the ambient one races every concurrent collection for the same directory. Give it from a fixture rather than at module import — a process-wide timeout does not cover a module-import probe, so a probe that costs tens of seconds there runs entirely outside the budget the suite enforces on tests.
+A probe subprocess that imports the real `open_webui` must be given its own `DATA_DIR`: the import builds a chromadb store under it, so a probe that inherits the ambient one races every concurrent collection for the same directory. The assignment must be **unconditional** — `os.environ['DATA_DIR'] = ...`, not `setdefault`. The parent process exports `DATA_DIR` and `tests/owui_stubs.py` sets it before any test runs, so a child always inherits a set value and a `setdefault` there is a line that reads compliant and does nothing.
+
+Give it from a fixture rather than at module import — a process-wide timeout does not cover a module-import probe, so a probe that costs tens of seconds there runs entirely outside the budget CI enforces on tests. `pytest.ini` sets no `--timeout` of its own; the only per-test ceiling in this repository is `--timeout=60` in `.github/workflows/verify.yml`, so "the budget the suite enforces" describes a CI run and not a local or agent run. `tests/test_a_test_module_starts_no_probe_at_import.py` is the census that keeps a module-scope probe from being added, and `tests/test_a_probe_script_path_is_not_shared_across_workers.py` is the one that keeps a probe's *script* off a path another worker can name.
 
 ### Running tests
 
@@ -95,6 +121,10 @@ The suite is organized by subsystem. Common entry points:
 - `tests/test_a_free_form_items_is_not_sealed_shut.py`: worked example of the probe-subprocess convention above — a real `open_webui` import, run from a session fixture over its own `TemporaryDirectory` under a file-scoped `pytest.mark.timeout`.
 - `tests/test_dashboard_socket_isolation.py`: worked example of the per-test reset convention — arms `dashboard_socket._get_pipe`/`._registered`/`._resync` and `http_routes._routes_get_pipe` in one test and reads them in the next, so conftest's `_reset_dashboard_socket_state` has a witness.
 - `tests/test_module_state_census.py`: the inventory of every module-level container the package writes, and why each is either reset per test or exempt — the guard that makes a new container a reviewed row rather than a silent leak.
+- `tests/test_channel_error_cards.py`, `tests/test_a_channel_card_carries_nobody_elsses_identity.py`: a second instance of the same convention, obeying the same rule. Each writes its driver scripts into a per-process `tempfile.mkdtemp` directory, and hands the child a `DATA_DIR` of its own through `own_data_dir()` in `tests/conftest.py` — once in the child's `env` and once as an argv the prelude hard-assigns before its first `open_webui` import, so neither guard is the one a later simplification can quietly drop. The census is `tests/test_a_probe_script_path_is_not_shared_across_workers.py`.
+- `tests/test_a_test_module_starts_no_probe_at_import.py`: the census for the convention itself — no collected test module may start a subprocess, await an event loop, sleep, or import the real `open_webui` at module scope.
+- `tests/test_a_test_module_does_not_leave_a_stub_module_rebound.py`: no test may rebind an attribute of an `open_webui` module without a `monkeypatch` or a `finally` that restores it.
+- `tests/test_a_process_wide_record_is_reset_between_tests.py`: every module-level container that one function writes and another reads to decide something is cleared between tests.
 
 ---
 

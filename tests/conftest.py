@@ -1039,12 +1039,25 @@ def _no_real_network():
     So outbound connections are refused instantly instead. An unmocked request becomes a
     fast, named failure rather than a slow one, and loopback still works for the tests
     that bind a local server or a Redis stub.
+
+    The stub only answers names a caller asks the OS for, and with the production
+    dependency set installed aiohttp's default resolver is c-ares-backed and never asks:
+    a connector a test builds resolves for real and the rule above is bypassed. Both
+    `DefaultResolver` names are therefore pinned to the threaded resolver, which reaches
+    `socket.getaddrinfo` through the loop's executor -- the same thing Open WebUI itself
+    does in `backend/open_webui/env.py` ("c-ares breaks name resolution in some
+    environments"), off by default, so the test resolver is also the shipped one.
     """
     import socket
+
+    import aiohttp.connector as _connector
+    import aiohttp.resolver as _resolver
 
     real_getaddrinfo = socket.getaddrinfo
     real_connect = socket.socket.connect
     real_connect_ex = socket.socket.connect_ex
+    real_resolver = _resolver.DefaultResolver
+    real_connector_resolver = getattr(_connector, "DefaultResolver", None)
 
     def _blocked_connect(self, address):
         if _is_loopback(address):
@@ -1065,12 +1078,20 @@ def _no_real_network():
     socket.getaddrinfo = _stub_getaddrinfo
     socket.socket.connect = _blocked_connect
     socket.socket.connect_ex = _blocked_connect_ex
+    _resolver.DefaultResolver = _resolver.ThreadedResolver
+    # `aiohttp.connector` binds its own reference at import, so pinning the public module
+    # alone leaves the connector building a c-ares resolver. Reached via setattr because
+    # it is a private re-export pyright does not see as an attribute.
+    setattr(_connector, "DefaultResolver", _resolver.ThreadedResolver)  # noqa: B010
     try:
         yield
     finally:
         socket.getaddrinfo = real_getaddrinfo
         socket.socket.connect = real_connect
         socket.socket.connect_ex = real_connect_ex
+        _resolver.DefaultResolver = real_resolver
+        if real_connector_resolver is not None:
+            setattr(_connector, "DefaultResolver", real_connector_resolver)  # noqa: B010
 
 
 @pytest.fixture(autouse=True)

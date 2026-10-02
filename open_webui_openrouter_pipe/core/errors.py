@@ -668,6 +668,7 @@ def _build_error_template_values(
         "model_identifier": _inline_span(model_identifier or ""),
         "requested_model": _inline_span(error.requested_model or ""),
         "openrouter_code": _inline_span(str(error.openrouter_code or "")),
+        "openrouter_error_type": _inline_span(str(error.openrouter_error_type or "")),
         "upstream_type": _inline_span(error.upstream_type or ""),
         "upstream_message": _bounded_card_span(error.upstream_message or ""),
         "openrouter_message": _bounded_card_span(error.openrouter_message or ""),

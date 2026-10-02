@@ -345,8 +345,12 @@ Riverflow variants, all 4 FLUX.2 variants, ByteDance Seedream 4.5.
 
 - **Where they come from**: OpenRouter's own list of models that output
   pictures. The list is re-read on every catalog refresh, so a model
-  OpenRouter withdraws disappears from the picker on the next sync, and
-  one it adds appears without anything being configured.
+  OpenRouter withdraws disappears from the picker on the next sync
+  **unless the chat catalogue also lists it — chat provenance keeps it,
+  and only `/models` stopping to list it retires the row**. One it adds
+  appears without anything being configured. A sweep that comes back
+  empty retires nothing at all, and a fetch that raised changes nothing;
+  both are described under the empty-sweep note further down.
 - **Multimodal dedupe**: if a model has `text` in `output_modalities`,
   `register_image_models` skips it (those stay in the chat catalog).
 - **Master-disable**: setting `ENABLE_OPENROUTER_IMAGE_GENERATION=False`

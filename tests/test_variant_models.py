@@ -251,7 +251,7 @@ class TestVariantModelsIntegration:
     - API ID preservation
     - Edge case handling (missing base, empty valve, malformed CSV)
 
-    The expansion is integrated into pipes() via a simple method call (pipe.py:1679),
+    The expansion is integrated into pipes() via a simple method call (pipe.py:1752),
     which is tested implicitly during manual testing and real usage.
     """
 

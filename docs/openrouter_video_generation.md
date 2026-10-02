@@ -1193,7 +1193,7 @@ default applies; the second gets no control.
 | `VIDEO_ASPECT_RATIO` | `Literal["", …]` | `""` | top-level `aspect_ratio` | `supported_aspect_ratios` non-empty | 27 (all except FLUX Video Edit, FLUX Video Upscale) |
 | `VIDEO_RESOLUTION` | `Literal["", …]` | `""` | top-level `resolution` | `supported_resolutions` non-empty | 26 (all except FLUX Video Edit, FLUX Video Upscale, Aleph 2.0) |
 | `VIDEO_SIZE` | `Literal["", …]` | `""` | top-level `size` | `supported_sizes` non-empty | 19 of 29 |
-| `VIDEO_FRAME_MODE` | `Literal["auto", "none", "first_only"(, "first_last")]` | `"auto"` | controls which chat-attached images become `frame_images[]` keyframes and which are sent as references instead (the keyframes go first and the references after them, in the order you attached them, however many there are); under `"none"` no picture is sent as a reference either and every picture is left in the request; a clip or a sound file attached alongside is not a picture and is still sent as a reference | `supported_frame_images` non-empty | 24 of 29 |
+| `VIDEO_FRAME_MODE` | `Literal["auto", "none", "first_only"(, "first_last")]` | `"auto"` | controls which chat-attached images become `frame_images[]` keyframes and which are sent as references instead (the keyframes go first and the references after them, in the order you attached them, up to the 16 a request carries — past that the excess is left out and named in the chat); under `"none"` no picture is sent as a reference either and every picture is left in the request; a clip or a sound file attached alongside is not a picture and is still sent as a reference | `supported_frame_images` non-empty | 24 of 29 |
 | `VIDEO_NEGATIVE_PROMPT` | `str` | `""` | passthrough `negative_prompt` (or `negativePrompt` on Veo) | `"negative_prompt"` or `"negativePrompt"` in `allowed_passthrough_parameters` | 8 of 29 |
 | `VIDEO_GENERATE_AUDIO` | `Literal["model_default", "on", "off"]` | `"model_default"` | top-level `generate_audio` (boolean) | not published as `false` | 22 of 29 |
 | `VIDEO_SEED` | `int` (`ge=0`) | `0` | top-level `seed` | not published as `false` | 19 of 29 |
@@ -1302,7 +1302,9 @@ rules:
   - `first_last`: attach exactly two images to get start and end keyframes.
     With three or more, the first and last are the keyframes and every
     image in between is still sent — as a reference the model can use,
-    not dropped. Nothing you attach is discarded. The middle images keep
+    not dropped. One request carries at most 16 references, so past that
+    the remainder is left out and the **Not sent with this video** list
+    names it. The middle images keep
     the order you attached them in and follow the two keyframes in the
     request, so the first keyframe is never pushed back by however many
     middle images there are. A classifier instruction that collides with
@@ -1478,7 +1480,10 @@ Anything you attach that the Frames control does not claim — extra
 images, a second image on a first-frame-only model, a clip, a sound file,
 or any image at all on a model with no frame support — is sent to the
 model as a **reference**: material for it to draw on rather than a fixed
-start or end point. Nothing you attach is silently discarded any more.
+start or end point. One request carries at most 16 references, the
+request format's own ceiling; past that the excess is left out and the
+**Not sent with this video** list says how many and why, and the render
+still goes ahead.
 
 Open WebUI keeps pictures out of the request-level file list — it feeds
 them to a chat as `image_url` parts — so the filter reads the turn's own
@@ -1515,9 +1520,10 @@ would be discarded without a word. Each reference is checked against the
 frame limits above; a clip or sound file, which travels by way of a public
 file host, is bounded by `MEDIA_FILE_HOST_MAX_SIZE_MB` instead.
 `REMOTE_VIDEO_MAX_SIZE_MB` bounds only the finished video coming back, not
-anything you attach. A reference that fails on kind, format, count or the
-combined budget is left out with a warning notice naming it and why, and
-the render still goes ahead; a clip that fails on pixel size
+anything you attach. A request carries at most 16 references, and a
+reference that fails on kind, format, count or the combined budget is
+left out with a warning notice naming it and why, and the render still
+goes ahead; a clip that fails on pixel size
 is left out the same way, and one that is simply too large stops the
 request instead, so that nothing is generated and billed from a prompt the
 attachment was meant to anchor. A **picture** is decoded and measured like

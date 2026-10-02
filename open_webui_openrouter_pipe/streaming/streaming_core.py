@@ -74,7 +74,7 @@ from ..core.errors import (
 )
 
 # Import SessionLogger
-from ..core.logging_system import SessionLogger
+from ..core.logging_system import SessionLogger, bounded_log_record_text
 
 # Import timing instrumentation
 from ..core.timing_logger import clear_timing_events, timed, timing_mark
@@ -2185,7 +2185,9 @@ class StreamingHandler:
                         redacted_event = _redact_payload_blobs(event)
                         self.logger.debug(
                             "OpenRouter payload: %s",
-                            json.dumps(redacted_event, indent=2, ensure_ascii=False),
+                            bounded_log_record_text(
+                                json.dumps(redacted_event, indent=2, ensure_ascii=False)
+                            ),
                         )
 
                     if etype:

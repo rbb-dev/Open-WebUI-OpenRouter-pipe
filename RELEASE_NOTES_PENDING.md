@@ -38,6 +38,42 @@
   rendered card, which carries a generated error id and a timestamp that identify one message and nothing else.
   The card the person sees is unchanged, and a turn that answered, that a plugin answered, or that the person
   stopped is still archived as it was.
+- **session log, per-record bound** — a record that carries a whole payload is now cut at 16,384 characters, and the
+  record names the cut: `...(truncated: 1,234 characters omitted)...`. This covers all five payload sites — the
+  streamed SSE event, the request headers, the request payload, the response payload and the error response — so one
+  1.8 MB frame or one 200 KB reply can no longer become a single 1.8 MB record. The bound is on the serialised record
+  after redaction, so a payload that is large because of many small fields is bounded as well as one large field, and
+  a payload below the bound produces a record byte-identical to today's. It is the same 16,384 and the same marker
+  the tool-result record already used, so there is now one number rather than two.
+
+  This is what `SESSION_LOG_MAX_LINES`'s help text already promised and did not do; the text is now true rather than
+  corrected. The cut is in the archive exactly as it is on stdout, and nothing else is cut by it: an exception block
+  keeps its whole traceback, the tool-result bound is unchanged, and the error object a card is rendered from keeps
+  its own values whole.
+
+  One help text moves with it. `OPENROUTER_ERROR_TEMPLATE` said "the complete values stay on the error object and in
+  the session log"; after this change no session-log record carries them for a payload above the bound (the error
+  record's own excerpt is cut at 8,192), so the sentence now promises the error object alone and says where the
+  session log's copy is cut.
+
+- **artifact retention, retired tables** — a `response_items_*` table that a previous `ARTIFACT_ENCRYPTION_KEY` left behind
+  is now swept on the same `ARTIFACT_CLEANUP_DAYS` window as the table in use. Nothing in the pipe addressed those tables at
+  all: after a rotation every row it had written — reasoning traces, tool results, temporary-chat rows, and staged
+  session-log segments carrying whole request and response content — stayed in the database past every window meant to
+  bound it. The retired tables get the age filter and the temporary-chat delete, but no bookkeeping deny-list: no owner
+  can address a retired table, so a staged segment there has nothing behind it but this window.
+
+  The pass is scoped by name to this pipe's own fragment, each table is reflected and swept in its own session, one
+  table's failure warns and skips without touching the others, and the live table's statements, order and single
+  `Retention removed` line are unchanged. Each retired table gets its own INFO line naming it and the row counts.
+
+  **It does not run while `ARTIFACT_ENCRYPTION_KEY` is set to a value the application secret can no longer open.** On that
+  arm the worker's own table name is derived from the sentinel placeholder, so its live table is a third table and every
+  other sibling it can see belongs to a key it does not hold — including the table of another configuration of the same
+  pipe that has simply never set a key. Nothing in the name tells those apart, so the whole pass is skipped: an unreadable
+  key costs retention until the key is re-entered, rather than deleting another installation's rows. The live table is
+  swept as before throughout.
+
 - **Config tab** — a save the database refuses to write now raises a durable banner instead of a toast alone.
   The banner names the fault, carries no Reload control, and leaves your staged edits in place, so nothing the
   refusal preserved can be discarded from the tab that preserved it. It clears on the next successful save or
@@ -75,6 +111,10 @@
   checked against is a whole-second timestamp, so two saves inside one second are one revision apart by nothing.
   The refusal appears as the Config tab's own save-failure toast, names the other save as the cause, and leaves
   your edits staged. Installs without Redis (`WEBSOCKET_MANAGER` unset) keep today's behaviour exactly.
+- **dashboard** — the System tab's **Readiness** panel now reports how much memory the session-log buffers hold, not only how many there are and how many records they keep. The `Log buffers (RAM)` row reads `2 buf / 40 000 events / 12.4 MB`, and a request whose records rolled off the top under the record cap says so on the same row. The cap counts records, so the counts alone cannot distinguish a quiet afternoon from a request holding a gigabyte of provider payloads in RAM.
+
+  The figure is the number of characters the held records actually carry, and it is counted where a record is appended rather than recomputed by the panel — so opening the dashboard on a busy worker costs the same whatever the buffers hold. A record dropped by the cap is subtracted as it is dropped, a change to `Archive record cap` is recomputed from the records that survive it, and a request's figure goes when its records are released.
+
 - **fusion** — a Fusion panel member's tool file is no longer filed against the outer chat. The file is still
   stored and still rendered in the panel, but it no longer appears in the chat's file list: the tool executor
   re-checks `fusion_inner` before it hands `chat_id`/`message_id` to Open WebUI's upload, so a member's file

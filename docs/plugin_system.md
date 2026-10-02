@@ -175,7 +175,7 @@ This hook fires every time Open WebUI refreshes its model dropdown list. You rec
 - **Annotate** — tag model names (e.g., append "[FREE]" to zero-cost models)
 - **Filter by capability** — remove models that lack specific features (vision, tool calling, etc.)
 
-Each row carries `id`, `name`, `norm_id` and `original_id`. When the catalog has them it also carries `capabilities` — a map of booleans — and `zdr_capable`; read both with `.get`, because a deployment whose ZDR roster failed to load publishes rows with no `zdr_capable` at all (`registry.py:517-519`) and `row["zdr_capable"]` raises there. Pricing, context length, architecture and provider details are not on the row; read them with `OpenRouterModelRegistry.spec(row["norm_id"])`, which is the call the pipe's own filters make (`pipe.py:4975-4990`).
+Each row carries `id`, `name`, `norm_id` and `original_id`. When the catalog has them it also carries `capabilities` — a map of booleans — and `zdr_capable`; read both with `.get`, because a deployment whose ZDR roster failed to load publishes rows with no `zdr_capable` at all (`registry.py:517-519`) and `row["zdr_capable"]` raises there. Pricing, context length, architecture and provider details are not on the row; read them with `OpenRouterModelRegistry.spec(row["norm_id"])`, which is the call the pipe's own filters make (`pipe.py:5052-5067`).
 
 ### on_request — Intercept or Inspect Requests
 

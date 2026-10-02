@@ -31,6 +31,29 @@ PROVIDER_OPTIONS_DESCRIPTION = (
     "nothing."
 )
 
+MODALITY_KIND_WORDS = {
+    "text": "a written prompt",
+    "image": "an image",
+    "audio": "an audio track",
+    "video": "a video clip",
+    "file": "a document",
+}
+
+
+def format_modality_kinds(declared: Any) -> str:
+    if not isinstance(declared, list):
+        return "not published"
+    kinds = [item for item in declared if isinstance(item, str) and item.strip()]
+    if not kinds:
+        return "not published"
+    known = [MODALITY_KIND_WORDS[kind] for kind in MODALITY_KIND_WORDS if kind in kinds]
+    extra = sorted(kind for kind in kinds if kind not in MODALITY_KIND_WORDS)
+    words = known + [f"`{kind}`" for kind in extra]
+    if len(words) == 1:
+        return words[0]
+    return f"{', '.join(words[:-1])} and {words[-1]}"
+
+
 TOP_LEVEL_PARAMS: tuple[str, ...] = (
     "aspect_ratio",
     "resolution",

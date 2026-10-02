@@ -43,13 +43,19 @@ import json
 import logging
 
 
-def _persisted_function_model() -> Any:
+def _persisted_function_model(monkeypatch) -> Any:
     """A declarative `Function` mapped to the `function` table Open WebUI owns.
 
     Installed on `open_webui.models.functions` rather than imported from it, because
     the stub module carries `Functions` and the form models but not the ORM class --
     the reader imports it by name. Tests that need their own column types install one
     only when the attribute is absent, so this stays the shared default.
+
+    Installed through `monkeypatch` because a bare `setattr` here survives the test, and
+    every later test in the session then reads a `Function` whose `valves` column is
+    bound to a base that will never reach a database. The `existing is not None` memo
+    below therefore means "reuse what THIS test already installed" rather than "reuse
+    whatever an earlier one left behind".
     """
     import open_webui.models.functions as functions_mod
 
@@ -64,12 +70,12 @@ def _persisted_function_model() -> Any:
         id = Column(String, primary_key=True)
         valves = Column(JSON)
 
-    functions_mod.Function = Function
-    _install_valve_codec()
+    monkeypatch.setattr(functions_mod, "Function", Function, raising=False)
+    _install_valve_codec(monkeypatch)
     return Function
 
 
-def _install_valve_codec() -> None:
+def _install_valve_codec(monkeypatch) -> None:
     """Stand in for `open_webui.utils.valves.decrypt_valves`, imported by the reader."""
     import sys as _sys
     import types as _types
@@ -85,19 +91,19 @@ def _install_valve_codec() -> None:
     utils_pkg.__path__ = []  # type: ignore[attr-defined]
     valves_mod = _types.ModuleType("open_webui.utils.valves")
     valves_mod.decrypt_valves = decrypt_valves  # type: ignore[attr-defined]
-    _sys.modules.setdefault("open_webui.utils.valves", valves_mod)
-    setattr(utils_pkg, "valves", _sys.modules["open_webui.utils.valves"])
+    monkeypatch.setitem(_sys.modules, "open_webui.utils.valves", valves_mod)
+    monkeypatch.setattr(utils_pkg, "valves", valves_mod, raising=False)
 
 
-def _install_persisted_collect_row(host: Any, collect: bool) -> None:
+def _install_persisted_collect_row(host: Any, collect: bool, monkeypatch) -> None:
     """Create the `function` table on this host's engine and store the valve row."""
-    Function = _persisted_function_model()
-    _install_valve_codec()
+    Function = _persisted_function_model(monkeypatch)
+    _install_valve_codec(monkeypatch)
     Function.metadata.create_all(host._engine)
-    _store_persisted_collect_row(host, collect)
+    _store_persisted_collect_row(host, collect, monkeypatch)
 
 
-def _store_persisted_collect_row(host: Any, collect: bool) -> None:
+def _store_persisted_collect_row(host: Any, collect: bool, monkeypatch) -> None:
     """Write this pipe's persisted valve row, replacing whatever was there.
 
     Separate from the install so a test that changes the stored row mid-run -- the way
@@ -106,8 +112,8 @@ def _store_persisted_collect_row(host: Any, collect: bool) -> None:
     because a suite that installs its own `Function` may declare `valves` as text, the
     way an encrypted deployment's column reads on disk.
     """
-    Function = _persisted_function_model()
-    _install_valve_codec()
+    Function = _persisted_function_model(monkeypatch)
+    _install_valve_codec(monkeypatch)
     Function.metadata.create_all(host._engine)
     value: Any = {"PIPE_DASHBOARD_USAGE_COLLECT": collect}
     column = Function.__table__.c.valves
@@ -119,7 +125,7 @@ def _store_persisted_collect_row(host: Any, collect: bool) -> None:
         session.commit()
 
 
-def _make_store_host(collect: bool = True) -> Any:
+def _make_store_host(collect: bool = True, *, monkeypatch) -> Any:
     """A store host on an engine that carries the pipe's persisted function row.
 
     `UsageStore._persist_sync` gates every batch on the persisted
@@ -146,7 +152,7 @@ def _make_store_host(collect: bool = True) -> Any:
         _is_table_exists_error=ArtifactStore._is_table_exists_error,
         _maybe_heal_index_conflict=lambda *a, **k: False,
     )
-    _install_persisted_collect_row(host, collect)
+    _install_persisted_collect_row(host, collect, monkeypatch)
     guard: Any = ArtifactStore._create_table_with_race_guard
     host._create_table_with_race_guard = (
         lambda table, eng, name: guard(host, table, eng, name)
@@ -203,8 +209,8 @@ def _wait_for(predicate, timeout: float = 3.0) -> bool:
     return False
 
 
-def test_ensure_creates_table_idempotently():
-    host = _make_store_host()
+def test_ensure_creates_table_idempotently(monkeypatch):
+    host = _make_store_host(monkeypatch=monkeypatch)
     usage = UsageStore()
     assert usage.ensure(host) is True
     assert usage.table_name == "dashboard_tpipe_ab12cd34"
@@ -223,8 +229,8 @@ def test_ensure_disabled_without_engine():
     assert usage.stop() is None
 
 
-def test_record_persists_through_thread():
-    host = _make_store_host()
+def test_record_persists_through_thread(monkeypatch):
+    host = _make_store_host(monkeypatch=monkeypatch)
     usage = UsageStore()
     assert usage.ensure(host)
     usage.record(_row())
@@ -233,8 +239,8 @@ def test_record_persists_through_thread():
     assert _count_rows(usage) == 1
 
 
-def test_stop_drains_pending_rows():
-    host = _make_store_host()
+def test_stop_drains_pending_rows(monkeypatch):
+    host = _make_store_host(monkeypatch=monkeypatch)
     usage = UsageStore()
     assert usage.ensure(host)
     for i in range(5):
@@ -243,10 +249,10 @@ def test_stop_drains_pending_rows():
     assert _count_rows(usage) == 5
 
 
-def test_signal_stop_is_nonblocking_join_writer_drains():
+def test_signal_stop_is_nonblocking_join_writer_drains(monkeypatch):
     """signal_stop() must not join (loop-safe); the off-loop join_writer()
     performs the drain-and-exit."""
-    host = _make_store_host()
+    host = _make_store_host(monkeypatch=monkeypatch)
     usage = UsageStore()
     assert usage.ensure(host)
     for i in range(4):
@@ -258,8 +264,8 @@ def test_signal_stop_is_nonblocking_join_writer_drains():
     assert _count_rows(usage) == 4
 
 
-def test_queue_overload_drops_oldest_and_counts():
-    host = _make_store_host()
+def test_queue_overload_drops_oldest_and_counts(monkeypatch):
+    host = _make_store_host(monkeypatch=monkeypatch)
     usage = UsageStore(queue_max=2)
     assert usage.ensure(host)
     usage._start_thread = lambda: None
@@ -276,8 +282,8 @@ def test_queue_overload_drops_oldest_and_counts():
     assert queued == ["b", "c"]
 
 
-def test_purge_deletes_only_older_than_cutoff():
-    host = _make_store_host()
+def test_purge_deletes_only_older_than_cutoff(monkeypatch):
+    host = _make_store_host(monkeypatch=monkeypatch)
     usage = UsageStore()
     assert usage.ensure(host)
     old = _row(ts=datetime.datetime.now(datetime.UTC).astimezone().replace(tzinfo=None) - datetime.timedelta(days=40), chat_id="old")
@@ -292,8 +298,8 @@ def test_purge_deletes_only_older_than_cutoff():
     assert remaining == ["new"]
 
 
-def test_purge_skips_when_lock_held():
-    host = _make_store_host()
+def test_purge_skips_when_lock_held(monkeypatch):
+    host = _make_store_host(monkeypatch=monkeypatch)
     usage = UsageStore()
     assert usage.ensure(host)
     usage._persist_sync([_row(ts=datetime.datetime.now(datetime.UTC).astimezone().replace(tzinfo=None) - datetime.timedelta(days=40))])
@@ -303,8 +309,8 @@ def test_purge_skips_when_lock_held():
     assert _count_rows(usage) == 1
 
 
-def test_purge_releases_lock_after_delete():
-    host = _make_store_host()
+def test_purge_releases_lock_after_delete(monkeypatch):
+    host = _make_store_host(monkeypatch=monkeypatch)
     usage = UsageStore()
     assert usage.ensure(host)
     host._item_model = object()
@@ -325,8 +331,8 @@ def test_retention_read_live_and_clamped():
     assert usage._purge_cutoff() is not None
 
 
-def test_table_info_counts_records():
-    host = _make_store_host()
+def test_table_info_counts_records(monkeypatch):
+    host = _make_store_host(monkeypatch=monkeypatch)
     usage = UsageStore()
     assert usage.ensure(host)
     usage._persist_sync([_row(), _row(chat_id="c2")])
@@ -336,8 +342,8 @@ def test_table_info_counts_records():
 
 
 @pytest.mark.asyncio
-async def test_start_and_stop_purge_task():
-    host = _make_store_host()
+async def test_start_and_stop_purge_task(monkeypatch):
+    host = _make_store_host(monkeypatch=monkeypatch)
     usage = UsageStore()
     assert usage.ensure(host)
     usage.start_purge_task(lambda: 30)

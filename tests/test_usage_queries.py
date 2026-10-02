@@ -33,7 +33,7 @@ from open_webui_openrouter_pipe.storage.persistence import ArtifactStore
 from tests.test_usage_store import _install_persisted_collect_row
 
 
-def _make_store_host() -> Any:
+def _make_store_host(*, monkeypatch) -> Any:
     """This suite's own host, with the persisted collect valve carried as production does.
 
     `UsageStore._persist_sync` gates every batch on the persisted
@@ -67,7 +67,7 @@ def _make_store_host() -> Any:
     host._create_table_best_effort = MethodType(ArtifactStore._create_table_best_effort, host)
     host._create_declared_indexes = MethodType(ArtifactStore._create_declared_indexes, host)
     host._drop_superseded_indexes = MethodType(ArtifactStore._drop_superseded_indexes, host)
-    _install_persisted_collect_row(host, True)
+    _install_persisted_collect_row(host, True, monkeypatch)
     return host
 
 
@@ -100,8 +100,8 @@ def _row(ts: float, **over: Any) -> dict[str, Any]:
 
 
 @pytest.fixture()
-def seeded():
-    host = _make_store_host()
+def seeded(monkeypatch):
+    host = _make_store_host(monkeypatch=monkeypatch)
     usage = UsageStore()
     assert usage.ensure(host)
     return host, usage

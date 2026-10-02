@@ -25,7 +25,6 @@ from ..core.config import (
     _RAW_REPLAYED_SERVER_TOOLS,
     OPENAI_ATTACHMENT_NOT_SENT_PREFIX,
     OPENAI_EMPTY_USER_TURN_FALLBACK,
-    markdown_image_destinations,
     markdown_image_spans,
 )
 
@@ -1315,10 +1314,6 @@ async def transform_messages_to_input(
 
             total_turns = max_turn + 1 if max_turn >= 0 else 0
             return indices, total_turns
-
-        def _markdown_images_from_text(text: str) -> list[str]:
-            """Extract inline Markdown image URLs from a text block."""
-            return markdown_image_destinations(text)
 
         def _is_old_turn(turn_index: int | None, *, threshold: int | None) -> bool:
             """Return True when a message turn falls outside the retention window."""

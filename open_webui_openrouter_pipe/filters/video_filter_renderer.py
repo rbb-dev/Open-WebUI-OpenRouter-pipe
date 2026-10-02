@@ -24,7 +24,11 @@ from ..integrations.image_types import (
     RENDERABLE_FIELD_NAME_RE,
     capability_declared_off,
 )
-from ..integrations.video_types import VIDEO_REQ_KEY_DESCRIPTION
+from ..integrations.video_types import _MAX_PASSTHROUGH_URLS, VIDEO_REQ_KEY_DESCRIPTION
+
+_REFERENCE_URLS_JSON_CEILING = (
+    " At most {n} are forwarded; the rest are named in the chat as not sent."
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1234,7 +1238,9 @@ def _render_purpose_built_fields_uncached(spec: VideoFilterSpec) -> list[str]:
                 'VIDEO_REFERENCE_VIDEOS_JSON: str = Field(\n'
                 '            default="",\n'
                 '            title="Reference videos JSON",\n'
-                '            description="Several clips to copy motion, camera work or voices from, written as a JSON list of links. Blank sends nothing.",\n'
+                '            description="Several clips to copy motion, camera work or voices from, written as a JSON list of links. Blank sends nothing.'
+                + _REFERENCE_URLS_JSON_CEILING.format(n=_MAX_PASSTHROUGH_URLS)
+                + '",\n'
                 "        )"
             )
         )
@@ -1244,7 +1250,9 @@ def _render_purpose_built_fields_uncached(spec: VideoFilterSpec) -> list[str]:
                 'VIDEO_REFERENCE_IMAGES_JSON: str = Field(\n'
                 '            default="",\n'
                 '            title="Reference images JSON",\n'
-                '            description="Several pictures that hold a face, an outfit, a prop or a setting steady, written as a JSON list of links. Blank sends nothing.",\n'
+                '            description="Several pictures that hold a face, an outfit, a prop or a setting steady, written as a JSON list of links. Blank sends nothing.'
+                + _REFERENCE_URLS_JSON_CEILING.format(n=_MAX_PASSTHROUGH_URLS)
+                + '",\n'
                 "        )"
             )
         )

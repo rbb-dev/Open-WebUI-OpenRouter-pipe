@@ -12,15 +12,20 @@ pointing at the real cause. And the unmocked test's negative arm passed for the 
 reason: a failed fetch installs nothing, so "every tool is disabled" and "the request
 never completed" produced the same answer.
 
-conftest answers every name from a rule instead. This file is the guard that the rule
-stays in force -- an autouse fixture is easy to delete or shadow, and the failure mode
-when it goes is a suite that looks green until the network is slow.
+conftest answers every name from a rule instead -- and, because that rule only lives in
+`socket.getaddrinfo`, it also pins aiohttp's default resolvers to the threaded one, so a
+connector built by a test resolves through the same stub instead of asking c-ares
+directly. This file is the guard that the rule stays in force -- an autouse fixture is
+easy to delete or shadow, and the failure mode when it goes is a suite that looks green
+until the network is slow.
 """
 
 from __future__ import annotations
 
+import asyncio
 import socket
 
+import aiohttp
 import pytest
 
 
@@ -131,7 +136,7 @@ def test_no_test_module_opts_out_of_the_stub():
         if path.name == pathlib.Path(__file__).name:
             continue
         text = path.read_text(encoding="utf-8")
-        for match in re.finditer(r"^.*getaddrinfo.*$", text, re.M):
+        for match in re.finditer(r"^.*(?:getaddrinfo|DefaultResolver).*$", text, re.M):
             line = match.group(0).strip()
             if line.startswith("#"):
                 continue
@@ -139,8 +144,10 @@ def test_no_test_module_opts_out_of_the_stub():
                 continue  # reverted for us at teardown
             if re.search(r"socket\.getaddrinfo\s*=", line):
                 offenders.append(f"{path.name}: {line}")
+            elif re.search(r"DefaultResolver\s*=", line):
+                offenders.append(f"{path.name}: {line}")
     assert not offenders, (
-        "these modules rebind socket.getaddrinfo without a mechanism that restores it, "
-        "so they either hand real DNS back or shadow the conftest stub for every test "
-        f"that follows:\n  " + "\n  ".join(offenders)
+        "these modules rebind socket.getaddrinfo or an aiohttp DefaultResolver without a "
+        "mechanism that restores it, so they either hand real DNS back or shadow the "
+        f"conftest stub for every test that follows:\n  " + "\n  ".join(offenders)
     )

@@ -889,23 +889,36 @@ class RequestOrchestrator:
                 return set(items)
 
             allowlist_key = "responses_audio_format_allowlist"
-            allowlist_seen = allowlist_key in attachments
-            allowlist_csv = attachments.get(allowlist_key, "") if allowlist_seen else ""
-            allowed_for_responses = (
-                _csv_set(allowlist_csv) if allowlist_seen else set(_DEFAULT_RESPONSES_AUDIO_FORMATS)
-            )
             operator_audio_key = "audio_format_allowlist"
-            operator_audio_formats = (
-                _csv_set(attachments.get(operator_audio_key, ""))
-                if operator_audio_key in attachments
-                else set()
-            )
-            operator_only_formats = {
-                fmt
-                for fmt in operator_audio_formats
-                if fmt not in _NATIVE_AUDIO_FORMATS
-                and fmt not in _UNMAPPABLE_AUDIO_FORMATS
-            }
+            _gate: list[tuple[set[str], set[str], str]] = []
+
+            async def _direct_upload_allowlists() -> tuple[set[str], set[str], str]:
+                if _gate:
+                    return _gate[0]
+                _key_seen = allowlist_key in attachments
+                _responses = (
+                    _csv_set(attachments.get(allowlist_key, ""))
+                    if _key_seen
+                    else set(_DEFAULT_RESPONSES_AUDIO_FORMATS)
+                )
+                _operator_csv = attachments.get(operator_audio_key, "")
+                _operator = _csv_set(_operator_csv) if isinstance(_operator_csv, str) else set()
+                _source = "metadata"
+                _stored, _read_ok = await self._pipe._stored_direct_uploads_valves()
+                if not _read_ok:
+                    _source = "unreadable"
+                    _operator = set()
+                else:
+                    _row_responses = _stored.get("DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST")
+                    if isinstance(_row_responses, str):
+                        _responses = _csv_set(_row_responses)
+                    _row_operator = _stored.get("DIRECT_AUDIO_FORMAT_ALLOWLIST")
+                    if isinstance(_row_operator, str):
+                        _operator = _csv_set(_row_operator)
+                        _source = "row"
+                _resolved = (_responses, _operator, _source)
+                _gate.append(_resolved)
+                return _resolved
 
             for item in attachments.get("audio", []):
                 file_id = item.get("id")
@@ -916,6 +929,15 @@ class RequestOrchestrator:
                     gateway=self._pipe._file_gateway, logger=self._pipe.logger,
                     chunk_size=chunk_size, max_bytes=max_bytes, user_model=user_model,
                 )
+                allowed_for_responses, operator_audio_formats, allowlist_source = (
+                    await _direct_upload_allowlists()
+                )
+                operator_only_formats = {
+                    fmt
+                    for fmt in operator_audio_formats
+                    if fmt not in _NATIVE_AUDIO_FORMATS
+                    and fmt not in _UNMAPPABLE_AUDIO_FORMATS
+                }
                 declared = item.get("format")
                 declared_format = declared.strip().lower() if isinstance(declared, str) else ""
                 sniffed = _sniff_audio_format(_decode_base64_prefix(b64))
@@ -926,7 +948,18 @@ class RequestOrchestrator:
                     audio_format not in _NATIVE_AUDIO_FORMATS
                     and audio_format not in operator_only_formats
                 ):
-                    if operator_audio_key not in attachments:
+                    if allowlist_source == "unreadable":
+                        raise ValueError(
+                            f"Native audio attachment format {audio_format!r} is not "
+                            f"supported, and the Direct Audio Format Allowlist valve "
+                            f"(DIRECT_AUDIO_FORMAT_ALLOWLIST) on the installed Direct "
+                            f"Uploads filter could not be read, so the pipe cannot tell "
+                            f"that the operator allowlisted it, and will not fall back on "
+                            f"the copy this request carries. Check that filter's valves "
+                            f"in Open WebUI's Functions list, or use one of: "
+                            f"{', '.join(sorted(_NATIVE_AUDIO_FORMATS))}."
+                        )
+                    if operator_audio_key not in attachments and allowlist_source != "row":
                         raise ValueError(
                             f"Native audio attachment format {audio_format!r} is not "
                             f"supported, and this request carries no Direct Audio Format "

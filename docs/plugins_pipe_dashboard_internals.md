@@ -151,7 +151,7 @@ Data collection is split into tiers to balance freshness against collection cost
 |------|-----------|------|-----------------|
 | **Identity** | Tick 0 + every ~16s | Version, pipe ID, worker count | Negligible |
 | **Fast** | Every 2s | Concurrency, queues, rate limits, sessions, uptime, the emitting worker's PID | Cheap (in-memory reads) |
-| **Medium** | Every ~16s | Models catalog status, system health | Moderate (subsystem inspection) |
+| **Medium** | Every ~16s | Models catalog status, system health | Moderate (subsystem inspection). The session-log figures it reports are counted, not walked: the buffer and record counts are per-deque lengths and the size is a running per-request total read under `SessionLogger._state_lock`, so the work the tier does does not grow with what the buffers hold. |
 | **Slow** | Every ~60s (30s recompute floor) | Storage stats, configuration, plugins | Expensive (DB queries), run on the artifact store's DB thread pool rather than the request loop; on a publisher-owned single-worker thread when the store has no pool (closed by `close()`, or a build that keeps failing) |
 
 A new viewer joining the room resets the tick counter, so the next emit carries the **full** tier set for an instant first paint — within ~2s when a worker is already streaming, or within one idle poll interval (~5s) on a cold start (no dashboards were open). The slow tier is additionally guarded by a wall-clock floor: rapid re-subscribes reuse the cached slow payload instead of re-running the storage queries.

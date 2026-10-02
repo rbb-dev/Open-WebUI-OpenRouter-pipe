@@ -115,6 +115,24 @@ EXPECTED_LATCHES = {
     "_warned_video_filter_installs",
     "_warned_video_provider_keys",
     "_warned_write_refusals",
+    # Not `_warned` latches, and NOT matched by `_LATCH_RE` below -- they are process-wide
+    # RECORDS rather than warn-once latches, so the prefix sweep in conftest cannot reach
+    # them; `_reset_filter_pass_accumulators` clears them by name through
+    # `_ACCUMULATOR_NAMES`, at both ends. They are inventoried here because everything
+    # below this set reasons about "every latch that exists", and a record that holds a
+    # decision across calls is the same isolation problem with a different name: a value
+    # one test wrote is read by the next.
+    "_PIPE_OFF_LANDED_AT",
+    "_REFUSED_FILTER_WRITES",
+}
+
+# The records `_LATCH_RE` cannot see, and the reason the source census below is not asked
+# to find them. `test_every_latch_in_the_source_is_accounted_for` asserts the regex's
+# matches equal the `_warned*` half of EXPECTED_LATCHES; widening the regex to reach these
+# two would ask it to assert a set the source does not contain.
+_NON_LATCH_RECORDS = {
+    "_PIPE_OFF_LANDED_AT",
+    "_REFUSED_FILTER_WRITES",
 }
 
 # `OrderedDict()` is a fourth admitted shape, not a fourth kind of latch: the
@@ -168,11 +186,17 @@ def test_every_latch_in_the_source_is_accounted_for():
         "the flat bundle. Rename one."
     )
     found: set[str] = {n for _, n in located}
+    # The two process-wide RECORDS are inventoried above but are not `_warned*`
+    # declarations, so `_LATCH_RE` -- which is `^`-anchored on that prefix -- cannot find
+    # them. Comparing the regex against the whole set would ask this to assert a set the
+    # source does not contain; comparing it against the warn-once half is the assertion
+    # this test has always made, unchanged.
+    expected_warn_latches = EXPECTED_LATCHES - _NON_LATCH_RECORDS
 
-    assert found == EXPECTED_LATCHES, (
+    assert found == expected_warn_latches, (
         "the set of warn-once latches changed.\n"
-        f"  only in source:   {sorted(found - EXPECTED_LATCHES)}\n"
-        f"  only in expected: {sorted(EXPECTED_LATCHES - found)}\n"
+        f"  only in source:   {sorted(found - expected_warn_latches)}\n"
+        f"  only in expected: {sorted(expected_warn_latches - found)}\n"
         "A new latch needs adding here so the reset is known to cover it; a renamed "
         "one silently stops being reset, which re-arms the bug this guards."
     )

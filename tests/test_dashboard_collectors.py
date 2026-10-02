@@ -277,6 +277,8 @@ class TestCollectMediumStats:
         assert h["log_worker"] == "active"
         assert isinstance(h["log_buffers"], int)
         assert isinstance(h["log_events_buffered"], int)
+        assert isinstance(h["log_bytes_buffered"], int)
+        assert isinstance(h["log_records_shed"], int)
         assert h["redis_enabled"] is False
         assert h["redis_connected"] is False
 
