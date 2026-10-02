@@ -1371,6 +1371,7 @@ class RequestOrchestrator:
             verdicts=await _tool_picture_verdicts_for_input(
                 self._pipe, responses_body.input,
             ),
+            event_emitter=__event_emitter__,
         )
         if (
             budget_outcome is not None

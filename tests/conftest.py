@@ -238,14 +238,27 @@ from tests.pipe_limits import reset_all_slots
 
 
 _WARN_LATCH_PREFIX = "_warned"
+_PIPE_MARKER_NAME = "OWUI_OPENROUTER_PIPE_MARKER"
 
 
 def _warn_latches() -> dict[str, set | dict | list]:
-    """Every module-level warn-once latch in the package.
+    """Every module-level warn-once latch the pipe owns, by package name OR by marker.
 
     These suppress a warning for the life of the process, so the first test to trip
     one silently disarms every later assertion that the warning is emitted. Resolved
     fresh each call because bundled modes alias submodule names onto one module.
+
+    Two owners, one sweep. The package-name branch is the one this file started with.
+    The marker branch is the one the routing filter needs: a RENDERED filter is a module
+    Open WebUI loaded from a Functions row, and it names it `function_<id>`, so the
+    package-name branch never saw its latches at all -- whatever their spelling. Keying
+    on the module NAME could not fix that, because the name is Open WebUI's, not ours.
+    `OWUI_OPENROUTER_PIPE_MARKER` is the codebase's own ownership predicate (every
+    renderer emits it, and `_installed_by` and `_row_owner` already read it off stored
+    content), it names exactly this pipe's own generated modules and nothing else, and it
+    travels with the module rather than depending on how the host happened to import it.
+    Keying on `MODEL_SLUG` instead was measured and cannot work: a bare model slug is not
+    a module identity, and many rows share one.
     """
     seen: dict[str, set | dict | list] = {}
     # Deduped by module OBJECT: this runs autouse before all ~5950 tests, and in a flat
@@ -254,14 +267,18 @@ def _warn_latches() -> dict[str, set | dict | list]:
     # identical set of latches.
     scanned: set[int] = set()
     for name, module in list(sys.modules.items()):
-        if name != "open_webui_openrouter_pipe" and not name.startswith(
-            "open_webui_openrouter_pipe."
-        ):
-            continue
         if id(module) in scanned:
             continue
+        namespace = getattr(module, "__dict__", None)
+        if not isinstance(namespace, dict):
+            continue
+        owned_by_name = name == "open_webui_openrouter_pipe" or name.startswith(
+            "open_webui_openrouter_pipe."
+        )
+        if not owned_by_name and not namespace.get(_PIPE_MARKER_NAME):
+            continue
         scanned.add(id(module))
-        for attr, value in list(vars(module).items()):
+        for attr, value in list(namespace.items()):
             if attr.startswith(_WARN_LATCH_PREFIX) and isinstance(value, (set, dict, list)):
                 seen.setdefault(f"{name}.{attr}", value)
     return seen

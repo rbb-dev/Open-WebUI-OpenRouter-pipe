@@ -709,6 +709,22 @@ def _archive_file_path(
     ) / f"{_archive_path_component(message_id, fallback='message')}.zip"
 
 
+def _archive_file_path_legacy(
+    base_dir: Path | str, *, user_id: str, chat_id: str, message_id: str
+) -> Path | None:
+    out_dir = (
+        Path(base_dir).expanduser()
+        / _sanitize_path_component(user_id, fallback="user")
+        / _sanitize_path_component(chat_id, fallback="chat")
+    )
+    legacy = out_dir / f"{_sanitize_path_component(message_id, fallback='message')}.zip"
+    if legacy == _archive_file_path(
+        base_dir, user_id=user_id, chat_id=chat_id, message_id=message_id
+    ):
+        return None
+    return legacy
+
+
 def _archive_claim_key(path: Path | str) -> str:
     return os.path.normpath(str(path))
 

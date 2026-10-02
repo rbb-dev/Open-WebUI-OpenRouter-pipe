@@ -2226,6 +2226,14 @@ that retries the same logical request gets a new `request_id` and
 therefore a second job. The `chat_id` itself stays empty throughout, so
 the finished video is never attached to a chat that does not exist.
 
+A **rejected** job on that leg now leaves the pipe as an HTTP error
+rather than as a card: the status the pipe resolved on the status line and
+the same number in `error.code` (the upstream status, and `502` when the 200
+from `/videos` was not an OpenRouter document), or a `500` carrying
+`Video generation failed.` when the fault is one the pipe owns. An
+**accepted** one still answers with the clip. See
+[Error Handling & User Experience](error_handling_and_user_experience.md#c-api-callers-with-no-chat-http-error-instead-of-a-card).
+
 Single-worker only: `_video_active_tasks` is process-local. Multi-worker
 deployments would lose the dedupe guarantee — that's why this is a
 single-worker constraint and documented as such. Multi-worker exact-once

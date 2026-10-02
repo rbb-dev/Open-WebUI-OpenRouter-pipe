@@ -366,7 +366,7 @@ _IMAGE_EXTENSIONS = frozenset(
     }
 )
 
-_IMAGE_EXTENSION_ALIASES = {"jpg": "jpeg", "svg+xml": "svg", "tif": "tiff"}
+_IMAGE_EXTENSION_ALIASES = {"jpg": "jpeg", "tif": "tiff"}
 
 
 def canonical_image_mime(declared: str) -> str | None:

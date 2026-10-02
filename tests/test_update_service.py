@@ -20,7 +20,7 @@ import types
 from functools import lru_cache, partial
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -2974,6 +2974,22 @@ class _LivablePipe:
         self._draining = False
         self._closing = False
         self.served = 0
+        self._plugin_registry = None
+
+    def _ensure_plugin_registry(self):
+        """The pipe's own seam, so a revived instance can register its plugins for real.
+
+        Mirrors `pipe.py::_ensure_plugin_registry`: the refused-write repair hands the
+        dashboard's module globals to the revived generation, and the way it does that
+        is by calling this. Without it on the stand-in the repair raises `AttributeError`,
+        the `except Exception` around it swallows that, and a working fix looks broken.
+        """
+        if self._plugin_registry is None:
+            from open_webui_openrouter_pipe.plugins.registry import PluginRegistry
+
+            self._plugin_registry = PluginRegistry()
+            self._plugin_registry.init_plugins(cast(Any, self))
+        return self._plugin_registry
 
     def pipe(self, *a, **kw):
         if self._draining or self._closing:

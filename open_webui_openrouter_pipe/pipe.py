@@ -4302,12 +4302,14 @@ class Pipe:
         user: Any = None,
         owui_chat_id: str | None = None,
         files_inlined: bool = False,
+        event_emitter: Any = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         async for event in self._ensure_chat_completions_adapter().send_openai_chat_completions_streaming_request(
             session, responses_request_body, api_key, base_url, valves=valves, breaker_key=breaker_key,
             user=user,
             owui_chat_id=owui_chat_id,
             files_inlined=files_inlined,
+            event_emitter=event_emitter,
         ):
             yield event
 
@@ -4370,6 +4372,7 @@ class Pipe:
         api_key: str,
         base_url: str,
         *,
+        event_emitter: Any = None,
         valves: Pipe.Valves | None = None,
         endpoint_override: Literal["responses", "chat_completions"] | None = None,
         workers: int = 4,
@@ -4393,6 +4396,7 @@ class Pipe:
             event_queue_maxsize=event_queue_maxsize, event_queue_warn_size=event_queue_warn_size,
             user=user,
             owui_chat_id=owui_chat_id,
+            event_emitter=event_emitter,
         ):
             yield event
 

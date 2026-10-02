@@ -3439,7 +3439,7 @@ __KEEP_WHAT_STILL_FITS__
             if order_slugs:
                 provider["order"] = order_slugs
             else:
-                self.log.warning("ORDER value %r not found in _ORDER_MAP", order_display)
+                _warn_unmapped_choice("ORDER", order_display)
 
 '''
         if "ONLY" in drawn:
@@ -3450,7 +3450,7 @@ __KEEP_WHAT_STILL_FITS__
             if only_slug:
                 provider["only"] = [only_slug]
             else:
-                self.log.warning("ONLY value %r not found in _PROVIDER_MAP", only_display)
+                _warn_unmapped_choice("ONLY", only_display)
 
 '''
         if "IGNORE" in drawn:
@@ -3461,7 +3461,7 @@ __KEEP_WHAT_STILL_FITS__
             if ignore_slug:
                 provider["ignore"] = [ignore_slug]
             else:
-                self.log.warning("IGNORE value %r not found in _PROVIDER_MAP", ignore_display)
+                _warn_unmapped_choice("IGNORE", ignore_display)
 
 '''
         if "SORT" in drawn:
@@ -3824,15 +3824,16 @@ _PROVIDER_MAP: dict[str, str] = {provider_map_code}
 # Map ORDER display values to provider slug lists
 _ORDER_MAP: dict[str, list[str]] = {order_map_code}
 
-_WARNED_STALE_CHOICES: set[tuple[str, str, str]] = set()
-_WARNED_UNUSABLE_SETTINGS: set[tuple[str, str, str]] = set()
+_warned_stale_choices: set[tuple[str, str, str]] = set()
+_warned_unusable_settings: set[tuple[str, str, str]] = set()
+_warned_unmapped_choices: set[tuple[str, str]] = set()
 
 
 def _warn_stale_choice(field: str, value: Any, kept: str) -> None:
     marker = (field, str(value), kept)
-    if marker in _WARNED_STALE_CHOICES:
+    if marker in _warned_stale_choices:
         return
-    _WARNED_STALE_CHOICES.add(marker)
+    _warned_stale_choices.add(marker)
     logging.getLogger(MODEL_SLUG).warning(
         "Provider routing valve %s: %r is no longer offered; using %r",
         field,
@@ -3843,15 +3844,24 @@ def _warn_stale_choice(field: str, value: Any, kept: str) -> None:
 
 def _warn_unusable_setting(field: str, value: Any, kept: Any) -> None:
     marker = (field, str(value), str(kept))
-    if marker in _WARNED_UNUSABLE_SETTINGS:
+    if marker in _warned_unusable_settings:
         return
-    _WARNED_UNUSABLE_SETTINGS.add(marker)
+    _warned_unusable_settings.add(marker)
     logging.getLogger(MODEL_SLUG).warning(
         "Provider routing valve %s: stored value %r is not usable by this filter "
         "build; using the field default %r",
         field,
         value,
         kept,
+    )
+
+
+def _warn_unmapped_choice(field: str, value: Any) -> None:
+    marker = (field, str(value))
+    level = logging.DEBUG if marker in _warned_unmapped_choices else logging.WARNING
+    _warned_unmapped_choices.add(marker)
+    logging.getLogger(f"openrouter.provider.{{MODEL_SLUG}}").log(
+        level, "%s value %r not found in the routing map", field, value
     )
 
 

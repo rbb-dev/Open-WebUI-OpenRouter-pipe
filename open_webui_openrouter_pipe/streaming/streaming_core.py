@@ -962,7 +962,10 @@ class StreamingHandler:
                 if text.startswith("data:"):
                     parsed = await asyncio.to_thread(self._pipe._multimodal_handler._parse_data_url, text)
                     if parsed:
-                        stored = await _persist_generated_image(parsed["data"], parsed["mime_type"])
+                        mime_type = _resolved_stored_mime(parsed["mime_type"], parsed["data"])
+                        if mime_type is None:
+                            return None
+                        stored = await _persist_generated_image(parsed["data"], mime_type)
                         if stored:
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
                             return f"/api/v1/files/{stored}/content"
@@ -976,7 +979,10 @@ class StreamingHandler:
                         return text
                     downloaded = await self._pipe._multimodal_handler._download_remote_url(text)
                     if downloaded:
-                        stored = await _persist_generated_image(downloaded["data"], downloaded["mime_type"])
+                        mime_type = _resolved_stored_mime(downloaded["mime_type"], downloaded["data"])
+                        if mime_type is None:
+                            return None
+                        stored = await _persist_generated_image(downloaded["data"], mime_type)
                         if stored:
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_REMOTE_SAVED, done=False)
                             return f"/api/v1/files/{stored}/content"
@@ -2205,6 +2211,7 @@ class StreamingHandler:
                         event_iter = self._pipe.send_openrouter_streaming_request(
                             session,
                             request_payload,
+                            event_emitter=event_emitter,
                             api_key=api_key_value,
                             base_url=valves.BASE_URL,
                             valves=valves,

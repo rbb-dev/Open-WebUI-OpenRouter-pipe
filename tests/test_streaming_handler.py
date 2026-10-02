@@ -7290,14 +7290,27 @@ class TestStreamingCoreAdditionalCoverage:
 
     @pytest.mark.asyncio
     async def test_materialize_image_jpg_mime_conversion(self, monkeypatch, pipe_instance_async, sample_image_base64):
-        """Test image materialization converts jpg to jpeg (lines 355-356)."""
+        """The stored file is typed by its bytes, and the filename extension tracks that type.
+
+        The declaration is `image/jpg`, the payload is `sample_image_base64` -- a 1x1 PNG --
+        and `resolve_download_type` gives IDENTIFIED evidence priority over the declared
+        one, so what is stored is `image/png`. That is the property, and it is written as
+        `canonical_image_mime` of the resolved type rather than as a literal, so the rule
+        holds for any future declaration rather than for this one spelling.
+
+        The old row asserted only `result is not None`, which no return value can fail.
+        This one watches the seam: it records what the upload was handed, so a mime that
+        never reaches the file, or an extension that disagrees with it, is visible.
+        """
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
+        uploads: list[dict[str, Any]] = []
 
         async def mock_resolve_storage_context(*args, **kwargs):
             return (Mock(), Mock())
 
-        async def mock_upload_to_storage(*args, **kwargs):
+        async def mock_upload_to_storage(**kwargs):
+            uploads.append(kwargs)
             return "stored-file-jpg"
 
         monkeypatch.setattr(pipe._file_gateway, "resolve_storage_context", mock_resolve_storage_context)
@@ -7333,6 +7346,22 @@ class TestStreamingCoreAdditionalCoverage:
         )
 
         assert result is not None
+        assert len(uploads) == 1, f"the generated picture was not stored once: {uploads}"
+        stored = uploads[0]
+        assert stored["mime_type"] == "image/png", (
+            f"stored mime_type={stored['mime_type']!r}; the payload is a 1x1 PNG and the "
+            "bytes decide, so a declared 'image/jpg' does not make it a jpeg"
+        )
+        assert stored["file_data"] == base64.b64decode(sample_image_base64), (
+            "the bytes handed to storage are not the bytes the reply carried"
+        )
+        assert stored["filename"] == f"generated-image-{stored['filename'].split('-', 2)[2]}", (
+            f"the stored filename is not the generated-image shape: {stored['filename']!r}"
+        )
+        assert Path(stored["filename"]).suffix == ".png", (
+            f"the stored filename extension is {Path(stored['filename']).suffix!r}, which "
+            f"disagrees with the stored mime {stored['mime_type']!r}"
+        )
 
     @pytest.mark.asyncio
     async def test_append_output_block_ends_with_newline(self, monkeypatch, pipe_instance_async):
@@ -10342,9 +10371,20 @@ class TestMaterializeImageEntry:
 
     @pytest.mark.asyncio
     async def test_materialize_image_entry_with_b64_json(self, monkeypatch, pipe_instance_async):
-        """Test image entry with b64_json key (lines 346-361)."""
+        """With no storage to write to, the entry falls back to the inline `data:` form.
+
+        The no-storage arm of the pair. `resolve_storage_context` returns `(None, None)`
+        and the metadata carries no `chat_id`, so `_persist_generated_image` returns `None`
+        before it is ever called -- nothing is written. What is worth pinning is that the
+        reply still carries the picture, inline, typed by its own bytes rather than by the
+        `image/jpg` the entry declared.
+
+        The old row here was `"Done" in result or "!" in result`, which every return value
+        satisfies: the `"!"` disjunct alone is true of almost any string.
+        """
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
+        uploads: list[dict[str, Any]] = []
 
         # Small valid PNG
         png_header = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82'
@@ -10372,7 +10412,12 @@ class TestMaterializeImageEntry:
         async def mock_resolve_storage_context(request_context, user_obj):
             return (None, None)
 
+        async def mock_upload_to_storage(**kwargs):
+            uploads.append(kwargs)
+            return "should-not-be-called"
+
         monkeypatch.setattr(pipe._file_gateway, "resolve_storage_context", mock_resolve_storage_context)
+        monkeypatch.setattr(pipe._file_gateway, "upload_to_owui_storage", mock_upload_to_storage)
 
         result = await pipe._streaming_handler._run_streaming_loop(
             body,
@@ -10384,7 +10429,10 @@ class TestMaterializeImageEntry:
             user_id="user-123",
         )
 
-        assert "Done" in result or "!" in result
+        assert uploads == [], f"a write was attempted with no storage context: {uploads}"
+        assert f"data:image/png;base64,{b64_image}" in result, (
+            f"the entry did not fall back to the inline data: form typed by its bytes: {result[:200]!r}"
+        )
 
     @pytest.mark.asyncio
     async def test_materialize_image_entry_invalid_b64_continues(self, monkeypatch, pipe_instance_async):
@@ -11647,11 +11695,20 @@ class TestNormalizeSurrogateEmpty:
 
 
 class TestJpgMimeTypeConversion:
-    """Test jpg to jpeg mime type conversion (line 277)."""
+    """A declared `image/jpg` reaches storage under the type its bytes identify."""
 
     @pytest.mark.asyncio
     async def test_jpg_mime_type_converted_to_jpeg(self, monkeypatch, pipe_instance_async):
-        """Test image/jpg mime type is converted to image/jpeg (line 277)."""
+        """The declaration is `image/jpg`; the payload is a PNG, so the PNG wins.
+
+        This row used to assert the opposite -- that `image/jpg` lands as `.jpeg` -- which
+        was the rule before B590: the declaration decided. The rule now is that the bytes
+        decide and the declaration only decides where the bytes say nothing, so a `data:`
+        arm that routes its declared type through `_resolved_stored_mime` stores this PNG as
+        `image/png`. The spelling that made the old answer necessary, `image/jpg`, is still
+        resolved -- by `canonical_image_mime`, for a payload whose bytes identify nothing --
+        and that is what `tests/test_image_api_path.py` pins.
+        """
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
 
@@ -11700,9 +11757,13 @@ class TestJpgMimeTypeConversion:
         )
 
         assert uploaded, "the image never reached storage, so this test proved nothing"
-        assert uploaded[0]["filename"].endswith(".jpeg"), (
-            "image/jpg is an alias browsers and providers both emit; it must land as a .jpeg "
-            f"file, not as {uploaded[0]['filename']!r}"
+        assert uploaded[0]["mime_type"] == "image/png", (
+            f"stored mime_type={uploaded[0]['mime_type']!r}; the bytes are a PNG, and the "
+            "stored filename's content-type must not disagree with them"
+        )
+        assert uploaded[0]["filename"].endswith(".png"), (
+            "a declared image/jpg carrying PNG bytes must land as a .png file, not as "
+            f"{uploaded[0]['filename']!r}"
         )
 
 

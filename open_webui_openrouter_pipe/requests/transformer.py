@@ -543,12 +543,6 @@ def _inline_payload_bytes(value: str) -> int:
     return inline_payload_bytes(value)
 
 
-def _inline_media_type(value: str) -> str:
-    if url_scheme(value) != "data":
-        return "raw base64"
-    return value.partition(",")[0][len("data:"):].split(";", 1)[0][:64]
-
-
 def _payload_is_present(value: Any) -> bool:
     if isinstance(value, str):
         return bool(value.strip())

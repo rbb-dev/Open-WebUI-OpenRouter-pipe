@@ -1117,18 +1117,17 @@ class UpdateService:
                         "the revived instance is serving factory defaults",
                         exc_info=True,
                     )
-            self._install_revived_getters(revived)
             self._repair_function_cache(request, pipe_id, revived, row)
+            self._install_revived_getters(revived)
         except Exception:
             logger.warning("update: refused-write rollback failed", exc_info=True)
 
     @staticmethod
     def _install_revived_getters(revived: Any) -> None:
-        from .dashboard_socket import register_socket_handler
-        from .http_routes import set_pipe_getter
-
-        set_pipe_getter(lambda: revived)
-        register_socket_handler(lambda: revived)
+        valves = getattr(revived, "valves", None)
+        if not bool(getattr(valves, "ENABLE_PLUGIN_SYSTEM", False)):
+            return
+        revived._ensure_plugin_registry()
 
     async def _pre_attempt_valves(self) -> Any | None:
         try:

@@ -1289,7 +1289,10 @@ most often — changes nothing on any model: every panel already attached stays
 attached, and the next model catalog fetch tries again. The same holds for the Fusion panel,
 which is installed by the same pass. A log line names it when it happens:
 `OpenRouter Image filter ensure failed` or `OpenRouter Fusion filter ensure
-failed`.
+failed`. The Fusion line — and the Web Tools, Image Gen and Direct Uploads
+ones beside it — is a warn-once line: the first occurrence is a `WARNING` and
+every later refresh that sees the same fault logs it again at `DEBUG`, with the
+traceback still attached.
 
 A single model's install failing is a different line, and a quieter one: it is
 named once per model per kind of failure, at WARNING, and every later
@@ -1564,6 +1567,14 @@ completed since install. Check:
   dropped database — and it left every model exactly as it was rather than
   detaching anything. A restart re-runs the installer; the next model catalog
   fetch retries on its own.
+- `OpenRouter Fusion filter ensure failed`, `OpenRouter Web Tools filter
+  ensure failed`, `OpenRouter Image Gen filter ensure failed` and `OpenRouter
+  Direct Uploads filter ensure failed` are warn-once lines: the first
+  occurrence of each cause is `WARNING`, and a fault that outlives one
+  catalogue pass repeats at `DEBUG` with the traceback still attached. Grep
+  for them at `DEBUG` too before concluding the installer is fine.
+  (`OpenRouter Image filter ensure failed` is not one of them and stays at
+  `WARNING` for as long as the fault lasts.)
 - Restart the pipe to force a fresh `pipes()` cycle, or toggle
   `AUTO_ATTACH_IMAGE_FILTERS` off → save → on → save.
 

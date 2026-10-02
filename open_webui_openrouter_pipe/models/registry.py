@@ -91,6 +91,12 @@ class ModelFamily:
     ) -> str:
         m = (model_id or "").strip()
 
+        preset_tag = ""
+        if "@" in m:
+            head, _sep, tail = m.rpartition("@")
+            if head and tail.startswith("preset/"):
+                m, preset_tag = head, tail
+
         suffix = ""
         if ":" in m:
             m, suffix = m.rsplit(":", 1)
@@ -107,6 +113,9 @@ class ModelFamily:
             m = m.removeprefix(pref)
 
         base = m.lower()
+
+        if preset_tag:
+            suffix = f"{suffix}:{preset_tag}" if suffix else preset_tag
 
         if suffix:
             return f"{base}:{suffix}"

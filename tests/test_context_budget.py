@@ -1060,8 +1060,9 @@ def test_a_replayed_result_shorter_than_the_stub_is_left_alone() -> None:
         {"type": "input_audio", "input_audio": {"data": "A" * 1_400_000, "format": "mp3"}},
         {"type": "input_file", "file_data": "data:application/pdf;base64," + "A" * 1_400_000},
         {"type": "video_url", "video_url": {"url": "data:x;base64," + "A" * 1_400_000}},
+        {"type": "input_video", "video_url": "data:x;base64," + "A" * 1_400_000},
     ],
-    ids=["input_image", "image_url", "input_audio", "input_file", "video_url"],
+    ids=["input_image", "image_url", "input_audio", "input_file", "video_url", "input_video"],
 )
 def test_an_attachment_does_not_switch_tool_trimming_off(block) -> None:
     """A payload the provider does not read as text must be charged at a flat rate.
@@ -1255,6 +1256,7 @@ def test_a_block_without_a_payload_is_not_charged_for_one() -> None:
 
     assert estimate_serialized_chars([{"type": "input_file"}]) < 200
     assert estimate_serialized_chars([{"type": "video_url", "video_url": {"url": ""}}]) < 200
+    assert estimate_serialized_chars([{"type": "input_video", "video_url": ""}]) < 200
     assert estimate_serialized_chars(
         [{"type": "input_audio", "input_audio": {"data": "", "format": "mp3"}}]
     ) < 200
@@ -1297,6 +1299,7 @@ def test_estimating_a_request_does_not_alter_it() -> None:
         ("input_audio", ("input_audio",), True),
         ("input_file", ("file_data", "file_url"), True),
         ("video_url", ("video_url",), True),
+        ("input_video", ("video_url",), True),
     ],
 )
 def test_a_payload_that_scales_is_not_charged_a_constant(block_type, keys, scales) -> None:
@@ -2026,6 +2029,7 @@ _EMITTED_PAYLOAD_KEYS: dict[str, tuple[str, ...]] = {
     "reasoning.encrypted": ("data",),
     "reasoning.text": ("text",),
     "video_url": ("video_url",),
+    "input_video": ("video_url",),
 }
 
 
@@ -2068,6 +2072,7 @@ _NON_PAYLOAD_BLOCK_KEYS: dict[str, set[str]] = {
     "text": {"type", "text", "format", "cache_control"},
     "image_url": {"type", "detail"},
     "video_url": {"type"},
+    "input_video": {"type"},
 }
 
 
@@ -2122,7 +2127,47 @@ def _scan_emitter_block_keys() -> dict[str, set[str]]:
             stack.extend(ast.iter_child_nodes(node))
         return nodes
 
-    for relative in ("requests/transformer.py", "api/transforms.py"):
+    def keyed_subscript(node: ast.AST) -> tuple[str, str] | None:
+        """`HOLDER["key"] = ...` where `HOLDER` is a plain name and `"key"` a literal."""
+        if not isinstance(node, ast.Assign):
+            return None
+        for target in node.targets:
+            if (
+                isinstance(target, ast.Subscript)
+                and isinstance(target.value, ast.Name)
+                and isinstance(target.slice, ast.Constant)
+                and isinstance(target.slice.value, str)
+            ):
+                return (target.value.id, target.slice.value)
+        return None
+
+    def literal_type(node: ast.AST, key: str) -> str | None:
+        if key != "type" or not isinstance(node, ast.Assign):
+            return None
+        value = node.value
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            return value.value
+        return None
+
+    def in_source_order(function: ast.AST) -> list[ast.AST]:
+        return sorted(
+            own_scope(function),
+            key=lambda node: (getattr(node, "lineno", 0), getattr(node, "col_offset", 0)),
+        )
+
+    def settle(
+        holder: str,
+        carried: dict[str, set[str]],
+        pending: dict[str, list[str]],
+    ) -> None:
+        """Charge a holder's pending `["type"]` renames the keys it now carries."""
+        keys = carried.get(holder)
+        if keys is None:
+            return
+        for block in pending.pop(holder, []):
+            found.setdefault(block, set()).update(keys)
+
+    def scan_dict_literals(relative: str) -> None:
         tree = ast.parse((root / relative).read_text(encoding="utf-8"))
         for function in ast.walk(tree):
             if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
@@ -2165,6 +2210,44 @@ def _scan_emitter_block_keys() -> dict[str, set[str]]:
                         and isinstance(target.slice.value, str)
                     ):
                         found[holders[target.value.id]].add(target.slice.value)
+
+    def scan_constant_subscript_producer(relative: str) -> None:
+        """`HOLDER["type"] = "<literal>"` beside sibling subscripts onto the same holder.
+
+        `_rewrite_video_blocks_for_responses` renames a block in place -- `block["type"] =
+        "input_video"` and `block["video_url"] = ...` -- so no dict literal anywhere names
+        `input_video` and the dict-literal rule above cannot see it. The keys a holder
+        carries are the ones subscript-assigned onto it since it was last bound to a name,
+        which is what distinguishes one branch's `transformed` from the next one's in a
+        module that reuses the name for every block type.
+        """
+        tree = ast.parse((root / relative).read_text(encoding="utf-8"))
+        for function in ast.walk(tree):
+            if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            carried: dict[str, set[str]] = {}
+            pending: dict[str, list[str]] = {}
+            for node in in_source_order(function):
+                if isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            settle(target.id, carried, pending)
+                            carried[target.id] = set()
+                entry = keyed_subscript(node)
+                if entry is None:
+                    continue
+                holder, key = entry
+                carried.setdefault(holder, set()).add(key)
+                block = literal_type(node, key)
+                if block is not None:
+                    pending.setdefault(holder, []).append(block)
+            for holder in list(pending):
+                settle(holder, carried, pending)
+
+    for relative in ("requests/transformer.py", "api/transforms.py"):
+        scan_dict_literals(relative)
+    for relative in ("requests/transformer.py", "api/transforms.py", "requests/orchestrator.py"):
+        scan_constant_subscript_producer(relative)
     return found
 
 

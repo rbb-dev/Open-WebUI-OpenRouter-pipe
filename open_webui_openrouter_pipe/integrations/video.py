@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from urllib.parse import urlsplit
 
 import aiohttp
+from starlette.responses import StreamingResponse
 
 from ..api.gateway.responses_adapter import _record_failed_call
 from ..core.config import (
@@ -32,10 +33,15 @@ from ..core.config import (
     _select_openrouter_http_referer,
 )
 from ..core.costs import maybe_dump_costs_snapshot
+from ..core.error_formatter import (
+    _admission_error_response,
+    _unreadable_body_failure_response,
+)
 from ..core.errors import (
     OpenRouterAPIError,
     RequiredInternalFileError,
     UpstreamBodyUnreadable,
+    is_sign_in_failure,
 )
 from ..core.utils import (
     _clean_str,
@@ -56,6 +62,7 @@ from ..media import (
 )
 from ..models.registry import OpenRouterModelRegistry
 from ..requests.fusion_engine import asks_for_help, latest_user_text
+from ..requests.orchestrator import _is_api_caller, _provider_error_response
 from ..storage.multimodal import (
     ADDRESS_CHECK_BUDGET_SECONDS,
     ADDRESS_CHECK_SECONDS,
@@ -795,7 +802,7 @@ class VideoGenerationAdapter:
         api_model_id: str,
         outcome_sink: dict[str, Any] | None = None,
         breaker_key: str | None = None,
-    ) -> str:
+    ) -> str | StreamingResponse:
         prompt = self._extract_prompt(body)
         video_spec = OpenRouterModelRegistry.spec(normalized_model_id)
         video_model = video_spec.get("video_model") if isinstance(video_spec, dict) else {}
@@ -1245,6 +1252,14 @@ class VideoGenerationAdapter:
         except OpenRouterAPIError as exc:
             self._count_a_failed_start(submitted and not lifecycle_transferred, outcome_sink, breaker_key)
             self.logger.warning("Video generation rejected (job_id=%s): %s", job_id, exc)
+            if _is_api_caller(metadata):
+                escape = _provider_error_response(
+                    exc, stream=bool(getattr(responses_body, "stream", False)), request=request
+                )
+                if escape is not None:
+                    if is_sign_in_failure(exc):
+                        self._pipe._note_auth_failure()
+                    return escape
             return await self._pipe._ensure_error_formatter()._report_openrouter_error(
                 exc,
                 event_emitter=event_emitter,
@@ -1262,6 +1277,13 @@ class VideoGenerationAdapter:
             self.logger.warning(
                 "Video generation body was not an OpenRouter document (job_id=%s): %s", job_id, exc
             )
+            if _is_api_caller(metadata):
+                escape = _unreadable_body_failure_response(
+                    exc, code=502, stream=bool(getattr(responses_body, "stream", False)),
+                    path=getattr(getattr(request, "url", None), "path", "") or "",
+                )
+                if escape is not None:
+                    return escape
             if not withheld_record_written:
                 disclosure_block = self._with_the_withheld_record(disclosure_block, withheld)
             content = self._build_failure_content(
@@ -1275,6 +1297,10 @@ class VideoGenerationAdapter:
         except Exception as exc:
             self._count_a_failed_start(submitted and not lifecycle_transferred, outcome_sink, breaker_key)
             self.logger.exception("Video generation request failed (job_id=%s)", job_id)
+            if _is_api_caller(metadata) and not bool(getattr(responses_body, "stream", False)):
+                escape = _admission_error_response(500, "Video generation failed.", request=request)
+                if escape is not None:
+                    return escape
             if not withheld_record_written:
                 disclosure_block = self._with_the_withheld_record(disclosure_block, withheld)
             reason = str(exc) or exc.__class__.__name__

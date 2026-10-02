@@ -133,6 +133,9 @@ async def test_video_help_renders_the_panel_and_starts_no_job(
     assert bool(submitted) is submits, (
         f"submitted={submitted!r} for {user_text!r} with system={system_text!r}"
     )
+    assert isinstance(result, str), (
+        f"a chat turn must keep its card, got {type(result).__name__}: {result!r}"
+    )
     panel = f"### {VIDEO_HELP_BY_MODEL[model_id]['display_name']}"
     if submits:
         assert panel not in result
@@ -618,6 +621,9 @@ async def test_the_panel_the_help_command_returns_reads_the_admin_intent_valve(i
     from open_webui_openrouter_pipe.integrations.video_help import _INTENT_KNOB_DESCRIPTIONS
 
     assert _INTENT_KNOB_DESCRIPTIONS, "no intent control to look for, so this checks nothing"
+    assert isinstance(result, str), (
+        f"a chat turn must keep its card, got {type(result).__name__}: {result!r}"
+    )
     named = [knob for knob in _INTENT_KNOB_DESCRIPTIONS if f"- `{knob}`:" in result]
     expected = list(_INTENT_KNOB_DESCRIPTIONS) if intent_enabled else []
     assert named == expected, (

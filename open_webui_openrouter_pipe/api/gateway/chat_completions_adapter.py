@@ -220,6 +220,19 @@ class ChatCompletionsAdapter:
         """
         self._pipe = pipe
         self.logger = logger
+        self._refused_tool_pictures: list[tuple[str, str, str]] = []
+
+    async def _report_refused_tool_pictures(
+        self, refusals: list[tuple[str, str, str]], event_emitter: Any
+    ) -> None:
+        from ...requests.transformer import _tool_picture_notice
+
+        self._refused_tool_pictures = list(refusals)
+        if not refusals or event_emitter is None:
+            return
+        await self._pipe._event_emitter_handler._emit_status(
+            event_emitter, _tool_picture_notice(refusals), done=False,
+        )
 
     def _timeout(self, effective_valves: Any) -> aiohttp.ClientTimeout:
         return http_timeout(effective_valves)
@@ -286,6 +299,7 @@ class ChatCompletionsAdapter:
         user: Any = None,
         owui_chat_id: str | None = None,
         files_inlined: bool = False,
+        event_emitter: Any = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Send /chat/completions and adapt streaming output into Responses-style events."""
         effective_valves = valves or self._pipe.valves
@@ -297,13 +311,16 @@ class ChatCompletionsAdapter:
                 max_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
                 user=user,
             )
+        chat_refused: list[tuple[str, str, str]] = []
         chat_payload = await _responses_payload_to_chat_completions_payload(
             responses_payload,
             max_inline_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
             allow_insecure=self._pipe._multimodal_handler._is_insecure_http_allowed,
             pipe=self._pipe,
+            refused_out=chat_refused,
         )
         chat_payload = _filter_openrouter_chat_request(chat_payload)
+        await self._report_refused_tool_pictures(chat_refused, event_emitter)
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -1155,6 +1172,7 @@ class ChatCompletionsAdapter:
         owui_chat_id: str | None = None,
         transient_retry: bool = True,
         files_inlined: bool = False,
+        event_emitter: Any = None,
     ) -> dict[str, Any]:
         """Send /chat/completions with stream=false and return the JSON payload."""
         effective_valves = valves or self._pipe.valves
@@ -1166,13 +1184,16 @@ class ChatCompletionsAdapter:
                 max_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
                 user=user,
             )
+        chat_refused: list[tuple[str, str, str]] = []
         chat_payload = await _responses_payload_to_chat_completions_payload(
             responses_payload,
             max_inline_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
             allow_insecure=self._pipe._multimodal_handler._is_insecure_http_allowed,
             pipe=self._pipe,
+            refused_out=chat_refused,
         )
         chat_payload = _filter_openrouter_chat_request(chat_payload)
+        await self._report_refused_tool_pictures(chat_refused, event_emitter)
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -1271,6 +1292,7 @@ class ChatCompletionsAdapter:
         event_queue_warn_size: int = 1000,
         user: Any = None,
         owui_chat_id: str | None = None,
+        event_emitter: Any = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Unified streaming request entrypoint with endpoint routing + fallback."""
         effective_valves = valves or self._pipe.valves
@@ -1342,6 +1364,7 @@ class ChatCompletionsAdapter:
                 user=user,
                 owui_chat_id=owui_chat_id,
                 files_inlined=True,
+                event_emitter=event_emitter,
             ):
                 yield event
 

@@ -143,7 +143,7 @@ In long tool loops, the request can become context-saturated (large replayed art
 The pipe now applies **adaptive, model-aware budgeting** instead of fixed output caps:
 
 - It derives prompt limits from model metadata: `max_prompt_tokens` when the catalog publishes it, otherwise the model's `context_length` less whatever reply allowance the request itself carries, with safe fallbacks, and a routing variant such as `base:nitro` resolves through its base's row. The provider's largest possible completion is not reserved — that is a ceiling the request never asked for, and on most of the catalog it put the budget far below the real window.
-- It estimates request/input size and omits oversized `function_call_output` payloads by replacing them with a short model-visible stub that advises the model to retry with a narrower query.
+- It estimates request/input size and omits oversized `function_call_output` payloads by replacing them with a short model-visible stub that advises the model to retry with a narrower query. An attachment is charged by its block's type and not by how many base64 characters happened to carry it: a picture at a flat rate, and audio, video and documents at a bytes-per-token rate. The two wire spellings of a video block — `video_url` and the `input_video` the `/responses` rewrite produces — carry the same rate, so which one a turn sends never changes what the clip costs.
 - The model retains full tool access throughout the conversation and can recover from oversized results by retrying with tighter parameters.
 
 This keeps the loop alive, informs the model in-band, and lets the model decide whether to summarize, stop tools, or ask for narrower tool queries.

@@ -378,6 +378,40 @@ def _preferred_request_id(segments: list[dict[str, Any]]) -> str:
     return ""
 
 
+def _prior_archive_belongs_to_turn(
+    meta: dict[str, Any], *, user_id: str, chat_id: str, message_id: str
+) -> bool:
+    ids = meta.get("ids")
+    if not isinstance(ids, dict):
+        return False
+    if str(ids.get("user_id") or "") != user_id:
+        return False
+    if str(ids.get("chat_id") or "") != chat_id:
+        return False
+    recorded = str(ids.get("message_id") or "")
+    return recorded in {message_id, _split_archive_key(message_id)[0]}
+
+
+def _pre_rename_archive_path(
+    out_path: Path,
+    base_dir: str,
+    *,
+    user_id: str,
+    chat_id: str,
+    message_id: str,
+) -> Path | None:
+    from ..core.logging_system import _archive_file_path_legacy
+
+    if out_path.exists():
+        return None
+    legacy = _archive_file_path_legacy(
+        base_dir, user_id=user_id, chat_id=chat_id, message_id=message_id
+    )
+    if legacy is None or not legacy.is_file():
+        return None
+    return legacy
+
+
 _MAX_KEY_CHARS = 64
 _MIN_HEAD_CHARS = 16
 _HEAD_DIGEST_CHARS = 10
@@ -1537,20 +1571,33 @@ class SessionLogManager:
         before_stat = None
         with contextlib.suppress(Exception):
             before_stat = rescue_path.stat()
-        if before_stat is not None and rescue_path.is_file():
+        prior_path = rescue_path if before_stat is not None and rescue_path.is_file() else (
+            _pre_rename_archive_path(
+                rescue_path,
+                base_dir,
+                user_id=user_id,
+                chat_id=chat_id,
+                message_id=fallback_message_id,
+            ) or rescue_path
+        )
+        if prior_path.is_file():
             try:
-                _prior_meta, prior_events = self.read_archive(
-                    rescue_path, (base_dir, zip_password, zip_compression, zip_compresslevel)
+                prior_meta, prior_events = self.read_archive(
+                    prior_path, (base_dir, zip_password, zip_compression, zip_compresslevel)
                 )
             except Exception:
                 self.logger.log(
                     warn_level(self._unreadable_archive_warnings,
-                               f"session_log_rescue_unreadable:{rescue_path}", cooldown_s=3600.0),
+                               f"session_log_rescue_unreadable:{prior_path}", cooldown_s=3600.0),
                     "Refusing to re-capture stranded session log turn chat_id=%s message_id=%s over an "
                     "unreadable rescue archive; the existing file and the newly staged segments are left "
-                    "intact (path=%s).", chat_id, message_id, str(rescue_path), exc_info=True,
+                    "intact (path=%s).", chat_id, message_id, str(prior_path), exc_info=True,
                 )
                 return False
+            if prior_path != rescue_path and not _prior_archive_belongs_to_turn(
+                prior_meta, user_id=user_id, chat_id=chat_id, message_id=message_id
+            ):
+                prior_events = []
             if prior_events:
                 events = self.dedupe_events(prior_events + events)
                 events.sort(key=lambda evt: float(evt.get("created") or 0.0))
@@ -1947,10 +1994,35 @@ class SessionLogManager:
             existing_raw: list[dict[str, Any]] = []
             existing_meta: dict[str, Any] = {}
             read_failed = False
-            if out_path.exists():
+            merge_path = out_path
+            if not out_path.exists():
+                merge_path = _pre_rename_archive_path(
+                    out_path,
+                    base_dir,
+                    user_id=resolved_user_id,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                ) or out_path
+            if merge_path.exists():
                 try:
-                    existing_meta, existing_raw = self.read_archive(out_path, settings)
-                    existing_events = existing_raw
+                    prior_meta, prior_raw = self.read_archive(merge_path, settings)
+                    if merge_path == out_path or _prior_archive_belongs_to_turn(
+                        prior_meta,
+                        user_id=resolved_user_id,
+                        chat_id=chat_id,
+                        message_id=message_id,
+                    ):
+                        existing_meta, existing_raw = prior_meta, prior_raw
+                    else:
+                        prior_raw = []
+                        self.logger.debug(
+                            "A pre-digest archive at %s names another turn's ids; it is left "
+                            "alone and this turn is assembled on its own (chat_id=%s message_id=%s).",
+                            str(merge_path),
+                            chat_id,
+                            message_id,
+                        )
+                    existing_events = prior_raw
                     existing_count = len(existing_events)
                     db_count = len(merged_events)
                     if existing_events:
@@ -1975,12 +2047,12 @@ class SessionLogManager:
                     self.logger.log(
                         warn_level(
                             self._unreadable_archive_warnings,
-                            f"session_log_archive_unreadable:{out_path}",
+                            f"session_log_archive_unreadable:{merge_path}",
                             cooldown_s=3600.0,
                         ),
                         "Refusing to assemble over an unreadable session log archive; "
                         "the existing file and the staged segments are left intact (path=%s chat_id=%s message_id=%s).",
-                        str(out_path),
+                        str(merge_path),
                         chat_id,
                         message_id,
                         exc_info=True,

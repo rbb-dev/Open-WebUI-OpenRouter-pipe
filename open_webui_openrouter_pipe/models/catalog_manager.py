@@ -199,10 +199,18 @@ def _warn_on_empty_read(
     return {}
 
 
+def _ensure_failure_level(latch: set[str], family: str, exc: BaseException) -> int:
+    return warn_level(latch, f"{family}:{type(exc).__name__}")
+
+
 _ROW_NOT_FETCHED = object()
 _ROWS_UNREADABLE = object()
 
+_warned_web_tools_filter_ensure: set[str] = set()
+_warned_image_gen_filter_ensure: set[str] = set()
 _warned_video_gen_filter_ensure: set[str] = set()
+_warned_fusion_filter_ensure: set[str] = set()
+_warned_direct_uploads_filter_ensure: set[str] = set()
 
 _MODEL_ROW_READ_CHUNK = 1000
 
@@ -1900,8 +1908,9 @@ class ModelCatalogManager:
                         rows=install_rows,
                     )
                 except Exception as exc:
-                    self.logger.warning(
-                        "OpenRouter Web Tools filter ensure failed: %s", exc, exc_info=True
+                    self.logger.log(
+                        _ensure_failure_level(_warned_web_tools_filter_ensure, "Web Tools", exc),
+                        "OpenRouter %s filter ensure failed: %s", "Web Tools", exc, exc_info=True,
                     )
                     web_tools_filter_function_id = None
                     web_tools_family_off = False
@@ -1917,8 +1926,9 @@ class ModelCatalogManager:
                 try:
                     image_gen_filter_function_id = await self._pipe._ensure_filter_manager().ensure_openrouter_image_gen_filter_function_id(rows=install_rows)
                 except Exception as exc:
-                    self.logger.warning(
-                        "OpenRouter Image Gen filter ensure failed: %s", exc, exc_info=True
+                    self.logger.log(
+                        _ensure_failure_level(_warned_image_gen_filter_ensure, "Image Gen", exc),
+                        "OpenRouter %s filter ensure failed: %s", "Image Gen", exc, exc_info=True,
                     )
                     image_gen_filter_function_id = None
                     image_gen_family_off = False
@@ -1999,8 +2009,9 @@ class ModelCatalogManager:
                         await _fusion_filter_manager.ensure_openrouter_fusion_filter_function_id(rows=install_rows)
                     )
                 except Exception as exc:
-                    self.logger.warning(
-                        "OpenRouter Fusion filter ensure failed: %s", exc, exc_info=True
+                    self.logger.log(
+                        _ensure_failure_level(_warned_fusion_filter_ensure, "Fusion", exc),
+                        "OpenRouter %s filter ensure failed: %s", "Fusion", exc, exc_info=True,
                     )
                     fusion_ids_known = False
                 if fusion_filter_unresolved:
@@ -2018,8 +2029,11 @@ class ModelCatalogManager:
                 try:
                     direct_uploads_filter_function_id = await self._pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id(rows=install_rows)
                 except Exception as exc:
-                    self.logger.warning(
-                        "OpenRouter Direct Uploads filter ensure failed: %s", exc, exc_info=True
+                    self.logger.log(
+                        _ensure_failure_level(
+                            _warned_direct_uploads_filter_ensure, "Direct Uploads", exc
+                        ),
+                        "OpenRouter %s filter ensure failed: %s", "Direct Uploads", exc, exc_info=True,
                     )
                     direct_uploads_filter_function_id = None
                     direct_uploads_family_off = False

@@ -3355,6 +3355,9 @@ async def _video_withheld_run(
     finally:
         video_module.OpenRouterVideoClient = original
         await pipe.close()
+    assert isinstance(content, str), (
+        f"a chat turn must keep its card, got {type(content).__name__}: {content!r}"
+    )
     return events, content
 
 

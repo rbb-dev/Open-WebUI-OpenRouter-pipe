@@ -979,6 +979,7 @@ async def _responses_input_to_chat_messages(
     allow_insecure: Callable[[str], bool],
     allow_unknown_fields: bool = False,
     pipe: Pipe | None = None,
+    refused_out: list[tuple[str, str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Convert Responses API input array -> Chat Completions messages array.
 
@@ -1015,6 +1016,8 @@ async def _responses_input_to_chat_messages(
         kept, refused = await _tool_picture_gate_with_address(
             pipe, tool_pictures, max_inline_bytes=max_inline_bytes,
         )
+        if refused and refused_out is not None:
+            refused_out.extend(refused)
         for url, reason, cause in refused:
             logger.warning(
                 "Not forwarding a tool's picture (%s): %s [cause=%s]",
@@ -1449,6 +1452,7 @@ async def _responses_payload_to_chat_completions_payload(
     max_inline_bytes: int,
     allow_insecure: Callable[[str], bool],
     pipe: Pipe | None = None,
+    refused_out: list[tuple[str, str, str]] | None = None,
 ) -> dict[str, Any]:
     """Convert a Responses API request payload into a Chat Completions payload."""
     if not isinstance(responses_payload, dict):
@@ -1572,6 +1576,7 @@ async def _responses_payload_to_chat_completions_payload(
         max_inline_bytes=max_inline_bytes,
         allow_insecure=allow_insecure,
         pipe=pipe,
+        refused_out=refused_out,
     )
 
     instructions = responses_payload.get("instructions")

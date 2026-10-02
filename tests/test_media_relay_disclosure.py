@@ -585,6 +585,9 @@ async def test_generate_puts_back_what_was_withheld_when_it_resumes_a_running_jo
     finally:
         await pipe.close()
 
+    assert isinstance(answered, str), (
+        f"a chat turn must keep its card, got {type(answered).__name__}: {answered!r}"
+    )
     assert "/api/v1/files/file-1/content" in answered, (
         f"the resumed job did not finish, so nothing below is about a resume:\n{answered}"
     )

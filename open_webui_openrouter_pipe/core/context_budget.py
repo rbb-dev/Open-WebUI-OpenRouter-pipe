@@ -184,6 +184,10 @@ def _reasoning_encrypted_tokens(
     return n // _REASONING_ENCRYPTED_BYTES_PER_TOKEN
 
 
+def _video_tokens(n: int, _media_type: str, _h: Any = None, _f: str = "") -> int:
+    return n // _VIDEO_BYTES_PER_TOKEN
+
+
 _OPAQUE_BLOCK_PAYLOADS: dict[str, tuple[tuple[str, ...], Callable[..., int]]] = {
     "input_image": (("image_url",), lambda _n, _t, _h=None, _f="": _PICTURE_TOKENS),
     "image_url": (("image_url",), lambda _n, _t, _h=None, _f="": _PICTURE_TOKENS),
@@ -194,10 +198,8 @@ _OPAQUE_BLOCK_PAYLOADS: dict[str, tuple[tuple[str, ...], Callable[..., int]]] = 
     "input_file": (("file_id", "file_data", "file_url"), _document_tokens),
     "reasoning.encrypted": (("data",), _reasoning_encrypted_tokens),
     "reasoning.text": (("text",), _reasoning_text_tokens),
-    "video_url": (
-        ("video_url",),
-        lambda n, _t, _h=None, _f="": n // _VIDEO_BYTES_PER_TOKEN,
-    ),
+    "video_url": (("video_url",), _video_tokens),
+    "input_video": (("video_url",), _video_tokens),
 }
 _LIVE_OMISSION_PREFIX = "[Tool result omitted due to context budget."
 _REPLAY_OMISSION_PREFIX = "[Replayed tool result omitted due to context budget."

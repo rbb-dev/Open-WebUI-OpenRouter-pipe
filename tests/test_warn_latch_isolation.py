@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -55,6 +56,16 @@ EXPECTED_LATCHES = {
     # decision -- warn the first time each, then repeat at DEBUG rather than going
     # silent at every level -- and the two arms are the same shape.
     "_warned_frame_not_materialised",
+    # The four filter-family ensure sites that used to log an installer failure at
+    # WARNING for as long as the fault lasts. A catalogue pass runs on a schedule
+    # (hourly by default) and on every worker restart, so a locked Functions table
+    # produced four traceback-bearing WARNINGs an hour, per worker. Keyed on the
+    # family and the exception class -- never on the message, which carries the row
+    # id and the SQL.
+    "_warned_web_tools_filter_ensure",
+    "_warned_image_gen_filter_ensure",
+    "_warned_fusion_filter_ensure",
+    "_warned_direct_uploads_filter_ensure",
     "_warned_image_catalog",
     "_warned_dropped_image_param",
     "_warned_image_cost_snapshot",
@@ -104,6 +115,19 @@ EXPECTED_LATCHES = {
     "_warned_responses_chunk_parse",
     "_warned_row_timestamps",
     "_warned_stale_filter_rows",
+    # The two latches the RENDERED provider-routing filter declares. They are in this
+    # inventory for the same reason the rest are: without a per-test reset the first
+    # test to trip one silently disarms every later assertion that the warning is
+    # emitted. They resolve on a rendered module rather than on a package module, so
+    # `_live_latches` below has to reach those too -- otherwise these two rows satisfy
+    # the census while resetting nothing, which is the documented lie this file exists
+    # to close.
+    "_warned_stale_choices",
+    "_warned_unusable_settings",
+    # The third generated latch: a routing choice the filter cannot map. Unreachable
+    # through the shipped renderer, and per-request if it ever opened, so it is a
+    # latch like the two above rather than a bare `self.log.warning`.
+    "_warned_unmapped_choices",
     "_warned_stale_valves",
     "_warned_storage_provider",
     "_warned_store",
@@ -187,6 +211,12 @@ _LATCH_RE = re.compile(
     re.M,
 )
 
+# The census pattern, case-blind. See `_declared_latches` for why these two differ.
+_LATCH_RE_ANY_CASE = re.compile(
+    r"^(_warned[A-Za-z0-9_]*)\s*(?::[^=]+)?=\s*(?:set\(\)|dict\(\)|OrderedDict\(\)|\{\}|\[\])",
+    re.M | re.I,
+)
+
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),
@@ -223,14 +253,24 @@ def test_every_latch_in_the_source_is_accounted_for():
 
 
 def _live_latches() -> dict[str, object]:
-    """Every inventoried latch, resolved to the live object on its module."""
+    """Every inventoried latch, resolved to the live object on its module.
+
+    Two owners, matching conftest's `_warn_latches()`: a package module by name, and a
+    rendered filter by the marker every renderer emits. Without the second branch a row
+    for a generated latch resolves to nothing -- an inert row that satisfies the census
+    while resetting nothing.
+    """
     import importlib
     import sys
 
     found: dict[str, object] = {}
     for name, module in list(sys.modules.items()):
+        namespace = getattr(module, "__dict__", None)
+        if not isinstance(namespace, dict):
+            continue
         root = name.split(".")[0]
-        if root != PACKAGE_DIR.name and not name.startswith(PACKAGE_DIR.name + "."):
+        owned_by_name = root == PACKAGE_DIR.name or name.startswith(PACKAGE_DIR.name + ".")
+        if not owned_by_name and not namespace.get("OWUI_OPENROUTER_PIPE_MARKER"):
             continue
         for attr in EXPECTED_LATCHES:
             value = getattr(module, attr, None)
@@ -268,6 +308,37 @@ def test_every_latched_warning_is_reset_on_every_test(run):
             value["sentinel-from-this-test"] = 0.0
         elif isinstance(value, list):
             value.append("sentinel-from-this-test")
+
+
+def _routing_filter_source() -> str:
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    return FilterManager._render_provider_routing_filter_source(
+        model_slug="example/latch-census",
+        providers=["baidu", "streamlake"],
+        quantizations=["fp8"],
+        visibility="both",
+        short_name="Latch Census",
+        provider_names={"baidu": "Baidu", "streamlake": "StreamLake"},
+    )
+
+
+def _declared_latches(module: ModuleType) -> dict[str, set | dict | list]:
+    """The rendered filter's own warn-once latches, found from the SOURCE and case-blind.
+
+    Two deliberate differences from `_LATCH_RE` above, both so that these nodes measure
+    the SWEEP rather than the spelling: the source is the generated one (the declaration
+    a rendered module actually carries), and the pattern is case-insensitive (the
+    case-sensitive one is exactly the blind spot that hid these two declarations from
+    the census, so a node written with it would go red on the spelling instead of on the
+    reset it exists to test).
+    """
+    declared = {}
+    for name in _LATCH_RE_ANY_CASE.findall(_routing_filter_source()):
+        value = getattr(module, name, None)
+        if isinstance(value, (set, dict, list)):
+            declared[name] = value
+    return declared
 
 
 def test_every_instance_held_latch_is_reset_by_construction():

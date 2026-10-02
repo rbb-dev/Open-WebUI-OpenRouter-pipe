@@ -2,6 +2,17 @@
 
 ## Behaviour changes
 
+- **Video generation, machine callers** — a video turn that fails *before* OpenRouter answers the submission now
+  reaches a caller with no chat as an HTTP error instead of a `200` with a Markdown card in it. A rejected job
+  leaves with the status the pipe resolved on the status line and the same number in `error.code` (`502` when a
+  proxy rewrote the `/videos` body); a fault the pipe owns leaves as `500` carrying `Video generation failed.`,
+  with no Python class name in the body and the full message and traceback at ERROR in the session log as before.
+  The gate is the same one the chat leg uses — no truthy `chat_id` **and** `message_id`, `stream: false`, never on
+  an Anthropic Messages path — so a chat keeps its card, a streamed turn keeps its card in the stream chunks, and a
+  successful job is unchanged. A plain API client that submits a video model with no chat can now branch on
+  `status_code` the way it already could for a chat completion.
+
+- **Presets** — a request naming a preset in the spelling the pipe itself dispatches (`<base>@preset/<slug>`) is now served instead of being refused as blocked. The pipe publishes presets as `<base>:preset/<slug>` and dispatches them with the `@`; the model-restriction gate read the dispatched spelling as a model of its own, so an id copied out of a request log or a response body came back as the `Blocked model message`. The published row was already enforced under the picker spelling, so nothing new is admitted — the two spellings now name one model. A preset turn also stops being billed to the 128 000-token fallback and picks up its base model's real context window, so a tool result the base's window can hold is no longer trimmed away and one it cannot is no longer shipped whole.
 - **Open-WebUI tool mode** — a call Open WebUI runs now shows its card from the moment the model names the tool, and the dashboard's live view now shows the running tool on those turns (it stayed empty before).
 - **Pipe dashboard, deleted function row** — deleting the pipe's function row now releases the live dashboard on the worker that served the DELETE and lets
   the pipe finish its in-flight requests and close, instead of holding it, its session-log threads and its storage handle until a restart. The stand-down
@@ -98,6 +109,29 @@
   and it needs an edit made in the same second as the tab's own load, so this closes a race an
   administrator had to be holding Apply for; updates are not otherwise riskier — nothing else about
   the apply path changed.
+- **Provider routing panels** — every installed routing panel's code is replaced on the next model-list refresh, and
+  what changed in it is entirely in the log. A stored choice the panel cannot map (an `ORDER`, `ONLY` or `IGNORE`
+  dropdown value with no entry in the routing map) now warns **once** at `WARNING` and repeats at `DEBUG` on every
+  later turn, naming the field and the value; before, one such choice meant three WARNINGs on every request for as
+  long as it stayed open, with no throttle of any kind. The choice itself still goes out unconstrained exactly as
+  before — nothing about the request changes. This entry also covers the two valve-healing warnings in the same
+  generated panel, whose latch declarations were renamed to the spelling the pipe's own warn-once inventory reads, so
+  that they are reset between runs instead of staying armed for the life of the process.
+
+- **inline video and the tool budget** — a turn carrying an inline video clip on `/responses` no longer shows the
+  "this conversation needs about N tokens" warning, and no longer drops a tool result, because the context budget
+  now rates the clip under the name the wire gives it. The two spellings of a video block — `video_url` before the
+  responses rewrite, `input_video` after it — were priced from different rows of the rate table, and only the first
+  had one, so every pass that ran after the rewrite charged the clip's base64 at its literal length, some 125× the
+  clip. The turn then read as hopeless and the budget stopped trimming tool output at all. Reach is occasional:
+  inline `data:` clips only, and only on `/responses`; a linked clip was never affected, and neither was a turn
+  without a tool result to lose. What it cost was the model answering without a tool result it had been sent.
+
+- **Update tab after a refused write** — the dashboard now follows the rebuilt instance on every surface, so the
+  Update tab, the Usage tab and the Live card stop disagreeing about which generation is live. A refused write no
+  longer leaves the Live card on the retired generation's sessions, and no longer leaves Update and Usage answering
+  "unavailable" once the rebuilt instance itself retires: the panel's registrations are taken back down with the
+  generation that made them, instead of being pinned for the life of the worker.
 - **Config tab** — a save the database refuses to write now raises a durable banner instead of a toast alone.
   The banner names the fault, carries no Reload control, and leaves your staged edits in place, so nothing the
   refusal preserved can be discarded from the tab that preserved it. It clears on the next successful save or
@@ -154,6 +188,13 @@
   stale to do returned before it, and a gateway admin running with the four image filter valves off kept being
   served the previous gateway's aspect-ratio, resolution and seed limits until some later sweep ran. The identity
   is now adopted before the gate, so one stored value (`API_KEY`) has one reader and one answer.
+- **provider error row** — on a failure reported inside a reply the pipe has already started, the **Provider error**
+  row now names the provider's own error type wherever the body carries one, read from `error.metadata.raw.error.type`
+  or from the failure's own `error.type` — the same two places the rejection path already reads — instead of an HTTP
+  status number or the literal word `error`. Nothing else on the card moves: the resolved status, the typed kind, the
+  template choice and the retry decision are unchanged for every shape, and a body that names no provider category
+  still falls back to the numeric code and then to the stream marker. Custom templates using `{upstream_type}` are
+  affected.
 - **API key** — a stored `API_KEY` the key gate refuses now produces the authentication card on the streaming and the
   housekeeping-task legs too, instead of a 401 or an opaque "Unexpected error in streaming loop". Both of those legs
   read the stored field with a bare decrypt instead of through `Pipe._resolve_openrouter_api_key`, so an encrypted
@@ -207,3 +248,12 @@
   plugins as `ctx.pipe._http_session`. Nothing else changes: no valve, no timeout, and nothing
   in the package read a cookie before or reads one now. Operator-configured gateways and
   catalog icon hosts were not probed.
+- **session log storage** — an archive written under the pre-digest path component is now found and merged by the
+  next assembly pass for that turn, which keeps the outcome the older archive recorded and republishes the merged
+  turn under the digest name. Only when the older file's `meta.json` names that turn's exact `ids`, so an archive
+  belonging to another turn that used to share the bare stem is left alone, and the file that was read is left
+  where it is for the retention sweep to reap.
+- **pipe dashboard** — the usage retention window now covers every `dashboard_*` table this pipe published and a key
+  rotation left behind, de-identifying its temporary-chat rows as it does the current table's, and the purge runs
+  whether or not `Collect usage records` is on. A table whose fragment another installed function id also sanitizes
+  to is skipped and named once in the log, and no table is ever dropped — only emptied.

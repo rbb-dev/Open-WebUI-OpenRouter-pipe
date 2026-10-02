@@ -66,6 +66,7 @@ from .errors import (
     _IN_BAND_STATUS_BY_ERROR_TYPE,
     _IN_BAND_STATUS_BY_NATIVE_CODE,
     _as_status_line,
+    _extract_openrouter_error_details,
     _resolved_error_status,
 )
 
@@ -358,7 +359,13 @@ class ErrorFormatter:
             openrouter_message=message,
             openrouter_code=code,
             upstream_message=message,
-            upstream_type=(str(code) if code is not None else "") or _as_text(event.get("type")) or "stream_error",
+            upstream_type=(
+                _extract_openrouter_error_details(raw_body).get("upstream_type")
+                or _as_text(error_block.get("type") if isinstance(error_block, dict) else None)
+                or (str(code) if code is not None else "")
+                or _as_text(event.get("type"))
+                or "stream_error"
+            ),
             request_id=next(
                 (
                     candidate

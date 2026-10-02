@@ -285,6 +285,26 @@ class PipeDashboardPlugin(PluginBase):
         self._maybe_start_publisher(get_pipe)
         self._maybe_start_sweep()
         self._maybe_start_auto_update()
+        self._maybe_start_usage_purge()
+
+    def _maybe_start_usage_purge(self) -> None:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            logger.debug("No event loop — usage purge task deferred")
+            return
+        usage_store = getattr(self, "_usage_store", None)
+        if usage_store is None:
+            return
+        get_pipe = getattr(self, "_get_pipe", None)
+        pipe = get_pipe() if get_pipe else None
+        store = getattr(pipe, "_artifact_store", None) if pipe else None
+        if store is None:
+            return
+        try:
+            usage_store.start_retention_purge(store, self._retention_days)
+        except Exception:
+            logger.debug("usage purge task start failed", exc_info=True)
 
     def _maybe_start_auto_update(self) -> None:
         """Start the auto-update loop task if an event loop is available."""
@@ -464,6 +484,7 @@ class PipeDashboardPlugin(PluginBase):
         task: Any,
         **kwargs: Any,
     ) -> dict[str, Any] | str | None:
+        self._maybe_start_usage_purge()
         requested_model = str(body.get("model", ""))
         if not self._is_our_model(requested_model):
             if _dashboard_observability_needed(getattr(self.ctx, "valves", None)):

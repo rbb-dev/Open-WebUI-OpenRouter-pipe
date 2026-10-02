@@ -1190,6 +1190,9 @@ async def test_video_adapter_completed_marker_returns_cached_content(monkeypatch
         api_model_id="openai/sora-2-pro",
         valves=pipe.valves,
     )
+    assert isinstance(result, str), (
+        f"a chat turn must keep its card, got {type(result).__name__}: {result!r}"
+    )
 
     assert result == final
 
@@ -1259,6 +1262,9 @@ async def test_video_adapter_pending_marker_resumes_without_submit(monkeypatch, 
         normalized_model_id="openai.sora-2-pro",
         api_model_id="openai/sora-2-pro",
         valves=pipe.valves,
+    )
+    assert isinstance(result, str), (
+        f"a chat turn must keep its card, got {type(result).__name__}: {result!r}"
     )
 
     assert submit_calls == 0
@@ -1376,6 +1382,9 @@ async def test_video_adapter_terminal_failures_persist_visible_failure(monkeypat
         api_model_id="openai/sora-2-pro",
         valves=pipe.valves,
     )
+    assert isinstance(result, str), (
+        f"a chat turn must keep its card, got {type(result).__name__}: {result!r}"
+    )
 
     assert "### Video generation failed" in result
     assert "provider stopped" in result
@@ -1421,6 +1430,9 @@ async def test_video_adapter_releases_semaphore_when_submit_fails(monkeypatch):
         normalized_model_id="openai.sora-2-pro",
         api_model_id="openai/sora-2-pro",
         valves=pipe.valves,
+    )
+    assert isinstance(result, str), (
+        f"a chat turn must keep its card, got {type(result).__name__}: {result!r}"
     )
 
     assert "submit exploded" in result
@@ -1686,6 +1698,9 @@ async def test_video_adapter_waiter_uses_active_task_before_user_cap():
         normalized_model_id="openai.sora-2-pro",
         api_model_id="openai/sora-2-pro",
         valves=pipe.valves,
+    )
+    assert isinstance(result, str), (
+        f"a chat turn must keep its card, got {type(result).__name__}: {result!r}"
     )
 
     assert result == "done"
@@ -4650,6 +4665,9 @@ async def test_an_empty_prompt_with_nothing_attached_is_still_refused(monkeypatc
         api_model_id=model_id,
         valves=pipe.valves,
     )
+    assert isinstance(result, str), (
+        f"a chat turn must keep its card, got {type(result).__name__}: {result!r}"
+    )
 
     assert not submitted, (
         "the request reached submit, so it was billed; 'failed' in the answer is satisfied "
@@ -5122,6 +5140,9 @@ async def test_a_clip_that_cannot_be_downloaded_is_declared_to_the_user(
         api_model_id="openai/sora-2-pro",
         valves=pipe.valves,
     )
+    assert isinstance(result, str), (
+        f"a chat turn must keep its card, got {type(result).__name__}: {result!r}"
+    )
 
     match = re.search(r"(\d+) of the (\d+) clips this job delivered could not be", result)
     if fails_at == 0 and clip_count > 16:
@@ -5259,6 +5280,9 @@ async def test_a_clip_that_cannot_be_stored_is_logged_and_declared_to_the_user(
             api_model_id="openai/sora-2-pro",
             valves=pipe.valves,
         )
+        assert isinstance(result, str), (
+            f"a chat turn must keep its card, got {type(result).__name__}: {result!r}"
+        )
     finally:
         adapter.logger.removeHandler(handler)
 
@@ -5371,6 +5395,9 @@ async def test_every_output_of_a_multi_clip_job_is_downloaded_and_rendered(
         normalized_model_id="openai.sora-2-pro",
         api_model_id="openai/sora-2-pro",
         valves=pipe.valves,
+    )
+    assert isinstance(result, str), (
+        f"a chat turn must keep its card, got {type(result).__name__}: {result!r}"
     )
 
     assert len(requested) == clip_count
@@ -6270,6 +6297,9 @@ async def test_a_rejected_video_reaches_the_user_as_the_operators_error_card(
         normalized_model_id="openai.sora-2-pro",
         api_model_id="openai/sora-2-pro",
         valves=pipe.valves,
+    )
+    assert isinstance(result, str), (
+        f"a chat turn must keep its card, got {type(result).__name__}: {result!r}"
     )
 
     cards = [

@@ -25,7 +25,12 @@ from typing import Any
 from ...core.utils import _stable_crockford_id
 from ...core.warn_latch import warn_level
 from ...storage.owui_files import is_temporary_chat, temporary_chat_prefixes
-from ...storage.persistence import ArtifactStore, _db_session, generate_item_id
+from ...storage.persistence import (
+    ArtifactStore,
+    _db_session,
+    _sanitize_table_fragment,
+    generate_item_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +47,8 @@ _US_DROP_WARN_EVERY = 50
 _US_RECONCILE_RETRY_S = 300.0
 _US_POLL_INTERVAL_S = 0.5
 _US_PERSIST_WARN_COOLDOWN_S = 300.0
+_USAGE_TABLE_PREFIX = "dashboard_"
+_US_SHARED_FRAGMENT_COOLDOWN_S = 3600.0
 
 USAGE_ROW_FIELDS = (
     "ts",
@@ -153,6 +160,7 @@ class UsageStore:
         self._width_warned: set[str] = set()
         self._purge_task: asyncio.Task | None = None
         self._retention_days_fn: Callable[[], int | Awaitable[int]] | None = None
+        self._table_absent: tuple[Any, ...] | None = None
 
     @property
     def enabled(self) -> bool:
@@ -301,7 +309,7 @@ class UsageStore:
             from sqlalchemy import Column, String
             from sqlalchemy.orm import declarative_base
 
-            table_name = f"dashboard_{suffix}"
+            table_name = f"{_USAGE_TABLE_PREFIX}{suffix}"
             item_table = getattr(getattr(store, "_item_model", None), "__table__", None)
             schema_name = getattr(item_table, "schema", None)
             table_args: dict[str, Any] = {"extend_existing": True}
@@ -685,35 +693,186 @@ class UsageStore:
         days = max(1, days)
         return usage_ts_from_epoch(time.time() - days * 86400.0)
 
-    def _purge_sync(self, cutoff: datetime.datetime) -> None:
-        store = self._store
-        model = self._model
-        if store is None or model is None or self._table_name is None:
-            return
-        lock_id = _stable_crockford_id(f"{self._table_name}:purge")
-        item_model = getattr(store, "_item_model", None)
-        acquired = True
-        if item_model is not None:
-            acquired = self._acquire_purge_lock(store, item_model, lock_id)
-            if not acquired:
-                return
+    def _usage_table_fragment(self) -> str:
+        table_name = self._table_name or ""
+        suffix = table_name.removeprefix(_USAGE_TABLE_PREFIX)
+        head, separator, key_hash = suffix.rpartition("_")
+        if not separator or not key_hash:
+            return ""
+        return head
+
+    def _published_table_present(self, store: Any) -> bool:
+        from sqlalchemy import inspect as sa_inspect
+
+        engine = getattr(store, "_engine", None)
+        suffix_of = getattr(store, "table_suffix", None)
+        if engine is None or not callable(suffix_of):
+            return False
         try:
-            session_factory = getattr(store, "_session_factory", None)
-            if session_factory is None:
-                return
+            signature = (id(engine), str(suffix_of()))
+        except Exception:
+            logger.debug("usage table suffix could not be derived", exc_info=True)
+            return False
+        if self._table_absent == signature:
+            return False
+        try:
+            present = bool(sa_inspect(engine).has_table(f"{_USAGE_TABLE_PREFIX}{signature[1]}"))
+        except Exception:
+            logger.debug("usage table presence probe failed", exc_info=True)
+            return False
+        if not present:
+            self._table_absent = signature
+        return present
+
+    def start_retention_purge(
+        self, store: Any, retention_days_fn: Callable[[], int | Awaitable[int]]
+    ) -> bool:
+        task = self._purge_task
+        if task is not None and not task.done():
+            return True
+        if self._model is None:
+            if not self._published_table_present(store):
+                return False
+            if not self.ensure(store):
+                return False
+        self.start_purge_task(retention_days_fn)
+        return True
+
+    def _other_installed_fragments(self, store: Any) -> set[str] | None:
+        from sqlalchemy import text
+
+        session_factory = getattr(store, "_session_factory", None)
+        if session_factory is None:
+            return None
+        table = ArtifactStore._quote_identifier("function")
+        item_table = getattr(getattr(store, "_item_model", None), "__table__", None)
+        schema_name = getattr(item_table, "schema", None)
+        if isinstance(schema_name, str) and schema_name.strip():
+            table = f"{ArtifactStore._quote_identifier(schema_name.strip())}.{table}"
+        own_id = str(getattr(store, "id", "") or "")
+        column = ArtifactStore._quote_identifier("id")
+        try:
             with _db_session(session_factory) as session:
+                rows = session.execute(text(f"SELECT {column} FROM {table}")).all()
+        except Exception:
+            logger.debug("the installed function ids could not be read", exc_info=True)
+            return None
+        return {
+            _sanitize_table_fragment(str(row[0]))
+            for row in rows
+            if row and row[0] is not None and str(row[0]) != own_id
+        }
+
+    def _retired_usage_table_names(self, store: Any) -> list[str]:
+        from sqlalchemy import inspect as sa_inspect
+
+        current = self._table_name
+        fragment = self._usage_table_fragment()
+        engine = getattr(store, "_engine", None)
+        if current is None or engine is None or not fragment:
+            return []
+        try:
+            names = sa_inspect(engine).get_table_names()
+        except Exception:
+            logger.debug("usage table discovery failed", exc_info=True)
+            return []
+        prefix = f"{_USAGE_TABLE_PREFIX}{fragment}_"
+        candidates = [
+            name for name in sorted(names) if name != current and name.startswith(prefix)
+        ]
+        if not candidates:
+            return []
+        other_fragments = self._other_installed_fragments(store)
+        if other_fragments is None:
+            for name in candidates:
+                logger.log(
+                    warn_level(
+                        self._warned, f"usage_retired_unverified:{name}",
+                        cooldown_s=_US_SHARED_FRAGMENT_COOLDOWN_S,
+                    ),
+                    "usage table %s was not swept: the installed function ids could not be "
+                    "read, so the pipe cannot tell its own retired tables apart from "
+                    "another installed copy's",
+                    name,
+                )
+            return []
+        if fragment in other_fragments:
+            for name in candidates:
+                logger.log(
+                    warn_level(
+                        self._warned, f"usage_retired_shared:{name}",
+                        cooldown_s=_US_SHARED_FRAGMENT_COOLDOWN_S,
+                    ),
+                    "usage table %s is not swept: another installed function id sanitizes "
+                    "to the same table fragment (%s), so the pipe cannot tell its own "
+                    "retired tables apart from the ones that copy is still writing into",
+                    name, fragment,
+                )
+            return []
+        return candidates
+
+    def _purge_table_sync(
+        self,
+        store: Any,
+        name: str,
+        cutoff: datetime.datetime,
+        model: Any,
+    ) -> None:
+        from sqlalchemy import text
+
+        session_factory = getattr(store, "_session_factory", None)
+        if session_factory is None:
+            return
+        with _db_session(session_factory) as session:
+            if model is not None:
                 session.query(model).filter(model.ts < cutoff).delete(synchronize_session=False)
                 for prefix in temporary_chat_prefixes():
                     session.query(model).filter(model.chat_id.startswith(prefix)).update(
                         {"chat_id": "", "session_id": ""}, synchronize_session=False
                     )
-                session.commit()
-        finally:
-            if item_model is not None and acquired:
-                try:
-                    store._delete_artifacts_sync([lock_id])
-                except Exception:
-                    logger.debug("purge lock release failed", exc_info=True)
+            else:
+                quoted = ArtifactStore._quote_identifier(name)
+                session.execute(
+                    text(f"DELETE FROM {quoted} WHERE ts < :cutoff"), {"cutoff": cutoff}
+                )
+                for prefix in temporary_chat_prefixes():
+                    session.execute(
+                        text(
+                            f"UPDATE {quoted} SET chat_id = '', session_id = '' "
+                            "WHERE chat_id LIKE :pattern"
+                        ),
+                        {"pattern": f"{prefix}%"},
+                    )
+            session.commit()
+
+    def _purge_sync(self, cutoff: datetime.datetime) -> None:
+        store = self._store
+        model = self._model
+        if store is None or model is None or self._table_name is None:
+            return
+        session_factory = getattr(store, "_session_factory", None)
+        if session_factory is None:
+            return
+        targets: list[tuple[str, Any]] = [(self._table_name, model)]
+        targets.extend((name, None) for name in self._retired_usage_table_names(store))
+        item_model = getattr(store, "_item_model", None)
+        for name, target_model in targets:
+            lock_id = _stable_crockford_id(f"{name}:purge")
+            acquired = True
+            if item_model is not None:
+                acquired = self._acquire_purge_lock(store, item_model, lock_id)
+                if not acquired:
+                    continue
+            try:
+                self._purge_table_sync(store, name, cutoff, target_model)
+            except Exception:
+                logger.debug("usage table %s could not be purged", name, exc_info=True)
+            finally:
+                if item_model is not None and acquired:
+                    try:
+                        store._delete_artifacts_sync([lock_id])
+                    except Exception:
+                        logger.debug("purge lock release failed", exc_info=True)
 
     def _acquire_purge_lock(self, store: Any, item_model: Any, lock_id: str) -> bool:
         try:
