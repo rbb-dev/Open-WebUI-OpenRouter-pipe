@@ -161,8 +161,8 @@ def _validate(args: Any, schema: Mapping[str, SchemaValue] | None) -> tuple[bool
 def _rate_limited(user_id: str, name: str) -> bool:
     now = time.monotonic()
     key = (user_id, name)
-    last = _rate_state.get(key, 0.0)
-    if now - last < _PD_ACTION_MIN_INTERVAL:
+    last = _rate_state.get(key)
+    if last is not None and 0.0 <= now - last < _PD_ACTION_MIN_INTERVAL:
         return True
     _rate_state[key] = now
     return False

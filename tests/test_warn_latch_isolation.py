@@ -35,8 +35,8 @@ EXPECTED_LATCHES = {
     "_warned_collectors",
     # The dead-manager arm of that same report, kept beside its sibling on purpose. The
     # manager is already gone by the time the drain runs, so the loss is reported through
-    # the module logger instead of a manager's. It is a dict with an hour's cooldown,
-    # keyed per stop, for the reason its sibling is. It also used to be spelled
+    # the module logger instead of a manager's. It is a dict, keyed per stop, for the
+    # reason its sibling is. It also used to be spelled
     # `_DEAD_MANAGER_DRAIN_WARNINGS`, which carries no prefix: the sweep never reached
     # it, so one file's bounded stop armed a table another file's census then read as a
     # second holder. The name is the reset's, not the report's.
@@ -44,10 +44,10 @@ EXPECTED_LATCHES = {
     # The shutdown-drain report's own table. It used to arm
     # `_unreadable_archive_warnings`, whose budget is the assembler's per-turn fault
     # window: the drain adds a fresh key per bounded stop, so every stop evicted live
-    # fault latches and the next occurrence of each re-warned at WARNING. It is a dict
-    # with an hour's cooldown, keyed per stop, so it re-arms per stop rather than
-    # latching forever -- the same shape as `_warned_dead_manager_drain` beside it, which
-    # the reset reaches for the same reason.
+    # fault latches and the next occurrence of each re-warned at WARNING. It is a dict,
+    # keyed per stop, so it re-arms per stop rather than latching forever -- the same
+    # shape as `_warned_dead_manager_drain` beside it, which the reset reaches for the
+    # same reason.
     "_warned_drain_incomplete",
     "_warned_dropped_video_param",
     # One latch for both reasons a frame_plan entry can fail to materialise: a frame

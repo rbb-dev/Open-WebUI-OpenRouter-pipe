@@ -80,7 +80,6 @@ def _report_drain_incomplete(
             warn_level(
                 _warned_drain_incomplete,
                 f"session_log_shutdown_drain_incomplete:{time.monotonic_ns()}",
-                cooldown_s=3600.0,
             ),
             "Session log writer stopped with %d queued archive(s) it could not write.",
             residual,
@@ -91,7 +90,6 @@ def _report_drain_incomplete(
         warn_level(
             _warned_dead_manager_drain,
             f"session_log_shutdown_drain_incomplete:{time.monotonic_ns()}",
-            cooldown_s=3600.0,
         ),
         "Session log writer stopped with %d queued archive(s) it could not write.",
         residual,

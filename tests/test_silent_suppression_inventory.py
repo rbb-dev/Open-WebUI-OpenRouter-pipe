@@ -320,7 +320,16 @@ _EXPECTED: dict[str, int] = {
     # now retrieves the exception unconditionally and reports a non-cancellation one by
     # model, and the cancellation arm is an explicit `except asyncio.CancelledError` that
     # ruff and this census both see.
-    "streaming/streaming_core.py": 3,
+    # 4th (B651): the abandoned turn's best-effort flush of whatever its cancelled writer
+    # had popped, in `_run_streaming_loop`'s teardown. It runs inside the `finally` of a
+    # frame the cancellation is unwinding, so it is reached with a cancellation already
+    # delivered and a second one raises out of the writer's await; letting that out would
+    # replace the turn's own cancellation -- which the caller is waiting on -- with an
+    # error from a write nobody is waiting for. The rows it fails to write are named by the
+    # two warnings beside it, so nothing the suppression costs is silent, and
+    # `test_a_cancelled_flush_returns_the_rows_it_had_popped.py` is what says a flush
+    # cancelled mid-flight hands its batch back rather than dropping it.
+    "streaming/streaming_core.py": 4,
     # 5th: the tool card emitted as each call's result is collected, the twin of the one in the loop that
     # follows. The card is what the person sees; a failure emitting it must not lose the tool result the
     # loop is in the middle of collecting, which is the model's answer.

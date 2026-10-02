@@ -79,7 +79,7 @@ def _valve_schema(cls: type) -> type:
             name: (field.annotation, field) for name, field in cls.model_fields.items()
         }
         shell = create_model(
-            f"_StoredValveSchema{len(_VALVE_SCHEMA_CACHE)}",
+            f"_StoredValveSchema_{cls.__module__}.{cls.__qualname__}",
             __base__=BaseModel,
             __config__=typing.cast("typing.Any", dict(cls.model_config)),
             **fields,

@@ -1039,7 +1039,6 @@ class FilterManager:
                         preferred_id,
                     )
                 if suffix > 50:
-                    self._write_not_installed = True
                     self.logger.warning(
                         "Open WebUI would not give the %s an id: %r and its numbered variants "
                         "are all held by rows the pipe did not install, so nothing was "
@@ -2226,6 +2225,8 @@ class FilterManager:
                     ),
                 )
             except Exception as exc:
+                if _is_install_enumeration_failure(exc):
+                    raise
                 self.logger.log(
                     bounded_warn_level(
                         _warned_video_filter_installs,

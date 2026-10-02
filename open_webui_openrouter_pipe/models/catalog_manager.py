@@ -490,10 +490,15 @@ def _single_id_is_transient(
     auto_attach: bool,
     family_off: bool,
     blank_is_a_decision: bool,
+    attach_valve_off: bool = False,
 ) -> bool:
     blank_id_release = bool(
         not filter_function_id
-        and (family_off or (blank_is_a_decision and (not supported or not auto_attach)))
+        and (
+            family_off
+            or attach_valve_off
+            or (blank_is_a_decision and (not supported or not auto_attach))
+        )
     )
     return not filter_function_id and not blank_id_release
 
@@ -508,11 +513,13 @@ def _apply_single_id_filter_ids(
     hands_off: bool = False,
     blank_is_a_decision: bool = False,
     family_off: bool = False,
+    attach_valve_off: bool = False,
 ) -> bool:
     if hands_off:
         return False
     if _single_id_is_transient(
-        filter_function_id, supported, auto_attach, family_off, blank_is_a_decision
+        filter_function_id, supported, auto_attach, family_off, blank_is_a_decision,
+        attach_valve_off,
     ):
         return False
     offered_id = filter_function_id or ""
@@ -2425,6 +2432,7 @@ class ModelCatalogManager:
                             auto_default_filter=valves.AUTO_DEFAULT_WEB_TOOLS_FILTER,
                             web_tools_panel_withheld=web_tools_panel_withheld,
                             web_tools_family_off=web_tools_family_off,
+                            web_tools_attach_valve_off=not valves.AUTO_ATTACH_WEB_TOOLS_FILTER,
                             direct_uploads_filter_function_id=direct_uploads_filter_function_id,
                             direct_uploads_filter_supported=native_supported,
                             auto_attach_direct_uploads_filter=auto_attach_direct_uploads,
@@ -2619,6 +2627,7 @@ class ModelCatalogManager:
         auto_default_filter: bool = False,
         web_tools_panel_withheld: bool = False,
         web_tools_family_off: bool = False,
+        web_tools_attach_valve_off: bool = False,
         direct_uploads_filter_function_id: str | None = None,
         direct_uploads_filter_supported: bool = False,
         auto_attach_direct_uploads_filter: bool = False,
@@ -2810,6 +2819,7 @@ class ModelCatalogManager:
                 record_key="web_tools_attached_id",
                 hands_off="web_tools_attached_id" in hands_off,
                 family_off=web_tools_family_off,
+                attach_valve_off=web_tools_attach_valve_off,
             )
 
         def _apply_direct_uploads_filter_ids(meta_dict: dict) -> bool:
@@ -2848,6 +2858,7 @@ class ModelCatalogManager:
             if _single_id_is_transient(
                 filter_function_id, filter_supported, auto_attach_filter,
                 web_tools_family_off, blank_is_a_decision=False,
+                attach_valve_off=web_tools_attach_valve_off,
             ):
                 keep.add(_recorded_filter_id(meta_dict, "web_tools_attached_id"))
             if _single_id_is_transient(
@@ -2898,7 +2909,11 @@ class ModelCatalogManager:
             blank_id_release = bool(
                 id_from_record
                 and not filter_function_id
-                and (not auto_default_filter or web_tools_panel_withheld)
+                and (
+                    not auto_default_filter
+                    or web_tools_panel_withheld
+                    or web_tools_attach_valve_off
+                )
                 and (
                     seeded_by_pipe
                     or pipe_meta.get("web_tools_seeded_id") == owned_id_str
@@ -3151,7 +3166,7 @@ class ModelCatalogManager:
                 meta_dict, prune_key="web_tools_filter_id",
                 filter_function_ids=web_tools_ids_now,
             )
-            if not filter_function_id:
+            if not filter_function_id and not web_tools_attach_valve_off:
                 web_tools_attach_detached = set()
                 web_tools_detached = set()
 

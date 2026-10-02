@@ -513,6 +513,39 @@ _NOT_IN_SCHEMA = (
     "OpenRouter's video API does not define this key; set it on a chat model instead"
 )
 
+_NOT_PUBLISHED = "this model's catalog entry publishes no value for this setting"
+
+_OUTSIDE_PUBLISHED = "this model's catalog entry no longer accepts this value"
+
+
+def _published_video_values(video_model: Any, key: str) -> list[Any]:
+    if not isinstance(video_model, dict):
+        return []
+    if key == "aspect_ratio":
+        published = video_model.get("supported_aspect_ratios")
+    elif key == "duration":
+        published = video_model.get("supported_durations")
+    elif key == "resolution":
+        published = video_model.get("supported_resolutions")
+    elif key == "size":
+        published = video_model.get("supported_sizes")
+        if not isinstance(published, list):
+            published = video_model.get("supported_size_options")
+    else:
+        return []
+    return published if isinstance(published, list) else []
+
+
+def _video_int_value(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
 _OVER_URL_BUDGET = (
     f"only the first {_MAX_PASSTHROUGH_URLS} links in a request are forwarded"
 )
@@ -2156,6 +2189,11 @@ class VideoGenerationAdapter:
                 if value is None or value == "":
                     continue
                 if key in top_level:
+                    published = _published_video_values(video_model, key)
+                    if published and not self._value_is_published(key, value, published):
+                        if withheld is not None:
+                            withheld.append((key, _OUTSIDE_PUBLISHED))
+                        continue
                     payload[key] = value
                     continue
                 target = self._select_passthrough_key(key, passthrough)
@@ -2164,6 +2202,8 @@ class VideoGenerationAdapter:
                     continue
                 documented = _clean_str(key) in _DOCUMENTED_TOP_LEVEL_VIDEO_FIELDS
                 latch_name = key if key in _DOCUMENTED_TOP_LEVEL_VIDEO_FIELDS else "*"
+                if documented and withheld is not None:
+                    withheld.append((key, _NOT_PUBLISHED))
                 self.logger.log(
                     warn_level(_warned_dropped_video_param, f"{api_model_id}:{latch_name}"),
                     "Dropping video parameter %r for %r: %s",
@@ -2491,6 +2531,20 @@ class VideoGenerationAdapter:
         if not isinstance(published, list) or len(published) != 1:
             return False
         return _clean_str(published[0]) == resolution
+
+    @classmethod
+    def _value_is_published(cls, key: str, value: Any, published: list[Any]) -> bool:
+        if key == "size" and cls._parse_pixel_size(value) is None:
+            return True
+        if key == "duration":
+            wanted = _video_int_value(value)
+            if wanted is None:
+                return False
+            return any(_video_int_value(item) == wanted for item in published)
+        cleaned = _clean_str(value)
+        if not cleaned:
+            return False
+        return any(_clean_str(item) == cleaned for item in published)
 
     def _apply_size_consistency(
         self,

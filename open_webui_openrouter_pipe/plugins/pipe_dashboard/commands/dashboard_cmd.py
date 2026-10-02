@@ -1510,7 +1510,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
       else if (lw === 'stopped') h += gc('Session logging', badge('Worker stopped', 'err'), true);
       else h += gc('Session logging', badge('Disabled', 'off'), true);
       if (d.log_buffers !== undefined) {{
-        var logRow = (d.log_buffers || 0) + ' buf / ' + (d.log_events_buffered || 0) + ' events / ' + fmtBytes(d.log_bytes_buffered || 0);
+        var logRow = (d.log_buffers || 0) + ' buf / ' + (d.log_events_buffered || 0) + ' events the pipe kept / ' + fmtBytes(d.log_bytes_buffered || 0);
         if (d.log_records_shed) logRow += ' \u00b7 ' + (d.log_records_shed || 0) + ' rec shed';
         h += gc('Log buffers (RAM)', logRow);
       }}

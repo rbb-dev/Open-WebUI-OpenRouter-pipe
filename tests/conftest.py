@@ -60,13 +60,24 @@ def _pipes_start_warm():
     tests below it are simply not about warm-up, so 85 of them were red for a reason that had
     nothing to do with what they assert.
 
+    The CANCEL is the load-bearing half, and it is here because of where the task is armed:
+    `Pipe.__init__` ends by scheduling `_run_startup_checks` (`pipe.py:1009`), so setting the
+    latch alone left a live `openrouter-warmup` task on the loop. Nothing awaits between that
+    `__init__` arm and the statement below, so cancelling here always beats the task's first
+    step -- and the task can only reach its `except` (`pipe.py:3158`) by awaiting the ping,
+    which a cancelled task never does. Without the cancel the task ran on the first `await`
+    inside whichever test held the pipe, and a failing ping set `_warmup_failed` on a pipe
+    this guard had already declared warm: turn one was served, turn two came back 503, and
+    which tests saw it depended on how the loop happened to schedule. `_startup_task` is
+    cleared with it so no reader is left holding a reference to a task that is not running.
+
     `Pipe.__init__` is wrapped rather than each fixture patched, so a pipe built directly in
     a test body gets the same state as one from `pipe_instance`/`pipe_instance_async`, and the
     wrap is undone when the session ends. The wrapper keeps no reference to the pipes it saw:
     `test_hot_reload_lifecycle.py` asserts that a finished pipe is collectable, so a list of
     them would pin all of them and turn six arms that are not about warm-up red. A test that
     genuinely needs a cold pipe opts out by setting `_warmup_tests_may_refuse` on itself,
-    which this guard reads; there are three such tests.
+    which this guard reads; there are eight such tests.
     """
     import open_webui_openrouter_pipe.pipe as pipe_mod
 
@@ -74,8 +85,13 @@ def _pipes_start_warm():
 
     def _warm_init(self, *args: Any, **kwargs: Any) -> None:
         original(self, *args, **kwargs)
-        if not getattr(self, "_warmup_tests_may_refuse", False):
-            self._startup_checks_complete = True
+        if getattr(self, "_warmup_tests_may_refuse", False):
+            return
+        task = getattr(self, "_startup_task", None)
+        if task is not None:
+            task.cancel()
+        self._startup_task = None
+        self._startup_checks_complete = True
 
     pipe_mod.Pipe.__init__ = _warm_init
     try:
@@ -987,10 +1003,14 @@ def _isolate_webui_secret_key(monkeypatch):
     deterministic regardless of ambient env or test order; tests that exercise the pin set
     it explicitly via monkeypatch.setenv. WEBUI_JWT_SECRET_KEY goes with it: it is a live
     fallback for Open WebUI's own key derivation, not a historical name, so an ambient one
-    decides every reader that does not look at the primary name at all.
+    decides every reader that does not look at the primary name at all. OPENROUTER_API_KEY
+    goes with both: `Valves.API_KEY` defaults to it, so a developer's exported key is the
+    one input the suite must not inherit -- it decides whether a warm-up arms at all, and
+    the tests that care about that set the valve themselves.
     """
     monkeypatch.delenv("WEBUI_SECRET_KEY", raising=False)
     monkeypatch.delenv("WEBUI_JWT_SECRET_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
 
 _LOOPBACK = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}

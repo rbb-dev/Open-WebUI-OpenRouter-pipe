@@ -3796,7 +3796,7 @@ class Pipe:
         tokens.append(
             (
                 SessionLogger.archive_wanted,
-                SessionLogger.archive_wanted.set(True),
+                SessionLogger.archive_wanted.set(bool(job.valves.SESSION_LOG_STORE_ENABLED)),
             )
         )
         tokens.append(

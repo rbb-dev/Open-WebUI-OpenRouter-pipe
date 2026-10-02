@@ -875,7 +875,8 @@ The chat-filter UI auto-hides knobs the model does not support, so this table
 is also the spec for the **model-specific** knobs you can change per-message.
 The table tracks OpenRouter's published contract, which can narrow between
 releases, so a value you saved earlier can fall back to the model's own
-default — see
+default — and if the row was not refreshed against a contract that has since
+narrowed, it is withheld on the way out and named in the chat instead — see
 [The chat filter UI](#the-chat-filter-ui-uservalves).
 
 Attachments Direct Uploads has already taken are not offered here: the
@@ -1282,6 +1283,14 @@ rules:
 - A knob set to its **default value** (empty string `""`, `0`, or
   `model_default`) is **NOT sent** to OpenRouter. The model's own default
   applies.
+- A knob set to a value the model's **current** catalog entry does not
+  accept is **NOT sent** either, and is named in the chat under **Not sent
+  with this video** with the reason: either the entry publishes no value for
+  that setting at all, or it no longer accepts that particular one. This is
+  the request path re-checking a panel row against the catalogue as it is
+  today, so it applies to a row that was not refreshed — the install valve
+  is off, the activation write was refused, or the entry publishes no
+  contract and the row was left exactly as it was.
 - 3-state Literals (`model_default`, `on`, `off`) translate to the
   provider as: not-sent / `True` / `False` respectively.
 - Numeric knobs (`Seed`, `Conditioning scale`) are skipped when set to 0.

@@ -132,8 +132,8 @@ def clear_fresh_dispatch(pipe: Any) -> None:
 
 def _coarse_rate_limited(user_id: str) -> bool:
     now = time.monotonic()
-    last = _coarse_state.get(user_id, 0.0)
-    if now - last < _PD_COARSE_MIN_INTERVAL:
+    last = _coarse_state.get(user_id)
+    if last is not None and 0.0 <= now - last < _PD_COARSE_MIN_INTERVAL:
         return True
     _coarse_state[user_id] = now
     return False

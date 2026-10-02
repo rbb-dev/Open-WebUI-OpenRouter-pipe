@@ -1882,7 +1882,11 @@ class StreamingHandler:
                     return
                 rows = pending_items[:]
                 pending_items.clear()
-                pending_ulids.extend(await _persist_rows(rows, reason))
+                try:
+                    pending_ulids.extend(await _persist_rows(rows, reason))
+                except asyncio.CancelledError:
+                    pending_items[:0] = [row for row in rows if row.get("payload") is not None]
+                    raise
 
             async def _mark_committed_rows(current_text: str) -> str:
                 if not pending_ulids:
@@ -4625,6 +4629,9 @@ class StreamingHandler:
                     self.logger.warning("Failed to persist terminal fusion snapshot", exc_info=True)
 
             if was_cancelled or handed_back_for_retry:
+                if was_cancelled:
+                    with contextlib.suppress(BaseException):
+                        await _flush_pending("abandoned")
                 if pending_ulids:
                     self.logger.warning(
                         "An abandoned turn left %d committed artifact row(s) with no marker "
@@ -4634,6 +4641,17 @@ class StreamingHandler:
                         "cancelled" if was_cancelled else "retry_handback",
                         chat_id,
                         list(pending_ulids),
+                    )
+                if pending_items:
+                    self.logger.warning(
+                        "An abandoned turn left %d artifact row(s) that no flush wrote: "
+                        "either its best-effort flush was cancelled or failed with it, or "
+                        "the turn was handed back for a retry that re-mints them "
+                        "(reason=%s chat_id=%s item_types=%s)",
+                        len(pending_items),
+                        "cancelled" if was_cancelled else "retry_handback",
+                        chat_id,
+                        sorted({str(row.get("item_type")) for row in pending_items}),
                     )
             else:
                 await _flush_pending("finalize")

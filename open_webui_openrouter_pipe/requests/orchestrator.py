@@ -593,8 +593,33 @@ def _apply_server_tools_metadata(
     return superseded
 
 
+_VIDEO_BLOCK_TYPES = frozenset({"video_url", "input_video", "video"})
+
+
+def _video_url_of(block: dict[str, Any]) -> Any:
+    payload = block.get("video_url")
+    if isinstance(payload, dict):
+        url = payload.get("url")
+    elif isinstance(payload, (str, bytes)):
+        url = payload
+    else:
+        url = None
+    if not isinstance(url, (str, bytes)) or not url:
+        url = block.get("url")
+    return url if isinstance(url, (str, bytes)) and url else None
+
+
 def _block_key(block: dict[str, Any]) -> Any:
     kind = block.get("type")
+    if isinstance(kind, str) and kind in _VIDEO_BLOCK_TYPES:
+        url = _video_url_of(block)
+        if url is None:
+            return None
+        return (
+            "video_url",
+            len(url),
+            hash(url),
+        )
     inner = block.get(kind) if isinstance(kind, str) else None
     if not isinstance(inner, dict):
         return None
@@ -613,15 +638,6 @@ def _block_key(block: dict[str, Any]) -> Any:
             inner.get("format"),
             len(data),
             hash(data),
-        )
-    if kind == "video_url":
-        url = inner.get("url")
-        if not isinstance(url, (str, bytes)):
-            return None
-        return (
-            "video_url",
-            len(url),
-            hash(url),
         )
     return None
 
