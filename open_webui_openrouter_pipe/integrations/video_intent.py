@@ -1314,8 +1314,6 @@ def _user_facing_downgrade_message(code: str) -> str:
     return "A non-critical step was skipped."
 
 
-_CLARIFICATION_CAPPED_CODE = "clarification_capped_max_reached"
-
 _CLARIFICATION_CARD_CODES = (
     "clarification_options_dropped",
     "clarification_options_truncated",
@@ -1329,14 +1327,6 @@ def _prompt_text_was_rewritten(
     if person_prompt_text is None or not intent_prompt:
         return False
     return " ".join(intent_prompt.split()) != " ".join(person_prompt_text.split())
-
-
-def _clarification_was_capped(intent: VideoIntentResult) -> bool:
-    return any(
-        isinstance(code, str)
-        and re.sub(r"_\d+", "", code) == _CLARIFICATION_CAPPED_CODE
-        for code in intent.downgrades
-    )
 
 
 def should_emit_confirmation_footer(
@@ -1364,8 +1354,6 @@ def should_emit_confirmation_footer(
     if confirm_mode == "always":
         return True
     if _prompt_text_was_rewritten(intent.prompt, person_prompt_text):
-        return True
-    if _clarification_was_capped(intent):
         return True
     if intent.downgrades:
         return True

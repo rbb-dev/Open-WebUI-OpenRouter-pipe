@@ -59,6 +59,7 @@ from ..transforms import (
 )
 from .responses_adapter import (
     _BODY_EXCERPT_CHARS,
+    AcceptedResponseLostBody,
     _backlog_cause,
     _backlog_debug_due,
     _body_not_an_object,
@@ -853,6 +854,7 @@ class ChatCompletionsAdapter:
         async with _count_failed_call(self._pipe, breaker_key):
             async for attempt in retryer:
                 with attempt:
+                    body_complete = False
                     if attempt.retry_state.attempt_number > 1:
                         tool_calls_by_index.clear()
                         tool_call_added.clear()
@@ -888,124 +890,132 @@ class ChatCompletionsAdapter:
                     await self._inline_internal_chat_files(chat_payload, effective_valves, user=user)
 
                     timing_mark("chat_http_request_start")
-                    async with session.post(
-                        url, json=chat_payload, headers=headers,
-                        timeout=self._timeout(effective_valves),
-                    ) as resp:
-                        timing_mark("chat_http_headers_received")
-                        if resp.status >= 400:
-                            error_body = await _debug_print_error_response(resp, logger=self.logger)
-                            extra_meta: dict[str, Any] = {}
-                            _apply_retry_after_metadata(extra_meta, resp.headers)
-                            rate_scope = (
-                                resp.headers.get("X-RateLimit-Scope")
-                                or resp.headers.get("x-ratelimit-scope")
-                            )
-                            if rate_scope:
-                                extra_meta["rate_limit_type"] = rate_scope
-                            reason_text = resp.reason or "HTTP error"
-                            raise _build_openrouter_api_error(
-                                resp.status,
-                                reason_text,
-                                error_body,
-                                requested_model=chat_payload.get("model"),
-                                extra_metadata=extra_meta or None,
-                            )
+                    try:
+                        async with session.post(
+                            url, json=chat_payload, headers=headers,
+                            timeout=self._timeout(effective_valves),
+                        ) as resp:
+                            timing_mark("chat_http_headers_received")
+                            if resp.status >= 400:
+                                error_body = await _debug_print_error_response(resp, logger=self.logger)
+                                extra_meta: dict[str, Any] = {}
+                                _apply_retry_after_metadata(extra_meta, resp.headers)
+                                rate_scope = (
+                                    resp.headers.get("X-RateLimit-Scope")
+                                    or resp.headers.get("x-ratelimit-scope")
+                                )
+                                if rate_scope:
+                                    extra_meta["rate_limit_type"] = rate_scope
+                                reason_text = resp.reason or "HTTP error"
+                                raise _build_openrouter_api_error(
+                                    resp.status,
+                                    reason_text,
+                                    error_body,
+                                    requested_model=chat_payload.get("model"),
+                                    extra_metadata=extra_meta or None,
+                                )
 
-                        buf = bytearray()
-                        scanned = 0
-                        excerpt = bytearray()
-                        event_data_parts: list[bytes] = []
-                        done = False
+                            buf = bytearray()
+                            scanned = 0
+                            excerpt = bytearray()
+                            event_data_parts: list[bytes] = []
+                            done = False
 
-                        async def _chunks():
-                            async for raw in resp.content.iter_any():
-                                yield raw
-                            if done:  # noqa: B023 - shares the loop's state by design
-                                return
-                            tail = bytes(buf)  # noqa: B023
-                            del buf[:]  # noqa: B023
-                            if not tail and not event_data_parts:  # noqa: B023
-                                return
-                            pending = list(event_data_parts)  # noqa: B023
-                            event_data_parts.clear()  # noqa: B023
-                            for part in pending:
-                                yield b"data: " + part + b"\n\n"
-                            if tail:
-                                yield tail + b"\n\n"
+                            async def _chunks():
+                                async for raw in resp.content.iter_any():
+                                    yield raw
+                                if done:  # noqa: B023 - shares the loop's state by design
+                                    return
+                                tail = bytes(buf)  # noqa: B023
+                                del buf[:]  # noqa: B023
+                                if not tail and not event_data_parts:  # noqa: B023
+                                    return
+                                pending = list(event_data_parts)  # noqa: B023
+                                event_data_parts.clear()  # noqa: B023
+                                for part in pending:
+                                    yield b"data: " + part + b"\n\n"
+                                if tail:
+                                    yield tail + b"\n\n"
 
-                        async for chunk in _chunks():
-                            if not chunk:
-                                continue
-                            if not first_chunk_received:
-                                first_chunk_received = True
-                                timing_mark("chat_first_chunk")
-                            body_bytes_seen = True
-                            buf.extend(chunk)
-                            if len(excerpt) < _BODY_EXCERPT_CHARS:
-                                excerpt.extend(chunk[: _BODY_EXCERPT_CHARS - len(excerpt)])
-                            sse_lines, scanned = _split_sse_lines(buf, scanned)
-                            for stripped in sse_lines:
+                            async for chunk in _chunks():
+                                if not chunk:
+                                    continue
+                                if not first_chunk_received:
+                                    first_chunk_received = True
+                                    timing_mark("chat_first_chunk")
+                                body_bytes_seen = True
+                                buf.extend(chunk)
+                                if len(excerpt) < _BODY_EXCERPT_CHARS:
+                                    excerpt.extend(chunk[: _BODY_EXCERPT_CHARS - len(excerpt)])
+                                sse_lines, scanned = _split_sse_lines(buf, scanned)
+                                for stripped in sse_lines:
 
-                                if not stripped:
-                                    if not event_data_parts:
+                                    if not stripped:
+                                        if not event_data_parts:
+                                            continue
+                                        data_blob = b"\n".join(event_data_parts).strip()
+                                        event_data_parts.clear()
+                                        if not data_blob:
+                                            continue
+                                        if data_blob == _CHAT_SSE_DONE_SENTINEL:
+                                            done = True
+                                            timing_mark("chat_stream_done")
+                                            break
+                                        for ev in _consume_blob(data_blob):
+                                            yield ev
+
+                                    if stripped.startswith(b":"):
                                         continue
-                                    data_blob = b"\n".join(event_data_parts).strip()
-                                    event_data_parts.clear()
-                                    if not data_blob:
+                                    if stripped.startswith(b"data:"):
+                                        saw_data_line = True
+                                        payload = bytes(stripped[5:].lstrip())
+                                        if payload == _CHAT_SSE_DONE_SENTINEL:
+                                            if event_data_parts:
+                                                data_blob = b"\n".join(event_data_parts).strip()
+                                                event_data_parts.clear()
+                                                if data_blob and data_blob != _CHAT_SSE_DONE_SENTINEL:
+                                                    for ev in _consume_blob(data_blob):
+                                                        yield ev
+                                            done = True
+                                            timing_mark("chat_stream_done")
+                                            break
+                                        event_data_parts.append(payload)
                                         continue
-                                    if data_blob == _CHAT_SSE_DONE_SENTINEL:
-                                        done = True
-                                        timing_mark("chat_stream_done")
-                                        break
+
+                                if done:
+                                    break
+                            body_complete = True
+                            if event_data_parts and not done:
+                                saw_data_line = True
+                                data_blob = b"\n".join(event_data_parts).strip()
+                                event_data_parts.clear()
+                                if data_blob and data_blob != _CHAT_SSE_DONE_SENTINEL:
                                     for ev in _consume_blob(data_blob):
                                         yield ev
-
-                                if stripped.startswith(b":"):
-                                    continue
-                                if stripped.startswith(b"data:"):
-                                    saw_data_line = True
-                                    payload = bytes(stripped[5:].lstrip())
-                                    if payload == _CHAT_SSE_DONE_SENTINEL:
-                                        if event_data_parts:
-                                            data_blob = b"\n".join(event_data_parts).strip()
-                                            event_data_parts.clear()
-                                            if data_blob and data_blob != _CHAT_SSE_DONE_SENTINEL:
-                                                for ev in _consume_blob(data_blob):
-                                                    yield ev
-                                        done = True
-                                        timing_mark("chat_stream_done")
-                                        break
-                                    event_data_parts.append(payload)
-                                    continue
-
-                            if done:
-                                break
-                        if event_data_parts and not done:
-                            saw_data_line = True
-                            data_blob = b"\n".join(event_data_parts).strip()
-                            event_data_parts.clear()
-                            if data_blob and data_blob != _CHAT_SSE_DONE_SENTINEL:
-                                for ev in _consume_blob(data_blob):
-                                    yield ev
-                        if not received_any:
-                            if saw_data_line or not body_bytes_seen:
-                                raise aiohttp.ClientPayloadError("OpenRouter closed the stream before sending anything")
-                            raise UpstreamBodyUnreadable(
-                                endpoint="/chat/completions",
-                                body_excerpt=excerpt.decode("utf-8", "replace"),
-                                content_type=resp.headers.get("Content-Type"),
-                            )
-                        if not saw_choice_chunk:
-                            raise aiohttp.ClientPayloadError("OpenRouter sent no choices on /chat/completions")
-                        if not done and not tool_calls_completed:
-                            if not delivered_any and not refusal_text_seen:
-                                raise aiohttp.ClientPayloadError(
-                                    "OpenRouter closed the stream before sending anything a reader could use"
+                            if not received_any:
+                                if saw_data_line or not body_bytes_seen:
+                                    raise aiohttp.ClientPayloadError("OpenRouter closed the stream before sending anything")
+                                raise UpstreamBodyUnreadable(
+                                    endpoint="/chat/completions",
+                                    body_excerpt=excerpt.decode("utf-8", "replace"),
+                                    content_type=resp.headers.get("Content-Type"),
                                 )
-                            _record_failed_call(self._pipe, breaker_key)
-                            cut_off = True
-                        break
+                            if not saw_choice_chunk:
+                                raise aiohttp.ClientPayloadError("OpenRouter sent no choices on /chat/completions")
+                            if not done and not tool_calls_completed:
+                                if not delivered_any and not refusal_text_seen:
+                                    raise aiohttp.ClientPayloadError(
+                                        "OpenRouter closed the stream before sending anything a reader could use"
+                                    )
+                                _record_failed_call(self._pipe, breaker_key)
+                                cut_off = True
+                            break
+                    except Exception as producer_exc:
+                        if not body_complete and isinstance(
+                            producer_exc, (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError)
+                        ):
+                            raise AcceptedResponseLostBody(str(producer_exc)) from producer_exc
+                        raise
 
         if cut_off:
             refusal_cut, _ = _refusal_split(

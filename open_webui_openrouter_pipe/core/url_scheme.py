@@ -52,12 +52,14 @@ def url_scheme(url: Any) -> str:
     prefix = _scheme_prefix(url)
     if prefix is not None:
         return prefix
+    colon = url.find(":")
+    if colon < 0:
+        return ""
+    head = url[:colon] + ":"
     try:
-        return _split(url).scheme
-    except ValueError:
-        pass
-    try:
-        return _split(f"{url.partition(':')[0]}:").scheme
+        if len(url) > _MEMOISED_MAX_CHARS:
+            return _split_uncached(head).scheme
+        return _split(head).scheme
     except ValueError:
         return ""
 
@@ -116,6 +118,26 @@ def url_path(value: Any) -> str:
 
 def is_http_or_https_url(url: Any) -> bool:
     return url_scheme(url) in HTTP_SCHEMES
+
+
+def _origin(value: Any) -> tuple[str, str, int] | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parts = _split(value)
+        port = parts.port
+    except ValueError:
+        return None
+    scheme = (parts.scheme or "").lower()
+    host = (parts.hostname or "").lower()
+    if not scheme or not host:
+        return None
+    return (scheme, host, port or (443 if scheme == "https" else 80))
+
+
+def _same_origin(url: Any, base: Any) -> bool:
+    left = _origin(url)
+    return left is not None and left == _origin(base)
 
 
 def is_inline_data_url(url: Any) -> bool:

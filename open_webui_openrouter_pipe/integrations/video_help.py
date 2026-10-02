@@ -932,6 +932,9 @@ _INTENT_KNOB_DESCRIPTIONS: dict[str, str] = {
         "asks none in any case."
     ),
     "Which frame to use from previous video": (
+        "A frame read out of an earlier video is bounded to 1920 on its long edge, so a "
+        "clip generated past that on its long edge is reduced before it is sent and "
+        "nothing is said about it. "
         "Which still is taken from the earlier clip when it is reused as a starting "
         "point: last continues from where it ended, first restarts from how it began. "
         "On a model that accepts only a first frame, a moment the earlier video has is "

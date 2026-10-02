@@ -1901,10 +1901,21 @@ stored as its own file. If some clips download and others do not, the
 ones that arrived are still delivered rather than the whole job being
 thrown away.
 
+The clip URL the pipe downloads is built from your configured `BASE_URL`,
+and a gateway on a private address is exempt from the SSRF address check
+for that download, so a self-hosted gateway is not refused by its own
+gate. The exemption is by parsed origin (scheme, hostname, effective
+port) and covers that one download only — a link a person attaches or
+pastes is still checked, even on the gateway's own host — and a
+cleartext `http://` gateway still needs `ALLOW_INSECURE_HTTP` with the
+host allowlisted. Because the origin is exempt rather than validated, that
+one download is not pinned to a resolved address, so a DNS answer for
+the gateway's host can change between the check and the connection.
+
 A job where some clips did not arrive says so, below the ones that
-did, naming every step that lost one, with its count — a clip OpenRouter
-never served could not be fetched, and a clip Open WebUI's storage
-refused could not be saved to storage:
+did, naming every step that lost one, with its count — a clip the pipe
+could not fetch could not be fetched, without saying where it was lost,
+and a clip Open WebUI's storage refused could not be saved to storage:
 
 ```markdown
 [openrouter:v1:videojob:<job_id>]: #
@@ -1932,6 +1943,38 @@ each took, and the leading number is still the total that went missing:
 2 of the 3 clips this job delivered could not be fetched (1) or saved
 to storage (1) and are not shown above.
 ```
+
+When *every* clip the pipe tried was lost, the card is a different
+sentence, and it names the cause rather than guessing at a party. The
+download step reports why it refused, and the card repeats that reason:
+
+```markdown
+[openrouter:v1:videojob:<job_id>]: #
+
+### Video generation failed
+
+None of the 3 clips this job delivered could be fetched: the clip is
+over `REMOTE_VIDEO_MAX_SIZE_MB`.
+```
+
+- **`blocked_by_policy`** — the pipe's own download policy refused the
+  clip before any byte was sent, and the card names
+  `ALLOW_INSECURE_HTTP` and `ENABLE_SSRF_PROTECTION` as the two valves
+  behind that decision.
+- **`too_large`** — the clip is over `REMOTE_VIDEO_MAX_SIZE_MB`.
+- **`mime_not_allowed`** — the clip's type is not in
+  `VIDEO_OUTPUT_MIME_ALLOWLIST`.
+- **`http_error`** — the request went out and OpenRouter answered with
+  an error. This is the only cause that names OpenRouter, because it is
+  the only one that is a conversation with the provider.
+
+A clause is added only when every lost clip carries the *same* cause.
+Three clips lost to two different causes get the plain sentence with no
+party named at all, because naming one of the two valves would send you
+to change a setting that was not what stopped you. The card says nothing
+about what the job cost either way: the charge is recorded to the ledger
+the dashboard reads regardless, and a total-loss card asserts nothing
+about billing.
 
 Both numbers in that sentence are counted from the clips the pipe
 actually tried to fetch, so a job that reported twenty clips but is
@@ -2276,6 +2319,11 @@ that state — so an off/on cycle is the way to clear one.
 The download step failed mid-stream or wrote zero bytes. Check:
 
 - OpenRouter job status was actually `completed` (not `failed`/`expired`).
+- The clip URL is not refused by the pipe's own address policy. It is built from your
+  `BASE_URL`, and a gateway on a private address is exempt for that download, so an
+  ordinary private gateway is not the cause; a cleartext `http://` gateway is, unless
+  `ALLOW_INSECURE_HTTP` is on with the host allowlisted. Check the log line
+  `Remote streaming download blocked by security policy` for the reason.
 - Downstream storage (`STORAGE_PROVIDER`) is healthy and writable.
 - The pipe process has filesystem write permission to its temp dir.
 

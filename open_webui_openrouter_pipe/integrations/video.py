@@ -196,6 +196,31 @@ def _shortfall_note(missing: int, attempted: int, fetched: int) -> str:
     )
 
 
+_CLIP_REFUSAL_CLAUSES = {
+    "blocked_by_policy": (
+        "the pipe's own download policy refused the clip before any byte was sent "
+        "(`ALLOW_INSECURE_HTTP` and `ENABLE_SSRF_PROTECTION`)"
+    ),
+    "too_large": "the clip is over `REMOTE_VIDEO_MAX_SIZE_MB`",
+    "mime_not_allowed": "the clip's type is not in `VIDEO_OUTPUT_MIME_ALLOWLIST`",
+}
+
+
+def _clip_loss_reason(outputs: int, reported: int, refused: dict[str, str]) -> str:
+    base = (
+        f"None of the {outputs} clips this job delivered could be fetched"
+        if reported > 1
+        else "Generated video could not be fetched"
+    )
+    causes = set(refused.values())
+    if causes == {"http_error"}:
+        return f"{base} from OpenRouter."
+    clause = _CLIP_REFUSAL_CLAUSES.get(next(iter(causes))) if len(causes) == 1 else None
+    if clause is None:
+        return f"{base}."
+    return f"{base}: {clause}."
+
+
 def _promotable_as_frame(entry: dict[str, Any], valves: Any = None) -> bool:
     raw = getattr(valves, "VIDEO_FRAME_IMAGE_MIME_ALLOWLIST", None) if valves is not None else None
     allowed = _csv_set("image/jpeg,image/png,image/webp") if raw is None else _csv_set(raw)
@@ -1498,6 +1523,7 @@ class VideoGenerationAdapter:
                 await self._emit_status(event_emitter, "Downloading generated video...", done=False, progress=80)
                 bearer = client.bearer_header()
                 tmp_dir = Path(tempfile.mkdtemp(prefix="openrouter-video-"))
+                refused: dict[str, str] = {}
                 for index in range(outputs):
                     tmp_path = tmp_dir / f"job-{job_id}-{index}.bin"
                     download_result = await self._pipe._multimodal_handler._download_remote_url_streaming(
@@ -1507,6 +1533,8 @@ class VideoGenerationAdapter:
                         max_size_bytes=max_bytes,
                         mime_allowlist=allowed_mimes,
                         extra_headers=bearer,
+                        trusted_base_url=valves.BASE_URL,
+                        refused=refused,
                     )
                     if not download_result:
                         with contextlib.suppress(Exception):
@@ -1540,12 +1568,7 @@ class VideoGenerationAdapter:
 
             elapsed = max(0.0, time.monotonic() - started_at)
             if not downloads:
-                raise VideoGenerationError(
-                    f"None of the {outputs} clips this job delivered could be fetched from "
-                    "OpenRouter."
-                    if reported > 1 else
-                    "Generated video could not be downloaded from OpenRouter."
-                )
+                raise VideoGenerationError(_clip_loss_reason(outputs, reported, refused))
             file_ids: list[str] = []
             storage_request, storage_user = await self._pipe._file_gateway.resolve_storage_context(
                 request, user_obj

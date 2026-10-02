@@ -492,6 +492,9 @@ def _backstop_session_log_status(outcome: dict[str, Any], future: Any) -> tuple[
         exc = future.exception()
     if outcome.get("error_occurred") is True or exc is not None:
         return "error", str(outcome.get("reason") or ("" if exc is None else str(exc)))
+    named = outcome.get("member_refusal_reason")
+    if isinstance(named, str) and named.strip():
+        return "error", named
     return "complete", ""
 
 

@@ -1064,6 +1064,21 @@ def test_collector_failures_warn_only_once(pipe_instance, caplog):
     assert len(repeats) == 4, [r.getMessage() for r in repeats]
 
 
+class _NotAQueue:
+    """Truthy, and not a queue.
+
+    The truthiness is the load-bearing half. `rq.qsize() if rq else 0` short-circuits
+    on ANY falsy value, so a double that got its falsiness wrong -- `__len__` returning
+    0, which is what a `len()`-bearing stand-in reaches for -- never calls `qsize()` at
+    all and passes against the unguarded read for a reason nobody chose. `__bool__` is
+    defined rather than left to `__len__` so that no other method can accidentally
+    change it.
+    """
+
+    def __bool__(self):
+        return True
+
+
 class _HostileWaiters:
     """A semaphore whose `_waiters` raises rather than being absent."""
 
@@ -1230,6 +1245,12 @@ _COLLECTOR_DRIVERS = {
     "semaphore_active": (lambda c: c._semaphore_active(_HostileValue(), 4), 0),
     "video_active": (lambda c: c.collect_video_pool(_HostileVideoPipe())["active"], 0),
     "auth_failures": (lambda c: _drive_hostile_auth_failures(c), 0),
+    "queue_depth": (
+        lambda c: c.collect_queues(
+            type("P", (), {"_request_queue": _NotAQueue(), "_log_queue": _NotAQueue()})()
+        )["requests"],
+        0,
+    ),
     "transport_session_state": (
         lambda c: c.collect_transport_session_state(_HostileTransportPipe()),
         "none",

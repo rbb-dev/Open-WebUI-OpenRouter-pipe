@@ -1960,6 +1960,7 @@ class FilterManager:
         function_id, outcome = await self._ensure_filter_installed(
             desired_source=render_openrouter_fusion_filter_source(
                 marker=_OPENROUTER_FUSION_FILTER_MARKER,
+                pipe_id=self._install_owner(),
             ).strip() + "\n",
             desired_name=FUSION_FILTER_DISPLAY_NAME,
             desired_meta={

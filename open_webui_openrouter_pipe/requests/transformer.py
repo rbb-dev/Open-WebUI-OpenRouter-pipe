@@ -1755,6 +1755,8 @@ async def transform_messages_to_input(
                             return None
 
                         owui_internal = names_an_owui_file_path(url)
+                        held_len: int | None = None
+                        held_over_cap = False
 
                         if (
                             is_cleartext_http_url(url)
@@ -1817,6 +1819,12 @@ async def transform_messages_to_input(
                                 memo_key, remembered,
                                 mode=mode, temporary_chat=temporary_chat,
                             )
+                            held_len = len(remembered[1]) if remembered is not None else None
+                            held_over_cap = (
+                                held_len is not None
+                                and memo_key is not None
+                                and held_len > await _remote_limit_bytes()
+                            )
                             if remembered is not None and not await (
                                 _memo_hit_is_still_permitted(
                                     pipe, memo_key, url, address_verdicts, address_deadline,
@@ -1838,17 +1846,6 @@ async def transform_messages_to_input(
                                 downloaded = None
                             if downloaded and not downloaded.get("data"):
                                 downloaded = None
-                            if (
-                                remembered is not None
-                                and memo_key is not None
-                                and len(remembered[1]) > await _remote_limit_bytes()
-                            ):
-                                _reuse_download_memo.pop(memo_key, None)
-                                return _refuse(
-                                    "could not be fetched, so it was not sent",
-                                    "remote_unfetched",
-                                    subject=loggable_link(url),
-                                )
                             if not downloaded and not (
                                 _cold_verdict := address_verdicts[url]
                                 if url in address_verdicts
@@ -1949,8 +1946,12 @@ async def transform_messages_to_input(
                         if mode == "reuse" and not (split[1] if split is not None else ""):
                             if is_http_or_https_url(url):
                                 return _refuse(
-                                    "could not be fetched, so it was not sent",
-                                    "remote_unfetched",
+                                    f"{held_len} bytes, over the "
+                                    f"{await _remote_limit_bytes()}-byte download limit, "
+                                    "so it was not sent"
+                                    if held_over_cap
+                                    else "could not be fetched, so it was not sent",
+                                    "oversized_remote" if held_over_cap else "remote_unfetched",
                                     subject=_image_subject(url),
                                 )
                             return ImageRefusal(
@@ -2120,15 +2121,21 @@ async def transform_messages_to_input(
                             )
 
                         _gate_fields = (("file_data", file_data), ("file_url", file_url))
+                        _scheme_verdicts: dict[str, bool | None] = {}
                         for _name, _value in _gate_fields:
                             if not isinstance(_value, str) or not _is_provider_fetched_link(
                                 _name, _value
                             ):
                                 continue
+                            _gate_memo = (
+                                address_verdicts
+                                if is_http_or_https_url(_value)
+                                else _scheme_verdicts
+                            )
                             if not (
-                                _file_verdict := address_verdicts[_value]
-                                if _value in address_verdicts
-                                else address_verdicts.setdefault(
+                                _file_verdict := _gate_memo[_value]
+                                if _value in _gate_memo
+                                else _gate_memo.setdefault(
                                     _value,
                                     await pipe._multimodal_handler._is_safe_url(
                                         _value,

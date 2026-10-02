@@ -335,6 +335,7 @@ def _contract_target(valves: Any) -> tuple[str, str]:
 
 
 _ZDR_CREDENTIAL_HISTORY = 4
+_REGISTRY_CATALOG_TIMEOUT_SECONDS = 15
 
 
 def _trim_credential_history(mapping: dict[str, Any], live: str, aliased: Any) -> bool:
@@ -368,10 +369,8 @@ def _content_digest(
     return hashlib.sha256("\x1e".join(parts).encode("utf-8", "surrogatepass")).hexdigest()
 
 
-def _catalog_timeout(valves: Any) -> aiohttp.ClientTimeout:
-    from ..core.utils import _DEFAULT_VALVES, http_timeout
-
-    return http_timeout(valves if valves is not None else _DEFAULT_VALVES)
+def _catalog_timeout() -> aiohttp.ClientTimeout:
+    return aiohttp.ClientTimeout(total=_REGISTRY_CATALOG_TIMEOUT_SECONDS)
 
 
 def _chat_merge_base(specs: dict[str, Any]) -> dict[str, Any]:
@@ -628,7 +627,7 @@ class OpenRouterModelRegistry:
             "X-OpenRouter-Categories": _OPENROUTER_CATEGORIES,
             **openrouter_attribution_headers(http_referer),
         }
-        _catalog_read_timeout = _catalog_timeout(valves)
+        _catalog_read_timeout = _catalog_timeout()
         _debug_print_request(headers, {"method": "GET", "url": url}, logger=logger)
         try:
             async with session.get(url, headers=headers, timeout=_catalog_read_timeout) as resp:
@@ -1675,7 +1674,7 @@ class OpenRouterModelRegistry:
         async with session.get(
             url,
             headers=headers,
-            timeout=timeout if timeout is not None else _catalog_timeout(None),
+            timeout=timeout if timeout is not None else _catalog_timeout(),
         ) as resp:
             if resp.status >= 400:
                 await _debug_print_error_response(resp, logger=logger)

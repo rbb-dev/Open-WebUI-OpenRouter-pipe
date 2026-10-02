@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Regenerate the reference copies under filters/ from the pipe's own renderers.
 
     python scripts/build_reference_filters.py

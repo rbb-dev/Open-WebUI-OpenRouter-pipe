@@ -190,11 +190,12 @@ class _FakeFunctions:
 
 
 @pytest.fixture
-def fake_functions(monkeypatch):
+def fake_functions(monkeypatch, config_rev_reader):
     import open_webui.models.functions as owf
 
     fake = _FakeFunctions()
     monkeypatch.setattr(owf, "Functions", fake)
+    config_rev_reader(lambda: fake.rev)
     return fake
 
 
@@ -452,24 +453,20 @@ async def test_config_set_conflict_returns_fresh_and_skips_write(fake_functions)
 
 
 @pytest.mark.asyncio
-async def test_config_set_treats_an_unreadable_rev_as_a_conflict(fake_functions, caplog):
+async def test_config_set_treats_an_unreadable_rev_as_a_conflict(
+    fake_functions, caplog, config_rev_reader
+):
     """A rev the server cannot read must block the write, not wave it through."""
     import logging as _logging
 
     pipe = _config_pipe()
 
-    async def _boom(*_args, **_kwargs):
-        raise RuntimeError("database unavailable")
+    config_rev_reader(None)
 
-    original = fake_functions.get_function_by_id
-    fake_functions.get_function_by_id = _boom
-    try:
-        with caplog.at_level(_logging.WARNING):
-            result = await actions.ACTIONS["config_set"].handler(
-                pipe, _user(), {"edits": {"MODEL_ID": "x"}, "rev": 1000}
-            )
-    finally:
-        fake_functions.get_function_by_id = original
+    with caplog.at_level(_logging.WARNING):
+        result = await actions.ACTIONS["config_set"].handler(
+            pipe, _user(), {"edits": {"MODEL_ID": "x"}, "rev": 1000}
+        )
 
     assert result["conflict"] is True, result
     assert fake_functions.saved is None, "the write proceeded without a rev check"
@@ -771,15 +768,18 @@ async def test_update_snapshot_delete_happy(update_env):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("client_rev", [None, 1000, "whatever-the-client-had"])
-async def test_a_row_open_webui_cannot_read_blocks_the_write(fake_functions, caplog, client_rev):
+async def test_a_row_open_webui_cannot_read_blocks_the_write(
+    fake_functions, caplog, client_rev, config_rev_reader
+):
     """Open WebUI returns None on a DB fault; it does not raise.
 
-    `Functions.get_function_by_id` is `try: ... except Exception: return None`
-    (models/functions.py), so `_current_config_rev`'s except arm is unreachable for a
-    real fault. The pipe got None, logged nothing, and `config_get` handed the client
-    `rev: null` -- which the shipped client stores and echoes back verbatim. Server-side
-    `client_rev` was then None, so `client_rev is not None` was False and the write went
-    through with NO concurrent-edit check, which is the state the guard exists to deny.
+    `read_config_rev` is `try: ... except Exception: return None`
+    (dashboard_socket.py), so the Config tab's revision read answers `None` for a real
+    fault rather than raising. The pipe got None, logged nothing, and `config_get`
+    handed the client `rev: null` -- which the shipped client stores and echoes back
+    verbatim. Server-side `client_rev` was then None, so `client_rev is not None` was
+    False and the write went through with NO concurrent-edit check, which is the state
+    the guard exists to deny.
 
     Parametrised over what the caller sent, including the None the server itself
     produced: an unreadable revision must block regardless of the caller.
@@ -788,18 +788,12 @@ async def test_a_row_open_webui_cannot_read_blocks_the_write(fake_functions, cap
 
     pipe = _config_pipe()
 
-    async def _missing_row(*_args, **_kwargs):
-        return None
+    config_rev_reader(None)
 
-    original = fake_functions.get_function_by_id
-    fake_functions.get_function_by_id = _missing_row
-    try:
-        with caplog.at_level(_logging.WARNING):
-            result = await actions.ACTIONS["config_set"].handler(
-                pipe, _user(), {"edits": {"MODEL_ID": "x"}, "rev": client_rev}
-            )
-    finally:
-        fake_functions.get_function_by_id = original
+    with caplog.at_level(_logging.WARNING):
+        result = await actions.ACTIONS["config_set"].handler(
+            pipe, _user(), {"edits": {"MODEL_ID": "x"}, "rev": client_rev}
+        )
 
     assert result.get("conflict") is True, (
         f"client_rev={client_rev!r}: the write was accepted while the server could not "

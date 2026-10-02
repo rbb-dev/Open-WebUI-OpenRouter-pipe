@@ -37,7 +37,11 @@ from .config import (
     ULID_LENGTH,
     _application_secret,
 )
-from .url_scheme import loggable_link, media_type_or_empty, split_base64_data_url
+from .url_scheme import (
+    base64_data_url_payload_len,
+    loggable_link,
+    media_type_or_empty,
+)
 from .warn_latch import shared_latch, warn_level
 
 logger = logging.getLogger(__name__)
@@ -257,6 +261,7 @@ def tool_output_text_and_pictures(output: Any) -> tuple[str, list[str]]:
 _DATA_URL_LOG_SCAN = re.compile(r"""(?<![A-Za-z0-9+.-])data:[^\s"')\]}]*""", re.IGNORECASE)
 _DATA_URL_LOG_MARKER_RE = re.compile(r"\s*\[redacted\]")
 _DATA_URL_NAME_PARAM = re.compile(r";name=[^;,]*", re.IGNORECASE)
+_DATA_URL_PRESENT = re.compile("data:", re.IGNORECASE)
 
 
 def _is_a_bare_media_type(head: str) -> bool:
@@ -266,28 +271,33 @@ def _is_a_bare_media_type(head: str) -> bool:
 
 
 def _data_url_log_subject(text: str) -> str:
-    if "data:" not in text and "data:" not in text.lower():
+    return _truncate_base64_runs(_data_url_tokens(text), 256)
+
+
+def _data_url_tokens(text: str) -> str:
+    if not _DATA_URL_PRESENT.search(text):
         return text
 
     out: list[str] = []
     last = 0
     for match in _DATA_URL_LOG_SCAN.finditer(text):
-        if match.start() < last:
+        start, stop = match.span()
+        if start < last:
             continue
-        token = match.group(0)
-        comma = token.find(",")
-        head = token[:comma] if comma >= 0 else token
+        comma_at = text.find(",", start, stop)
+        head = text[start:comma_at] if comma_at >= 0 else text[start:stop]
+        comma = comma_at - start if comma_at >= 0 else -1
         if comma < 0 and (
-            _is_a_bare_media_type(head) or _DATA_URL_LOG_MARKER_RE.match(text, match.end())
+            _is_a_bare_media_type(head) or _DATA_URL_LOG_MARKER_RE.match(text, stop)
         ):
             continue
         if comma >= 0 and ";base64" not in head.lower():
-            newline = text.find("\n", match.end())
+            newline = text.find("\n", stop)
             end = len(text) if newline < 0 else newline
         else:
-            end = match.end()
+            end = stop
         candidate = head.split()[0] if head.split() else head
-        out.append(text[last : match.start()])
+        out.append(text[last:start])
         out.append(f"data:{media_type_or_empty(candidate[len('data:') :])} [redacted]")
         last = end
     out.append(text[last:])
@@ -1096,6 +1106,43 @@ _MEDIA_KEY_STEMS = frozenset(_payload_key(k) for k in _MEDIA_URL_KEYS)
 
 _BARE_BASE64_SHAPE = re.compile(r"[A-Za-z0-9+/_-]{1024,}={0,2}\Z")
 
+_BARE_BASE64_RUN = re.compile(r"[A-Za-z0-9+/_-]{1024,}")
+
+
+def _truncate_base64_runs(text: str, max_chars: int) -> str:
+    keep = max(8, min(64, max_chars // 4))
+    pieces: list[str] = []
+    last = 0
+    for match in _BARE_BASE64_RUN.finditer(text):
+        start, end = match.span()
+        if start < last:
+            continue
+        pieces.append(text[last:start])
+        pieces.append(
+            f"{text[start : start + keep]}…{_REDACTED_DATA_URL_MARKER}({end - start} chars)…"
+        )
+        last = end
+    if not pieces:
+        return text
+    pieces.append(text[last:])
+    return "".join(pieces)
+
+
+def _truncate_bare_blob(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    keep = max(8, min(64, max_chars // 4))
+    return f"{text[:keep]}…{_REDACTED_DATA_URL_MARKER}({len(text)} chars)…"
+
+
+def _stripped_len(text: str) -> int:
+    start, end = 0, len(text)
+    while start < end and text[start].isspace():
+        start += 1
+    while end > start and text[end - 1].isspace():
+        end -= 1
+    return end - start
+
 
 def _redact_payload_blobs(value: Any, *, max_chars: int = 256) -> Any:
     """Return a copy of ``value`` with large base64 blobs truncated.
@@ -1106,22 +1153,19 @@ def _redact_payload_blobs(value: Any, *, max_chars: int = 256) -> Any:
     """
 
     def _redact_data_url(text: str) -> str:
-        candidate = text.strip()
-        split = split_base64_data_url(candidate)
-        if split is None:
+        payload_len = base64_data_url_payload_len(text)
+        if payload_len is None:
             return _data_url_log_subject(text)
-        header, b64 = split
-        header = _DATA_URL_NAME_PARAM.sub("", header)
-        if len(candidate) <= max_chars:
-            return _data_url_log_subject(candidate)
+        comma = text.find(",")
+        header = _DATA_URL_NAME_PARAM.sub("", text[:comma])
+        if _stripped_len(text) <= max_chars:
+            return _data_url_log_subject(text)
         keep = max(8, min(64, max_chars // 4))
-        return f"{header},{b64[:keep]}…{_REDACTED_DATA_URL_MARKER}({len(b64)} chars)…"
-
-    def _redact_bare_blob(text: str) -> str:
-        if len(text) <= max_chars:
-            return text
-        keep = max(8, min(64, max_chars // 4))
-        return f"{text[:keep]}…{_REDACTED_DATA_URL_MARKER}({len(text)} chars)…"
+        body_at = comma + 1
+        return (
+            f"{header},{text[body_at : body_at + keep]}…{_REDACTED_DATA_URL_MARKER}"
+            f"({payload_len} chars)…"
+        )
 
     def _citation_url_holder(obj: dict[Any, Any]) -> bool:
         declared = obj.get("type")
@@ -1149,12 +1193,10 @@ def _redact_payload_blobs(value: Any, *, max_chars: int = 256) -> Any:
                 citation and _payload_key(key) == "url"
             ):
                 return loggable_link(obj) or _REDACTED_DATA_URL_MARKER
-            if split_base64_data_url(obj.strip()) is not None:
+            if base64_data_url_payload_len(obj) is not None:
                 return _redact_data_url(obj)
             if key in _BARE_BASE64_KEYS or key.endswith("_b64"):
-                return _redact_bare_blob(obj)
-            if len(obj) > max_chars and _BARE_BASE64_SHAPE.fullmatch(obj):
-                return _redact_bare_blob(obj)
+                return _truncate_bare_blob(obj, max_chars)
             return _redact_data_url(obj)
         return obj
 

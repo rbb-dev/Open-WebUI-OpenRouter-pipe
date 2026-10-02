@@ -65,6 +65,7 @@ _USAGE_ICON_FIELDS = ("time", "cost", "total", "input", "output", "cached", "rea
 from .errors import (
     _IN_BAND_STATUS_BY_ERROR_TYPE,
     _IN_BAND_STATUS_BY_NATIVE_CODE,
+    _as_status_line,
     _resolved_error_status,
 )
 
@@ -80,13 +81,8 @@ def _in_band_status(code: Any, error_type: str, *, default: int = 400) -> int:
         status = table.get(named)
         if status is not None:
             return status
-    if isinstance(code, int) and not isinstance(code, bool):
-        numeric = code
-    elif isinstance(code, str) and code.strip().isdigit():
-        numeric = int(code.strip())
-    else:
-        numeric = None
-    if numeric is not None and 400 <= numeric <= 599:
+    numeric = _as_status_line(code, default=0)
+    if 400 <= numeric <= 599:
         return numeric
     return default
 

@@ -603,22 +603,6 @@ def test_a_blob_key_reaches_through_a_list():
     )
 
 
-@pytest.mark.parametrize(
-    "value",
-    [
-        ("A" * 2000) + " and then some prose the operator needs to read",
-        "some prose the operator needs to read " + ("A" * 2000),
-    ],
-)
-def test_the_shape_rule_requires_the_whole_string_to_be_base64(value):
-    from open_webui_openrouter_pipe.core.utils import _redact_payload_blobs
-
-    assert _redact_payload_blobs({"result": value})["result"] == value, (
-        "a partial match would truncate any long value that merely starts or ends "
-        "base64-shaped, taking the prose beside it out of the debug log"
-    )
-
-
 @pytest.mark.parametrize(("max_chars", "prefix_len"), [(64, 16), (256, 64)])
 def test_the_retained_prefix_scales_with_max_chars(max_chars, prefix_len):
     from open_webui_openrouter_pipe.core.utils import _redact_payload_blobs

@@ -2295,7 +2295,10 @@ class ModelCatalogManager:
 
                 tool_use_ruled_out = _safe_rules_out(spec_lookup_id)
                 picture_only = uses_dedicated_image_api(ModelFamily._lookup_spec(str(norm_id or "")))
-                fusion_model = bool(_is_fusion(openrouter_id) or _is_fusion(str(original_id or "")))
+                fusion_model = bool(
+                    _is_fusion(openrouter_id, pipe_id=pipe_identifier)
+                    or _is_fusion(str(original_id or ""), pipe_id=pipe_identifier)
+                )
                 image_gen_filter_supported = not (
                     tool_use_ruled_out
                     or picture_only
@@ -2321,7 +2324,7 @@ class ModelCatalogManager:
                     and not tool_use_ruled_out
                     and not picture_only
                     and not pipe_capabilities.get("video_generation")
-                    and not _is_fusion(openrouter_id)
+                    and not _is_fusion(openrouter_id, pipe_id=pipe_identifier)
                 )
 
                 native_supported = bool(
@@ -2368,7 +2371,8 @@ class ModelCatalogManager:
                 from ..filters.fusion_filter_renderer import is_fusion_model
                 fusion_filter_ids_for_model: list[str] = []
                 if fusion_filter_function_id and (
-                    is_fusion_model(openrouter_id) or is_fusion_model(str(original_id or ""))
+                    is_fusion_model(openrouter_id, pipe_id=pipe_identifier)
+                    or is_fusion_model(str(original_id or ""), pipe_id=pipe_identifier)
                 ):
                     fusion_filter_ids_for_model = [fusion_filter_function_id]
                 auto_attach_fusion = bool(

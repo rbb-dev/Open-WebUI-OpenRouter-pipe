@@ -43,7 +43,7 @@ def collect_transport_session_state(pipe: Any) -> str:
             exc_info=True,
         )
         return "none"
-    except (AttributeError, TypeError, RuntimeError):
+    except Exception:
         _level = warn_level(_warned_collectors, 'transport_session_state')
         logger.log(
             _level,
@@ -70,6 +70,22 @@ def _safe_int(value: Any) -> int:
             _level,
             "pipe_dashboard: a collected metric was not an integer; reporting 0 "
             "for it until this is fixed",
+            exc_info=True,
+        )
+        return 0
+
+
+def _queue_depth(q: Any) -> int:
+    if not q:
+        return 0
+    try:
+        return int(q.qsize())
+    except Exception:
+        _level = warn_level(_warned_collectors, 'queue_depth')
+        logger.log(
+            _level,
+            "pipe_dashboard: cannot read a queue depth; the dashboard will report "
+            "an empty queue for it",
             exc_info=True,
         )
         return 0
@@ -136,13 +152,13 @@ def collect_queues(pipe: Any) -> dict[str, int]:
     slm = getattr(pipe, "_session_log_manager", None)
     archive_q = getattr(slm, "_queue", None) if slm else None
     return {
-        "requests": rq.qsize() if rq else 0,
+        "requests": _queue_depth(rq),
         "requests_max": _safe_int(getattr(pipe, "_QUEUE_MAXSIZE", 1000)) or 1000,
         "waiting": _waiter_count(_limits(pipe).request_semaphore),
         "tool_waiting": _waiter_count(_limits(pipe).tool_semaphore),
-        "logs": lq.qsize() if lq else 0,
+        "logs": _queue_depth(lq),
         "logs_max": _safe_int(getattr(lq, "maxsize", 0)) if lq else 0,
-        "archive": archive_q.qsize() if archive_q else 0,
+        "archive": _queue_depth(archive_q),
         "archive_max": _safe_int(getattr(archive_q, "maxsize", 0)) if archive_q else 0,
     }
 
@@ -157,7 +173,7 @@ def collect_video_pool(pipe: Any) -> dict[str, int]:
     else:
         try:
             active = len(getattr(pipe, "_video_active_tasks", {}) or {})
-        except TypeError:
+        except Exception:
             _level = warn_level(_warned_collectors, 'video_active')
             logger.log(
                 _level,

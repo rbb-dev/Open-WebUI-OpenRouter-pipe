@@ -60,6 +60,7 @@ from ..core.errors import (
 )
 from ..core.timing_logger import timed
 from ..core.url_scheme import (
+    _same_origin,
     is_http_or_https_url,
     is_inline_data_url,
     loggable_link,
@@ -1115,18 +1116,36 @@ class MultimodalHandler:
         timeout_seconds: int | None = None,
         mime_allowlist: set[str] | None = None,
         extra_headers: dict[str, str] | None = None,
+        trusted_base_url: str | None = None,
+        refused: dict[str, str] | None = None,
     ) -> dict[str, Any] | None:
         url = (url or "").strip()
         if not is_http_or_https_url(url):
+            if refused is not None:
+                refused[url] = "not_http"
             return None
-        pinned = await self._prepare_pinned_request(url)
-        if pinned is None:
-            self.logger.error(
-                "Remote streaming download blocked by security policy (SSRF or HTTP disabled by default): %s",
-                loggable_link(url),
-            )
-            return None
-        request_url, pin_headers, pin_extensions = pinned
+        if trusted_base_url is not None and _same_origin(url, trusted_base_url):
+            if not self._is_insecure_http_allowed(url):
+                self.logger.error(
+                    "Remote streaming download blocked by security policy (SSRF or HTTP disabled by default): %s",
+                    loggable_link(url),
+                )
+                if refused is not None:
+                    refused[url] = "blocked_by_policy"
+                return None
+            self.logger.debug("Skipping the address policy for the admin's own base URL origin")
+            request_url, pin_headers, pin_extensions = url, {}, {}
+        else:
+            pinned = await self._prepare_pinned_request(url)
+            if pinned is None:
+                self.logger.error(
+                    "Remote streaming download blocked by security policy (SSRF or HTTP disabled by default): %s",
+                    loggable_link(url),
+                )
+                if refused is not None:
+                    refused[url] = "blocked_by_policy"
+                return None
+            request_url, pin_headers, pin_extensions = pinned
 
         max_retries = self.valves.REMOTE_DOWNLOAD_MAX_RETRIES
         initial_delay = self.valves.REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS
@@ -1170,6 +1189,8 @@ class MultimodalHandler:
                         self.logger.warning(
                             "Streaming download retry timeout exceeded for %s after %.1fs", loggable_link(url), elapsed
                         )
+                        if refused is not None:
+                            refused[url] = "retry_timeout"
                         return None
                     if attempt > 1:
                         self.logger.info(
@@ -1198,6 +1219,8 @@ class MultimodalHandler:
                             retryable, retry_after = _classify_retryable_http_error(exc)
                             if retryable:
                                 raise _RetryableHTTPStatusError(exc, retry_after=retry_after) from exc
+                            if refused is not None:
+                                refused[url] = "http_error"
                             raise
 
                         mime_type = response.headers.get("content-type", "").split(";")[0].lower().strip()
@@ -1213,6 +1236,8 @@ class MultimodalHandler:
                                         "(%s bytes > %s bytes); aborting.",
                                         loggable_link(url), content_length, effective_max,
                                     )
+                                    if refused is not None:
+                                        refused[url] = "too_large"
                                     return None
                             except ValueError:
                                 pass
@@ -1233,6 +1258,8 @@ class MultimodalHandler:
                                         "(%.1fMB > %.1fMB); aborting.",
                                         loggable_link(url), size_mb, limit_mb
                                     )
+                                    if refused is not None:
+                                        refused[url] = "too_large"
                                     return None
                                 if len(sniff_buffer) < _SNIFF_PREFIX_BYTES:
                                     sniff_buffer.extend(
@@ -1252,6 +1279,8 @@ class MultimodalHandler:
                                     "Streaming download MIME %r (declared %r) not in allowlist %r; aborting.",
                                     sniffed_mime, mime_type, sorted(mime_allowlist),
                                 )
+                                if refused is not None:
+                                    refused[url] = "mime_not_allowed"
                                 return None
 
                     if attempt > 1:
@@ -1274,6 +1303,8 @@ class MultimodalHandler:
                 attempt,
                 elapsed,
             )
+            if refused is not None:
+                refused.setdefault(url, "transport_error")
             return None
 
     async def _is_safe_url(self, url: str, *, seconds: float = ADDRESS_CHECK_SECONDS) -> bool | None:

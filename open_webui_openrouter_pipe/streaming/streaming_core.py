@@ -1874,7 +1874,6 @@ class StreamingHandler:
                 return lead
 
             async def _append_assistant_hidden_markers(current_text: str, markers: list[str]) -> str:
-                nonlocal retry_barrier_crossed
                 if not markers:
                     return current_text
                 current_text += _continuation_lead(current_text)
@@ -1887,8 +1886,9 @@ class StreamingHandler:
                 marker_delta = current_text[msg_before:]
                 if body.stream:
                     await _open_message()
-                    await event_emitter({"type": "chat:message:delta", "data": {"content": marker_delta}})
-                    retry_barrier_crossed = True
+                    await _publish_turn_frame(
+                        {"type": "chat:message:delta", "data": {"content": marker_delta}}
+                    )
                 elif content_handed_back:
                     self.logger.warning(
                         "Committed artifact row(s) left unaddressed: the content was handed back before its "
@@ -2372,7 +2372,7 @@ class StreamingHandler:
                             assistant_message += normalized_delta
                             if not fusion_armed:
                                 await _open_message()
-                                await event_emitter(
+                                await _publish_turn_frame(
                                     {
                                         "type": "chat:message:delta",
                                         "data": {
@@ -2380,8 +2380,6 @@ class StreamingHandler:
                                         },
                                     }
                                 )
-                                if body.stream:
-                                    retry_barrier_crossed = True
                         continue
 
                     if etype in ("response.refusal.delta", "response.refusal.done"):
@@ -2426,7 +2424,7 @@ class StreamingHandler:
                             assistant_message += normalized_refusal
                             if not fusion_armed:
                                 await _open_message()
-                                await event_emitter(
+                                await _publish_turn_frame(
                                     {
                                         "type": "chat:message:delta",
                                         "data": {
@@ -2434,8 +2432,6 @@ class StreamingHandler:
                                         },
                                     }
                                 )
-                                if body.stream:
-                                    retry_barrier_crossed = True
                         continue
 
                     if etype == "response.content_part.done":
@@ -2705,14 +2701,12 @@ class StreamingHandler:
                                     assistant_message += published
                                     if not fusion_armed:
                                         await _open_message()
-                                        await event_emitter(
+                                        await _publish_turn_frame(
                                             {
                                                 "type": "chat:message:delta",
                                                 "data": {"content": published},
                                             }
                                         )
-                                        if body.stream:
-                                            retry_barrier_crossed = True
                             await _emit_annotation_citations(item.get("annotations"))
                             phase_marker = _phase_marker_for_output_item(item)
                             if not api_hold_key:
@@ -3168,9 +3162,9 @@ class StreamingHandler:
                             if event_emitter:
                                 image_delta = assistant_message[msg_before:]
                                 await _open_message()
-                                await event_emitter({"type": "chat:message:delta", "data": {"content": image_delta}})
-                                if body.stream:
-                                    retry_barrier_crossed = True
+                                await _publish_turn_frame(
+                                    {"type": "chat:message:delta", "data": {"content": image_delta}}
+                                )
                             if (
                                 item_type in ("image_generation_call", "openrouter:image_generation")
                                 and str(item.get("id") or "") in opened_image_windows

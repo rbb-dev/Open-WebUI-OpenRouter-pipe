@@ -512,6 +512,14 @@ def _carries_a_content_decision(exc: Any) -> bool:
     )
 
 
+def _as_status_line(value: Any, default: int = 400) -> int:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return default
+
+
 def _resolved_error_status(
     code: Any,
     error_type: str,
@@ -522,6 +530,7 @@ def _resolved_error_status(
 ) -> int:
     from .error_formatter import _in_band_status
 
+    http_status = _as_status_line(http_status)
     if from_wire and _is_content_decision(metadata):
         return http_status
     kind = error_type.strip().lower() if isinstance(error_type, str) else ""

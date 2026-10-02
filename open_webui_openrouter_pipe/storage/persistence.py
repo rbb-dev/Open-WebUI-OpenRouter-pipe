@@ -67,7 +67,7 @@ from ..core.utils import (
     tool_output_text_and_pictures,
 )
 from ..core.warn_latch import warn_level
-from .owui_files import is_temporary_chat, temporary_chat_prefixes
+from .owui_files import is_temporary_chat, loggable_chat_id, temporary_chat_prefixes
 
 # Optional dependencies
 try:
@@ -483,7 +483,8 @@ class ReplyMemory:
         dropped = 0
         oversized = 0
         for row, payload, payload_bytes in sized:
-            key = self._key(row.get("chat_id"), row.get("message_id"))
+            row_chat_id = row.get("chat_id")
+            key = self._key(row_chat_id, row.get("message_id"))
             if key not in self._replies:
                 with self._unheld_latch:
                     level = warn_level(self._unheld_warn, "reply-not-held", cooldown_s=300.0)
@@ -492,7 +493,7 @@ class ReplyMemory:
                     level,
                     "A row was offered to a reply the memory no longer holds and was dropped: "
                     "chat_id=%s message_id=%s id=%s item_type=%s",
-                    row.get("chat_id"),
+                    "<not retained>" if is_temporary_chat(row_chat_id) else row_chat_id,
                     row.get("message_id"),
                     row.get("id"),
                     row.get("item_type"),
@@ -1954,7 +1955,7 @@ class ArtifactStore:
                 self.logger.debug(
                     "Temporary chat row dropped: its reply is closed and holds nothing "
                     "(chat_id=%s message_id=%s id=%s item_type=%s)",
-                    rows[0].get("chat_id"),
+                    loggable_chat_id(rows[0].get("chat_id")),
                     rows[0].get("message_id"),
                     rows[0].get("id"),
                     rows[0].get("item_type"),

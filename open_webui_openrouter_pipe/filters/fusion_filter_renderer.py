@@ -39,6 +39,14 @@ _FUSION_MODEL_PATTERN = re.compile(r"^~?openrouter/fusion(?:-flash)?(?::[^@\s][^
 _FUSION_DOTTED_PATTERN = re.compile(r"(?:^|\.)~?openrouter\.fusion(?:-flash)?(?::[^@\s][^@]*)?$")
 
 
+def _fusion_dotted_pattern(pipe_id: str | None = None) -> re.Pattern[str]:
+    if isinstance(pipe_id, str) and pipe_id:
+        return re.compile(
+            r"^(?:" + re.escape(pipe_id) + r"\.)?~?openrouter\.fusion(?:-flash)?(?::[^@\s][^@]*)?$"
+        )
+    return _FUSION_DOTTED_PATTERN
+
+
 def canonical_model_slug(raw: str) -> str:
     """Strip the OWUI pipe prefix (``openrouter.openrouter/fusion`` -> ``openrouter/fusion``)."""
     if not isinstance(raw, str) or "/" not in raw:
@@ -47,7 +55,7 @@ def canonical_model_slug(raw: str) -> str:
     return head.rsplit(".", 1)[-1] + slash + tail
 
 
-def is_fusion_model(model_id: str) -> bool:
+def is_fusion_model(model_id: str, *, pipe_id: str | None = None) -> bool:
     """True if ``model_id`` is the dedicated openrouter/fusion model, in any id form the
     pipe produces: raw slug, pipe-prefixed slug, sanitized dot-form, or full OWUI id.
 
@@ -58,6 +66,8 @@ def is_fusion_model(model_id: str) -> bool:
         return False
     if _FUSION_MODEL_PATTERN.match(canonical_model_slug(model_id)):
         return True
+    if isinstance(pipe_id, str) and pipe_id:
+        return bool(_fusion_dotted_pattern(pipe_id).match(model_id))
     return bool(_FUSION_DOTTED_PATTERN.search(model_id))
 
 
@@ -304,7 +314,7 @@ __KEEP_WHAT_STILL_FITS__
 '''
 
 
-def render_openrouter_fusion_filter_source(*, marker: str) -> str:
+def render_openrouter_fusion_filter_source(*, marker: str, pipe_id: str | None = None) -> str:
     """Return the canonical OWUI filter source for the OpenRouter Fusion filter."""
     return (
         _FUSION_FILTER_TEMPLATE
@@ -313,5 +323,5 @@ def render_openrouter_fusion_filter_source(*, marker: str) -> str:
         .replace("__ADAPTER_CACHE__", _ADAPTER_CACHE)
         .replace("__KEEP_WHAT_STILL_FITS__", _KEEP_WHAT_STILL_FITS)
         .replace("__FUSION_MODEL_PATTERN__", _FUSION_MODEL_PATTERN.pattern)
-        .replace("__FUSION_DOTTED_PATTERN__", _FUSION_DOTTED_PATTERN.pattern)
+        .replace("__FUSION_DOTTED_PATTERN__", _fusion_dotted_pattern(pipe_id).pattern)
     )

@@ -165,6 +165,39 @@ def sample_audio_base64() -> str:
     return base64.b64encode(b"FAKE_AUDIO_DATA").decode("utf-8")
 
 
+@pytest.fixture
+def config_rev_reader(monkeypatch):
+    """Answer the Config tab's revision read at its own seam, from a revision the caller names.
+
+    `actions._current_config_rev` reads one integer -- the stored `updated_at` -- and it
+    reads it through `read_config_rev`, whose SELECT projects `function.updated_at` and
+    nothing else. `read_config_rev` closes over `open_webui.internal.db`, which no
+    in-process test installs, so an unpatched Config-tab test sees `None`, every save
+    looks stale, and every save takes the conflict arm.
+
+    The revision is CALLER-SUPPLIED rather than derived from the caller's own
+    `Functions.get_function_by_id` double. Deriving it would re-couple the two readers,
+    and a test could no longer tell which one the code under test used -- which is the
+    whole subject here, and the reason a suite already covering `read_config_rev` did
+    not notice a second, wider reader of the same column. A test that wants the two to
+    DISAGREE (and one that wants to count the narrow reads) writes its own reader; the
+    two arms in `test_config_tab_secret_clear.py` do.
+
+    Not autouse: an unasked-for revision is a revision no test chose, and the tests
+    that are about an unreadable row need the opposite of this.
+    """
+    def _install(rev: Any) -> None:
+        from open_webui_openrouter_pipe.plugins.pipe_dashboard import actions
+
+        async def _read(pipe_id: str) -> Any:
+            return rev() if callable(rev) else rev
+
+        monkeypatch.setattr(actions, "read_config_rev", _read, raising=False)
+
+    return _install
+
+
+
 def _maybe_install_bundled_pipe() -> None:
     """Optionally preload a generated monolith bundle for testing.
 

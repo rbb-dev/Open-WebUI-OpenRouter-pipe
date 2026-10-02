@@ -319,3 +319,10 @@ The capability check is what runs first, so these are the five paths on which an
 When `OPENAI` log level is set to debug in Open WebUI, the pipe logs:
 - `Injecting direct uploads into chat request ...`
 - `Ignoring direct uploads for task request ...`
+
+A temporary chat's `chat_id` is the browser's socket id, so neither record names a
+chat for one: they read `chat_id=<not retained>`.  The task name and the
+`files=`/`audio=`/`video=` counts are unaffected -- that is the diagnostic these two
+lines exist for, and dropping the record would leave a Direct Uploads turn
+indistinguishable from one that had no uploads.  A saved or `channel:` chat is
+named in full.

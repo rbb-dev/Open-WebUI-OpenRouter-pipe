@@ -366,6 +366,10 @@ def is_temporary_chat(chat_id: Any) -> bool:
     return isinstance(chat_id, str) and chat_id.strip().startswith(temporary_chat_prefixes())
 
 
+def loggable_chat_id(chat_id: Any) -> str:
+    return "<not retained>" if is_temporary_chat(chat_id) else str(chat_id or "")
+
+
 def channel_id_for_chat(chat_id: Any) -> str | None:
     if not isinstance(chat_id, str):
         return None

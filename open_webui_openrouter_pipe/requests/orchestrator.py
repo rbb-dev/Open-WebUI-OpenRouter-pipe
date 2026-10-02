@@ -981,6 +981,7 @@ class RequestOrchestrator:
 
         chat_id = (__metadata__ or {}).get("chat_id")
         chat_id = chat_id.strip() if isinstance(chat_id, str) else ""
+        loggable_chat_id = "<not retained>" if is_temporary_chat(chat_id) else chat_id
         task_name = TaskModelAdapter._task_name(__task__) if __task__ else ""
         use_task_model_adapter = TaskModelAdapter._uses_task_model_adapter(__task__)
         def _extract_direct_uploads_warnings(metadata: dict[str, Any]) -> list[str]:
@@ -1018,7 +1019,7 @@ class RequestOrchestrator:
                 self.logger.debug(
                     "Ignoring direct uploads for task request (task=%s chat_id=%s)",
                     task_name or "task",
-                    chat_id,
+                    loggable_chat_id,
                 )
             direct_uploads = {}
         endpoint_override: Literal["responses", "chat_completions"] | None = None
@@ -1026,7 +1027,7 @@ class RequestOrchestrator:
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(
                     "Injecting direct uploads into chat request (chat_id=%s files=%d audio=%d video=%d)",
-                    chat_id,
+                    loggable_chat_id,
                     len(direct_uploads.get("files", []) or []),
                     len(direct_uploads.get("audio", []) or []),
                     len(direct_uploads.get("video", []) or []),

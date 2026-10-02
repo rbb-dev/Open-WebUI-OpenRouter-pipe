@@ -29,6 +29,7 @@ from aioresponses import aioresponses
 
 from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.api.gateway.chat_completions_adapter import ChatCompletionsAdapter
+from open_webui_openrouter_pipe.api.gateway.responses_adapter import AcceptedResponseLostBody
 from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
 from open_webui_openrouter_pipe.storage.owui_files import InlinedFile
 

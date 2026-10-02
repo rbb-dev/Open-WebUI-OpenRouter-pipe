@@ -29,7 +29,11 @@ from .config_service import (
     readable_stored,
     stored_row_readable,
 )
-from .dashboard_socket import emit_config_changed, publish_valves_changed
+from .dashboard_socket import (
+    emit_config_changed,
+    publish_valves_changed,
+    read_config_rev,
+)
 from .update_service import UpdateError, UpdateService, _distributed_lock
 
 logger = logging.getLogger(__name__)
@@ -347,24 +351,13 @@ async def _usage_stats(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
 
 async def _current_config_rev(pipe: Any) -> Any:
     """Return the function's stored ``updated_at``, or None."""
-    try:
-        from open_webui.models.functions import Functions
-
-        function = await Functions.get_function_by_id(getattr(pipe, "id", ""))
-        if function is None:
-            logger.warning(
-                "pipe_dashboard: the stored function row could not be read, so the "
-                "config revision is unknown; concurrent-edit protection is unavailable"
-            )
-            return None
-        return getattr(function, "updated_at", None)
-    except Exception:
+    rev = await read_config_rev(getattr(pipe, "id", ""))
+    if rev is None:
         logger.warning(
-            "pipe_dashboard: could not read the stored config revision; "
-            "concurrent-edit protection is unavailable for this call",
-            exc_info=True,
+            "pipe_dashboard: the stored function row could not be read, so the "
+            "config revision is unknown; concurrent-edit protection is unavailable"
         )
-        return None
+    return rev
 
 
 async def _read_stored_valves(pipe_id: str) -> tuple[dict[str, Any] | None, bool]:

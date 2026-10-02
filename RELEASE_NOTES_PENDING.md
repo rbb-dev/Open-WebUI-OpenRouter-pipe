@@ -8,6 +8,36 @@
   happens whether or not `PIPE_DASHBOARD_ENABLE` is on, and it is per worker: on a multi-worker deployment the other workers release their own generation at
   their next hot reload, exactly as Open WebUI keeps its own per-worker function cache. The action route and the socket gate still refuse once the row is
   gone; nothing about the authorization answer changes.
+- **`/chat/completions`** — a streaming body the provider accepted and then lost is no longer re-sent.
+  The `/responses` leg already stopped re-POSTing one; the fallback leg did not, so the same shape cost
+  `1 + TRANSIENT_RETRY_MAX_ATTEMPTS` POSTs for a request OpenRouter had already accepted and begun
+  generating for. It now costs one, whatever frames the stream had published — visible or not — and the
+  fault crosses as `AcceptedResponseLostBody`, which every handler above the transport still reads as the
+  connection-class fault it has always seen. The rule is about whether the **body finished arriving**, not
+  about the exception class: a body that arrived whole and delivered nothing a reader could use is still
+  retried on the full budget and keeps its own class, and a connection that never reached the provider is
+  still retried. `DEFAULT_LLM_ENDPOINT` defaults to `responses`, so this is the fallback leg — reached by
+  `AUTO_FALLBACK_CHAT_COMPLETIONS`, by `FORCE_CHAT_COMPLETIONS_MODELS`, and by any deployment whose
+  `DEFAULT_LLM_ENDPOINT` is `chat_completions` — rather than the one most turns take.
+- **Streaming** — a frame the drop valve discarded no longer closes the retry barrier. With
+  `MIDDLEWARE_STREAM_QUEUE_MAXSIZE` above `0`, a full buffer used to discard the delta the pipe had just
+  published, and the streaming loop raised the retry barrier anyway — so a recoverable rejection right
+  after it ended the turn on a card, and the discarded text was lost with nothing on the wire to say so.
+  A frame the reader never received has not been published: the emit and the barrier now go through one
+  helper that reads the emitter's own delivery verdict, so such a turn is handed back and retried. The
+  direction that matters is unchanged — a frame the buffer *did* take still ends the turn, because a retry
+  would splice two attempts into the reader's message — and with streaming off `body.stream` still governs
+  the leg, since the non-streaming wrapper drops those frames before they leave the pipe.
+- **Session log** — a turn the pipe refused before sending is now archived as `error` instead of `complete`.
+  The seven pre-send refusals (Zero Data Retention routing in force with the model off the roster, the ZDR
+  endpoint list unreadable, an endpoint-override conflict from a preset or from Direct Uploads, a Fusion model
+  forced to `/chat/completions`, an attachment that would not load, and the operator's model restrictions)
+  return a card instead of raising, so the job's future resolved cleanly and the archive recorded a turn whose
+  chat holds nothing but a refusal card as a clean completion with no cause. The archived `reason` is the
+  pipe's own sentence naming the control that refused it, through the operator's own valve labels — not the
+  rendered card, which carries a generated error id and a timestamp that identify one message and nothing else.
+  The card the person sees is unchanged, and a turn that answered, that a plugin answered, or that the person
+  stopped is still archived as it was.
 - **Config tab** — a save the database refuses to write now raises a durable banner instead of a toast alone.
   The banner names the fault, carries no Reload control, and leaves your staged edits in place, so nothing the
   refusal preserved can be discarded from the tab that preserved it. It clears on the next successful save or
@@ -81,3 +111,12 @@
   `meta.capabilities`, so nothing about a model's checkboxes in the model editor changes. A third-party
   Open WebUI plugin importing the pipe and calling this one accessor would break; nothing inside this package
   does.
+- **Log redaction no longer copies the payload it removes** — a record or a debug payload carrying a
+  multi-megabyte picture now costs a few kilobytes to redact instead of a copy of the picture. The redaction
+  answers the same way as before — a run of 1024 or more base64 characters is still cut to 64 characters
+  with the same marker, and the prose around it is still left alone — but it reaches that answer by
+  reading spans and indices instead of materialising what it is removing: the `sub` replacement was built
+  from `match.group(0)`, which is the whole run; the guard asked `"data:" in text.lower()`, and `str.lower()`
+  copies; and `url_scheme` handed a multi-megabyte string with no colon in it to `urlsplit`, which copies it
+  to build a `path`. A record's redaction runs on whatever thread emitted it, so on a busy worker that copy
+  landed inside whatever else that thread was doing. Nothing an operator sees changes.
