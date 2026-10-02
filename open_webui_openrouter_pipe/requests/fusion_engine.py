@@ -56,6 +56,10 @@ def _member_refused_before_send() -> str:
     return "the pipe refused this member before sending its request, and did not say why"
 
 
+def _member_faulted_after_send() -> str:
+    return "the request was sent and the model call then failed"
+
+
 _LOG_DRAIN_TIMEOUT_SECONDS = 1.0
 _GENERATION_COMPLETE_DISPATCH_TIMEOUT_SECONDS = 5.0
 
@@ -317,10 +321,11 @@ async def run_fusion_member(
                 notices=tuple(collector.notices),
             )
         empty_result = not content.strip() or content == NO_CONTENT_AFTER_TOOLS_FALLBACK
+        faulted = bool(sink.get("error_occurred")) or bool(sink.get("member_ended_early"))
         failed = bool(sink.get("error_occurred")) or empty_result
         reason = sink.get("reason") if failed else None
-        if failed and empty_result and not isinstance(reason, str):
-            reason = "the model returned no answer"
+        if failed and not isinstance(reason, str):
+            reason = _member_faulted_after_send() if faulted else "the model returned no answer"
         return FusionMemberResult(
             model=model, content=content, usage=collector.usage,
             failed=failed, fail_reason=reason if isinstance(reason, str) else None,

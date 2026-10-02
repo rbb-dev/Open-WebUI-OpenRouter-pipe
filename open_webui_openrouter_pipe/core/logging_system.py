@@ -26,6 +26,7 @@ import time
 import traceback
 import uuid
 from collections import deque
+from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
@@ -71,6 +72,7 @@ class _SessionLogArchiveJob:
     terminal: bool = False
     status: str = ""
     reason: str = ""
+    publish_guard: Callable[[], bool] | None = None
 
 
 def _safe_message(record: logging.LogRecord) -> str:
@@ -769,13 +771,24 @@ class _Reservation:
             (self.out_dir / _ARCHIVE_CLAIM_SUFFIX).unlink()
 
 
-def _publish_archive(tmp_path: Path, out_path: Path, out_dir: Path) -> bool:
+def _publish_archive(
+    tmp_path: Path,
+    out_path: Path,
+    out_dir: Path,
+    *,
+    guard: Callable[[], bool] | None = None,
+) -> bool | None:
     with contextlib.suppress(OSError):
         fd = os.open(tmp_path, os.O_RDONLY)
         try:
             os.fsync(fd)
         finally:
             os.close(fd)
+
+    if guard is not None and not guard():
+        with contextlib.suppress(Exception):
+            tmp_path.unlink(missing_ok=True)  # type: ignore[arg-type]
+        return None
 
     try:
         os.replace(tmp_path, out_path)
@@ -1025,9 +1038,10 @@ def _write_session_log_archive_unclaimed(
             tmp_path.unlink(missing_ok=True)  # type: ignore[arg-type]
         return
 
-    if not _archive_publish_changed_file(
-        out_path, None, published=_publish_archive(tmp_path, out_path, out_dir)
-    ):
+    published = _publish_archive(tmp_path, out_path, out_dir, guard=job.publish_guard)
+    if published is None:
+        return
+    if not _archive_publish_changed_file(out_path, None, published=published):
         _report_archive_write_failed(
             f"session_log_archive_publish_failed:{out_path}",
             "The archive was not published; the staged events are not on disk in this "

@@ -93,6 +93,8 @@ The suite is organized by subsystem. Common entry points:
 - `tests/test_transform_messages.py`: history reconstruction/marker replay behavior.
 - `tests/test_pipe_guards.py`: admission controls, breakers, and runtime guards.
 - `tests/test_a_free_form_items_is_not_sealed_shut.py`: worked example of the probe-subprocess convention above — a real `open_webui` import, run from a session fixture over its own `TemporaryDirectory` under a file-scoped `pytest.mark.timeout`.
+- `tests/test_dashboard_socket_isolation.py`: worked example of the per-test reset convention — arms `dashboard_socket._get_pipe`/`._registered`/`._resync` and `http_routes._routes_get_pipe` in one test and reads them in the next, so conftest's `_reset_dashboard_socket_state` has a witness.
+- `tests/test_module_state_census.py`: the inventory of every module-level container the package writes, and why each is either reset per test or exempt — the guard that makes a new container a reviewed row rather than a silent leak.
 
 ---
 

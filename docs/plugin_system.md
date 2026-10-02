@@ -22,6 +22,7 @@
    - [on_emitter_wrap](#on_emitter_wrap)
    - [on_tool_result](#on_tool_result)
    - [on_request_retry](#on_request_retry)
+   - [on_request_alive](#on_request_alive)
    - [on_generation_complete](#on_generation_complete)
    - [on_shutdown](#on_shutdown)
 8. [Hook Dispatch Semantics](#hook-dispatch-semantics)
@@ -935,6 +936,38 @@ async def on_request_retry(self, kind, **kwargs):
 
 ---
 
+### `on_request_alive`
+
+```python
+async def on_request_alive(
+    self,
+    request_id: str = "",
+    **kwargs: Any,
+) -> None:
+```
+
+**When:** Fires once per `_PD_LIVENESS_INTERVAL_S` (60 s, a module constant in `pipe.py`) for every request the pipe's own request loop is still executing. It is the request loop's own heartbeat, not an event-driven stamp, so it fires on the streaming and the non-streaming path alike and is what keeps a slow non-streaming request -- or a reasoning-only stretch, whose deltas `streaming_core` consumes and never republishes -- from being swept as a failure after two hours of silence.
+
+**Extra kwargs:** none beyond the positional `request_id`; the signature is `request_id` plus `**kwargs` for forward compatibility.
+
+**Dispatch location:** `pipe.py`, from the per-request task started in `_execute_pipe_job` alongside `self._active_jobs[task] = job` and cancelled in that method's `finally`:
+```python
+await registry.dispatch_on_request_alive(job.request_id)
+```
+
+**Dispatch type:** **Void broadcast (observer)** -- same semantics as `on_tool_result` and `on_request_retry`: priority order, per-plugin `try/except`, plain `await` with no timeout. The dispatch is wrapped in the pipe's own `try/except` that logs at DEBUG, and the task is only started when the plugin system is enabled.
+
+**Return:** `None`. Observe only. The interval is deliberately not a valve: an operator who could set it above the two-hour abandon window would silently re-open the defect the heartbeat closes.
+
+**Example -- keep a liveness clock moving:**
+```python
+async def on_request_alive(self, request_id="", **kwargs):
+    # Refresh this request's observed-liveness stamp.
+    self._last_seen[request_id] = time.monotonic()
+```
+
+---
+
 ### `on_generation_complete`
 
 ```python
@@ -1020,6 +1053,7 @@ Each hook has a specific dispatch pattern:
 | `on_emitter_wrap` | **Chain/Wrap** | `callable \| None` | All subscribers run; each wraps or replaces the current emitter |
 | `on_tool_result` | **Void broadcast (observer)** | `None` | Observe one tool call the pipe ran in a batch; plain await, no timeout |
 | `on_request_retry` | **Void broadcast (observer)** | `None` | Observe one orchestrator retry decision; plain await, no timeout |
+| `on_request_alive` | **Void broadcast (observer)** | `None` | Observe that a request the pipe is still running is alive; plain await, no timeout |
 | `on_generation_complete` | **Void broadcast (observer)** | `None` | Observe the terminal state once per request; plain await, no timeout |
 | `on_shutdown` | **Always** | `None` | Called for all plugins (not subscription-based) |
 
@@ -1036,6 +1070,7 @@ All hooks accept `**kwargs` for forward compatibility. Extra keyword arguments a
 | `on_emitter_wrap` | `stream_emitter` | `raw_emitter`, `job_metadata`, `valves` |
 | `on_tool_result` | `tool_name`, `status` | `request_id`, `metadata` |
 | `on_request_retry` | `kind` | `request_id` |
+| `on_request_alive` | `request_id` | *(none currently)* |
 | `on_generation_complete` | `usage`, `status` | `request_id`, `metadata`, `task` |
 | `on_shutdown` | *(none)* | *(none currently)* |
 
@@ -1123,7 +1158,7 @@ for hook_name in _PR_SUBSCRIBABLE_HOOKS:
     self._hook_subscribers[hook_name] = subscribers
 ```
 
-Subscribable hooks: `on_models`, `on_request`, `on_request_transform`, `on_emitter_wrap`, `on_tool_result`, `on_request_retry`, `on_generation_complete`.
+Subscribable hooks: `on_models`, `on_request`, `on_request_transform`, `on_emitter_wrap`, `on_tool_result`, `on_request_retry`, `on_request_alive`, `on_generation_complete`.
 
 Lifecycle hooks (`on_init`, `on_shutdown`) are **not** subscription-based and always fire.
 
@@ -1259,7 +1294,7 @@ The plugin system is designed to never crash the pipe:
 | Hook dispatch throws | Request continues without plugin result | DEBUG |
 | Hook dispatch times out | Request continues after 30s timeout (transform/chain hooks only) | WARNING |
 
-The three transform/chain hooks — `on_request`, `on_request_transform`, and `on_emitter_wrap` — wrap each plugin call in `asyncio.wait_for()` with a 30-second timeout (`_PR_DISPATCH_TIMEOUT`) and `try/except`. `on_models` and the three observer hooks (`on_tool_result`, `on_request_retry`, `on_generation_complete`) are dispatched with a plain `await` and **no** timeout — they run on the hot path, so a hung observer is treated as a plugin bug rather than a guarded case (it is still isolated by the per-plugin `try/except`). The chain-dispatch shape:
+The three transform/chain hooks — `on_request`, `on_request_transform`, and `on_emitter_wrap` — wrap each plugin call in `asyncio.wait_for()` with a 30-second timeout (`_PR_DISPATCH_TIMEOUT`) and `try/except`. `on_models` and the four observer hooks (`on_tool_result`, `on_request_retry`, `on_request_alive`, `on_generation_complete`) are dispatched with a plain `await` and **no** timeout — they run on the hot path, so a hung observer is treated as a plugin bug rather than a guarded case (it is still isolated by the per-plugin `try/except`). The chain-dispatch shape:
 
 ```python
 # Example from registry.py — dispatch_on_request (a timeout-guarded hook)

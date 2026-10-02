@@ -176,7 +176,7 @@ from .core.warn_latch import warn_level
 from .integrations.anthropic import _is_anthropic_model_id
 
 # Import logging
-from .logging.session_log_manager import SessionLogManager
+from .logging.session_log_manager import SessionLogManager, resolve_message_id
 
 # Import model management
 from .models.catalog_manager import ModelCatalogManager, every_web_tool_is_off
@@ -388,6 +388,8 @@ _VALVE_DRAIN_MAX_FLUSHES = 64
 _TOOL_THREAD_CAP: int = 8
 
 _TOOL_CANCEL_GRACE_SECONDS: float = 5.0
+
+_PD_LIVENESS_INTERVAL_S: float = 60.0
 
 
 def _tool_thread_workers(handler: Any) -> int:
@@ -672,6 +674,7 @@ class _PipeJob:
     continued_reply: str | None = None
     counter_state: dict[str, bool] | None = None
     admission_refused: bool = False
+    liveness_task: asyncio.Task[None] | None = None
 
     @property
     @timed
@@ -2802,6 +2805,29 @@ class Pipe:
                 with contextlib.suppress(RuntimeError):
                     job.future.cancel()
 
+    def _start_liveness_heartbeat(self, job: _PipeJob) -> asyncio.Task[None] | None:
+        registry = self._plugin_registry
+        if registry is None or not self.valves.ENABLE_PLUGIN_SYSTEM:
+            return None
+        request_id = job.request_id
+
+        async def _tick() -> None:
+            while True:
+                await asyncio.sleep(_PD_LIVENESS_INTERVAL_S)
+                try:
+                    await registry.dispatch_on_request_alive(request_id)
+                except Exception:
+                    self.logger.debug(
+                        "Liveness heartbeat dispatch failed (request_id=%s)",
+                        request_id,
+                        exc_info=True,
+                    )
+
+        try:
+            return asyncio.get_running_loop().create_task(_tick())
+        except RuntimeError:
+            return None
+
     def _abandon_request_queue(self) -> None:
         queue = self._request_queue
         self._request_queue = None
@@ -3357,6 +3383,7 @@ class Pipe:
 
                 active = job.pipe._active_jobs
                 active[task] = job
+                job.liveness_task = job.pipe._start_liveness_heartbeat(job)
 
                 def _mark_done(_task: asyncio.Task, q=queue,
                                _active: dict[asyncio.Task[None], _PipeJob] = active,
@@ -3411,6 +3438,7 @@ class Pipe:
         completed = False
         deferred_result: Any = None
         permit_handed_to_manager = False
+        live_turn: tuple[str, str] = ("", "")
         if permit_handoff is not None:
             permit_handoff.claim()
         try:
@@ -3444,6 +3472,11 @@ class Pipe:
             permit_handed_to_manager = True
             async with self._acquire_semaphore(semaphore, job.request_id, held=semaphore_held):
                 tokens = self._apply_logging_context(job)
+                live_turn = (
+                    str(job.metadata.get("chat_id") or ""),
+                    resolve_message_id(job.metadata),
+                )
+                self._session_log_manager._note_turn_started(*live_turn)
                 session = await self._shared_request_session(job.valves)
                 tokens.append(
                     (ModelFamily._PIPE_ID, ModelFamily._PIPE_ID.set(self.id))
@@ -3561,6 +3594,11 @@ class Pipe:
         finally:
             if semaphore_held and not permit_handed_to_manager:
                 _release_permit(semaphore)
+            liveness_task = job.liveness_task
+            if liveness_task is not None:
+                job.liveness_task = None
+                liveness_task.cancel()
+            self._session_log_manager._note_turn_finished(*live_turn)
             session_rid = SessionLogger.request_id.get() or ""
             try:
                 _drop_backlog_latch(job.request_id)
@@ -3578,7 +3616,6 @@ class Pipe:
                     if fallback_events:
                         status, reason = _backstop_session_log_status(outcome, job.future)
 
-                        from .logging.session_log_manager import resolve_message_id
                         resolved_user_id = str(job.user_id or job.user.get("id") or job.metadata.get("user_id") or "")
                         resolved_session_id = str(job.session_id or job.metadata.get("session_id") or "")
                         resolved_chat_id = str(job.metadata.get("chat_id") or "")

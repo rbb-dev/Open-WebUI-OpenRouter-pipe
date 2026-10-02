@@ -5788,21 +5788,24 @@ class _FakeEngine:
 
 
 def _rows_from_insert(stmt: Any) -> list[dict[str, Any]] | None:
-    """The rows a chunked dialect ``INSERT`` carries, or ``None`` for any other statement.
+    """The rows a dialect ``INSERT`` carries, or ``None`` for any other statement.
 
     ``_db_persist_sync`` writes a chunk through a conflict-tolerant insert on sqlite and
     postgresql, and ``_try_acquire_lock_sync`` through a single-row one; both reach this
-    stand-in's ``execute``. Only the chunked form is recognised: it compiles to one flat
-    parameter dict whose keys carry a ``_m<N>`` row suffix, which is what this reassembles.
-    A single-row ``values(**kwargs)`` has no such suffix and is left to the caller's
-    default, so the lock path keeps reporting one row acquired.
+    stand-in's ``execute``. The chunked form compiles to one flat parameter dict whose keys
+    carry a ``_m<N>`` row suffix, which is what the first branch reassembles. The single-row
+    ``values(**kwargs)`` has no such suffix and arrives as one unsuffixed dict, which is one
+    row -- and the lock row has to be stored, not just counted as acquired: a pass that
+    acquires a lock the table never received is holding nothing, and a production check that
+    re-reads its own lock row at the moment of publish would (correctly) refuse to publish
+    under a lock this stand-in invented.
     """
     compiled = getattr(stmt, "compile", lambda: None)()
     params = getattr(compiled, "params", None)
     if not isinstance(params, dict) or not params:
         return None
     if not any(re.search(r"_m\d+$", name) for name in params):
-        return None
+        return [dict(params)]
     rows: dict[int, dict[str, Any]] = {}
     for name, value in params.items():
         row_index = int(name.rsplit("_m", 1)[1])

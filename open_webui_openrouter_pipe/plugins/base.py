@@ -209,6 +209,13 @@ class PluginBase:
         Extra kwargs: ``request_id`` — the pipe's per-request id.
         """
 
+    async def on_request_alive(
+        self,
+        request_id: str = "",
+        **kwargs: Any,
+    ) -> None:
+        pass
+
     # Async void dispatch — observe the terminal state of a request.
     async def on_generation_complete(
         self,

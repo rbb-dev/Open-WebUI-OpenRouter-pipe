@@ -68,7 +68,12 @@ The Live tab shows the in-flight and recently-completed requests across every wo
 
 - User and model. The model column shows display names and toggles to model slugs.
 - A status badge: `queued`, `streaming`, `tool:<name>`, `completed`, `failed`, or `cancelled`.
-- Elapsed time, tool success and failure counts, tokens (in → cached → out), cost, and the worker PID.
+- Elapsed time, tool success and failure counts, tokens (in → cached → out), cost, and the worker PID. Every tool
+  call the pipe settles is counted once, whichever path settled it: a call the round refuses before it runs — the
+  breaker, an unknown tool, arguments that did not parse, an entry with no callable, the Open-WebUI-owned skip — is
+  counted as the refusal it was (`skipped` or `failed`), not left out of all three counters as it used to be. The
+  count carries the status the refusal was decided with, not the word the tool output carries to the model, because
+  that word is normalised to the wire vocabulary and would count as nothing.
 
 Cost updates live as the request runs; the completed row shows the final cost. Task-model calls — titles, tags, follow-ups — fold their cost into their parent chat's row: the turn that was already running when the task started.
 
@@ -92,7 +97,7 @@ Select a range: 1h, 6h, 24h, 7d, or 30d. Ranges longer than the retention window
 
 **Invoice note.** Task models configured outside this pipe never reach it, so they are absent from these totals. Expect a small gap against the OpenRouter invoice when such task models are in use.
 
-A request that is still running and producing liveness signals when the two-hour sweep passes is recorded by whoever really ends it, so its status, duration and token counts are the real ones. Streaming requests refresh the liveness stamp on every chunk. A non-streaming request that runs a tool call, or whose provider call retries, refreshes it too and is likewise spared: the sweep abandons a non-streaming request only when it has produced no liveness signal at all in two hours. A non-streaming request with no tool activity and no retry is still abandoned as a failure after two hours — that case is not covered here. The sweep runs on a timer of its own, so this happens whether or not the dashboard is open.
+A request that is still running and producing liveness signals when the two-hour sweep passes is recorded by whoever really ends it, so its status, duration and token counts are the real ones. Streaming requests refresh the liveness stamp on every chunk. A non-streaming request that runs a tool call, or whose provider call retries, refreshes it too and is likewise spared: the sweep abandons a non-streaming request only when it has produced no liveness signal at all in two hours. A non-streaming request with no tool activity and no retry is spared too: the pipe tells its observer the request is still alive once a minute for as long as its own request loop is executing it, so the sweep does not mistake a slow but running request for an abandoned one. What is abandoned is a request the pipe is genuinely no longer running and which has also stopped emitting. The sweep runs on a timer of its own, so this happens whether or not the dashboard is open.
 
 The Usage tables sort on any column and have a filter box.
 

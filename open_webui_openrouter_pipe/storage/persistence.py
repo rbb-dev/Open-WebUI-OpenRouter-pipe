@@ -1813,6 +1813,8 @@ class ArtifactStore:
                     elif needs_encryption:
                         raw_payload = payload if isinstance(payload, dict) else {}
                         stored_payload, is_encrypted = self._encrypt_if_needed(row.get("item_type", ""), raw_payload)
+                        row["payload"] = stored_payload
+                        row["is_encrypted"] = is_encrypted
                     instances.append(
                         self._item_model(  # type: ignore[call-arg]
                             id=ulid,

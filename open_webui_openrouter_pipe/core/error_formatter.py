@@ -148,9 +148,10 @@ def _transported_failure_response(
     if retry_after_seconds is not None:
         error["retry_after_seconds"] = retry_after_seconds
         headers["Retry-After"] = str(int(retry_after_seconds))
+    status = code if isinstance(code, int) and not isinstance(code, bool) and 400 <= code <= 599 else 400
     return StreamingResponse(
         iter([json.dumps({"error": error}).encode("utf-8")]),
-        status_code=400,
+        status_code=status,
         media_type="application/json",
         headers=headers,
     )

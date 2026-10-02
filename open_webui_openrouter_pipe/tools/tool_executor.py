@@ -645,14 +645,23 @@ class ToolExecutor:
         owned_by_open_webui = self._open_webui_owned_names(context, tools)
         breaker_skips: list[tuple[str, str | None]] = []
 
-        async def _append_and_notify(index: int, call: dict, result: dict) -> None:
+        async def _append_and_notify(index: int, call: dict, result: dict, status: str) -> None:
             slots[index] = result
             if _on_complete:
                 with contextlib.suppress(Exception):
                     await _on_complete(call, result)
+            await self._pipe._dispatch_plugin_event(
+                "dispatch_on_tool_result",
+                str(resolved_tool_name(call) or "?"),
+                status,
+                request_id=context.request_id,
+                metadata=context.metadata or {},
+            )
 
         async def _refuse(index: int, call: dict, text: str) -> None:
-            await _append_and_notify(index, call, self._build_tool_output(call, text, status="failed"))
+            await _append_and_notify(
+                index, call, self._build_tool_output(call, text, status="failed"), "failed"
+            )
 
         for index, call in enumerate(calls):
             tool_name = resolved_tool_name(call)
@@ -681,7 +690,7 @@ class ToolExecutor:
                         call,
                         f"Tool '{tool_name}' skipped: {OPEN_WEBUI_OWNS_SKIPPED_REASON}",
                         status="incomplete",
-                    ))
+                    ), "incomplete")
                     continue
                 await _refuse(index, call, f'Error: Tool "{tool_name}" not found.')
                 continue
@@ -701,7 +710,7 @@ class ToolExecutor:
                     call,
                     f"Tool '{call.get('name')}' skipped due to repeated failures.",
                     status="skipped",
-                ))
+                ), "skipped")
                 continue
             fn = tool_cfg.get("callable")
             if fn is None:
@@ -709,7 +718,7 @@ class ToolExecutor:
                     call,
                     f"Tool '{call.get('name')}' has no callable configured.",
                     status="failed",
-                ))
+                ), "failed")
                 continue
             if context.tool_call_budget is not None:
                 if context.tool_call_budget <= 0:
@@ -717,7 +726,7 @@ class ToolExecutor:
                         call,
                         f"Tool '{call.get('name')}' skipped: fusion tool budget exhausted.",
                         status="skipped",
-                    ))
+                    ), "skipped")
                     continue
                 context.tool_call_budget -= 1
 
@@ -1019,7 +1028,6 @@ class ToolExecutor:
         Args:
             call: Original tool call dict
             output_text: Tool output or error message
-            status: Execution status (completed, failed, skipped, etc.)
             files: Optional list of extracted files (images, audio, etc.)
             embeds: Optional list of HTML embed strings
 

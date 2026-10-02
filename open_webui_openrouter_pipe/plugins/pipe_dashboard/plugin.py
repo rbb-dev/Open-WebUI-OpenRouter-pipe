@@ -157,6 +157,7 @@ class PipeDashboardPlugin(PluginBase):
         "on_emitter_wrap": 50,
         "on_tool_result": 50,
         "on_request_retry": 50,
+        "on_request_alive": 50,
         "on_generation_complete": 50,
     }
     plugin_valves: ClassVar[dict[str, tuple]] = {
@@ -607,6 +608,14 @@ class PipeDashboardPlugin(PluginBase):
     async def on_request_retry(self, kind: str, **kwargs: Any) -> None:
         try:
             self._tracker.retry(str(kwargs.get("request_id") or ""))
+        except (AttributeError, KeyError, TypeError, ValueError):
+            pass
+
+    async def on_request_alive(self, request_id: str = "", **kwargs: Any) -> None:
+        try:
+            if not _dashboard_observability_needed(getattr(getattr(self, "ctx", None), "valves", None)):
+                return
+            self._tracker.mark_stream_alive(str(request_id or ""))
         except (AttributeError, KeyError, TypeError, ValueError):
             pass
 

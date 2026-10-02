@@ -492,10 +492,31 @@ class SessionLogManager:
         self._archive_queue_drops: int = 0
         self._temporary_chat_sweep_at: float = 0.0
         self._ownership_skips: dict[str, float] = {}
+        self._live_turns: dict[tuple[str, str], float] = {}
 
     @property
     def _assembly_failures(self) -> dict[tuple[str, str], float]:
         return self._assembler_recent_failures
+
+    def _live_turn_keys(self) -> tuple[tuple[str, str], ...]:
+        with self._lock:
+            return tuple(self._live_turns)
+
+    def _note_turn_started(self, chat_id: str, message_id: str) -> None:
+        key = (str(chat_id or ""), str(message_id or ""))
+        if not (key[0] and key[1]):
+            return
+        with self._lock:
+            self._live_turns[key] = time.monotonic()
+            limit = max(int(getattr(self.valves, "MAX_CONCURRENT_REQUESTS", 0) or 0) + 2, 2)
+            while len(self._live_turns) > limit:
+                oldest = min(self._live_turns, key=lambda item: self._live_turns[item])
+                self._live_turns.pop(oldest, None)
+
+    def _note_turn_finished(self, chat_id: str, message_id: str) -> None:
+        key = (str(chat_id or ""), str(message_id or ""))
+        with self._lock:
+            self._live_turns.pop(key, None)
 
     def set_artifact_store(self, artifact_store: ArtifactStore) -> None:
         """Set the artifact store reference."""
@@ -1310,11 +1331,12 @@ class SessionLogManager:
     ) -> list[tuple[str, str]]:
         from ..storage.owui_files import is_temporary_chat
 
+        set_aside = tuple(exclude) + self._live_turn_keys()
         cutoff = datetime.datetime.now(datetime.UTC).replace(tzinfo=None) - datetime.timedelta(seconds=float(stale_finalize_seconds))
         rows: list[Any] = []
         offered: list[tuple[str, str]] = []
         held: list[tuple[str, str]] = []
-        _page = int(limit)
+        _page = int(limit) + len(set_aside)
         while True:
             try:
                 # Candidates (best effort): any message that has at least one segment.
@@ -1330,15 +1352,15 @@ class SessionLogManager:
                         .having(func.max(model.created_at) < cutoff)  # type: ignore[attr-defined]
                         .having(terminal_count == 0)  # type: ignore[attr-defined]
                     )
-                    if exclude:
-                        query = query.having(_set_aside_predicate(model, exclude))
+                    if set_aside:
+                        query = query.having(_set_aside_predicate(model, set_aside))
                     rows = (
                         query
                         .order_by(func.max(model.created_at).asc())  # type: ignore[attr-defined]
                         .limit(_page)
                         .all()
                     )
-                offered, held = _window_rows(rows, exclude, is_temporary_chat, limit)
+                offered, held = _window_rows(rows, set_aside, is_temporary_chat, limit)
             except Exception as exc:
                 self.logger.debug("Stale message listing skipped — %s: %s", type(exc).__name__, exc, exc_info=True)
                 return []
@@ -1666,6 +1688,43 @@ class SessionLogManager:
         with contextlib.suppress(Exception):
             self._artifact_store._delete_artifacts_sync([*(ids or []), lock_id])  # type: ignore[union-attr]
 
+    def _assembly_lock_is_ours(
+        self,
+        model: Any,
+        session_factory: Any,
+        lock_id: str,
+        claimed_at: float,
+    ) -> bool:
+
+        try:
+            with _db_session(session_factory) as session:
+                row = (
+                    session.query(model.payload)  # type: ignore[attr-defined]
+                    .filter(model.id == lock_id)  # type: ignore[attr-defined]
+                    .first()
+                )
+        except Exception as exc:
+            self.logger.debug(
+                "Session log assembly lock ownership re-read failed for lock_id=%s: %s",
+                lock_id, type(exc).__name__, exc_info=True,
+            )
+            return False
+        if not row:
+            return False
+        payload = row[0]
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except (TypeError, ValueError):
+                return False
+        if not isinstance(payload, dict):
+            return False
+        try:
+            found = float(payload.get("claimed_at"))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return False
+        return found == float(claimed_at)
+
     @timed
     def _assemble_and_write_bundle(
         self,
@@ -1717,6 +1776,15 @@ class SessionLogManager:
         # to avoid noisy duplicate key errors in multi-worker environments
         if not self._artifact_store._try_acquire_lock_sync(lock_row):
             return _LOCK_CONTENDED
+
+        claimed_at = float(lock_row["payload"]["claimed_at"])
+        publish_refused: list[bool] = []
+
+        def _publish_guard() -> bool:
+            held = self._assembly_lock_is_ours(model, session_factory, lock_id, claimed_at)
+            if not held:
+                publish_refused.append(True)
+            return held
 
         ids: list[str] = []
         stamps: dict[str, Any] = {}
@@ -1972,6 +2040,7 @@ class SessionLogManager:
                 terminal=terminal,
                 status=resolved_status,
                 reason=resolved_reason,
+                publish_guard=_publish_guard,
             )
             if not self.valves.SESSION_LOG_STORE_ENABLED:
                 self.logger.log(
@@ -2005,6 +2074,22 @@ class SessionLogManager:
                     exc_info=True,
                 )
                 return False
+
+            if publish_refused:
+                self._restore_touched_stamps(model, session_factory, stamps, list(ids), chat_id, message_id)
+                self.logger.log(
+                    warn_level(
+                        self._unreadable_archive_warnings,
+                        f"session_log_lock_contended_at_publish:{chat_id}:{message_id}",
+                        cooldown_s=3600.0,
+                    ),
+                    "Session log archive for chat_id=%s message_id=%s was abandoned at the moment of "
+                    "publish: this pass no longer holds the turn's assembly lock, so another worker owns "
+                    "the bundle and its archive is the one on disk. Nothing was published and the staged "
+                    "segments are kept for that pass.",
+                    chat_id, message_id,
+                )
+                return _LOCK_CONTENDED
 
             wrote = _archive_publish_changed_file(out_path, before_stat)
             if self.logger.isEnabledFor(logging.DEBUG):

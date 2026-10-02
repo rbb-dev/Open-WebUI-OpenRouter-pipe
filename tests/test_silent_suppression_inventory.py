@@ -70,7 +70,7 @@ _EXPECTED: dict[str, int] = {
     # Wraps only the diagnostic itself: the workaround must not fail a request because
     # its own logging failed, and it runs before any pipe module exists.
     "../scripts/anyio_1111_workaround.py": 1,
-    "core/logging_system.py": 3,
+    "core/logging_system.py": 4,
     # 1st: the drain cap in `_drop_member_log_buffer`, which waits for the pipe's own log
     # worker to turn a member's queued records into buffers before the member's key is
     # dropped. A wedged or absent worker must not hang a member's teardown, and the pop
@@ -88,6 +88,13 @@ _EXPECTED: dict[str, int] = {
     # `finally` runs while the cancellation is unwinding, and the release that follows
     # must happen on that path too -- the close is the better answer to a cross-loop
     # close than a second orphan.
+    # 3rd: `_archive_publish_changed_file`'s `stat()` after the write, whose only
+    # consequence is falling back to "unchanged", i.e. keeping the rows.
+    # 4th: unlinking the finished temporary archive when the publish-time ownership guard
+    # refuses, so a pass that abandoned its write leaves no full archive on disk under a
+    # name the reader would take for the turn's. A refusal must not be able to raise out
+    # of the writer, which swallows its own failures by contract, and an unlink that fails
+    # is reaped by the same cleanup sweep either way.
     "requests/fusion_engine.py": 2,
     # 7th: the cost snapshot, now one guarded helper reached from all three exits. A job
     # OpenRouter has already billed for is recorded whatever the pipe does with the

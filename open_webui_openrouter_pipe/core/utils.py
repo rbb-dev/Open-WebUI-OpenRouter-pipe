@@ -699,7 +699,9 @@ def _render_error_template(template: str, values: dict[str, Any]) -> str:
         remainder = line[len(line_prefix) :]
 
         def _emit(text: str, prefix: str = line_prefix) -> None:
-            rendered_lines.extend(prefix + row for row in text.split("\n"))
+            rendered_lines.extend(
+                prefix + row if row else prefix.rstrip() for row in text.split("\n")
+            )
 
         if any(
             f"{{{name}}}" in line and not _template_value_present(value)

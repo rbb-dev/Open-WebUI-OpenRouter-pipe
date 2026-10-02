@@ -752,6 +752,153 @@ def _reset_filter_pass_accumulators():
         accumulator.clear()
 
 
+_DASHBOARD_SOCKET_MODULES = (
+    ("open_webui_openrouter_pipe.plugins.pipe_dashboard.dashboard_socket",
+     ("_get_pipe", "_registered", "_resync")),
+    ("open_webui_openrouter_pipe.plugins.pipe_dashboard.http_routes",
+     ("_routes_get_pipe",)),
+)
+_DASHBOARD_SOCKET_UNSET = {"_get_pipe": None, "_registered": False, "_resync": False,
+                           "_routes_get_pipe": None}
+
+
+@pytest.fixture(autouse=True)
+def _reset_dashboard_socket_state():
+    """Put back the four process-wide singletons the socket gates and the action route read.
+
+    `_get_pipe`, `_registered` and `_resync` in `dashboard_socket`, and their twin
+    `_routes_get_pipe` in `http_routes`, are module globals. Nothing in the package
+    clears them, which is right for a live worker -- a socket gate must stay bound to the
+    pipe it was bound to -- and wrong for a test process, where the bound pipe is drained
+    and closed by the time the next test runs. Six test files write these four; five
+    carry a per-file save/restore, and the one that does not
+    (`test_a_refused_update_write_leaves_one_live_pipe.py`) calls both public setters, so
+    its getter is the answer every later test in that worker reads.
+    `tests/test_dashboard_socket_isolation.py` arms and reads; it is the witness.
+
+    `_routes_get_pipe` is in scope because the SAME call
+    (`UpdateService._install_revived_getters`) writes it and `_get_pipe`. Repairing one
+    half leaves the twin armed for the same test.
+
+    `_teardown_epoch` is deliberately NOT reset. `set_pipe_getter` and
+    `clear_fresh_dispatch` both increment it, and its whole job is to be monotonic ACROSS
+    a teardown: zeroing it per test makes a reconcile arm computed under one test read as
+    un-armed under the next, and
+    `tests/test_a_reconcile_that_overlaps_a_teardown_publishes_nothing.py` depends on the
+    real semantics. Resetting it to `True`-ish is the other trap: `_registered` is
+    restored, never re-armed.
+
+    Save/restore rather than reset-to-default at teardown: a bundle may have set
+    `_registered = True` at import, and clobbering that breaks the bundle tier. BOTH ends,
+    as `_reset_package_caches` records: the setup end discards whatever a finalizer
+    ordering put back, the teardown end stops this test's arm poisoning the next.
+
+    Resolved through `sys.modules` and skipped when absent, the shape
+    `_reset_stub_chat_files` already uses: a no-plugins bundle omits
+    `plugins/pipe_dashboard` entirely, and a bare import here would be a collection
+    error in the one mode that has no dashboard to reset.
+
+    This covers the `bool`/`bool`/`Any` globals only. The module-level CONTAINERS in
+    these same modules are a separate defect with a separate reset --
+    `_reset_module_state_containers` -- and the census in
+    `tests/test_module_state_census.py` inventories those. That census cannot see these
+    four: its declaration shape admits only mutable containers, and a reader looking for
+    a fourth global beside these three finds nothing to complain about. Neither guard
+    covers the other, which is why both exist.
+    """
+    saved = [
+        (sys.modules[name], attr, getattr(sys.modules[name], attr))
+        for name, attrs in _DASHBOARD_SOCKET_MODULES
+        if name in sys.modules
+        for attr in attrs
+    ]
+    for name, attrs in _DASHBOARD_SOCKET_MODULES:
+        module = sys.modules.get(name)
+        if module is None:
+            continue
+        for attr in attrs:
+            setattr(module, attr, _DASHBOARD_SOCKET_UNSET[attr])
+    yield
+    for module, attr, original in saved:
+        setattr(module, attr, original)
+
+
+_MODULE_STATE_CONTAINERS = (
+    ("open_webui_openrouter_pipe.core.timing_logger", "_timing_events"),
+    ("open_webui_openrouter_pipe.core.logging_system", "_ARCHIVE_CLAIMS"),
+    ("open_webui_openrouter_pipe.core.valve_salvage", "_VALVE_SCHEMA_CACHE"),
+    ("open_webui_openrouter_pipe.filters.filter_manager", "_PIPE_OFF_LANDED_AT"),
+    ("open_webui_openrouter_pipe.filters.filter_manager", "_REFUSED_FILTER_WRITES"),
+    ("open_webui_openrouter_pipe.plugins.pipe_dashboard.actions", "_rate_state"),
+    ("open_webui_openrouter_pipe.plugins.pipe_dashboard.actions", "_config_write_locks"),
+    ("open_webui_openrouter_pipe.plugins.pipe_dashboard.http_routes", "_coarse_state"),
+    ("open_webui_openrouter_pipe.plugins.pipe_dashboard.usage_queries", "_UQ_MEMO"),
+)
+
+
+@pytest.fixture(autouse=True)
+def _reset_module_state_containers():
+    """Empty every module-level container the package writes, at BOTH ends of every test.
+
+    A container is one worker's answer, not this test's, and the package never clears
+    them -- right for a live worker, wrong for a test process. The nine here are the
+    rows `tests/test_module_state_census.py` lists as reset rather than exempt: the
+    timing buffer, the archive claim table, the stored-valve schema cache, the two
+    filter-manager latches, both dashboard rate limiters, the per-pipe config write
+    locks, and the usage query memo.
+
+    `_coarse_state` and `_rate_state` are the pair the census exists for. Both key on
+    `time.monotonic()`, and the suite's stub clocks run at 1000.0 -- hours behind the
+    real clock -- so an entry armed under the real clock and read under a stub makes
+    `now - last` NEGATIVE, the "too soon" branch is taken, and the FIRST call for a
+    user this worker has never served is refused. Nothing goes red: the limiter simply
+    declines work for a reason its caller cannot see.
+    `tests/test_a_module_state_does_not_outlive_its_test.py` drives that arm.
+
+    BOTH ends, for the reason `_reset_package_caches` records: the teardown stops this
+    test's arm poisoning the next one, and the setup discards anything a finalizer
+    ordering put back afterwards.
+
+    Deliberately NOT cleared by THIS fixture: the import-time action registry, the
+    named-latch registry, the monotone registration-path set, and the cooldown latches
+    their own readers age out. A blanket "clear every module-level mutable" sweep would
+    take all of those with the nine, plus the ~82 read-only constant tables, which is
+    why each exclusion and its reason is written down IN THE CENSUS rather than here:
+    naming a container in this docstring would make the census read it as a name
+    conftest resets, and a row that says "nobody looks after this" while something else
+    silently clears it is exactly the duplicate the census exists to name.
+
+    The package's lazy-import memo and the self-draining pending-emit set were on that
+    list once and are not any more: `_reset_package_process_state` above clears both at
+    both ends of every test, for the reach analysis it gives in
+    `_clear_package_process_state`. Two fixtures, one reset each, is the split that file
+    and this one already keep for the socket singles below.
+
+    Resolved through `sys.modules` and skipped when absent, the shape
+    `_reset_warn_latches` uses: a module no test imported has no container to clear,
+    and a no-plugins bundle has no `plugins/pipe_dashboard` at all. The census, not
+    this fixture, is what covers a container in a module nothing imported.
+
+    It cannot reach the four SINGLES in `_reset_dashboard_socket_state` above, and that
+    is the split between the two fixtures: `dashboard_socket._get_pipe`/`._registered`/
+    `._resync` and `http_routes._routes_get_pipe` are a bool, a bool and two `Any`, and
+    this census admits only containers. Reading one list for the other is how a fourth
+    global beside those three would arrive unaccounted for.
+    """
+    def _clear() -> None:
+        for module_name, attr in _MODULE_STATE_CONTAINERS:
+            module = sys.modules.get(module_name)
+            if module is None:
+                continue
+            container = getattr(module, attr, None)
+            if isinstance(container, (set, dict, list)):
+                container.clear()
+
+    _clear()
+    yield
+    _clear()
+
+
 def _clear_stub_task_models() -> None:
     """Empty the Open WebUI Config stub's Task Model rows.
 

@@ -3225,6 +3225,8 @@ class StreamingHandler:
                     if not fusion_inner_call:
                         session_log_reason = _STREAM_INTERRUPTED_REASON
                     if fusion_inner_call:
+                        if outcome_sink is not None:
+                            outcome_sink["member_ended_early"] = True
                         self.logger.warning("Stream ended without completion event for model=%s", body.model)
                         if event_emitter:
                             await self._pipe._event_emitter_handler._emit_completion(

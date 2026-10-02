@@ -1659,7 +1659,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     )
     ENCRYPT_ALL: bool = Field(
         default=True,
-        description="Encrypt every persisted artifact when ARTIFACT_ENCRYPTION_KEY is set. When False, only reasoning tokens are encrypted. This decides what is written; a row already stored encrypted stays encrypted, and the replay cache keeps it encrypted, whatever this is set to. If ARTIFACT_ENCRYPTION_KEY is set but cannot be decrypted after a rotation of `WEBUI_SECRET_KEY`, or the deprecated `WEBUI_JWT_SECRET_KEY` it falls back to (a default, so an empty primary is not a fallback), the pipe stops writing artifacts rather than storing them in the clear; that refusal is armed by a stored row that still looks like a Fernet token and will not open, so a plain-JSON valve row, which is what an install with Open WebUI's ENABLE_VALVE_ENCRYPTION at its default has, never arms it, and the person in the chat is told once, on the turn it happens, that the items will be missing from later turns.",
+        description="Encrypt every persisted artifact when ARTIFACT_ENCRYPTION_KEY is set. When False, only reasoning tokens are encrypted. This decides what is written; a row already stored encrypted stays encrypted, whatever this is set to. The replay cache is written in the form the row was stored in, on the buffered flush as well as on a read, so the one window in which a clear copy of a row the table holds sealed can exist is the write-behind queue's own residency before the flush. If ARTIFACT_ENCRYPTION_KEY is set but cannot be decrypted after a rotation of `WEBUI_SECRET_KEY`, or the deprecated `WEBUI_JWT_SECRET_KEY` it falls back to (a default, so an empty primary is not a fallback), the pipe stops writing artifacts rather than storing them in the clear; that refusal is armed by a stored row that still looks like a Fernet token and will not open, so a plain-JSON valve row, which is what an install with Open WebUI's ENABLE_VALVE_ENCRYPTION at its default has, never arms it, and the person in the chat is told once, on the turn it happens, that the items will be missing from later turns.",
     )
     ENABLE_LZ4_COMPRESSION: bool = Field(
         default=True,
@@ -1903,25 +1903,28 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         description=(
             "If a message has staged session-log segments but never signals that it finished "
             "(the worker crashed or was killed), finalize an incomplete zip after this many seconds since the last piece. "
-            "This is a cutoff on the last segment, not on the turn: a turn still running when it passes is sealed as "
-            "incomplete too, and a segment it stages afterwards is left stranded until the next assembly, unless it lands before "
+            "This is a cutoff on the last segment, and it applies only to a turn that is not running: a turn the pipe is still "
+            "executing is held off the stale listing entirely, so a slow but live turn is never sealed and its staged rows are never "
+            "consumed. A segment a still-running turn stages is picked up by a later pass. That set is per-process, so on an install with "
+            "more than one worker another worker's pass can still seal a turn that is running here. What remains exposed is a turn "
+            "whose worker died, and that exposure is why the default is long. "
+            "Otherwise the same carve-out applies, unless a segment lands before "
             "the sealing pass has read that turn's segments - a pass that finds a terminal segment among the rows it loaded writes the "
             "turn complete instead; one that lands after that read is not folded into that archive by that pass and is "
             "picked up by a later one, unless the archive already records that turn as finished - "
             "a segment that lands after that read on a turn whose archive already records the turn as "
             "finished is folded in by that same pass, which writes the turn complete rather than sealing it "
-            "again and also preserves the outcome that archive already recorded. That "
-            "exposure is why the default is long. Each pass takes the oldest stranded bundles first and seals a "
+            "again and also preserves the outcome that archive already recorded. Each pass takes the oldest stranded bundles first and seals a "
             "bundle only if the sealed write succeeds, keeping the segments for a retry otherwise."
             "The incomplete marker is written at most once per archive: a pass that finds the turn still stale re-stamps that one marker "
             "rather than adding another - only its count is stable, and its timestamp is the last such pass - and a pass that finds the turn complete retires it. "
-            "**Warning:** The minimum is `300` seconds (five minutes): a lower value is refused when the configuration is saved, and a stored one that no longer validates falls back to the default rather than being raised to it."
+            "**Warning:** The minimum is `300` seconds (five minutes): a lower value is refused when the configuration is saved, and a stored one that no longer validates falls back to the default rather than being raised to it. Lowering it toward that floor makes the remaining exposure routine rather than rare, because a turn that outlives the window between two of its segments is then sealed by the next pass."
         ),
     )
     SESSION_LOG_LOCK_STALE_SECONDS: int = Field(
         default=1800,
         ge=60,
-        description="Stale lock timeout (seconds) for DB-backed session log assembly locks; stale locks are reclaimed. It is also the write-failure backoff: a bundle whose archive could not be written is skipped for this long before it is retried, so one bundle the pipe cannot write does not hold the window. The one carve-out is the stranded-turn rescue: a turn whose existing archive could not be read is exempt from the backoff only while its own three-strike rescue budget lasts, and once that budget is spent it is set aside for this interval like any other bundle the pipe could not write. A turn whose rows were rescued to a separate archive is exempt on the pass that wrote that archive and set aside from the next one like any other bundle the pipe could not write. The rescue bookkeeping is itself bounded: at most 32 stranded turns are tracked at once, and beyond that the oldest is set aside early. A lock held by another worker is not a write failure and is never backed off.",
+        description="Stale lock timeout (seconds) for DB-backed session log assembly locks; stale locks are reclaimed. Reclaiming a lock this old is what releases a turn held by a worker that died, and a pass that finds its lock gone when it reaches the moment of publish abandons its write rather than publishing over the worker that owns the bundle: the archive on disk stays the one written under the lock, and the abandoned pass keeps its staged segments for the pass that owns them. It is also the write-failure backoff: a bundle whose archive could not be written is skipped for this long before it is retried, so one bundle the pipe cannot write does not hold the window. The one carve-out is the stranded-turn rescue: a turn whose existing archive could not be read is exempt from the backoff only while its own three-strike rescue budget lasts, and once that budget is spent it is set aside for this interval like any other bundle the pipe could not write. A turn whose rows were rescued to a separate archive is exempt on the pass that wrote that archive and set aside from the next one like any other bundle the pipe could not write. The rescue bookkeeping is itself bounded: at most 32 stranded turns are tracked at once, and beyond that the oldest is set aside early. A lock held by another worker is not a write failure and is never backed off.",
     )
     ENABLE_TIMING_LOG: bool = Field(
         default=False,

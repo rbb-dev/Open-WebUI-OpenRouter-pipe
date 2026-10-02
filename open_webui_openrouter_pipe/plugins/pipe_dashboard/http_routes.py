@@ -62,12 +62,24 @@ def _current_reconcile_lock() -> asyncio.Lock:
     return lock
 
 
+def _live_reconcile_state() -> Any:
+    try:
+        mod = importlib.import_module(_ROUTES_MODNAME)
+    except Exception:
+        logger.warning("pipe_dashboard action-route reconcile-state lookup failed", exc_info=True)
+        return None
+    return mod
+
+
 def set_pipe_getter(get_pipe: Any) -> None:
-    global _routes_get_pipe, _teardown_epoch
-    if _routes_get_pipe is get_pipe:
+    state = _live_reconcile_state()
+    if state is None:
         return
-    _routes_get_pipe = get_pipe
-    _teardown_epoch += 1
+    if state._routes_get_pipe is get_pipe:
+        return
+    state._routes_get_pipe = get_pipe
+    state._teardown_epoch += 1
+    state._fresh_dispatch = None
 
 
 def clear_routes_pipe_getter(instance: Any, name: str) -> None:
@@ -109,11 +121,13 @@ async def _dispatch_unavailable(
 
 
 def clear_fresh_dispatch(pipe: Any) -> None:
-    global _fresh_dispatch, _teardown_epoch
-    _teardown_epoch += 1
-    cached = _fresh_dispatch
+    state = _live_reconcile_state()
+    if state is None:
+        return
+    state._teardown_epoch += 1
+    cached = state._fresh_dispatch
     if cached is not None and cached[1] is pipe:
-        _fresh_dispatch = None
+        state._fresh_dispatch = None
 
 
 def _coarse_rate_limited(user_id: str) -> bool:
@@ -253,25 +267,30 @@ def _preferred_dispatch(action: str) -> Any:
     live = _live_dispatch()
     if live is not None and action in (_live_actions() or {}):
         return live
-    if _fresh_dispatch is not None:
-        return _fresh_dispatch[0]
+    state = _live_reconcile_state()
+    if state is not None:
+        cached = state._fresh_dispatch
+        if cached is not None and cached[1] is _live_routes_get_pipe():
+            return cached[0]
     if live is not None:
         return live
     return _dispatch_unavailable
 
 
 async def _current_dispatch(request: Any, user: Any, pipe: Any, fid: Any, action: str = "") -> tuple[Any, Any]:
-    global _fresh_dispatch, _reconcile_retry_until
-    if pipe is not None and fid and time.monotonic() >= _reconcile_retry_until and await can_view(user, pipe):
-        epoch = _teardown_epoch
+    state = _live_reconcile_state()
+    if state is not None and pipe is not None and fid and time.monotonic() >= state._reconcile_retry_until and await can_view(user, pipe):
+        epoch = state._teardown_epoch
         async with _current_reconcile_lock():
-            if _fresh_dispatch is None and epoch == _teardown_epoch and time.monotonic() >= _reconcile_retry_until:
+            state = _live_reconcile_state()
+            if state is not None and state._fresh_dispatch is None and epoch == state._teardown_epoch and time.monotonic() >= state._reconcile_retry_until:
                 fresh = await _resolve_fresh(request, fid)
-                if fresh is not None and _teardown_epoch == epoch:
-                    _fresh_dispatch = fresh
-                    _reconcile_retry_until = 0.0
-                else:
-                    _reconcile_retry_until = time.monotonic() + _PD_RECONCILE_BACKOFF_S
+                state = _live_reconcile_state()
+                if fresh is not None and state is not None and state._teardown_epoch == epoch:
+                    state._fresh_dispatch = fresh
+                    state._reconcile_retry_until = 0.0
+                elif state is not None:
+                    state._reconcile_retry_until = time.monotonic() + _PD_RECONCILE_BACKOFF_S
     return _preferred_dispatch(action), pipe
 
 

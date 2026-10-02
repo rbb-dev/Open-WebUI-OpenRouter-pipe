@@ -7922,7 +7922,7 @@ class TestStreamingCoreAdditionalCoverage:
         persisted_data: list[dict] = []
         from open_webui.models.chats import Chats
         original_upsert = Chats.upsert_message_to_chat_by_id_and_message_id
-        async def capturing_upsert(chat_id, message_id, data):
+        async def capturing_upsert(chat_id, message_id, data, **_kwargs):
             persisted_data.append({"chat_id": chat_id, "message_id": message_id, "data": data})
 
         monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", capturing_upsert)
@@ -7975,7 +7975,7 @@ class TestStreamingCoreAdditionalCoverage:
         persisted_data: list[dict] = []
         from open_webui.models.chats import Chats
         original_upsert = Chats.upsert_message_to_chat_by_id_and_message_id
-        async def capturing_upsert(chat_id, message_id, data):
+        async def capturing_upsert(chat_id, message_id, data, **_kwargs):
             persisted_data.append({"chat_id": chat_id, "message_id": message_id, "data": data})
 
         monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", capturing_upsert)
@@ -8296,7 +8296,7 @@ class TestStreamingCoreAdditionalCoverage:
         persisted_data: list[dict] = []
         from open_webui.models.chats import Chats
         original_upsert = Chats.upsert_message_to_chat_by_id_and_message_id
-        async def capturing_upsert(chat_id, message_id, data):
+        async def capturing_upsert(chat_id, message_id, data, **_kwargs):
             persisted_data.append({"chat_id": chat_id, "message_id": message_id, "data": data})
 
         monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", capturing_upsert)
@@ -8389,7 +8389,7 @@ class TestStreamingCoreAdditionalCoverage:
         persisted_data: list[dict] = []
         from open_webui.models.chats import Chats
         original_upsert = Chats.upsert_message_to_chat_by_id_and_message_id
-        async def capturing_upsert(chat_id, message_id, data):
+        async def capturing_upsert(chat_id, message_id, data, **_kwargs):
             persisted_data.append({"chat_id": chat_id, "message_id": message_id, "data": data})
 
         monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", capturing_upsert)
@@ -8594,7 +8594,7 @@ class TestStreamingCoreAdditionalCoverage:
         upsert_calls: list[tuple] = []
         from open_webui.models.chats import Chats
         original_upsert_fn = Chats.upsert_message_to_chat_by_id_and_message_id
-        async def tracking_upsert(chat_id, message_id, data):
+        async def tracking_upsert(chat_id, message_id, data, **_kwargs):
             upsert_calls.append((chat_id, message_id, data))
 
         monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", tracking_upsert)
@@ -8661,7 +8661,7 @@ class TestStreamingCoreAdditionalCoverage:
         # Make upsert fail for annotations
         from open_webui.models.chats import Chats
         original_upsert_for_annotations = Chats.upsert_message_to_chat_by_id_and_message_id
-        async def failing_upsert(chat_id, message_id, data):
+        async def failing_upsert(chat_id, message_id, data, **_kwargs):
             if "annotations" in data:
                 raise Exception("Annotations persistence failed")
 
@@ -8713,7 +8713,7 @@ class TestStreamingCoreAdditionalCoverage:
 
         from open_webui.models.chats import Chats
         original_upsert_for_reasoning = Chats.upsert_message_to_chat_by_id_and_message_id
-        async def failing_upsert(chat_id, message_id, data):
+        async def failing_upsert(chat_id, message_id, data, **_kwargs):
             if "reasoning_details" in data:
                 raise Exception("Reasoning details persistence failed")
 
@@ -9701,7 +9701,7 @@ class TestPhaseMarkerPersistence:
         upsert_calls: list[tuple[str, str, dict[str, Any]]] = []
         from open_webui.models.chats import Chats
 
-        async def tracking_upsert(chat_id, message_id, data):
+        async def tracking_upsert(chat_id, message_id, data, **_kwargs):
             upsert_calls.append((chat_id, message_id, data))
 
         monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", tracking_upsert)

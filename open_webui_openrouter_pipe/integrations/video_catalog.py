@@ -148,6 +148,8 @@ async def ensure_video_catalog_loaded(
                 models = await client.list_models()
             except (TimeoutError, aiohttp.ClientError, OSError) as exc:
                 OpenRouterModelRegistry.record_video_attempt(api_key)
+                if with_modalities:
+                    OpenRouterModelRegistry.record_video_modality_attempt()
                 logger.log(
                     warn_level(_warned_video_catalog, type(exc).__name__),
                     "Video catalog fetch failed (/videos/models): %s — chat catalog kept, video models will not appear.",
@@ -157,6 +159,8 @@ async def ensure_video_catalog_loaded(
 
             if not models:
                 OpenRouterModelRegistry.record_video_attempt(api_key)
+                if with_modalities:
+                    OpenRouterModelRegistry.record_video_modality_attempt()
                 kept = len(OpenRouterModelRegistry._video_catalog_norms)
                 logger.log(
                     warn_level(_warned_video_catalog, "empty"),
@@ -170,8 +174,7 @@ async def ensure_video_catalog_loaded(
 
             if with_modalities:
                 await _attach_declared_input_modalities(client, models, logger)
-            else:
-                _carry_declared_input_modalities(models)
+            _carry_declared_input_modalities(models)
 
             OpenRouterModelRegistry.register_video_models(models)
             OpenRouterModelRegistry.record_video_attempt(api_key)
@@ -210,8 +213,8 @@ async def _sweep_declared_input_modalities(
     if known < len(ids):
         logger.log(
             warn_level(_warned_video_catalog, "modalities"),
-            "Read the accepted input kinds for %d of %d video model(s); the rest are offered "
-            "every reference control until it can be read again.",
+            "Read the accepted input kinds for %d of %d video model(s); the rest keep the "
+            "input kinds they last published.",
             known,
             len(ids),
         )
@@ -253,15 +256,15 @@ async def _attach_declared_input_modalities(
         unread = sum(1 for m in wanted if not m.get("input_modalities"))
         logger.warning(
             "The video modality sweep ran past %ds with %d of %d model(s) still unread; "
-            "those are offered every reference control until a later refresh reads them.",
+            "those keep the input kinds they last published.",
             _VIDEO_SWEEP_BUDGET_SECONDS, unread, len(wanted),
         )
     known = sum(1 for m in wanted if m.get("input_modalities"))
     if known < len(wanted):
         logger.log(
             warn_level(_warned_video_catalog, "modalities"),
-            "Read the accepted input kinds for %d of %d video model(s); the rest are offered "
-            "every reference control until it can be read again.",
+            "Read the accepted input kinds for %d of %d video model(s); the rest keep the "
+            "input kinds they last published.",
             known,
             len(wanted),
         )

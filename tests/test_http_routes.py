@@ -18,9 +18,16 @@ from open_webui_openrouter_pipe.core.config import Valves
 from open_webui_openrouter_pipe.plugins.pipe_dashboard import http_routes
 
 
+#: The one object `_on_valves` hands out. A getter is a closure over the pipe the plugin
+#: system initialised, so it returns the SAME object every call -- Open WebUI's
+#: `get_function_module_by_id` reads that same instance back out of its `FUNCTIONS` cache,
+#: which is why the reconcile cache and the serving pipe are one identity in production.
+_SERVING_PIPE = SimpleNamespace(id="openrouter", valves=Valves(ENABLE_PLUGIN_SYSTEM=True))
+
+
 def _on_valves() -> Any:
     """A pipe whose master plugin switch reads on: the route 404s without it."""
-    return SimpleNamespace(id="openrouter", valves=Valves(ENABLE_PLUGIN_SYSTEM=True))
+    return _SERVING_PIPE
 
 
 class _PersistedSwitchOn:
@@ -231,16 +238,20 @@ def test_route_self_heals_unknown_action(monkeypatch):
         served["pipe"] = pipe
         return 200, {"ok": True, "result": {"healed": name}}
 
-    fresh_pipe = SimpleNamespace(id="openrouter", marker="fresh")
     serving_pipe = SimpleNamespace(
         id="openrouter", marker="serving", valves=Valves(ENABLE_PLUGIN_SYSTEM=True)
     )
+    # The seam returns the serving pipe itself, because in production it does:
+    # `get_function_module_by_id` reads the instance back out of Open WebUI's `FUNCTIONS`
+    # cache (`utils/plugin.py:398`), so the pipe the reconcile caches and the pipe the route
+    # serves are one object. A stub handing back a different one would be asserting against
+    # a shape the seam never produces.
     app = FastAPI()
     monkeypatch.setattr(http_routes, "get_owui_app", lambda: app)
     monkeypatch.setattr(http_routes, "bearer_user",
                         AsyncMock(return_value=SimpleNamespace(id="u1", role="user")))
     monkeypatch.setattr(http_routes, "can_view", AsyncMock(return_value=True))
-    monkeypatch.setattr(http_routes, "_resolve_fresh", AsyncMock(return_value=(_fresh, fresh_pipe)))
+    monkeypatch.setattr(http_routes, "_resolve_fresh", AsyncMock(return_value=(_fresh, serving_pipe)))
     monkeypatch.setattr(http_routes, "_fresh_dispatch", None)
     monkeypatch.setattr(http_routes, "_reconcile_retry_until", 0.0)
     http_routes.set_pipe_getter(lambda: serving_pipe)

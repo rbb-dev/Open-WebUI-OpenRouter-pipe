@@ -128,7 +128,7 @@ The pipe can persist response artifacts (reasoning and tool outputs) to a per-pi
 Key properties (code-aligned):
 
 - The table name includes a sanitized pipe id fragment and a short hash of `(ARTIFACT_ENCRYPTION_KEY + pipe_identifier)`.
-- Artifact encryption is enabled when `ARTIFACT_ENCRYPTION_KEY` is set; `ENCRYPT_ALL` controls whether all artifacts or reasoning-only artifacts are encrypted, and a row already stored encrypted stays encrypted in the table and in the replay cache whatever it is set to.
+- Artifact encryption is enabled when `ARTIFACT_ENCRYPTION_KEY` is set; `ENCRYPT_ALL` controls whether all artifacts or reasoning-only artifacts are encrypted, and a row already stored encrypted stays encrypted in the table and in the replay cache whatever it is set to, the cache entry being written in the form the row was stored in on the buffered flush as well as on a read.
 - Optional LZ4 compression is applied before encryption when enabled and beneficial.
 
 Related docs: [Persistence, Encryption & Storage](persistence_encryption_and_storage.md), [History Reconstruction & Context Replay](history_reconstruction_and_context.md).

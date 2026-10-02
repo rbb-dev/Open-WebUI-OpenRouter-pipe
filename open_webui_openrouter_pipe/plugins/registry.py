@@ -28,6 +28,7 @@ _PR_SUBSCRIBABLE_HOOKS = frozenset({
     "on_emitter_wrap",
     "on_tool_result",
     "on_request_retry",
+    "on_request_alive",
     "on_generation_complete",
 })
 
@@ -331,6 +332,17 @@ class PluginRegistry:
             except Exception:
                 logger.debug(
                     "Plugin '%s' on_request_retry failed", plugin.plugin_id, exc_info=True,
+                )
+
+    async def dispatch_on_request_alive(self, request_id: str = "", **kwargs) -> None:
+        for plugin, _priority in self._hook_subscribers.get("on_request_alive", ()):
+            try:
+                result = plugin.on_request_alive(request_id, **kwargs)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                logger.debug(
+                    "Plugin '%s' on_request_alive failed", plugin.plugin_id, exc_info=True,
                 )
 
     async def dispatch_on_generation_complete(

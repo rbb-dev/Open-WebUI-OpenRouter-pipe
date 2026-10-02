@@ -1197,7 +1197,7 @@ default applies; the second gets no control.
 | `VIDEO_NEGATIVE_PROMPT` | `str` | `""` | passthrough `negative_prompt` (or `negativePrompt` on Veo) | `"negative_prompt"` or `"negativePrompt"` in `allowed_passthrough_parameters` | 8 of 29 |
 | `VIDEO_GENERATE_AUDIO` | `Literal["model_default", "on", "off"]` | `"model_default"` | top-level `generate_audio` (boolean) | not published as `false` | 22 of 29 |
 | `VIDEO_SEED` | `int` (`ge=0`) | `0` | top-level `seed` | not published as `false` | 19 of 29 |
-| `VIDEO_AUDIO_URL` | `str` | `""` | passthrough `audio` (URL) | `"audio"` allowed, **and** `audio` withheld only while the model publishes an `input_modalities` list that omits it. A model whose sweep has not been read publishes no such list and is offered every reference control, so the draw set depends on sweep state and reopens on every sweep timeout; a chat turn no longer creates that state, since a request-path refresh carries the previous declarations forward | none with the recorded sweep; Wan 2.6 and 2.7 draw it while the sweep is unread |
+| `VIDEO_AUDIO_URL` | `str` | `""` | passthrough `audio` (URL) | `"audio"` allowed, **and** `audio` withheld only while the model publishes an `input_modalities` list that omits it. A model whose sweep has not been read publishes no such list and is offered every reference control, so the draw set depends on sweep state until the first read that answers, and a model that has been read keeps the input kinds it last published rather than reopening the draw set on every sweep timeout; a chat turn no longer creates that state, since a request-path refresh carries the previous declarations forward | none with the recorded sweep; Wan 2.6 and 2.7 draw it while the sweep is unread |
 | `VIDEO_REFERENCE_VIDEO_URL` | `str` | `""` | passthrough `video` | `"video"` allowed, **and** `video` withheld only while the model publishes an `input_modalities` list that omits it — sweep-state dependent as above, and a chat no longer creates the unread state | none with the recorded sweep; Wan 2.7 draws it while the sweep is unread |
 | `VIDEO_REFERENCE_VIDEOS_JSON` | `str` (JSON array) | `""` | passthrough `videos` | `"videos"` allowed, **and** `video` withheld only while the model publishes an `input_modalities` list that omits it — sweep-state dependent as above, and a chat no longer creates the unread state | none with the recorded sweep; Wan 2.7 draws it while the sweep is unread |
 | `VIDEO_REFERENCE_IMAGES_JSON` | `str` (JSON array) | `""` | passthrough `images` | `"images"` in `allowed_passthrough_parameters` | Wan 2.7 |
@@ -2501,26 +2501,29 @@ Key files:
   `OpenRouterModelRegistry`. Each read is capped at 15s and the whole
   modality sweep at 45s, so the number of video models never becomes the
   time the picker takes to appear; a model whose read did not finish in
-  time is published without its input kinds for that pass, and is offered
-  every reference control until a later one succeeds. The request path
-  runs no per-model reads at all: a chat turn refreshes the video *list*
-  once per TTL window and never the modality sweep behind it, and a
-  request-path refresh carries each model's previous input kinds forward
-  onto the freshly fetched rows rather than clearing them — so the
-  published-without-its-input-kinds state above is now reached only by a
-  read that timed out, and never merely because a chat happened. The
-  retry clock is
-  stamped once an attempt completes — a failed or empty fetch, or a
-  successful registration — but not while the modality sweep is still
-  running, so a fetch cancelled mid-sweep neither loses the video models
-  nor suppresses the next attempt. Each of those three stamps also writes
+  time, or answered nothing usable, keeps the input kinds it last
+  published, so the only model published without any is one nothing has
+  ever read. The request path runs no per-model reads at all: a chat turn
+  refreshes the video *list* once per TTL window and never the modality
+  sweep behind it, and it does not satisfy the freshness check that
+  guards that sweep either, so the next picker build performs it — against
+  the rows that chat path already registered, without re-fetching the list
+  it has just fetched. A request-path refresh carries each model's previous
+  input kinds forward onto the freshly fetched rows rather than clearing
+  them. The retry clock is stamped once an attempt completes — a failed or
+  empty fetch, or a successful registration — but not while the modality
+  sweep is still running, so a fetch cancelled mid-sweep neither loses the
+  video models nor suppresses the next attempt. Each of those three stamps also writes
   the fingerprint of the account that asked, so the window is a hit only
   for that account: fetch under key A, call under key B inside the window,
   and B is asked anyway rather than answered from A's rows. One fingerprint
   rather than one per outcome, because there is one video clock and the
   image catalogue's two share a stamp for the same reason. The master-off
   arm clears it with the clock, so a valve off/on cycle refetches under the
-  key in hand. The fetch is single-flight: concurrent
+  key in hand. The modality sweep keeps a
+  record of its own beside that clock, stamped by a failed fetch, an empty
+  fetch, or a completed sweep, and only a caller that swept stamps it. The
+  fetch is single-flight: concurrent
   callers on a cold cache queue on one lock, one caller fetches and the
   rest re-check the clock behind it, so a refresh that fails is still
   one refresh. A request that arrives while a sweep is in flight is
