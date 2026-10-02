@@ -481,39 +481,37 @@ class ChatCompletionsAdapter:
                 reasoning_details_order.append(key)
                 reasoning_details_by_key[key] = dict(detail)
                 return True
-            merged = dict(existing)
             if dtype == "reasoning.text":
-                prev_text = merged.get("text")
                 next_text = detail.get("text")
-                if isinstance(prev_text, str) and isinstance(next_text, str):
-                    _append_text_field(merged, "text", next_text)
-                elif isinstance(next_text, str):
-                    merged["text"] = next_text
+                if isinstance(next_text, str):
+                    if type(existing.get("text")) is str:
+                        _append_text_field(existing, "text", next_text)
+                    else:
+                        existing["text"] = next_text
                 next_signature = detail.get("signature")
                 if isinstance(next_signature, str) and next_signature:
-                    merged["signature"] = next_signature
+                    existing["signature"] = next_signature
                 next_format = detail.get("format")
                 if isinstance(next_format, str) and next_format:
-                    merged["format"] = next_format
+                    existing["format"] = next_format
             elif dtype == "reasoning.summary":
                 next_summary = detail.get("summary")
                 if isinstance(next_summary, str) and next_summary.strip():
-                    held_summary = merged.get("summary")
-                    merged["summary"] = _merge_summary_fragment(
+                    held_summary = existing.get("summary")
+                    existing["summary"] = _merge_summary_fragment(
                         held_summary if isinstance(held_summary, str) else "", next_summary
                     )
             elif dtype == "reasoning.encrypted":
-                prev_data = merged.get("data")
                 next_data = detail.get("data")
-                if isinstance(prev_data, str) and isinstance(next_data, str):
-                    _append_text_field(merged, "data", next_data)
-                elif isinstance(next_data, str):
-                    merged["data"] = next_data
+                if isinstance(next_data, str):
+                    if type(existing.get("data")) is str:
+                        _append_text_field(existing, "data", next_data)
+                    else:
+                        existing["data"] = next_data
             for k, v in detail.items():
-                if k in merged:
+                if k in existing:
                     continue
-                merged[k] = v
-            reasoning_details_by_key[key] = merged
+                existing[k] = v
             return False
 
         def _reasoning_identity(

@@ -379,6 +379,8 @@ def _install_open_webui_stubs() -> None:
         env_mod.VERSION = "0.10.2"
     if not hasattr(env_mod, "SRC_LOG_LEVELS"):
         env_mod.SRC_LOG_LEVELS = {}
+    if not hasattr(env_mod, "WEBUI_AUTH_TRUSTED_EMAIL_HEADER"):
+        env_mod.WEBUI_AUTH_TRUSTED_EMAIL_HEADER = None
     open_webui.env = env_mod
 
     misc_mod = cast(Any, _ensure_module("open_webui.utils.misc"))

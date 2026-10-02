@@ -2028,6 +2028,10 @@ class _Field:
         return ("ge", self.name, other)
 
     def in_(self, values):
+        # SQLAlchemy's `in_` takes a subquery as readily as a list, and the paged
+        # retention delete passes one: the ids a page SELECT read.
+        if hasattr(values, "all"):
+            return _In(self.name, [row[0] for row in values.all()])
         return _In(self.name, list(values))
 
     def startswith(self, prefix):
@@ -2097,9 +2101,12 @@ class _FakeQuery:
         self._filters.extend(conditions)
         return self
 
-    def order_by(self, order):
-        if isinstance(order, tuple):
-            self._order = (order[0], order[1])
+    def order_by(self, *orders):
+        # `order_by` is variadic in SQLAlchemy and the sweep orders on `(created_at, id)`,
+        # so the double takes the same shape rather than one clause at a time.
+        for order in orders:
+            if isinstance(order, tuple):
+                self._order = (order[0], order[1])
         return self
 
     def limit(self, limit: int):

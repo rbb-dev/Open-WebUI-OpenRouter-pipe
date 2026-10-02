@@ -187,6 +187,7 @@ async def bearer_user(request: Request) -> Any:
         raise HTTPException(status_code=401)
     token = auth[len("Bearer "):]
     try:
+        from open_webui.env import WEBUI_AUTH_TRUSTED_EMAIL_HEADER
         from open_webui.models.users import Users
         from open_webui.utils.auth import decode_token, is_valid_token
     except Exception:
@@ -207,6 +208,10 @@ async def bearer_user(request: Request) -> Any:
     user = await Users.get_user_by_id(data["id"])
     if user is None or user.role not in ("user", "admin"):
         raise HTTPException(status_code=401)
+    if WEBUI_AUTH_TRUSTED_EMAIL_HEADER:
+        trusted_email = request.headers.get(WEBUI_AUTH_TRUSTED_EMAIL_HEADER, "").lower()
+        if trusted_email and user.email != trusted_email:
+            raise HTTPException(status_code=401)
     return user
 
 

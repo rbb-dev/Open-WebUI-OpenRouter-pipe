@@ -66,6 +66,8 @@ from open_webui_openrouter_pipe.storage import owui_files as owui_files_module
 from tests.test_filters import _load_filter_from_source as _compile_rendered_filter
 import pytest_asyncio
 
+_CALLER = SimpleNamespace(id="caller-1", role="user", email="caller@example.com")
+
 
 
 async def _a_listening_chat(_event):

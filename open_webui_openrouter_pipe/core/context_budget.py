@@ -390,18 +390,20 @@ def _budget_shape(
         if spec is not None:
             payload_keys, rate = spec
             sizes: dict[str, tuple[int, str, str | None]] = {}
+            indexed: set[str] = set()
             for key in payload_keys:
                 if key not in value:
                     continue
-                measured = _referenced_bytes(
-                    value[key], referenced_sizes
-                ) or _payload_bytes(value[key])
+                from_index = _referenced_bytes(value[key], referenced_sizes)
+                measured = from_index or _payload_bytes(value[key])
                 if measured is not None:
                     sizes[key] = measured
+                    if from_index is not None:
+                        indexed.add(key)
             resolved_first = payload_keys[0]
             charged_key = (
                 resolved_first
-                if resolved_first in sizes
+                if resolved_first in indexed
                 else max(sizes, key=lambda k: sizes[k][0])
                 if sizes
                 else None

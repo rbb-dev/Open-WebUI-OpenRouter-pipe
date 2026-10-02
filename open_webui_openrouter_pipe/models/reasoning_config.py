@@ -106,6 +106,9 @@ class ReasoningConfigManager:
         )
         repaired = {k: v for k, v in cfg.items() if k not in consumed}
         repaired["enabled"] = True
+        if "max_tokens" in repaired:
+            repaired.pop("effort", None)
+            return repaired, True
         lowest = _select_best_effort_fallback(
             _NO_EFFORT,
             [e for e in ModelFamily.reasoning_contract(model_id).get("supported_efforts") or [] if e != _NO_EFFORT],
@@ -157,6 +160,17 @@ class ReasoningConfigManager:
 
         return responses_body.model if refused else None
 
+    @classmethod
+    def _budget_outlives_the_task_effort(cls, responses_body: ResponsesBody, cfg: dict[str, Any]) -> bool:
+        from .registry import _classify_gemini_thinking_family
+
+        if not isinstance(cfg.get("max_tokens"), int):
+            return False
+        gemini = _classify_gemini_thinking_family(ModelFamily.base_model(responses_body.model))
+        return not gemini and "reasoning" in ModelFamily.catalog_supported_parameters(
+            responses_body.model
+        )
+
     def _apply_task_reasoning_preferences(self, responses_body: ResponsesBody, effort: str) -> str | None:
         """Override reasoning effort for task models."""
         if not effort:
@@ -174,7 +188,10 @@ class ReasoningConfigManager:
                 else {}
             )
             cfg = dict(cfg) if cfg else {}
-            cfg["effort"] = target_effort
+            if target_effort in _EFFORT_REASONING_OFF or not self._budget_outlives_the_task_effort(
+                responses_body, cfg
+            ):
+                cfg["effort"] = target_effort
             cfg.setdefault("enabled", True)
             cfg, refused = self._refuse_off_on_mandatory_model(
                 responses_body.model, cfg, off_from_settings=target_effort == _NO_EFFORT

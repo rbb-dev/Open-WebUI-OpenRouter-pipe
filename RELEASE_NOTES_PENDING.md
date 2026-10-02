@@ -23,6 +23,14 @@
   session-logging indicator. `Log verbosity level` set to `DEBUG` still prints those payloads to the console,
   which never read the archive valve. With the valve on, nothing changes: the payloads are built and kept, as
   before.
+- **Artifact retention sweep** — a cleanup pass whose Redis cache purge could not finish no longer deletes anything. Both purge
+  arms returned on the first `delete` fault without telling the caller, so the sweep went straight on to the delete: rows the
+  operator had been told were purged were gone while the cache entries naming them stayed readable, for a temporary chat under a
+  key that embeds its socket id, until the cache TTL expired. The arms now report whether they completed and one gate acts on it,
+  so a faulted cycle logs one warning naming the deferral, deletes no rows at all - retention and temporary-chat alike, since one
+  arm's unread pages are the other's evidence - and both the rows and their entries go on the next interval instead. Nothing
+  changes on a healthy pass, and a deployment with the Redis cache valve off still sweeps: no client means nothing to invalidate,
+  which counts as complete.
 - **Open-WebUI tool mode** — a call Open WebUI runs now shows its card from the moment the model names the tool, and the dashboard's live view now shows the running tool on those turns (it stayed empty before).
 - **Pipe dashboard, deleted function row** — deleting the pipe's function row now releases the live dashboard on the worker that served the DELETE and lets
   the pipe finish its in-flight requests and close, instead of holding it, its session-log threads and its storage handle until a restart. The stand-down
@@ -267,3 +275,26 @@
   rotation left behind, de-identifying its temporary-chat rows as it does the current table's, and the purge runs
   whether or not `Collect usage records` is on. A table whose fragment another installed function id also sanitizes
   to is skipped and named once in the log, and no table is ever dropped — only emptied.
+- **Pipe Dashboard, action route** — the dashboard's `POST /api/pipe/dashboard/action` route now answers
+  `401` for a request that Open WebUI itself would refuse. The route validated the bearer token, re-read the
+  user row and checked the role, but never compared OWUI's `WEBUI_AUTH_TRUSTED_EMAIL_HEADER`: on a deployment
+  behind a proxy that authenticates by trusted header, a request whose header named a **different** person than
+  the token's own user was admitted, and the admin-only write actions behind it (`config_set`, `update_apply`)
+  ran. It now compares exactly as OWUI's `get_current_user` does — the header value lowercased against the
+  stored `user.email`, and only when the setting is on *and* the header actually carries a value — so the
+  comparison is presence-optional and an API-token caller that sends no such header is unaffected. The
+  property the route is built on is unchanged: the comparison reads a request header and never the session
+  cookie, so the route stays CSRF-safe regardless of OWUI's CORS/SameSite settings. With the setting off —
+  the default, and every deployment that does not run one — nothing changes at all. The socket leg is
+  untouched: OWUI performs no such comparison there either.
+- **Video, prior-video frames** — the frame extracted from a prior video is now **read** as the person who
+  asked for it, not as the pipe's storage service account. The read that copies a prior video out of Open
+  WebUI storage to extract a frame was authorised with the storage account — an `admin` by default — so a
+  turn whose user could not be resolved read any file in the deployment, including videos belonging to other
+  people. Reads now run as the request's own resolved identity, which is what Open WebUI itself gates file
+  content on; a turn with no signed-in user gets no prior frame and is told so (`⚠️ Previous video could not
+  be loaded.`) rather than quietly sent one. The **upload** of the extracted frame is a write and is
+  unchanged: the storage account still owns the file the pipe publishes. One consequence worth naming: a
+  video turn driven by API automation, with no signed-in user, loses its prior-video frame. That is the
+  intended outcome — Open WebUI gates file content on the requester and never on a service account — and the
+  only alternative would be a pipe-owned service identity for prior-video reads.

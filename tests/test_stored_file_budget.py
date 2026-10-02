@@ -37,6 +37,7 @@ from open_webui_openrouter_pipe.models.registry import ModelFamily
 from open_webui_openrouter_pipe.pipe import Pipe
 from open_webui_openrouter_pipe.storage import owui_files
 from open_webui_openrouter_pipe.storage.owui_files import (
+    OwuiFileGateway,
     index_referenced_file_payloads,
 )
 
@@ -45,7 +46,9 @@ _INTERNAL_URL = f"/api/v1/files/{_FILE_ID}/content"
 _SECOND_ID = "9f2c1a7b-3e4d-4f5a-8b6c-000000000002"
 _SECOND_URL = f"/api/v1/files/{_SECOND_ID}/content"
 _THIRD_ID = "9f2c1a7b-3e4d-4f5a-8b6c-000000000003"
+_UNSIZED_ID = "9f2c1a7b-3e4d-4f5a-8b6c-00000000000f"
 _FOUR_MB_DATA_URL = "data:text/plain;base64," + "QQQQ" * 1_000_000
+_FOUR_MB_BODY = _FOUR_MB_DATA_URL.partition(",")[2]
 _UNPARSEABLE_INTERNAL_URL = "/api/v1/files/_leading/content"
 
 
@@ -461,6 +464,39 @@ async def test_the_index_resolves_the_one_reference_the_gateway_will_inline(
         f"this block was charged {charged} chars; the reference the gateway will inline "
         f"is worth about {expect_charged}"
     )
+
+
+#: The bytes each stored record hands the gateway, derived from the same size the record
+#: declares, so the record the index reads and the record the gateway inlines agree.
+_DISPATCH_PAYLOADS = {
+    _FILE_ID: base64.b64encode(b"%PDF-1.4\n" + b"x" * 1_000).decode("ascii"),
+    _UNSIZED_ID: _FOUR_MB_BODY,
+    _SECOND_ID: base64.b64encode(b"%PDF-1.4\n" + b"x" * 4_000_000).decode("ascii"),
+}
+
+
+async def _dispatch(monkeypatch, block: dict, records: list) -> dict:
+    """The real gateway over one block, with only the two boundaries stubbed."""
+    by_id = {record.id: record for record in records}
+
+    async def _record_for(file_id, _logger=None):
+        return by_id.get(file_id)
+
+    monkeypatch.setattr(owui_files, "get_file_by_id", _record_for)
+    gateway = OwuiFileGateway.__new__(OwuiFileGateway)
+    gateway.logger = logging.getLogger("test")
+
+    async def _base64(file_obj, chunk_size: int, max_bytes: int, **_kwargs):
+        return _DISPATCH_PAYLOADS[file_obj.id]
+
+    gateway.read_file_record_base64 = _base64
+    dispatched = await gateway.inline_internal_responses_input_files(
+        {"input": _blocks({"type": "input_file", **block})},
+        chunk_size=1024,
+        max_bytes=50 * 1024 * 1024,
+        user=_OWNER,
+    )
+    return cast(dict, dispatched["input"][0]["content"][0])
 
 
 @pytest.mark.asyncio

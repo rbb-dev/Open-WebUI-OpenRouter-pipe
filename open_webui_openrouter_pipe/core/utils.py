@@ -25,7 +25,7 @@ import logging
 import math
 import re
 import uuid
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Iterator
 from contextvars import ContextVar
 from typing import Any, TypeVar, cast
 
@@ -297,7 +297,7 @@ def _data_url_tokens(text: str) -> str:
             newline = text.find("\n", stop)
             end = len(text) if newline < 0 else newline
         else:
-            end = stop
+            end = _folded_base64_end(text, stop)
         candidate = head.split()[0] if head.split() else head
         out.append(text[last:start])
         out.append(f"data:{media_type_or_empty(candidate[len('data:') :])} [redacted]")
@@ -1120,18 +1120,70 @@ _BARE_BASE64_SHAPE = re.compile(r"[A-Za-z0-9+/_-]{1024,}={0,2}\Z")
 
 _BARE_BASE64_RUN = re.compile(r"[A-Za-z0-9+/_-]{1024,}")
 
+_BASE64_FOLD_STEP = re.compile(r"\r?\n[ \t]*[A-Za-z0-9+/_-]+={0,2}[ \t]*(?=\r?\n|\Z)")
+
+_BASE64_FOLD_SEED = re.compile(
+    r"(?<![A-Za-z0-9+/_-])[ \t]*[A-Za-z0-9+/_-]+[ \t]*\r?\n"
+    r"[ \t]*[A-Za-z0-9+/_-]+={0,2}[ \t]*(?=\r?\n|\Z)"
+)
+
+_BASE64_ALPHABET = (
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/-_="
+)
+
+_BARE_BASE64_FLOOR = 1024
+
+
+def _folded_base64_end(text: str, stop: int) -> int:
+    end = stop
+    while True:
+        step = _BASE64_FOLD_STEP.match(text, end)
+        if step is None:
+            return end
+        end = step.end()
+
+
+def _base64_span_size(text: str, start: int, end: int) -> int:
+    return sum(text.count(char, start, end) for char in _BASE64_ALPHABET)
+
+
+def _bare_base64_spans(text: str) -> Iterator[tuple[int, int, int]]:
+    last = 0
+    runs = _BARE_BASE64_RUN.finditer(text)
+    folds = _BASE64_FOLD_SEED.finditer(text)
+    run = next(runs, None)
+    fold = next(folds, None)
+    while True:
+        if run is not None and (fold is None or run.start() <= fold.start()):
+            start, stop, folded = run.start(), run.end(), False
+            run = next(runs, None)
+        elif fold is not None:
+            start, stop, folded = fold.start(), fold.end(), True
+            fold = next(folds, None)
+        else:
+            return
+        if start < last:
+            continue
+        if folded:
+            end = _folded_base64_end(text, stop)
+            size = _base64_span_size(text, start, end)
+        else:
+            end = stop
+            size = end - start
+        if size < _BARE_BASE64_FLOOR:
+            continue
+        last = end
+        yield start, end, size
+
 
 def _truncate_base64_runs(text: str, max_chars: int) -> str:
     keep = max(8, min(64, max_chars // 4))
     pieces: list[str] = []
     last = 0
-    for match in _BARE_BASE64_RUN.finditer(text):
-        start, end = match.span()
-        if start < last:
-            continue
+    for start, end, size in _bare_base64_spans(text):
         pieces.append(text[last:start])
         pieces.append(
-            f"{text[start : start + keep]}…{_REDACTED_DATA_URL_MARKER}({end - start} chars)…"
+            f"{text[start : start + keep]}…{_REDACTED_DATA_URL_MARKER}({size} chars)…"
         )
         last = end
     if not pieces:

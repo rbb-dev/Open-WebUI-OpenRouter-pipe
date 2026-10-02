@@ -733,6 +733,9 @@ class StreamingHandler:
         reasoning_summary_consumed: dict[str, str] = {}
         reasoning_stream_completed: set[str] = set()
         reasoning_display: dict[str, dict[str, Any]] = {}
+        unpublished_reasoning_keys: dict[str, None] = {}
+        open_reasoning_windows: dict[str, None] = {}
+        model_call_cards_at_round_start = 0
         round_saw_function_call = 0
         calls_in_this_round = 0
         named_tool_call = False
@@ -1676,6 +1679,7 @@ class StreamingHandler:
                         box = _ReasoningTextBox()
                         reasoning_stream_buffers[key] = box
                     box.add(append)
+                    unpublished_reasoning_keys[key] = None
                 return append
 
             def _append_summary_tail(key: str, raw_text: str) -> str:
@@ -1709,20 +1713,27 @@ class StreamingHandler:
                         "published_id": None,
                     }
                     reasoning_display[key] = state
+                    _reopen_reasoning_window(key, state)
                 return state
+
+            def _reopen_reasoning_window(key: str, state: dict[str, Any]) -> None:
+                state["mono_close"] = None
+                open_reasoning_windows[key] = None
 
             def _close_open_reasoning_windows() -> None:
                 now = _monotonic()
-                for state in reasoning_display.values():
+                for key in list(open_reasoning_windows):
+                    state = reasoning_display[key]
                     if state["mono_close"] is None:
                         state["mono_close"] = now
+                open_reasoning_windows.clear()
 
-            def _rearm_reasoning_window(state: dict[str, Any]) -> None:
+            def _rearm_reasoning_window(key: str, state: dict[str, Any]) -> None:
                 if state.get("published_round") is None or state["published_round"] == loop_index:
                     return
                 state["wall_open"] = time.time()
                 state["mono_open"] = _monotonic()
-                state["mono_close"] = None
+                _reopen_reasoning_window(key, state)
 
             async def _emit_reasoning_item(key: str, current_text: str, *, closing: bool = False) -> None:
                 nonlocal emitted_response_output_items
@@ -1750,6 +1761,7 @@ class StreamingHandler:
                 state["published_round"] = loop_index
                 state["emitted"] = True
                 reasoning_stream_completed.add(key)
+                unpublished_reasoning_keys.pop(key, None)
                 emitted_response_output_items = True
                 reasoning_item: dict[str, Any] = {
                     "type": "reasoning",
@@ -1812,10 +1824,11 @@ class StreamingHandler:
                         }
                     )
                 state["published_len"] = len(text)
+                unpublished_reasoning_keys.pop(key, None)
 
             async def _close_and_emit_reasoning_items(current_text: str) -> None:
                 _close_open_reasoning_windows()
-                for reasoning_key in list(reasoning_display):
+                for reasoning_key in list(unpublished_reasoning_keys):
                     await _emit_reasoning_item(reasoning_key, current_text, closing=True)
 
             async def _publish_open_reasoning_before_a_card(current_text: str) -> None:
@@ -1839,7 +1852,7 @@ class StreamingHandler:
                     elif entry.get("type") == "reasoning" and calls_before:
                         entry_id = entry.get("id")
                         if isinstance(entry_id, str) and entry_id:
-                            due = round_saw_function_call + calls_before
+                            due = model_call_cards_at_round_start + calls_before
                             deferred_reasoning_keys[entry_id] = min(
                                 due, deferred_reasoning_keys.get(entry_id, due)
                             )
@@ -1856,7 +1869,7 @@ class StreamingHandler:
             async def _flush_trailing_reasoning(current_text: str) -> None:
                 if event_emitter is None or not thinking_box_enabled:
                     return
-                for reasoning_key in list(reasoning_display):
+                for reasoning_key in list(unpublished_reasoning_keys):
                     try:
                         await _emit_reasoning_item(reasoning_key, current_text, closing=True)
                     except Exception:
@@ -2138,6 +2151,9 @@ class StreamingHandler:
                     reasoning_summary_consumed.pop("__reasoning__", None)
                     reasoning_stream_completed.discard("__reasoning__")
                     reasoning_display.pop("__reasoning__", None)
+                    unpublished_reasoning_keys.pop("__reasoning__", None)
+                    open_reasoning_windows.pop("__reasoning__", None)
+                    model_call_cards_at_round_start = len(emitted_model_call_items)
                     calls_in_this_round = 0
                     named_tool_call = False
                     final_response = None
@@ -2318,8 +2334,8 @@ class StreamingHandler:
                             if append:
                                 note_generation_activity()
                                 display_state = _reasoning_display_state(key)
-                                _rearm_reasoning_window(display_state)
-                                display_state["mono_close"] = None
+                                _rearm_reasoning_window(key, display_state)
+                                _reopen_reasoning_window(key, display_state)
                                 if fusion_inner_call and event_emitter is not None:
                                     await event_emitter({"type": "fusion_inner:reasoning.delta", "data": {"delta": append}})
                                 await _maybe_emit_reasoning_status(append)
@@ -2431,7 +2447,7 @@ class StreamingHandler:
                         note_model_activity()
                         if reasoning_display:
                             _close_open_reasoning_windows()
-                            for reasoning_key in list(reasoning_display):
+                            for reasoning_key in list(unpublished_reasoning_keys):
                                 if reasoning_key in deferred_reasoning_keys:
                                     continue
                                 await _emit_reasoning_item(reasoning_key, assistant_message)
@@ -2622,8 +2638,8 @@ class StreamingHandler:
                                         note_generation_activity()
                                         reasoning_stream_active = True
                                         display_state = _reasoning_display_state(key)
-                                        _rearm_reasoning_window(display_state)
-                                        display_state["mono_close"] = None
+                                        _rearm_reasoning_window(key, display_state)
+                                        _reopen_reasoning_window(key, display_state)
                                 if thinking_status_enabled:
                                     cancel_thinking()
                                     await event_emitter(
@@ -3263,7 +3279,7 @@ class StreamingHandler:
                                 note_generation_activity()
                                 opened = reasoning_display.get(key)
                                 if opened is not None:
-                                    _rearm_reasoning_window(opened)
+                                    _rearm_reasoning_window(key, opened)
                                 await _maybe_emit_reasoning_status(append)
                                 await _maybe_emit_reasoning_status("", force=True)
                             if emitter_supplied and calls_in_this_round:
@@ -3305,7 +3321,7 @@ class StreamingHandler:
                         if reasoning_display:
                             _close_open_reasoning_windows()
                             _defer_reasoning_keys_after_a_call(event.get("response"))
-                            for reasoning_key in list(reasoning_display):
+                            for reasoning_key in list(unpublished_reasoning_keys):
                                 if reasoning_key in deferred_reasoning_keys:
                                     continue
                                 await _emit_reasoning_item(reasoning_key, assistant_message)

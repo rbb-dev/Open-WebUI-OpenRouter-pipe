@@ -199,9 +199,10 @@ _RECORD_SHAPE_RE = re.compile(
 
 
 def _deformed_exception_text(text: str) -> tuple[str, bool]:
+    reduced = _data_url_log_subject(text)
     lines: list[str] = []
-    changed = False
-    for line in text.splitlines():
+    changed = reduced != text
+    for line in reduced.splitlines():
         if _RECORD_SHAPE_RE.match(line):
             lines.append(f" {line}")
             changed = True

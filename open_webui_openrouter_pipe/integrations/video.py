@@ -3576,7 +3576,12 @@ class VideoGenerationAdapter:
         storage_request, storage_user = await self._pipe._file_gateway.resolve_storage_context(
             request, user_obj
         )
-        if isinstance(user_obj, dict) or not storage_request or not storage_user:
+        if (
+            user_obj is None
+            or isinstance(user_obj, dict)
+            or not storage_request
+            or not storage_user
+        ):
             self.logger.warning(
                 "No resolved storage identity for the frame plan; the frames were not uploaded"
             )
@@ -3598,7 +3603,7 @@ class VideoGenerationAdapter:
 
                 try:
                     file_id = await self._resolve_prior_video_file_id(
-                        entry, intent=intent, user_obj=storage_user,
+                        entry, intent=intent, user_obj=user_obj,
                     )
                     if not file_id:
                         intent.downgrades.append(
@@ -3610,7 +3615,7 @@ class VideoGenerationAdapter:
                     tmp_path = materialised.get(file_id)
                     if tmp_path is None:
                         tmp_path = await self._resolve_owui_file_path(
-                            file_id=file_id, request=storage_request, user_obj=storage_user,
+                            file_id=file_id, request=storage_request, user_obj=user_obj,
                         )
                         if tmp_path is not None:
                             materialised[file_id] = tmp_path

@@ -2843,7 +2843,7 @@ __PRIORITY_FIELD__
         )
         DIRECT_FILE_MIME_ALLOWLIST: str = Field(
             default="application/pdf,text/plain,text/markdown,application/json,text/csv",
-            description="Comma-separated MIME allowlist for diverted direct generic files. The pattern is matched with `fnmatch` against the declared type, so a wildcard admits declared values that are not media types at all; Non-allowlisted types are fail-open: the item stays on the normal OWUI RAG/Knowledge path instead.",
+            description="Comma-separated MIME allowlist for diverted direct generic files. The pattern is matched with `fnmatch` against the declared type, so a wildcard admits declared values that are not media types at all; that admitted value is not the type the provider is told, because the pipe declares the file under the type Open WebUI recorded, and a recorded type which is not a media type stops the request before it is sent, with the reason shown on the turn; Non-allowlisted types are fail-open: the item stays on the normal OWUI RAG/Knowledge path instead.",
         )
         DIRECT_AUDIO_MIME_ALLOWLIST: str = Field(
             default="audio/*",

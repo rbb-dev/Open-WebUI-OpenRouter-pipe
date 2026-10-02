@@ -118,7 +118,17 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # the pipe fail to import. This scan walks `open_webui_openrouter_pipe` only, so the
 # matching test-side import (`test_a_cleared_direct_audio_allowlist_is_not_an_absent_one.py`,
 # which installs an empty `Functions` on the same lazy module) is deliberately not counted.
-_EXPECTED_OWUI_IMPORTS = (25, 97)
+# 97 -> 98 (B918/H2560-1): the dashboard action route's `bearer_user` now imports
+# `open_webui.env` for `WEBUI_AUTH_TRUSTED_EMAIL_HEADER` alongside the two auth helpers it
+# already read there, so the route agrees with Open WebUI's own `get_current_user` about a
+# trusted-identity header. It is a named import inside the existing guarded `try`, not a
+# `getattr` with a `None` default: a gate that disables itself when it cannot find its own
+# setting is fail-open on an identity check, so a host that cannot supply the constant
+# denies the request through that same `except` rather than admitting it unchecked. The name
+# is read from `open_webui.env` and never from `open_webui.utils.auth`, which re-exports it
+# but is a bare module under the test harness -- a name read from there would raise inside
+# the guarded import and turn every call into a silent 401.
+_EXPECTED_OWUI_IMPORTS = (25, 98)
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),

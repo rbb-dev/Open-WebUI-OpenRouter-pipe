@@ -3238,8 +3238,14 @@ class ArtifactStore:
             return
         cutoff_days = self.valves.ARTIFACT_CLEANUP_DAYS
         cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=cutoff_days)
-        await self._purge_expired_cache_entries(cutoff)
-        await self._purge_temporary_cache_entries()
+        _expired_purged, expired_complete = await self._purge_expired_cache_entries(cutoff)
+        _temporary_purged, temporary_complete = await self._purge_temporary_cache_entries()
+        if not (expired_complete and temporary_complete):
+            self.logger.warning(
+                "Retention deferred to the next sweep: a Redis cache purge could not "
+                "invalidate every entry, so no artifact row is deleted on this pass"
+            )
+            return
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             self._db_executor,
@@ -3263,6 +3269,8 @@ class ArtifactStore:
         with _db_session(self._session_factory) as session:
             query = session.query(model.id, model.chat_id, model.created_at).filter(
                 self._artifact_retention_filter(model, cutoff)
+            ).filter(
+                self._artifact_retention_exclude(model)
             )
             if after is not None:
                 query = query.filter(or_(
@@ -3280,15 +3288,16 @@ class ArtifactStore:
         model = self._item_model
         with _db_session(self._session_factory) as session:
             query = session.query(model.id, model.chat_id).filter(
-                or_(*[model.chat_id.startswith(p) for p in temporary_chat_prefixes()])
+                or_(*[and_(*_temporary_chat_chat_id_conditions(model.chat_id, p))
+                       for p in temporary_chat_prefixes()])
             )
             if after_id is not None:
                 query = query.filter(model.id > after_id)
             return [(row[1], row[0]) for row in query.order_by(model.id).limit(limit)]
 
-    async def _purge_temporary_cache_entries(self) -> int:
+    async def _purge_temporary_cache_entries(self) -> tuple[int, bool]:
         if not (self._redis_enabled and self._redis_client):
-            return 0
+            return 0, True
         loop = asyncio.get_running_loop()
         after_id: str | None = None
         purged = 0
@@ -3302,7 +3311,7 @@ class ArtifactStore:
                 ),
             )
             if not batch:
-                return purged
+                return purged, True
             keys = [key for key in (self._redis_cache_key(chat_id, row_id) for chat_id, row_id in batch) if key]
             if keys:
                 try:
@@ -3312,13 +3321,13 @@ class ArtifactStore:
                         "Redis cache invalidation of temporary-chat artifacts failed (best-effort): %s",
                         exc, exc_info=True,
                     )
-                    return purged
+                    return purged, False
             purged += len(batch)
             after_id = batch[-1][1]
 
-    async def _purge_expired_cache_entries(self, cutoff: datetime.datetime) -> int:
+    async def _purge_expired_cache_entries(self, cutoff: datetime.datetime) -> tuple[int, bool]:
         if not (self._redis_enabled and self._redis_client):
-            return 0
+            return 0, True
         loop = asyncio.get_running_loop()
         after: tuple[datetime.datetime, str] | None = None
         purged = 0
@@ -3333,7 +3342,7 @@ class ArtifactStore:
                 ),
             )
             if not batch:
-                return purged
+                return purged, True
             keys = [
                 key
                 for key in (
@@ -3351,7 +3360,7 @@ class ArtifactStore:
                         exc,
                         exc_info=True,
                     )
-                    return purged
+                    return purged, False
             purged += len(batch)
             after = (batch[-1][2], batch[-1][1])
 
@@ -3436,12 +3445,24 @@ class ArtifactStore:
             return
         with _db_session(self._session_factory) as session:
             ulid_lo, ulid_hi = self._expired_row_id_bounds(session, self._item_model, cutoff)
-            deleted = (
-                session.query(self._item_model)
-                .filter(self._artifact_retention_filter(self._item_model, cutoff))
-                .filter(self._artifact_retention_exclude(self._item_model))
-                .delete(synchronize_session=False)
-            )
+            deleted = 0
+            while True:
+                page = (
+                    session.query(self._item_model.id)
+                    .filter(self._artifact_retention_filter(self._item_model, cutoff))
+                    .filter(self._artifact_retention_exclude(self._item_model))
+                    .order_by(self._item_model.created_at, self._item_model.id)
+                    .limit(_RETENTION_CACHE_PURGE_BATCH)
+                )
+                removed = (
+                    session.query(self._item_model)
+                    .filter(self._item_model.id.in_(page))
+                    .delete(synchronize_session=False)
+                )
+                session.commit()
+                deleted += removed
+                if removed < _RETENTION_CACHE_PURGE_BATCH:
+                    break
             left_by_temporary_chats = sum(
                 session.query(self._item_model)
                 .filter(*_temporary_chat_chat_id_conditions(self._item_model.chat_id, prefix))

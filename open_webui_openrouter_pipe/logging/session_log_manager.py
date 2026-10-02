@@ -476,6 +476,7 @@ class SessionLogManager:
         "_captured_row_ids",
         "_capture_exempt",
         "_rescue_pending",
+        "_ownership_skips",
     )
 
     def __init__(
@@ -643,6 +644,7 @@ class SessionLogManager:
 
             return bool(await Chats.is_chat_owner(chat_id, user_id))
         except Exception:
+            _truncate_latch(self._ownership_skips, _MAX_DRAIN_LATCH_KEYS - 1)
             self.logger.log(
                 warn_level(
                     self._ownership_skips,
@@ -673,6 +675,7 @@ class SessionLogManager:
     def _latch_ownership_skip(
         self, user_id: str, chat_id: str, message_id: str, request_id: str
     ) -> None:
+        _truncate_latch(self._ownership_skips, _MAX_DRAIN_LATCH_KEYS - 1)
         self.logger.log(
             warn_level(
                 self._ownership_skips,
@@ -1514,6 +1517,15 @@ class SessionLogManager:
 
         from ..core.logging_system import _archive_file_path, _SessionLogArchiveJob
         from ..core.utils import _stable_crockford_id
+        from ..storage.owui_files import is_temporary_chat
+
+        if is_temporary_chat(chat_id):
+            self._warn_temporary_chat_skip(
+                "rescue", _TEMPORARY_CHAT_PROCESS_SCOPE,
+                "Stranded session log turn not rescued (temporary chat): message_id=%s",
+                message_id,
+            )
+            return False
 
         key = f"{chat_id}:{message_id}"
         already = key in self._captured_turns and all(
@@ -1541,6 +1553,27 @@ class SessionLogManager:
         self._unreadable_archive_attempts[key] = attempts
         if attempts < _UNREADABLE_ARCHIVE_CAPTURE_AFTER:
             return False
+
+        distinct_user_ids = sorted({
+            str(seg.get("user_id") or "").strip()
+            for seg in segments
+            if str(seg.get("user_id") or "").strip()
+        })
+        if len(distinct_user_ids) > 1:
+            self.logger.log(
+                warn_level(
+                    self._unreadable_archive_warnings,
+                    f"session_log_rescue_mixed_user:{chat_id}:{message_id}",
+                    cooldown_s=3600.0,
+                ),
+                "Refusing to rescue a session log turn whose segments name %d "
+                "different users (chat_id=%s message_id=%s users=%s); no archive "
+                "is written under any of them and every staged segment is kept.",
+                len(distinct_user_ids), chat_id, message_id, ",".join(distinct_user_ids),
+            )
+            return False
+        if distinct_user_ids:
+            user_id = distinct_user_ids[0]
 
         events: list[dict[str, Any]] = []
         request_id = _preferred_request_id(segments)

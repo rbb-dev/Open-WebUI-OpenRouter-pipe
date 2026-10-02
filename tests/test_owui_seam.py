@@ -344,7 +344,16 @@ def test_every_declared_absence_is_actually_imported_under_a_guard() -> None:
     )
 
 
-_EXPECTED_SEAM_IMPORTS = 77
+# 77 -> 78 (B918/H2560-1): the dashboard action route's `bearer_user` reads Open WebUI's
+# `WEBUI_AUTH_TRUSTED_EMAIL_HEADER` so the route refuses exactly what `get_current_user`
+# refuses, including a trusted-identity header that names a different person than the
+# token's own user. It is a named import inside the gate's existing guarded `try`, so the
+# entry is the guarded kind; the constant has shipped in `open_webui.env` since well below
+# this manifest's floor, so it is not an absence and carries no `_NEWER_THAN_OUR_FLOOR` row.
+# Reading the name with a `getattr(env_module, ..., None)` default would have added no
+# import here and left this count unchanged -- and would have made the identity check
+# silently disable itself on a rename, which is the direction this count cannot see.
+_EXPECTED_SEAM_IMPORTS = 78
 
 
 def test_seam_checklist_covers_every_open_webui_import() -> None:

@@ -137,7 +137,7 @@ Related docs: [Persistence, Encryption & Storage](persistence_encryption_and_sto
 
 The pipe includes:
 
-- a periodic artifact cleanup worker (time-based retention via `ARTIFACT_CLEANUP_DAYS` measured from `created_at` which is refreshed on every read, database or cache, and interval via `ARTIFACT_CLEANUP_INTERVAL_HOURS`, with jitter, which also invalidates the Redis cache entries of the rows it deletes, and scoped to artifacts so the pipe's bookkeeping rows — staged session-log segments and coordination locks — are reaped by their owners instead),
+- a periodic artifact cleanup worker (time-based retention via `ARTIFACT_CLEANUP_DAYS` measured from `created_at` which is refreshed on every read, database or cache, and interval via `ARTIFACT_CLEANUP_INTERVAL_HOURS`, with jitter, which also invalidates the Redis cache entries of the rows it deletes, deferring the delete to the next cycle rather than running it if that invalidation cannot finish, and scoped to artifacts so the pipe's bookkeeping rows — staged session-log segments and coordination locks — are reaped by their owners instead),
 - replay pruning rules (for example, tool output retention window in turns).
 
 Operator guidance:

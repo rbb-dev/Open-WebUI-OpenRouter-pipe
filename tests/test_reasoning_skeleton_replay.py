@@ -122,7 +122,8 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
     "think-delta-search-then-calls" and "call-then-thought-search" stream the reasoning as text, "call-thought-done-search"
     and "server-thought-then-call" close it with its own `output_item.done` -- and ``server_item`` names which of the
     four card-publishing arms they run ("openrouter:web_search", "openrouter:web_fetch", "openrouter:datetime" or the
-    generic "openrouter:advisor"), item id "st-<round>".
+    generic "openrouter:advisor"), item id "st-<round>". "call-thought-then-server" is the sixth: a model call, a
+    signed thought the provider closed itself, then the server item, which is the shape a deferral is measured on.
     ``signed=False`` streams reasoning with
     no signature, which Anthropic cannot take back; ``signed="at-completion"`` streams it unsigned and signs it only in
     the completed response, as Anthropic does. ``message_id=None`` sends no message id, as an API request does;
@@ -232,6 +233,34 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
                                "content": [{"type": "reasoning_text", "text": f"THOUGHT-{index}"}], "summary": []})
             if kind.endswith("-then-text"):
                 yield {"type": "response.output_text.delta", "delta": f"text {index} "}
+            yield {"type": "response.completed", "response": {"output": output, "usage": {}}}
+            return
+
+        if kind == "call-thought-then-server":
+            # A model call, then a thought the provider closed with its own `output_item.done`, then a server
+            # tool the pipe runs on the model's behalf. The server card is what the test is about: it is emitted
+            # like any other tool card, so a reader cannot tell it apart from a model call except by its id.
+            # The thought is signed so nothing is deferred by the signature gate, and the round carries no
+            # `response.output_text.delta` at all: a text delta publishes every reasoning key inline ahead of
+            # the deferral, so the box would land above both cards for a reason this shape is not about
+            # (B306), and the test would measure nothing.
+            for slot, call_id in enumerate(value):
+                call = {"type": "function_call", "call_id": call_id, "name": tool_name,
+                        "arguments": json.dumps({"q": ARGUMENT_CANARY}), "status": "completed"}
+                yield {"type": "response.output_item.done", "item": call}
+                output.append(call)
+                if slot == 0:
+                    between = f"rs-{index}-between"
+                    yield {"type": "response.output_item.done", "item": {
+                        "type": "reasoning", "id": between, "status": "completed",
+                        "content": [{"type": "reasoning_text", "text": f"BETWEEN-{index}"}],
+                        "summary": [], "signature": f"sig-{index}-between"}}
+                    output.append({"type": "reasoning", "id": between, "status": "completed",
+                                   "content": [{"type": "reasoning_text", "text": f"BETWEEN-{index}"}],
+                                   "summary": [], "signature": f"sig-{index}-between"})
+            search = _server_item_for_a_round(server_item, f"st-{index}")
+            yield {"type": "response.output_item.done", "item": search}
+            output.append(search)
             yield {"type": "response.completed", "response": {"output": output, "usage": {}}}
             return
 
