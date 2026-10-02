@@ -64,17 +64,29 @@ class CircuitBreaker:
             return
         window = self._window_seconds
         if which in ("both", "requests"):
-            for key, failures in list(self._breaker_records.items()):
-                if not failures or now - failures[-1] > window:
-                    self._breaker_records.pop(key, None)
+            expired: list[str] = []
+            for key, failures in self._breaker_records.items():
+                if failures and now - failures[-1] <= window:
+                    break
+                expired.append(key)
+            for key in expired:
+                self._breaker_records.pop(key, None)
         if which in ("both", "tools"):
-            for user_id, tools in list(self._tool_breakers.items()):
-                for tool_key in list(tools.keys()):
+            emptied: list[str] = []
+            for user_id, tools in self._tool_breakers.items():
+                dead: list[tuple[str, str]] = []
+                for tool_key in tools.keys():  # noqa: SIM118
                     failures = tools[tool_key]
-                    if not failures or now - failures[-1] > window:
-                        tools.pop(tool_key, None)
-                if not tools:
-                    self._tool_breakers.pop(user_id, None)
+                    if failures and now - failures[-1] <= window:
+                        break
+                    dead.append(tool_key)
+                for tool_key in dead:
+                    tools.pop(tool_key, None)
+                if tools:
+                    break
+                emptied.append(user_id)
+            for user_id in emptied:
+                self._tool_breakers.pop(user_id, None)
         if which == "both":
             self._sweep_after = now + window
 
@@ -142,7 +154,10 @@ class CircuitBreaker:
         if not user_id:
             return None
         now = time.time()
-        self._breaker_records[user_id].append(now)
+        window = self._breaker_records[user_id]
+        window.append(now)
+        del self._breaker_records[user_id]
+        self._breaker_records[user_id] = window
         self._sweep_expired(now, force=True, which="requests")
         return now
 
@@ -210,7 +225,14 @@ class CircuitBreaker:
         if not user_id or not tool_type:
             return
         now = time.time()
-        self._tool_breakers[user_id][(tool_type, tool_name)].append(now)
+        tools = self._tool_breakers[user_id]
+        tool_key = (tool_type, tool_name)
+        window = tools[tool_key]
+        window.append(now)
+        del tools[tool_key]
+        tools[tool_key] = window
+        del self._tool_breakers[user_id]
+        self._tool_breakers[user_id] = tools
         self._sweep_expired(now, force=True, which="tools")
 
     def reset_tool(self, user_id: str, tool_type: str, tool_name: str = "") -> None:

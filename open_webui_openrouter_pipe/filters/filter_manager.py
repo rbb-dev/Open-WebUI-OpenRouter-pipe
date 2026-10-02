@@ -218,7 +218,7 @@ class _WriteOutcome:
         self.refused = False
 
 
-async def _write_function(Functions, function_id, updates, what, logger, raised=None, *, settle: bool = True, landed_out: list | None = None) -> bool:
+async def _write_function(Functions, function_id, updates, what, logger, raised=None, *, settle: bool = True, landed_out: list | None = None, refused_out: set[str] | None = None) -> bool:
     try:
         landed = await Functions.update_function_by_id(function_id, updates)
         if landed_out is not None:
@@ -229,6 +229,8 @@ async def _write_function(Functions, function_id, updates, what, logger, raised=
         landed = None
     if landed is None:
         _REFUSED_FILTER_WRITES.add(str(function_id))
+        if refused_out is not None:
+            refused_out.add(str(function_id))
         logger.log(
             warn_level(_warned_write_refusals, f"refused:{function_id}", cooldown_s=3600),
             "Open WebUI refused the write to %s while %s; it will be retried on the next pass.",
@@ -237,11 +239,11 @@ async def _write_function(Functions, function_id, updates, what, logger, raised=
         )
         return False
     if settle:
-        await _settle_the_off_stamp(Functions, function_id, updates, landed, logger)
+        await _settle_the_off_stamp(Functions, function_id, updates, landed, logger, refused_out)
     return True
 
 
-async def _settle_the_off_stamp(Functions, function_id, updates, landed, logger) -> None:
+async def _settle_the_off_stamp(Functions, function_id, updates, landed, logger, refused_out: set[str] | None = None) -> None:
     desired_meta = updates.get("meta") if isinstance(updates, dict) else None
     if not isinstance(desired_meta, dict) or desired_meta.get(_PIPE_OFF_META_KEY) is not True:
         return
@@ -268,6 +270,7 @@ async def _settle_the_off_stamp(Functions, function_id, updates, landed, logger)
             logger,
             settle=False,
             landed_out=settled,
+            refused_out=refused_out,
         )
         if not settled or settled[0] is None:
             return
@@ -623,7 +626,6 @@ class FilterManager:
     _unresolved_image_filter_ids: frozenset[str] = frozenset()
     _unresolved_video_filter_ids: frozenset[str] = frozenset()
     _unresolved_fusion_filter_id: bool = False
-    _installed_image_gen_model: str | None = None
 
     def __init__(
         self,
@@ -641,12 +643,10 @@ class FilterManager:
         self._pipe = pipe
         self._valves = valves
         self._provider_routing_state_hash = ""
-        self._provider_routing_ids_known = True
         self.logger = logger
         self._unresolved_image_filter_ids = frozenset()
         self._unresolved_video_filter_ids = frozenset()
         self._unresolved_fusion_filter_id = False
-        self._installed_image_gen_model = None
 
     @property
     def valves(self) -> Any:
@@ -664,10 +664,6 @@ class FilterManager:
     @property
     def unresolved_fusion_filter_id(self) -> bool:
         return self._unresolved_fusion_filter_id
-
-    @property
-    def installed_image_gen_model(self) -> str | None:
-        return self._installed_image_gen_model
 
 
     @staticmethod
@@ -873,6 +869,7 @@ class FilterManager:
         rows: _FilterRows | None = None,
         tie_break_id: bool = False,
         candidates: list[Any] | None = None,
+        refused_out: set[str] | None = None,
     ) -> tuple[str | None, _WriteOutcome]:
         """Generic filter install/update lifecycle shared by all filter types.
 
@@ -916,7 +913,7 @@ class FilterManager:
         return await self._install_from_rows(
             filters, desired_source, desired_name, desired_meta, preferred_id,
             auto_install_valve, log_label, matches_candidate, primary_marker, prefer_id,
-            tie_break_id, candidates,
+            tie_break_id, candidates, refused_out,
         )
 
     def _validate_before_write(self, desired_source: str, log_label: str) -> None:
@@ -938,6 +935,7 @@ class FilterManager:
         prefer_id: str | None = None,
         tie_break_id: bool = False,
         candidates: list[Any] | None = None,
+        refused_out: set[str] | None = None,
     ) -> tuple[str | None, _WriteOutcome]:
         from open_webui.models.functions import Functions  # type: ignore
 
@@ -1020,6 +1018,7 @@ class FilterManager:
                         },
                         f"activating the inert {log_label} this pass found",
                         self.logger,
+                        refused_out=refused_out,
                     ):
                         self.logger.info("Activated inert %s: %s", log_label, candidate_id)
                         return candidate_id, outcome
@@ -1084,6 +1083,7 @@ class FilterManager:
                     {"is_active": True, "is_global": False, "name": desired_name, "meta": _merged_meta(created, desired_meta, off_by_pipe=False)},
                     f"activating the newly installed {log_label}",
                     self.logger,
+                    refused_out=refused_out,
                 ):
                     self.logger.log(
                         warn_level(_warned_stale_filter_rows, f"not_activated:{candidate_id}"),
@@ -1143,6 +1143,7 @@ class FilterManager:
                     },
                     f"updating the stored source of the installed {log_label}",
                     self.logger,
+                    refused_out=refused_out,
                 ):
                     self.logger.info("Updating %s: %s", log_label, function_id)
             else:
@@ -1162,6 +1163,7 @@ class FilterManager:
                         },
                         f"refreshing the stored settings of the installed {log_label}",
                         self.logger,
+                        refused_out=refused_out,
                     )
         elif existing_content != desired_source:
             self.logger.log(
@@ -1668,6 +1670,7 @@ class FilterManager:
         enable_subagent: bool = True,
         enable_search_models: bool = True,
         rows: _FilterRows | None = None,
+        refused_out: set[str] | None = None,
     ) -> str | None:
         """Ensure the OpenRouter Web Tools filter exists (and is up to date), returning its OWUI function id."""
 
@@ -1701,6 +1704,7 @@ class FilterManager:
             primary_marker=_OPENROUTER_WEB_TOOLS_FILTER_MARKER,
             prefer_id=_OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID,
             rows=rows,
+            refused_out=refused_out,
         )
         return function_id
 
@@ -1946,7 +1950,9 @@ class FilterManager:
     # OPENROUTER FUSION FILTER
 
     async def ensure_openrouter_fusion_filter_function_id(
-        self, rows: _FilterRows | None = None
+        self,
+        rows: _FilterRows | None = None,
+        refused_out: set[str] | None = None,
     ) -> tuple[str | None, bool]:
         """Ensure the OpenRouter Fusion filter exists (and is up to date), returning its OWUI function id."""
         from .fusion_filter_renderer import (
@@ -1984,6 +1990,7 @@ class FilterManager:
             matches_candidate=_matches,
             primary_marker=_OPENROUTER_FUSION_FILTER_MARKER,
             rows=rows,
+            refused_out=refused_out,
         )
         unresolved = not function_id and bool(
             outcome.refused
@@ -2044,11 +2051,11 @@ class FilterManager:
 
     @timed
     async def ensure_openrouter_image_gen_filter_function_id(
-        self, rows: _FilterRows | None = None
-    ) -> str | None:
+        self,
+        rows: _FilterRows | None = None,
+        refused_out: set[str] | None = None,
+    ) -> tuple[str | None, str | None]:
         """Ensure the OpenRouter Image Generation filter exists (and is up to date), returning its OWUI function id."""
-
-        self._installed_image_gen_model = None
 
         def _matches(content: str) -> bool:
             if not isinstance(content, str) or not content:
@@ -2065,8 +2072,7 @@ class FilterManager:
             await self.image_gen_filter_inputs(rows)
         )
         if model_id is None:
-            return None
-        self._installed_image_gen_model = model_id
+            return None, None
         spec = build_image_model_filter_spec(
             model_id, image_model, endpoint_record, dedicated_image_api=dedicated_image_api
         )
@@ -2102,8 +2108,9 @@ class FilterManager:
             primary_marker=_OPENROUTER_IMAGE_GEN_FILTER_MARKER,
             tie_break_id=True,
             rows=rows,
+            refused_out=refused_out,
         )
-        return function_id
+        return function_id, model_id
 
     async def image_gen_filter_selected_model(self, rows: _FilterRows | None = None) -> str | None:
         try:
@@ -2178,6 +2185,7 @@ class FilterManager:
         self,
         models: list[dict[str, Any]],
         rows: _FilterRows | None = None,
+        refused_out: set[str] | None = None,
     ) -> tuple[dict[str, str], frozenset[str]]:
         from ..models.registry import ModelFamily, OpenRouterModelRegistry
 
@@ -2235,6 +2243,7 @@ class FilterManager:
                     candidates=_sweep_candidates(
                         index, unindexed, f"VIDEO_MODEL_ID = {video_spec_id!r}"
                     ),
+                    refused_out=refused_out,
                 )
             except Exception as exc:
                 if _is_install_enumeration_failure(exc):
@@ -2272,6 +2281,7 @@ class FilterManager:
         rows: _FilterRows | None = None,
         candidates: list[Any] | None = None,
         variant_ids: tuple[str, ...] = (),
+        refused_out: set[str] | None = None,
     ) -> str | None:
         function_id, _refused = await self._install_single_video_gen_filter(
             model_id=model_id,
@@ -2279,6 +2289,7 @@ class FilterManager:
             rows=rows,
             candidates=candidates,
             variant_ids=variant_ids,
+            refused_out=refused_out,
         )
         return function_id
 
@@ -2290,6 +2301,7 @@ class FilterManager:
         rows: _FilterRows | None = None,
         candidates: list[Any] | None = None,
         variant_ids: tuple[str, ...] = (),
+        refused_out: set[str] | None = None,
     ) -> tuple[str | None, bool]:
         from .video_filter_renderer import build_video_filter_spec
 
@@ -2340,6 +2352,7 @@ class FilterManager:
             matches_candidate=_matches,
             rows=rows,
             candidates=candidates,
+            refused_out=refused_out,
         )
         return function_id, _outcome.refused
 
@@ -2498,6 +2511,7 @@ class FilterManager:
         self,
         models: list[dict[str, Any]],
         rows: _FilterRows | None = None,
+        refused_out: set[str] | None = None,
     ) -> tuple[dict[str, list[str]], frozenset[str]]:
         """Install one filter per image model and return its attachment list.
 
@@ -2576,6 +2590,7 @@ class FilterManager:
                         f"IMAGE_FILTER_MODEL_ID = {image_spec_id!r}",
                         f"IMAGE_FILTER_MODEL_ID = {canonical_id!r}",
                     ),
+                    refused_out=refused_out,
                 )
             except Exception as exc:
                 # One model's install failure costs that model its filter and nothing
@@ -2610,7 +2625,11 @@ class FilterManager:
         await self._retire_variant_image_filters(rows)
         return installed, frozenset(unresolved)
 
-    async def _retire_variant_image_filters(self, rows: _FilterRows | None = None) -> set[str]:
+    async def _retire_variant_image_filters(
+        self,
+        rows: _FilterRows | None = None,
+        refused_out: set[str] | None = None,
+    ) -> set[str]:
         """Deactivate image filters left over from the fixed-variant design.
 
         Those rows carry the image marker but no ``IMAGE_FILTER_MODEL_ID``, so nothing
@@ -2658,6 +2677,7 @@ class FilterManager:
                 {"is_active": False, "meta": switched_off_meta(row)},
                 "retiring a superseded image filter",
                 self.logger,
+                refused_out=refused_out,
             ):
                 continue
             retired.add(row_id)
@@ -2666,7 +2686,11 @@ class FilterManager:
             )
         return retired
 
-    async def _retire_variant_video_filters(self, rows: _FilterRows | None = None) -> None:
+    async def _retire_variant_video_filters(
+        self,
+        rows: _FilterRows | None = None,
+        refused_out: set[str] | None = None,
+    ) -> None:
         try:
             from open_webui.models.functions import Functions
 
@@ -2693,6 +2717,7 @@ class FilterManager:
                 {"is_active": False, "meta": switched_off_meta(row)},
                 "retiring a superseded per-model video filter",
                 self.logger,
+                refused_out=refused_out,
             ):
                 continue
             self.logger.info(
@@ -2709,6 +2734,7 @@ class FilterManager:
         rows: _FilterRows | None = None,
         variant_ids: tuple[str, ...] = (),
         candidates: list[Any] | None = None,
+        refused_out: set[str] | None = None,
     ) -> tuple[str | None, _WriteOutcome]:
         from .image_filter_renderer import build_image_model_filter_spec
 
@@ -2778,6 +2804,7 @@ class FilterManager:
             prefer_id=spec.function_id,
             rows=rows,
             candidates=candidates,
+            refused_out=refused_out,
         )
         return function_id, _outcome
 
@@ -3236,7 +3263,9 @@ __KEEP_WHAT_STILL_FITS__
 
     @timed
     async def ensure_direct_uploads_filter_function_id(
-        self, rows: _FilterRows | None = None
+        self,
+        rows: _FilterRows | None = None,
+        refused_out: set[str] | None = None,
     ) -> str | None:
         """Ensure the OpenRouter Direct Uploads companion filter exists (and is up to date), returning its OWUI function id."""
 
@@ -3266,6 +3295,7 @@ __KEEP_WHAT_STILL_FITS__
             log_label="OpenRouter Direct Uploads filter",
             matches_candidate=_matches,
             rows=rows,
+            refused_out=refused_out,
         )
         return function_id
 
@@ -3906,7 +3936,7 @@ class Filter:
         rows: _FilterRows | None = None,
         *,
         not_fetched_slugs: Iterable[str] = (),
-    ) -> dict[str, str]:
+    ) -> tuple[dict[str, str], bool]:
         """Ensure provider routing filters exist for specified models.
 
         Creates, updates, or disables filters based on current valve configuration.
@@ -3921,14 +3951,14 @@ class Filter:
                 Functions,
             )
         except ImportError:
-            return {}
+            return {}, False
         except Exception:
             logging.getLogger(__name__).warning(
                 "open_webui.models.functions failed to import for a reason other than absence; "
                 "the features that depend on it are now disabled",
                 exc_info=True,
             )
-            return {}
+            return {}, False
 
         # Parse model lists
         admin_models = {m.strip() for m in admin_models_csv.split(",") if m.strip()}
@@ -3958,19 +3988,19 @@ class Filter:
             else:
                 model_visibility[slug] = "user"
 
-        self._provider_routing_ids_known = True
+        ids_known = True
         try:
             if rows is not None and rows.all_rows is not None:
                 all_filters = rows.all_rows
             else:
                 all_filters = await Functions.get_functions_by_type("filter", active_only=False)
         except Exception:
-            self._provider_routing_ids_known = False
+            ids_known = False
             self.logger.exception(
                 "Cannot enumerate OWUI filter functions; aborting provider routing sync "
                 "to avoid creating duplicate filters"
             )
-            return {}
+            return {}, ids_known
 
         filters_by_slug: dict[str, list[Any]] = {}
         for f in all_filters:
@@ -4081,7 +4111,7 @@ class Filter:
                 "Returning %d existing provider routing filter mappings",
                 len(slug_to_filter_id),
             )
-            return slug_to_filter_id
+            return slug_to_filter_id, ids_known
 
         if missing_filters:
             self.logger.info(
@@ -4274,7 +4304,7 @@ class Filter:
                             slug_to_filter_id[slug] = candidate_id
                         else:
                             writes_ok = False
-                            self._provider_routing_ids_known = False
+                            ids_known = False
                             removed = await Functions.delete_function_by_id(candidate_id)
                             if not removed:
                                 self.logger.warning(
@@ -4285,7 +4315,7 @@ class Filter:
                                 )
                     else:
                         writes_ok = False
-                        self._provider_routing_ids_known = False
+                        ids_known = False
                         self.logger.warning(
                             "Open WebUI refused to create the provider routing filter for %r; "
                             "the models it covers keep the filter they already have, and the "
@@ -4350,4 +4380,4 @@ class Filter:
             len(slug_to_filter_id),
             slug_to_filter_id,
         )
-        return slug_to_filter_id
+        return slug_to_filter_id, ids_known

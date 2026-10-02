@@ -123,19 +123,28 @@ the breaker, 503 for the other four.
 
 **A channel card is reduced, a saved-chat card is not.** Every member of a channel can
 read what the pipe writes there, so a card that reaches a channel is rendered as though
-thirteen of its placeholders were empty: `session_id`, `user_id`, `detail`,
+eighteen of its placeholders were empty: `session_id`, `user_id`, `detail`,
 `sanitized_detail`, `reason`, `openrouter_message`, `upstream_message`,
 `moderation_reasons`, `flagged_excerpt`, `raw_body`, `metadata_json`,
-`provider_raw_json` and `body_excerpt`. Those are the requester's identifiers, the text they wrote and the
+`provider_raw_json`, `body_excerpt`, `required_cost`, `account_balance`,
+`model_id_filter`, `free_model_filter` and `tool_calling_filter`. The first thirteen are the
+requester's identifiers, the text they wrote and the
 provider's own prose about it — and a provider's rejection body routinely quotes the
 prompt back, so the prose *can* be their words. `body_excerpt` is on the list for the
 same reason `raw_body` is: it is the part of a reply the pipe could not parse, which is
 the part an attacker chooses, and a WAF challenge page is not something to broadcast to a
-room. The reduction happens at the render, on
+room. The last five are not the requester's at all but the deployment's own: what one turn
+would cost and what the account has left, and the three model-filter settings the
+orchestrator copies straight out of the valves, `MODEL_ID` among them, whose ids an admin
+may have deliberately kept off the picker. Both subjects are somebody else's data in a
+room of other people, so the reduction covers both. The reduction happens at the render, on
 every path that can reach a channel, and it is keyed on the surface rather than on the
 template: an admin's custom template gets the same answer, and there is no valve to put
 the ids back. `error_id`, the model, the provider, `openrouter_code`, `status_code`, the
-limits and the rate or balance fields still render, so the card still says what failed.
+limits and the rate-limit fields still render, so the card still says what failed. The
+account's balance, what one request would have cost, and the three filter settings the
+admin chose are withheld with the rest: they are the deployment's own figures, not
+anything about the request that failed.
 
 **A temporary chat's card is reduced by one key, and for a different reason.** A
 `temporary:` or `local:` chat's `session_id` is withheld on the same terms, and the rest
@@ -216,7 +225,7 @@ These templates are used for the `OpenRouterAPIError` path (and for certain HTTP
 
 **A stored value the current release no longer accepts degrades one setting at a time, and says so.** This is the other way a configuration is not what the operator thinks it is. The trigger is a release, not an edit: a bound tightened, a `Literal` member removed or a type narrowed, against a row an installation already wrote. It used to be a total outage instead — the pipe refused to load at all, and Open WebUI re-raised that on every chat, so every user on every worker got a failure with no message naming a setting. It now leaves that one setting at its default, writes a warning naming the field, the stored value and the default it read as, and leaves every other saved value untouched. The warning is the whole signal on an installation with no Config tab, so it is WARNING on first sighting and after a five-minute cooldown, and DEBUG in between rather than a flood on a path that runs per request. The other half of that signal is the setting this release no longer publishes at all — a name a release renamed or removed, which the stored row still carries and which is read by nobody. That name is reported in the same warning, and its stored value is never quoted with it: the name is all the operator needs to delete it from the row, and a name this release does not publish has no annotation left to decide that its value was a secret. Secret valves are the exception in both directions: they are never replaced by their default, and neither their stored value nor their default is ever written to the log. The row repairs itself on the next save from Open WebUI's own valves panel; the Open WebUI *sync* route is the one door that does not repair it, so an operator who repairs a stale row must do it from that panel.
 
-**A filter write the database refused is surfaced as a database fault, not a setting.** Open WebUI's `Functions.update_function_by_id` returns `None` — it never raises — both when the commit failed and when the row is gone, so a write that did not land is invisible to any caller that only wraps the call in `try`/`except`. Every switch-off, switch-on and retirement write the pipe makes goes through one helper that reads that return value, and when the answer is `None` it records the row, names the operation it was performing, and says the write will be retried on the next pass. The message is WARNING the first time an hour and DEBUG after that, per row, so a standing fault is one line rather than one per pass. **What to look for:** a `Open WebUI refused the write to <row id> while <operation>` line. `<operation>` is the only clue about *which* write was refused — the refusal set is matched by row-id prefix, so a retirement and an install of the same family read alike at that line, and the operation is what tells them apart. **What it means:** a database fault, not a valve to change; no setting reaches it. **What to do:** check the Open WebUI database's health and disk space, then let the next pass retry, or restart the worker to force one sooner.
+**A filter write the database refused is surfaced as a database fault, not a setting.** Open WebUI's `Functions.update_function_by_id` returns `None` — it never raises — both when the commit failed and when the row is gone, so a write that did not land is invisible to any caller that only wraps the call in `try`/`except`. The diagnostic that names the row as a database fault rather than a setting to change reads only the refusals **that build** met, so an overlapping build — a second model-list refresh, or a second installed copy in the same process — cannot turn a refused install into "enable the install valve". Every switch-off, switch-on and retirement write the pipe makes goes through one helper that reads that return value, and when the answer is `None` it records the row, names the operation it was performing, and says the write will be retried on the next pass. The message is WARNING the first time an hour and DEBUG after that, per row, so a standing fault is one line rather than one per pass. **What to look for:** a `Open WebUI refused the write to <row id> while <operation>` line. `<operation>` is the only clue about *which* write was refused — the refusal set is matched by row-id prefix, so a retirement and an install of the same family read alike at that line, and the operation is what tells them apart. **What it means:** a database fault, not a valve to change; no setting reaches it. **What to do:** check the Open WebUI database's health and disk space, then let the next pass retry, or restart the worker to force one sooner.
 
 ### B) Generic templated errors (network/5xx/internal)
 

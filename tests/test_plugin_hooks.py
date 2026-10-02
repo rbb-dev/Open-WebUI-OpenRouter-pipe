@@ -542,6 +542,29 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
                 for _ in range(3):
                     await pipe.pipes()
 
+            # Sixth phase: the image-gen selected-model reader. It is the AUTO_ATTACH-only
+            # arm of pipes() that reads it now -- on the AUTO_INSTALL arm the value came
+            # out of the ensure earlier in the same pass, so nothing here can raise and
+            # the site is unreachable in every phase above by construction. Same manager
+            # stub as the phases before it, same once-per-cause rule.
+            cast(Any, pipe)._ensure_filter_manager = _explode
+            pipe.valves.AUTO_INSTALL_IMAGE_GEN_FILTER = False
+            pipe.valves.AUTO_ATTACH_IMAGE_GEN_FILTER = True
+            pipe_module._warned_pipes_maintenance.discard("image_gen_model:RuntimeError")
+            with aioresponses() as http:
+                http.get(
+                    "https://openrouter.ai/api/v1/models",
+                    exception=RuntimeError("catalog endpoint down"),
+                    repeat=True,
+                )
+                http.get(
+                    "https://openrouter.ai/api/v1/endpoints/zdr",
+                    exception=RuntimeError("ZDR endpoint down"),
+                    repeat=True,
+                )
+                for _ in range(3):
+                    await pipe.pipes()
+
             emitted = _warnings()
             armed = {c.split(":", 1)[0] for c in pipe_module._warned_pipes_maintenance}
     finally:

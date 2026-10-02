@@ -129,7 +129,17 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # is read from `open_webui.env` and never from `open_webui.utils.auth`, which re-exports it
 # but is a bare module under the test harness -- a name read from there would raise inside
 # the guarded import and turn every call into a silent 401.
-_EXPECTED_OWUI_IMPORTS = (25, 98)
+# 98 -> 99 (B550/H2762-1): the anti-plaintext guard reads the raw `Function.valves` column
+# through the type Open WebUI declares it with, so `_owui_valve_column_type`
+# (storage/persistence.py) imports `JSONField` from `open_webui.internal.db` lazily,
+# beside the module's existing lazy import of that same module for its engine. A host
+# whose `internal.db` cannot supply the type keeps the bare reflection rather than
+# crashing, which is the fallback the helper returns None for.
+# Measured on this merged tree: 25 module-scope and 99 lazy. The count is what the scan
+# finds after the change, not a floor and not either side's arithmetic -- the 98 above is
+# B918's own import on this tree, and B550's earlier port recorded (25, 98) against a
+# tree that did not yet carry T494's or B918's lazy import.
+_EXPECTED_OWUI_IMPORTS = (25, 99)
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),

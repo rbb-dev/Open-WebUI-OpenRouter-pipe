@@ -2085,9 +2085,10 @@ class Pipe:
             except Exception as exc:
                 level = warn_level(_warned_pipes_maintenance, f"fusion:{type(exc).__name__}")
                 self.logger.log(level, "AUTO_INSTALL_FUSION_FILTER failed: %s", exc, exc_info=True)
+        image_gen_installed_model = ""
         if self.valves.AUTO_INSTALL_IMAGE_GEN_FILTER and self.valves.ENABLE_IMAGE_GENERATION:
             try:
-                await self._ensure_filter_manager().ensure_openrouter_image_gen_filter_function_id(
+                _, image_gen_installed_model = await self._ensure_filter_manager().ensure_openrouter_image_gen_filter_function_id(
                     install_rows
                 )
             except Exception as exc:
@@ -2147,9 +2148,7 @@ class Pipe:
         ):
             try:
                 if self.valves.AUTO_INSTALL_IMAGE_GEN_FILTER:
-                    image_gen_filter_model = (
-                        self._ensure_filter_manager().installed_image_gen_model
-                    ) or ""
+                    image_gen_filter_model = image_gen_installed_model or ""
                 else:
                     image_gen_filter_model = (
                         await self._ensure_filter_manager().image_gen_filter_selected_model(read_rows)

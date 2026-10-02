@@ -720,6 +720,8 @@ _CHANNEL_WITHHELD_TEMPLATE_KEYS = frozenset({
     "flagged_excerpt", "raw_body", "metadata_json", "provider_raw_json", "body_excerpt",
     "detail", "sanitized_detail", "reason", "openrouter_message", "upstream_message",
     "moderation_reasons",
+    "required_cost", "account_balance",
+    "model_id_filter", "free_model_filter", "tool_calling_filter",
 })
 
 

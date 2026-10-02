@@ -1384,7 +1384,13 @@ async def transform_messages_to_input(
             if (message.get("role") or "").lower() == "user"
             and turn_indices[position] is not None
             and turn_indices[position] == total_turns - 1
-            and not (position and is_tool_image_handoff(messages[position - 1], message))
+            and not (
+                position
+                and (
+                    is_tool_image_handoff(messages[position - 1], message)
+                    or _handoff_back(messages, position)
+                )
+            )
         ]
         last_person_position = current_turn_people[-1] if current_turn_people else -1
         tool_handoff_positions = [
@@ -1392,7 +1398,10 @@ async def transform_messages_to_input(
             for position, message in enumerate(messages)
             if (message.get("role") or "").lower() == "user"
             and position
-            and is_tool_image_handoff(messages[position - 1], message)
+            and (
+                is_tool_image_handoff(messages[position - 1], message)
+                or _handoff_back(messages, position)
+            )
         ]
         last_tool_handoff_index = tool_handoff_positions[-1] if tool_handoff_positions else -1
         person_images_this_turn = False
@@ -1663,7 +1672,7 @@ async def transform_messages_to_input(
                     "call_id": call_id,
                     "output": tool_content_text,
                 }
-                if pruning_turns > 0 and _is_old_turn(msg_turn_index, threshold=prune_before_turn):
+                if not round_exempt and pruning_turns > 0 and _is_old_turn(msg_turn_index, threshold=prune_before_turn):
                     _prune_tool_output(tool_item, marker=None, turn_index=msg_turn_index, retention_turns=pruning_turns)
                 openai_input.append(tool_item)
                 if tool_pictures and not _handoff_ahead(messages, idx):
@@ -3191,14 +3200,15 @@ async def transform_messages_to_input(
                             replay_round_name = _replay_round_name(
                                 item_type, str(item.get("name") or ""), item.get("call_id"), replay_pending
                             )
+                            replay_round_exempt = _round_keeps_its_ask_user_answer(
+                                item.get("call_id"),
+                                replay_round_name,
+                                ask_user_names,
+                                recorded_ask_user_rounds,
+                                stamped_ask_user_rounds,
+                            )
                             if item_type == "function_call_output" and not (
-                                _round_keeps_its_ask_user_answer(
-                                    item.get("call_id"),
-                                    replay_round_name,
-                                    ask_user_names,
-                                    recorded_ask_user_rounds,
-                                    stamped_ask_user_rounds,
-                                )
+                                replay_round_exempt
                                 or (idx in window_armed_at and not is_picture_output(item.get("output")))
                             ):
                                 last_image_blocks, last_image_turn = [], None
@@ -3215,7 +3225,8 @@ async def transform_messages_to_input(
                                     continue
                             for part in _as_replayed(item, fallback_id=segment["marker"]):
                                 if (
-                                    is_old_message
+                                    not replay_round_exempt
+                                    and is_old_message
                                     and pruning_turns > 0
                                     and prune_before_turn is not None
                                 ):

@@ -1886,12 +1886,7 @@ class ModelCatalogManager:
                 )
 
             semaphore = asyncio.Semaphore(10)
-            from ..filters.filter_manager import (
-                _REFUSED_FILTER_WRITES,
-                a_filter_write_was_refused,
-            )
-
-            _REFUSED_FILTER_WRITES.clear()
+            refused_this_build: set[str] = set()
             install_rows = await self._pipe._read_filter_rows()
             if install_rows is not None:
                 install_rows = await self._pipe._with_active_rows(install_rows)
@@ -1913,6 +1908,7 @@ class ModelCatalogManager:
                         enable_subagent=web_valves.ENABLE_SUBAGENT,
                         enable_search_models=web_valves.ENABLE_SEARCH_MODELS,
                         rows=install_rows,
+                        refused_out=refused_this_build,
                     )
                 except Exception as exc:
                     self.logger.log(
@@ -1931,7 +1927,7 @@ class ModelCatalogManager:
                 valves.AUTO_INSTALL_IMAGE_GEN_FILTER or valves.AUTO_ATTACH_IMAGE_GEN_FILTER
             ) and valves.ENABLE_IMAGE_GENERATION:
                 try:
-                    image_gen_filter_function_id = await self._pipe._ensure_filter_manager().ensure_openrouter_image_gen_filter_function_id(rows=install_rows)
+                    image_gen_filter_function_id, _ = await self._pipe._ensure_filter_manager().ensure_openrouter_image_gen_filter_function_id(rows=install_rows, refused_out=refused_this_build)
                 except Exception as exc:
                     self.logger.log(
                         _ensure_failure_level(_warned_image_gen_filter_ensure, "Image Gen", exc),
@@ -1953,7 +1949,7 @@ class ModelCatalogManager:
                 _video_filter_manager = self._pipe._ensure_filter_manager()
                 try:
                     video_gen_filter_function_ids, video_filter_ids_unresolved = (
-                        await _video_filter_manager.ensure_openrouter_video_gen_filter_function_ids(models, rows=install_rows)
+                        await _video_filter_manager.ensure_openrouter_video_gen_filter_function_ids(models, rows=install_rows, refused_out=refused_this_build)
                     )
                 except Exception as exc:
                     self.logger.log(
@@ -1964,7 +1960,7 @@ class ModelCatalogManager:
                     video_family_off = False
             elif not valves.ENABLE_VIDEO_GENERATION:
                 try:
-                    await self._pipe._ensure_filter_manager()._retire_variant_video_filters(rows=install_rows)
+                    await self._pipe._ensure_filter_manager()._retire_variant_video_filters(rows=install_rows, refused_out=refused_this_build)
                 except Exception as exc:
                     self.logger.debug(
                         "Retiring superseded video filters failed: %s", exc, exc_info=True
@@ -1981,7 +1977,7 @@ class ModelCatalogManager:
                 _image_filter_manager = self._pipe._ensure_filter_manager()
                 try:
                     image_filter_function_ids, image_filter_ids_unresolved = (
-                        await _image_filter_manager.ensure_openrouter_image_filter_function_ids(models, rows=install_rows)
+                        await _image_filter_manager.ensure_openrouter_image_filter_function_ids(models, rows=install_rows, refused_out=refused_this_build)
                     )
                 except Exception as exc:
                     self.logger.warning(
@@ -1996,7 +1992,7 @@ class ModelCatalogManager:
                 # values into every request.
                 try:
                     retired_image_filter_ids = frozenset(
-                        await self._pipe._ensure_filter_manager()._retire_variant_image_filters(rows=install_rows)
+                        await self._pipe._ensure_filter_manager()._retire_variant_image_filters(rows=install_rows, refused_out=refused_this_build)
                         or ()
                     )
                 except Exception as exc:
@@ -2013,7 +2009,7 @@ class ModelCatalogManager:
                 _fusion_filter_manager = self._pipe._ensure_filter_manager()
                 try:
                     fusion_filter_function_id, fusion_filter_unresolved = (
-                        await _fusion_filter_manager.ensure_openrouter_fusion_filter_function_id(rows=install_rows)
+                        await _fusion_filter_manager.ensure_openrouter_fusion_filter_function_id(rows=install_rows, refused_out=refused_this_build)
                     )
                 except Exception as exc:
                     self.logger.log(
@@ -2034,7 +2030,7 @@ class ModelCatalogManager:
                 or valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER
             ):
                 try:
-                    direct_uploads_filter_function_id = await self._pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id(rows=install_rows)
+                    direct_uploads_filter_function_id = await self._pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id(rows=install_rows, refused_out=refused_this_build)
                 except Exception as exc:
                     self.logger.log(
                         _ensure_failure_level(
@@ -2047,7 +2043,7 @@ class ModelCatalogManager:
 
             if valves.AUTO_ATTACH_WEB_TOOLS_FILTER and not every_web_tool_is_off(valves):
                 if not web_tools_filter_function_id:
-                    if a_filter_write_was_refused(_OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID):
+                    if any(fid.startswith(_OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID) for fid in refused_this_build):
                         if valves.AUTO_INSTALL_WEB_TOOLS_FILTER:
                             self.logger.warning(
                                 "AUTO_ATTACH_WEB_TOOLS_FILTER is enabled but the OpenRouter Web Tools filter is "
@@ -2079,7 +2075,7 @@ class ModelCatalogManager:
 
             if valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER:
                 if not direct_uploads_filter_function_id:
-                    if a_filter_write_was_refused(_DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID):
+                    if any(fid.startswith(_DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID) for fid in refused_this_build):
                         if valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER:
                             self.logger.warning(
                                 "AUTO_ATTACH_DIRECT_UPLOADS_FILTER is enabled but the OpenRouter Direct Uploads filter is "
@@ -2162,7 +2158,7 @@ class ModelCatalogManager:
                 )
                 if provider_map:
                     try:
-                        provider_routing_filter_map = await self._pipe._ensure_filter_manager().ensure_provider_routing_filters(
+                        provider_routing_filter_map, pr_answered = await self._pipe._ensure_filter_manager().ensure_provider_routing_filters(
                             admin_routing_models,
                             user_routing_models,
                             provider_map,
@@ -2172,13 +2168,13 @@ class ModelCatalogManager:
                         )
                         if not isinstance(provider_routing_filter_map, dict):
                             provider_routing_filter_map = {}
+                            pr_answered = False
                     except Exception as exc:
                         pr_ids_known = False
                         self.logger.warning("Provider routing filter generation failed: %s", exc, exc_info=True)
                         provider_routing_filter_map = {}
-                    pr_ids_known = pr_ids_known and bool(
-                        self._pipe._ensure_filter_manager()._provider_routing_ids_known
-                    )
+                        pr_answered = False
+                    pr_ids_known = pr_ids_known and pr_answered
                 else:
                     pr_ids_known = False
                     self.logger.warning(

@@ -200,11 +200,32 @@ REPLY_MEMORY_MAX_BYTES = 64 * 1024 * 1024
 class ArtifactStoreUnavailable(RuntimeError):
     pass
 
+
+class _SealedValveRow(Exception):
+    pass
+
 # Type alias for Redis client
 if TYPE_CHECKING:
     from redis.asyncio import Redis as _RedisClient
 else:
     _RedisClient = Any
+
+
+def _db_retryer() -> AsyncRetrying:
+    return AsyncRetrying(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=0.5, min=0.5, max=2),
+        retry=retry_if_exception_type(Exception),
+        reraise=True,
+    )
+
+
+def _owui_valve_column_type() -> Any:
+    try:
+        from open_webui.internal.db import JSONField  # type: ignore
+    except (ImportError, AttributeError):
+        return None
+    return JSONField()
 
 
 def _encode_crockford(value: int, length: int) -> str:
@@ -697,10 +718,17 @@ class ArtifactStore:
         session_factory = self._session_factory
         if session_factory is None:
             return None, False
-        metadata = MetaData()
+        schema = self._owui_schema
+        metadata = MetaData(schema=schema) if schema else MetaData()
         table = Table("function", metadata, autoload_with=session_factory.kw["bind"])
+        valves_column = _owui_valve_column_type()
+        if valves_column is not None:
+            table.c.valves.type = valves_column
         with _db_session(session_factory) as session:
-            return session.query(table.c.valves).filter(table.c.id == self.id).scalar(), True
+            try:
+                return session.query(table.c.valves).filter(table.c.id == self.id).scalar(), True
+            except (ValueError, TypeError) as exc:
+                raise _SealedValveRow(str(exc)) from exc
 
     def _stored_valve_row_is_unreadable(self, stored: Any) -> bool:
         secret = _webui_secret_key()
@@ -710,6 +738,8 @@ class ArtifactStore:
             return memo[memo_key]
         try:
             raw, reached = self._raw_valve_column()
+        except _SealedValveRow:
+            unreadable = True
         except Exception:
             self.logger.debug(
                 "Raw valve column could not be read while arming the artifact guard (pipe_id=%s)",
@@ -717,9 +747,10 @@ class ArtifactStore:
                 exc_info=True,
             )
             return False
-        if not reached:
-            return False
-        unreadable = not raw_valve_column_decodes(raw)
+        else:
+            if not reached:
+                return False
+            unreadable = not raw_valve_column_decodes(raw)
         if len(memo) >= _STORED_VALVE_UNREADABLE_MEMO_MAX:
             memo.clear()
         memo[memo_key] = unreadable
@@ -853,6 +884,7 @@ class ArtifactStore:
         self._artifact_table_name: str | None = None
         self._db_executor: ThreadPoolExecutor | None = None
         self._artifact_store_signature: tuple[str, str] | None = None
+        self._owui_schema: str | None = None
         self._closed: bool = False
         self._store_lock = threading.Lock()
 
@@ -1162,6 +1194,7 @@ class ArtifactStore:
         item_model = type(class_name, (base,), attrs)
 
         schema_name = item_model.__table__.schema
+        self._owui_schema = schema_name.strip() or None if isinstance(schema_name, str) else None
         table_exists = True
         try:
             table_exists = sa_inspect(engine).has_table(table_name, schema=schema_name)
@@ -2146,12 +2179,7 @@ class ArtifactStore:
             if not rows:
                 return []
 
-        retryer = AsyncRetrying(
-            stop=stop_after_attempt(3),
-            wait=wait_exponential(multiplier=0.5, min=0.5, max=2),
-            retry=retry_if_exception_type(Exception),
-            reraise=True,
-        )
+        retryer = _db_retryer()
         loop = asyncio.get_running_loop()
         async for attempt in retryer:
             with attempt:
@@ -2475,12 +2503,7 @@ class ArtifactStore:
         *,
         producers: dict[str, str] | None = None,
     ) -> dict[str, dict]:
-        retryer = AsyncRetrying(
-            stop=stop_after_attempt(3),
-            wait=wait_exponential(multiplier=0.5, min=0.5, max=2),
-            retry=retry_if_exception_type(Exception),
-            reraise=True,
-        )
+        retryer = _db_retryer()
         loop = asyncio.get_running_loop()
         async for attempt in retryer:
             with attempt:
@@ -2533,20 +2556,37 @@ class ArtifactStore:
             return False
 
         loop = asyncio.get_running_loop()
+        delete_call = functools.partial(self._delete_artifacts_sync, ids, keep_message_id)
+        kept: set[str] = set()
         try:
-            kept = await loop.run_in_executor(
-                self._db_executor, functools.partial(self._delete_artifacts_sync, ids, keep_message_id)
-            )
+            async for attempt in _db_retryer():
+                with attempt:
+                    kept = await loop.run_in_executor(self._db_executor, delete_call)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self._record_db_failure(user_id)
+            if user_id:
+                self._record_db_failure(user_id)
             self.logger.warning(
-                "Artifact delete failed; keeping %d row(s) for the next turn: %s",
+                "Artifact delete failed: %d stored row(s) were not cleaned up and will be "
+                "offered again on a later turn: %s",
                 len(ids),
                 exc,
                 exc_info=True,
             )
+            if self._emit_notification:
+                context = self._TOOL_CONTEXT.get() if self._TOOL_CONTEXT else None
+                try:
+                    await self._emit_notification(
+                        context.event_emitter if context else None,
+                        "Some earlier stored items for this conversation were not cleaned "
+                        "up; they are still stored and will be offered again on a later turn.",
+                        level="warning",
+                    )
+                except Exception:
+                    self.logger.debug(
+                        "Artifact delete fault notice could not be delivered", exc_info=True
+                    )
             return False
         if keep_message_id:
             kept = kept | {row_id for row_id, owner in owners.items() if owner == keep_message_id}
@@ -2754,6 +2794,7 @@ class ArtifactStore:
 
             entries_by_row: list[tuple[str, dict[str, Any]]] = []
             committed: set[str] = set()
+            returned_to_queue = False
             try:
                 malformed = 0
                 batch_size = self.valves.DB_BATCH_SIZE
@@ -2863,6 +2904,7 @@ class ArtifactStore:
                         )
                     try:
                         await self._redis_requeue_entries(uncommitted)
+                        returned_to_queue = True
                         self.logger.debug(
                             "Re-queued %d artifact(s) after an incomplete flush (reason=%s)",
                             len(uncommitted),
@@ -2880,8 +2922,9 @@ class ArtifactStore:
                     self.logger.debug("✅ Successfully flushed %d artifacts to DB", len(rows))
                 if failure:
                     raise RuntimeError(failure) from None
-            except asyncio.CancelledError:
-                await self._return_popped_entries_on_cancel(entries_by_row, committed)
+            except BaseException:
+                if not returned_to_queue:
+                    await self._return_popped_entries_on_cancel(entries_by_row, committed)
                 raise
         finally:
             if lock_acquired and self._redis_client:

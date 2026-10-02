@@ -2127,7 +2127,7 @@ class TestProviderRoutingEndToEndOverlay:
         assert provider_map["example/null-model"]["providers"] == ["alpha", "beta", "gamma"]
 
         filter_manager = pipe._ensure_filter_manager()
-        mapping = await filter_manager.ensure_provider_routing_filters(
+        mapping, _ = await filter_manager.ensure_provider_routing_filters(
             "example/null-model",
             "",
             provider_map,
@@ -2197,7 +2197,7 @@ class TestProviderRoutingHashPersistence:
                 "provider_names": {"alpha": "Alpha", "beta": "Beta"},
             }
         }
-        first = await filter_manager.ensure_provider_routing_filters(
+        first, _ = await filter_manager.ensure_provider_routing_filters(
             "example/steady-model", "", provider_map, [], "openrouter"
         )
         assert "example/steady-model" in first
@@ -2210,7 +2210,7 @@ class TestProviderRoutingHashPersistence:
         monkeypatch.setattr(_FakeFunctionsTable, "get_functions_by_type", _boom)
         filter_manager._provider_routing_state_hash = ""
 
-        result = await filter_manager.ensure_provider_routing_filters(
+        result, _ = await filter_manager.ensure_provider_routing_filters(
             "example/steady-model", "", provider_map, [], "openrouter"
         )
         assert result == {}
@@ -2272,7 +2272,7 @@ class TestProviderRoutingHashPersistence:
             }
         }
         filter_manager = pipe_instance_async._ensure_filter_manager()
-        mapping = await filter_manager.ensure_provider_routing_filters(
+        mapping, _ = await filter_manager.ensure_provider_routing_filters(
             slug, "", provider_map, [], "openrouter"
         )
         assert mapping[slug] == "openrouter_provider_example_dup_model"
@@ -2302,7 +2302,7 @@ class TestProviderRoutingHashPersistence:
             }
         }
         filter_manager = pipe_instance_async._ensure_filter_manager()
-        mapping = await filter_manager.ensure_provider_routing_filters(
+        mapping, _ = await filter_manager.ensure_provider_routing_filters(
             "example/plain-model", "", provider_map, [], "openrouter"
         )
         assert "v1" not in mapping
@@ -2326,12 +2326,12 @@ class TestProviderRoutingHashPersistence:
                 "provider_names": {"alpha": "Alpha"},
             }
         }
-        first = await filter_manager.ensure_provider_routing_filters(slug, "", provider_map, [], "openrouter")
+        first, _ = await filter_manager.ensure_provider_routing_filters(slug, "", provider_map, [], "openrouter")
         assert slug in first
         created = len(_FakeFunctionsTable.store)
 
         filter_manager._provider_routing_state_hash = ""
-        second = await filter_manager.ensure_provider_routing_filters(slug, "", provider_map, [], "openrouter")
+        second, _ = await filter_manager.ensure_provider_routing_filters(slug, "", provider_map, [], "openrouter")
         assert second == first
         assert len(_FakeFunctionsTable.store) == created
         assert not any(k.endswith("_1") for k in _FakeFunctionsTable.store)
@@ -2348,21 +2348,21 @@ class TestProviderRoutingHashPersistence:
                 "provider_names": {"alpha": "Alpha", "beta": "Beta"},
             }
         }
-        first = await filter_manager.ensure_provider_routing_filters(
+        first, _ = await filter_manager.ensure_provider_routing_filters(
             "example/steady-model", "", provider_map, [], "openrouter"
         )
         assert "example/steady-model" in first
         hash_after_create = filter_manager._provider_routing_state_hash
         assert hash_after_create
 
-        second = await filter_manager.ensure_provider_routing_filters(
+        second, _ = await filter_manager.ensure_provider_routing_filters(
             "example/steady-model", "", provider_map, [], "openrouter"
         )
         assert second == first
         assert filter_manager._provider_routing_state_hash == hash_after_create
 
         filter_manager._provider_routing_state_hash = ""
-        third = await filter_manager.ensure_provider_routing_filters(
+        third, _ = await filter_manager.ensure_provider_routing_filters(
             "example/steady-model", "", provider_map, [], "openrouter"
         )
         assert third == first
@@ -2380,14 +2380,14 @@ class TestProviderRoutingHashPersistence:
                 "provider_names": {"alpha": "Alpha", "beta": "Beta"},
             }
         }
-        first = await filter_manager.ensure_provider_routing_filters(
+        first, _ = await filter_manager.ensure_provider_routing_filters(
             "example/steady-model, example/typo-model", "", provider_map, [], "openrouter"
         )
         assert "example/steady-model" in first
         assert "example/typo-model" not in first
         updates_after_first = _FakeFunctionsTable.update_count
 
-        second = await filter_manager.ensure_provider_routing_filters(
+        second, _ = await filter_manager.ensure_provider_routing_filters(
             "example/steady-model, example/typo-model", "", provider_map, [], "openrouter"
         )
         assert second == first
@@ -2431,7 +2431,7 @@ class TestProviderRoutingHashPersistence:
             for slug in (routable, undeliverable)
         }
 
-        mapping = await filter_manager.ensure_provider_routing_filters(
+        mapping, _ = await filter_manager.ensure_provider_routing_filters(
             f"{routable},{undeliverable}", "", provider_map, [], "openrouter"
         )
 
@@ -2482,7 +2482,7 @@ class TestProviderRoutingHashPersistence:
         }
         csv = f"{routable},{undeliverable}"
 
-        first = await filter_manager.ensure_provider_routing_filters(
+        first, _ = await filter_manager.ensure_provider_routing_filters(
             csv, "", provider_map, [], "openrouter"
         )
         assert undeliverable in first
@@ -2494,7 +2494,7 @@ class TestProviderRoutingHashPersistence:
               "allowed_passthrough_parameters": []}]
         )
 
-        second = await filter_manager.ensure_provider_routing_filters(
+        second, _ = await filter_manager.ensure_provider_routing_filters(
             csv, "", provider_map, [], "openrouter"
         )
 
@@ -2505,7 +2505,7 @@ class TestProviderRoutingHashPersistence:
             "transport was found to carry none of those settings"
         )
 
-        third = await filter_manager.ensure_provider_routing_filters(
+        third, _ = await filter_manager.ensure_provider_routing_filters(
             csv, "", provider_map, [], "openrouter"
         )
         assert undeliverable not in third
@@ -2757,7 +2757,7 @@ class TestInstalledRowMatchesTheRenderedModule:
             }
         }
         manager = pipe_instance_async._ensure_filter_manager()
-        mapping = await manager.ensure_provider_routing_filters(
+        mapping, _ = await manager.ensure_provider_routing_filters(
             admin_csv, user_csv, provider_map, [], "openrouter"
         )
         assert "example/toggle-model" in mapping, "the filter was never installed"
@@ -3161,7 +3161,8 @@ async def test_a_valve_read_that_failed_leaves_the_installed_filter_alone():
             "a read that raised must be distinguishable from a valve that is unset"
         )
         assert await manager.image_gen_filter_inputs() == (None, None, None, False)
-        assert await manager.ensure_openrouter_image_gen_filter_function_id() is None
+        mapping, _ = await manager.ensure_openrouter_image_gen_filter_function_id()
+        assert mapping is None
         assert manager._ensure_filter_installed.await_count == 0, (
             "a read that failed must not rewrite the installed row"
         )
@@ -3170,10 +3171,8 @@ async def test_a_valve_read_that_failed_leaves_the_installed_filter_alone():
         patched.setattr(Functions, "get_functions_by_type", AsyncMock(return_value=[installed]))
         patched.setattr(Functions, "get_function_valves_by_id", AsyncMock(return_value={}))
         assert await manager.image_gen_filter_selected_model() == ""
-        assert (
-            await manager.ensure_openrouter_image_gen_filter_function_id()
-            == "openrouter_image_gen"
-        )
+        mapping, _ = await manager.ensure_openrouter_image_gen_filter_function_id()
+        assert mapping == "openrouter_image_gen"
         assert manager._ensure_filter_installed.await_count == 1, (
             "a valve that is genuinely unset must still install for the default model"
         )

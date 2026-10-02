@@ -414,6 +414,7 @@ class OpenRouterModelRegistry:
     _specs: ClassVar[dict[str, dict[str, Any]]] = {}
     _id_map: ClassVar[dict[str, str]] = {}
     _zdr_model_ids: set[str] | None = None
+    _zdr_stamped_specs: dict[str, dict[str, Any]] | None = None
     _zdr_rosters: ClassVar[dict[str, set[str]]] = {}
     _ZDR_KEY: ContextVar[str | None] = ContextVar(
         "owui_zdr_key_ctx",
@@ -526,10 +527,18 @@ class OpenRouterModelRegistry:
 
     @classmethod
     def _adopt_roster_for(cls, api_key: str) -> None:
-        cls._zdr_model_ids = cls._zdr_roster_for(api_key)
+        roster = cls._zdr_roster_for(api_key)
+        if (
+            roster is not None
+            and roster is cls._zdr_model_ids
+            and cls._specs is cls._zdr_stamped_specs
+        ):
+            return
+        cls._zdr_model_ids = roster
         for norm_id, spec in cls._specs.items():
-            cls._stamp_zdr_capable(spec, norm_id, cls._zdr_model_ids, cls._specs)
+            cls._stamp_zdr_capable(spec, norm_id, roster, cls._specs)
         cls._enriched_cache = None
+        cls._zdr_stamped_specs = cls._specs
 
     @classmethod
     def _catalog_lock(cls) -> asyncio.Lock:

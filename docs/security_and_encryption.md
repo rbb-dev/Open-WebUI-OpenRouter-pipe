@@ -212,6 +212,27 @@ then let the HTTP client resolve the name again:
   enough, because a keep-alive connection opened while the gate was off is reused
   without consulting any resolver, and an answer from a lookup that was already in
   flight lands in the cache after it has been cleared.
+- Within one request the pipe asks Open WebUI whether a stored file may be read **once per
+  file, per requester**, and carries that verdict for the rest of the request, so a body that
+  leaves the pipe twice is authorised once instead of being put to Open WebUI twice. The
+  verdict is keyed on the pair `(file id, requester id)` — the id the requester is held
+  under, whether the pipe has them as an object or as the dict Open WebUI hands it — so an
+  entry is served only to the person it was recorded for. A second person on the same file is
+  asked afresh and is answered what Open WebUI answered *them*, and a request the pipe could
+  not resolve to an id is asked rather than served a named person's answer; a file's owner
+  and an admin are answered before the record is consulted at all and cost no question. A
+  denial is carried exactly as a grant is, which is the safe direction to remember: a failing
+  access check is caught and recorded as a refusal, so a remembered refusal cannot become a
+  grant. The record is a `ContextVar` set at the start of the turn and reset at its end, so
+  it is carried **for the request only**, and never beyond it: a grant revoked between two
+  turns is decided again by the next one. It is deliberately narrower than Open WebUI, which
+  caches this decision nowhere and re-decides it on every call: one request there carries one
+  identity, while a pipe turn can carry two — the requester, and, when the requester's row
+  does not resolve, the fallback storage account the turn's own uploads are stored under and
+  read back — and Open WebUI's `has_access_to_file` is a multi-query check (the file row, its
+  knowledge bases, the requester's groups, their channels, the chats sharing it and the models
+  attaching it), so dropping the record would multiply every shared attachment by the number
+  of identities in the turn.
 - The gate also re-runs on a **re-use**: an image a worker already downloaded is
   answered from its in-process memo on later turns, and the memo does not stand in for
   the gate. The memo is per-person: an entry is served only to the person whose own

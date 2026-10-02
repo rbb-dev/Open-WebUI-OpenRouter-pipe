@@ -353,7 +353,15 @@ def test_every_declared_absence_is_actually_imported_under_a_guard() -> None:
 # Reading the name with a `getattr(env_module, ..., None)` default would have added no
 # import here and left this count unchanged -- and would have made the identity check
 # silently disable itself on a rename, which is the direction this count cannot see.
-_EXPECTED_SEAM_IMPORTS = 78
+# 78 -> 79 with B550 (H2762-1): `open_webui.internal.db.JSONField`, imported lazily by
+# `_owui_valve_column_type` in storage/persistence.py so the anti-plaintext guard reads
+# the raw `Function.valves` column through the type Open WebUI declares it with rather
+# than through bare reflection. Guarded, so `is_optional` is True, and the symbol resolves
+# in the installed Open WebUI (`internal/db.py:125`), so it needs no _NEWER_THAN_OUR_FLOOR
+# entry: the fallback for a host that cannot supply it is the bare reflection.
+# Measured on this merged tree (`len(_IMPORTS)` after the change), not carried over: the 78
+# above is B918's own entry on this tree.
+_EXPECTED_SEAM_IMPORTS = 79
 
 
 def test_seam_checklist_covers_every_open_webui_import() -> None:

@@ -3610,6 +3610,37 @@ class StreamingHandler:
                             _carried["format"] = _fmt
                         if _carried:
                             _signed_by_id[_rid] = _carried
+                if valves.PERSIST_REASONING_TOKENS in {"next_reply", "conversation"}:
+                    _awaiting = reasoning_anchor_state["awaiting"]
+                    _awaiting_ids = {
+                        str(_pending.get("id"))
+                        for _pending, _stream_pos, _text_pos in _awaiting
+                        if _pending.get("id")
+                    }
+                    for _o in _ordered:
+                        if not (isinstance(_o, dict) and _o.get("type") == "reasoning"):
+                            continue
+                        _rid = _o.get("id")
+                        if not _rid or str(_rid) in _awaiting_ids:
+                            continue
+                        _normalized = normalize_persisted_item(_o)
+                        if not _normalized:
+                            continue
+                        _normalized[REASONING_ANCHOR_SEQ_KEY] = reasoning_anchor_state["seq"]
+                        reasoning_anchor_state["seq"] += 1
+                        _awaiting.append(
+                            (
+                                _normalized,
+                                reasoning_anchor_state["stream_calls"],
+                                reasoning_anchor_state["text_chunks"],
+                            )
+                        )
+                        _awaiting_ids.add(str(_rid))
+                        _row = self._pipe._artifact_store._make_db_row(
+                            persist_chat_id, persist_message_id, openwebui_model, _normalized
+                        )
+                        if _row:
+                            pending_items.append(_row)
                 _stream_total = reasoning_anchor_state["stream_calls"]
                 _stream_consistent = _stream_total == _calls_seen + len(_fc_local)
                 for _idx, (_pending_reasoning, _stream_pos, _text_pos) in enumerate(reasoning_anchor_state["awaiting"]):
@@ -4468,7 +4499,16 @@ class StreamingHandler:
                     self.logger.debug("generation-complete dispatch failed", exc_info=True)
 
             if (not error_occurred) and (not was_cancelled) and (not handed_back):
-                await self._cleanup_replayed_reasoning(body, valves, message_id)
+                try:
+                    await self._cleanup_replayed_reasoning(body, valves, message_id)
+                except (asyncio.CancelledError, Exception) as _exc:
+                    if isinstance(_exc, asyncio.CancelledError):
+                        _finalise_cancelled = _exc
+                    self.logger.debug(
+                        "Replayed-reasoning cleanup failed; this turn's own rows and the "
+                        "terminal frames are unaffected",
+                        exc_info=True,
+                    )
             if (not error_occurred) and (not was_cancelled) and event_emitter:
                 effective_start = stream_started_at or request_started_at
                 elapsed = max(0.0, perf_counter() - effective_start)

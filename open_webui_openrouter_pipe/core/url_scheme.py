@@ -221,6 +221,11 @@ _BASE64_FOLDED_CHARS = (
 )
 
 
+_BASE64_FOLDED_TABLE = {ord(c): None for c in _BASE64_FOLDED_CHARS}
+
+_BASE64_FOLD_SLICE = 32 * 1024
+
+
 def base64_data_url_payload_chars(value: Any) -> int | None:
     if not isinstance(value, str) or url_scheme(value) != "data":
         return None
@@ -230,8 +235,10 @@ def base64_data_url_payload_chars(value: Any) -> int | None:
     if _base64_marker_end(value[:comma]) is None:
         return None
     start = comma + 1
-    folded = sum(value.count(char, start) for char in _BASE64_FOLDED_CHARS)
-    return len(value) - start - folded
+    chars = 0
+    for offset in range(start, len(value), _BASE64_FOLD_SLICE):
+        chars += len(value[offset : offset + _BASE64_FOLD_SLICE].translate(_BASE64_FOLDED_TABLE))
+    return chars
 
 
 def base64_data_url_media_type(value: Any) -> str:
