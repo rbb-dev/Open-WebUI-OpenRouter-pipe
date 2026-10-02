@@ -33,7 +33,7 @@ _registration_lock = threading.Lock()
 _PD_COARSE_MIN_INTERVAL = 0.25
 _coarse_state: dict[str, float] = {}
 
-_off_audit_state: dict[str, float] = {}
+_warned_off_audit_state: dict[str, float] = {}
 _PD_OFF_AUDIT_EVERY_S = 300.0
 
 _PD_RECONCILE_BACKOFF_S = 5.0
@@ -107,7 +107,7 @@ def _audit_off(user: Any, action: str, client_ip: Any) -> None:
 
     uid = str(getattr(user, "id", None) or "-")
     _actions_logger.log(
-        warn_level(_off_audit_state, f"{uid}|plugin_system_off", cooldown_s=_PD_OFF_AUDIT_EVERY_S),
+        warn_level(_warned_off_audit_state, f"{uid}|plugin_system_off", cooldown_s=_PD_OFF_AUDIT_EVERY_S),
         "pipe_dashboard action user=%s action=%s outcome=plugin_system_off ip=%s args=-",
         _scrub(uid), _scrub(action), _scrub(client_ip),
     )

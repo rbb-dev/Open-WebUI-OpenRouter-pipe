@@ -1668,7 +1668,9 @@ class MultimodalHandler:
                 ttl_dns_cache=_VETTED_DNS_CACHE_SECONDS,
             )
             transport = _VettedTransport(
-                aiohttp.ClientSession(connector=connector),
+                aiohttp.ClientSession(
+                    connector=connector, cookie_jar=aiohttp.DummyCookieJar()
+                ),
                 protection=protection,
                 loop=asyncio.get_running_loop(),
                 holders=1,

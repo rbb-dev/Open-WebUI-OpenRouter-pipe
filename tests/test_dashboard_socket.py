@@ -197,21 +197,6 @@ def _install_socket_stub(monkeypatch, **attrs):
     return main_mod
 
 
-@pytest.fixture(autouse=True)
-def _reset_socket_state():
-    registered = dashboard_socket._registered
-    resync = dashboard_socket._resync
-    get_pipe = dashboard_socket._get_pipe
-    warned = set(dashboard_socket._warned_import_sites)
-    dashboard_socket._warned_import_sites.clear()
-    yield
-    dashboard_socket._registered = registered
-    dashboard_socket._resync = resync
-    dashboard_socket._get_pipe = get_pipe
-    dashboard_socket._warned_import_sites.clear()
-    dashboard_socket._warned_import_sites.update(warned)
-
-
 def _make_mock_pipe():
     pipe = Mock()
     pipe.id = "test-pipe"

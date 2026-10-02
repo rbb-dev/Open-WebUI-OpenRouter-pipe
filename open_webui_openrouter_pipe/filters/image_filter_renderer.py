@@ -22,7 +22,12 @@ from ..core.config import (
     _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID,
     _PIPE_METADATA_KEY,
 )
-from ..core.utils import _ADAPTER_CACHE, _KEEP_WHAT_STILL_FITS, scrub_surrogates
+from ..core.utils import (
+    _ADAPTER_CACHE,
+    _KEEP_WHAT_STILL_FITS,
+    _PRIORITY_FIELD,
+    scrub_surrogates,
+)
 from ..core.utils import OWUI_FUNCTION_ID_ILLEGAL_RE as _IMAGE_FILTER_ID_RE
 from ..integrations.image_types import (
     PASSTHROUGH_DESCRIPTION,
@@ -956,10 +961,7 @@ class Filter:
     toggle = True
 
     class Valves(BaseModel):
-        priority: int = Field(
-            default=0,
-            description="Priority level for the filter operations.",
-        )
+{_PRIORITY_FIELD}
 
     class UserValves(BaseModel):
 {_KEEP_WHAT_STILL_FITS}
@@ -1337,10 +1339,7 @@ class Filter:
 
     class Valves(BaseModel):
 {_KEEP_WHAT_STILL_FITS}
-        priority: int = Field(
-            default=0,
-            description="Priority level for the filter operations.",
-        )
+{_PRIORITY_FIELD}
         IMAGE_GENERATION_MODEL: str = Field(
             default={model_id!r},
             title="Image generation model",

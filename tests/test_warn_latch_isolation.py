@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FILE_ACCESSOR_NAMES, REBINDABLE_FILE_ACCESSOR_MODULES
+from conftest import FILE_ACCESSOR_NAMES, REBINDABLE_FILE_ACCESSOR_MODULES, _WARN_LATCH_PREFIX
 from open_webui_openrouter_pipe.core import config as _core_config
 
 PACKAGE_DIR = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
@@ -32,12 +32,21 @@ EXPECTED_LATCHES = {
     "_warned_bzip2_compresslevel",
     "_warned_chat_chunk_parse",
     "_warned_collectors",
+    # The dead-manager arm of that same report, kept beside its sibling on purpose. The
+    # manager is already gone by the time the drain runs, so the loss is reported through
+    # the module logger instead of a manager's. It is a dict with an hour's cooldown,
+    # keyed per stop, for the reason its sibling is. It also used to be spelled
+    # `_DEAD_MANAGER_DRAIN_WARNINGS`, which carries no prefix: the sweep never reached
+    # it, so one file's bounded stop armed a table another file's census then read as a
+    # second holder. The name is the reset's, not the report's.
+    "_warned_dead_manager_drain",
     # The shutdown-drain report's own table. It used to arm
     # `_unreadable_archive_warnings`, whose budget is the assembler's per-turn fault
     # window: the drain adds a fresh key per bounded stop, so every stop evicted live
     # fault latches and the next occurrence of each re-warned at WARNING. It is a dict
     # with an hour's cooldown, keyed per stop, so it re-arms per stop rather than
-    # latching forever -- the same shape as the dead-manager table beside it.
+    # latching forever -- the same shape as `_warned_dead_manager_drain` beside it, which
+    # the reset reaches for the same reason.
     "_warned_drain_incomplete",
     "_warned_dropped_video_param",
     # One latch for both reasons a frame_plan entry can fail to materialise: a frame
@@ -59,6 +68,12 @@ EXPECTED_LATCHES = {
     "_warned_image_provider_keys",
     "_warned_image_reuse",
     "_warned_no_task_model",
+    # A dashboard action taken while the plugin system is committed off is audited by
+    # `<uid>|plugin_system_off` with a five-minute cooldown, so a retry storm reports
+    # once rather than on every request. It carries the prefix so the per-test reset
+    # reaches it: one test that drives the route is otherwise enough to silence the
+    # WARNING the next test asserts is still emitted.
+    "_warned_off_audit_state",
     "_warned_oversized_inline",
     "_warned_forward_headers",
     "_warned_import_sites",
@@ -101,6 +116,11 @@ EXPECTED_LATCHES = {
     # interval and the log line has to be throttled with it or the operator gets one
     # WARNING per completed request -- the very cost the interval exists to avoid.
     "_warned_usage_table_create",
+    # The usage retention purge that could not take its cross-worker lock, keyed per
+    # table with an hour's cooldown: the purge runs about four times an hour, so an
+    # unlatched WARNING is four tracebacks an hour for as long as the database is sick,
+    # and the repeats have to stay visible at DEBUG to an operator who raises the level.
+    "_warned_purge_lock",
     "_warned_timing_file",
     "_warned_unrenderable_params",
     "_warned_user_valves",

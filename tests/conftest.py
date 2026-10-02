@@ -770,11 +770,12 @@ def _reset_dashboard_socket_state():
     `_routes_get_pipe` in `http_routes`, are module globals. Nothing in the package
     clears them, which is right for a live worker -- a socket gate must stay bound to the
     pipe it was bound to -- and wrong for a test process, where the bound pipe is drained
-    and closed by the time the next test runs. Six test files write these four; five
-    carry a per-file save/restore, and the one that does not
-    (`test_a_refused_update_write_leaves_one_live_pipe.py`) calls both public setters, so
-    its getter is the answer every later test in that worker reads.
-    `tests/test_dashboard_socket_isolation.py` arms and reads; it is the witness.
+    and closed by the time the next test runs. This fixture repairs all four at both ends
+    of every test, and no test module restores any of them itself: a test that writes one
+    of these globals is relying on the repair below, not on a fixture of its own.
+    `tests/test_dashboard_socket_isolation.py` arms and reads; it is the witness, and
+    `tests/test_a_test_module_does_not_restore_what_conftest_resets.py` is the census
+    that keeps a per-file save/restore from being added back.
 
     `_routes_get_pipe` is in scope because the SAME call
     (`UpdateService._install_revived_getters`) writes it and `_get_pipe`. Repairing one

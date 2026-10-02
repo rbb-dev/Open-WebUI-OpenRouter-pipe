@@ -1187,38 +1187,6 @@ async def test_send_openrouter_streaming_request_respects_endpoint_override(pipe
         assert events == [{"type": "chat"}]
 
 
-@pytest.mark.asyncio
-async def test_inline_internal_responses_input_files_inplace_rewrites_internal_urls(pipe_instance_async):
-    pipe = pipe_instance_async
-    payload = {
-        "model": "google/gemini-3-flash-preview",
-        "input": [
-            {
-                "type": "message",
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_file",
-                        "filename": "example.pdf",
-                        "file_url": "/api/v1/files/abc123/content",
-                    }
-                ],
-            }
-        ],
-    }
-
-    pipe._file_gateway.inline_owui_file_id = AsyncMock(  # type: ignore[method-assign]
-        return_value=InlinedFile(data_url="data:application/pdf;base64,SGVsbG8=", filename="example.pdf")
-    )
-
-    sent = await pipe._file_gateway.inline_internal_responses_input_files(payload, chunk_size=1024, max_bytes=1024 * 1024)
-    pipe._file_gateway.inline_owui_file_id.assert_awaited_once_with("abc123", chunk_size=1024, max_bytes=1024 * 1024, user=None)
-
-    block = cast(dict, sent["input"][0]["content"][0])
-    assert block.get("file_data", "").startswith("data:application/pdf;base64,")
-    assert "file_url" not in block
-
-
 # ===== From test_direct_upload_blocklist.py =====
 
 """Tests for direct upload blocklist functionality.

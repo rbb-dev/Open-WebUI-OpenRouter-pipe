@@ -2205,7 +2205,8 @@ class TestFilterReplayableInputItems:
 
     def test_non_replayable_filtered(self):
         """Test non-replayable tool artifacts are filtered."""
-        # The actual non-replayable artifacts are: local_shell_call, image_generation_call,
+        # The actual non-replayable artifacts are: local_shell_call, shell_call,
+        # shell_call_output, local_shell_call_output, image_generation_call,
         # file_search_call, web_search_call
         items = [
             {"type": "message", "content": "Hi"},

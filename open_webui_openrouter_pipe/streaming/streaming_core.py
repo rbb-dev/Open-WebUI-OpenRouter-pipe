@@ -348,6 +348,51 @@ def _read_arguments_as_open_webui_reads_them(item: dict[str, Any]) -> str:
 _TOOL_RESULT_LOG_MAX_CHARS = 16_384
 
 
+_SHELL_CALL_ARTIFACTS = frozenset(
+    {
+        "shell_call",
+        "local_shell_call",
+        "shell_call_output",
+        "local_shell_call_output",
+    }
+)
+
+_SHELL_CALL_OUTPUT_ARTIFACTS = frozenset({"shell_call_output", "local_shell_call_output"})
+
+
+def _shell_call_commands(item: dict[str, Any]) -> list[str]:
+    action = item.get("action")
+    if not isinstance(action, dict):
+        return []
+    for key in ("commands", "command"):
+        raw = action.get(key)
+        if isinstance(raw, str):
+            return [raw]
+        if isinstance(raw, list):
+            return [str(part) for part in raw]
+    return []
+
+
+def _shell_call_result_text(item: dict[str, Any]) -> str:
+    output = item.get("output")
+    if isinstance(output, str):
+        return output
+    if not isinstance(output, list):
+        return ""
+    parts: list[str] = []
+    for entry in output:
+        if isinstance(entry, str):
+            parts.append(entry)
+            continue
+        if not isinstance(entry, dict):
+            continue
+        for key in ("stdout", "stderr"):
+            value = entry.get(key)
+            if isinstance(value, str) and value:
+                parts.append(value)
+    return "\n".join(parts)
+
+
 def _tool_result_for_log(output: dict[str, Any]) -> str:
     text = tool_output_text_and_pictures(output.get("output"))[0]
     limit = _TOOL_RESULT_LOG_MAX_CHARS
@@ -631,6 +676,7 @@ class StreamingHandler:
         emitted_tool_output_items: set[str] = set()
         committed_call_rows: set[str] = set()
         committed_output_rows: set[str] = set()
+        committed_shell_calls: set[str] = set()
         stubbed_call_ids: set[str] = set()
         executed_tool_call_ids: set[tuple[str, str, str]] = set()
         emitted_response_output_items = False
@@ -2677,6 +2723,7 @@ class StreamingHandler:
                                 "openrouter:advisor": "Consulting advisor…",
                                 "openrouter:subagent": "Delegating to worker…",
                                 "openrouter:experimental__search_models": "Searching models…",
+                                "openrouter:shell": "Running shell commands…",
                             }.get(item_type, f"Running {item_type}…")
                             await self._pipe._event_emitter_handler._emit_status(
                                 event_emitter, tool_label, done=False
@@ -3121,6 +3168,40 @@ class StreamingHandler:
                                 effective_id, "web_fetch", server_tool_status(item),
                                 item_type=item_type, result_text=result_text, arguments=args_text, current_text=assistant_message,
                             )
+                            await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
+                        elif item_type in _SHELL_CALL_ARTIFACTS:
+                            title = None
+                            args_text = json.dumps(
+                                {"commands": _shell_call_commands(item)}, ensure_ascii=False
+                            )
+                            result_text = _shell_call_result_text(item)
+                            raw_call_id = item.get("call_id")
+                            effective_id = (
+                                raw_call_id.strip()
+                                if isinstance(raw_call_id, str) and raw_call_id.strip()
+                                else server_tool_call_id(item.get("id"))
+                            )
+                            if emitter_supplied:
+                                effective_id = await _emit_tool_start(
+                                    call_id=effective_id,
+                                    name="shell",
+                                    arguments=args_text,
+                                    status=server_tool_status(item),
+                                    current_text=assistant_message,
+                                )
+                                if result_text:
+                                    await _emit_tool_result(
+                                        call_id=effective_id,
+                                        result_text=result_text,
+                                        status=server_tool_status(item),
+                                        current_text=assistant_message,
+                                    )
+                            if effective_id not in committed_shell_calls:
+                                committed_shell_calls.add(effective_id)
+                                assistant_message = await _commit_server_tool_round(
+                                    effective_id, "shell", server_tool_status(item),
+                                    item_type=item_type, result_text=result_text, arguments=args_text, current_text=assistant_message,
+                                )
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
                         elif isinstance(item_type, str) and item_type.startswith("openrouter:"):
                             title = None

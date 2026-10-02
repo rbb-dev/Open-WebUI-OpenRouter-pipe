@@ -2296,6 +2296,35 @@ Tuning hints:
 
 ## Errors and troubleshooting
 
+### "### Video generation failed" and a body that is not OpenRouter's
+
+The card says the endpoint answered with a body that is not an OpenRouter response, and
+names the upstream `Content-Type` beside it. That is a proxy, CDN or WAF in front of the
+deployment rewriting the reply — the request was accepted, and what came back was not a
+document. Three things follow from it, and none of them is a failed call:
+
+- **It is not charged to your breaker.** The network path produced that body, not
+  OpenRouter, so five rewrites inside `BREAKER_WINDOW_SECONDS` will not open your circuit
+  for your chat requests. Every other failure after the request is accepted — a job id the
+  provider did not return, a provider-reported error, a poll that fell over — is charged
+  exactly once, as before.
+- **It is not retried.** The request may already have run and been billed upstream, and a
+  rewritten reply is rewritten again.
+- **The excerpt is quoted, not scrubbed, and fenced.** The first 200 characters of what
+  arrived appear inside a code block, verbatim: a WAF's own words are the evidence, and
+  `docs/security_and_encryption.md` is explicit that the fence is containment rather than
+  redaction. On a **channel** chat the excerpt is withheld entirely and the card keeps only
+  the diagnosis that names nobody — the endpoint and the `Content-Type` — because every
+  member of the room reads it.
+
+This card is built from the exception rather than rendered through
+`SERVICE_ERROR_TEMPLATE`, unlike a picture-only image generation's. That is deliberate and
+it is load-bearing: `_extract_video_job_marker` and `_looks_like_final_video_content` parse
+the `[openrouter:v1:videojob:…]` markers and the literal `### Video generation failed`
+heading back out of the persisted transcript when a turn continues, and the template has no
+marker placeholder. The video card therefore borrows the fence and the channel withholding,
+and keeps its own heading and markers.
+
 ### "AUTO_ATTACH_VIDEO_FILTERS is enabled but no OpenRouter Video Generation filters are installed"
 
 The catalog manager couldn't ensure per-model filter installs. Causes:
@@ -2526,7 +2555,16 @@ Key files:
   rather than one per outcome, because there is one video clock and the
   image catalogue's two share a stamp for the same reason. The master-off
   arm clears it with the clock, so a valve off/on cycle refetches under the
-  key in hand. The modality sweep keeps a
+  key in hand. A **failed** fetch also opens a backoff: the next attempt is
+  no sooner than 5 seconds later, then 10, 20, 40, 80 and 160, capped by
+  `MODEL_CATALOG_REFRESH_SECONDS` whenever that is set below 160, so the
+  first media retry after a blip costs the picker seconds rather than a
+  whole interval. The count is kept per OpenRouter account and per media
+  catalog, so one key's outage never paces another's video list, and a
+  successful registration clears it. An **empty** fetch stamps the clock and
+  leaves the count alone -- an empty list is an answer, not a fault, and
+  counting it would pace a healthy catalogue behind one that is merely
+  quiet. The modality sweep keeps a
   record of its own beside that clock, stamped by a failed fetch, an empty
   fetch, or a completed sweep, and only a caller that swept stamps it. The
   fetch is single-flight: concurrent

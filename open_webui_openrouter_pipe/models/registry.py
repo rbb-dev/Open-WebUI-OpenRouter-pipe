@@ -420,6 +420,7 @@ class OpenRouterModelRegistry:
     )
     _next_refresh_after: float = 0.0
     _failure_counts: ClassVar[dict[str, int]] = {}
+    _media_failure_counts: ClassVar[dict[str, int]] = {}
     _last_errors: ClassVar[dict[str, str]] = {}
     _last_error: str | None = None
     _last_error_time: float = 0.0
@@ -821,6 +822,28 @@ class OpenRouterModelRegistry:
         backoff_until = cls._last_error_time + max(base_backoff, capped_backoff)
         return backoff_until
 
+    @classmethod
+    def _media_retry_window(cls, cache_seconds: int, key: str) -> float:
+        failures = cls._media_failure_counts.get(key, 0)
+        if failures <= 0:
+            return float(cache_seconds)
+        exponent = min(failures - 1, 5)
+        base_backoff = 5.0
+        raw_backoff = base_backoff * (2 ** exponent)
+        return float(min(cache_seconds, max(base_backoff, raw_backoff)))
+
+    @classmethod
+    def record_media_failure(cls, api_key: str) -> None:
+        key = _fingerprint(api_key)
+        cls._media_failure_counts[key] = cls._media_failure_counts.get(key, 0) + 1
+        _trim_credential_history(cls._media_failure_counts, key, None)
+
+    @classmethod
+    def record_media_success(cls, api_key: str) -> None:
+        key = _fingerprint(api_key)
+        cls._media_failure_counts.pop(key, None)
+        _trim_credential_history(cls._media_failure_counts, key, None)
+
     @staticmethod
     def _derive_features(
         supported_parameters: set[str],
@@ -1020,6 +1043,7 @@ class OpenRouterModelRegistry:
     def reset_video_attempt(cls) -> None:
         cls._last_video_attempt = 0.0
         cls._last_video_account = ""
+        cls._media_failure_counts.clear()
 
     @classmethod
     def last_video_modality_attempt(cls) -> float:
@@ -1371,6 +1395,7 @@ class OpenRouterModelRegistry:
     def reset_image_attempt(cls) -> None:
         cls._last_image_attempt = 0.0
         cls._last_image_account = ""
+        cls._media_failure_counts.clear()
 
     @classmethod
     def reset_image_fetch_timestamp(cls) -> None:

@@ -21,6 +21,12 @@ Available server tools:
 | `advisor` | Consult a higher-intelligence model mid-generation |
 | `subagent` | Delegate a self-contained task to a worker model an admin chooses |
 | `chat_search_models` | Let the model search the OpenRouter model catalog |
+| `shell` | Run shell commands and return their output to the model |
+
+> The pipe does not offer the shell tool: there is no filter, valve or `openrouter:shell` switch for it, and nothing
+> attaches it to a request. A caller that writes `{"type": "shell"}` or `{"type": "local_shell"}` into `tools` has it
+> forwarded verbatim, and the round it comes back as is rendered like any other — a card naming the commands that ran,
+> with their output as its result, on the streaming and the non-streaming leg alike.
 
 > Advisor and subagent each spawn an **additional model call**; both default **off** per chat and are gated by `ENABLE_ADVISOR` / `ENABLE_SUBAGENT`. The `SERVER_TOOLS_MAX_COST_USD` filter valve bounds the server-tool agent loop via the OpenRouter `stop_server_tools_when` request parameter (overrides `max_tool_calls`); it is sent only while an `openrouter:` server tool is on the request, and dropped when every tool it bounds has been switched off or stripped. It is the cost bound, not the only one: OpenRouter treats `stop_server_tools_when` as an override, so a request that also carries a caller-set top-level `max_tool_calls` is stopped by whichever fires first, and at the default `0.0` — no cap, field absent — that step count is the only bound on the loop. The cap is per request: one request is one call the pipe makes, and an internal Fusion turn is one call per panel member plus the judge and the synthesis, each sent the whole cap, so the ceiling for that turn is that multiple. What a model charges is on OpenRouter's pricing page.
 

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 
-from ..core.utils import _ADAPTER_CACHE, _KEEP_WHAT_STILL_FITS
+from ..core.utils import _ADAPTER_CACHE, _KEEP_WHAT_STILL_FITS, _PRIORITY_FIELD
 
 # Canonical id of the dedicated Fusion model and the OWUI function id.
 FUSION_MODEL_SLUG = "openrouter/fusion"
@@ -134,10 +134,7 @@ class Filter:
     class Valves(BaseModel):
 __KEEP_WHAT_STILL_FITS__
 
-        priority: int = Field(
-            default=0,
-            description="Priority level for the filter operations.",
-        )
+__PRIORITY_FIELD__
         ALLOW_ON_NON_FUSION_MODELS: bool = Field(
             default=False,
             title="Allow on non-Fusion models",
@@ -322,6 +319,7 @@ def render_openrouter_fusion_filter_source(*, marker: str, pipe_id: str | None =
         .replace("__FILTER_ID__", FUSION_FILTER_FUNCTION_ID)
         .replace("__ADAPTER_CACHE__", _ADAPTER_CACHE)
         .replace("__KEEP_WHAT_STILL_FITS__", _KEEP_WHAT_STILL_FITS)
+        .replace("__PRIORITY_FIELD__", _PRIORITY_FIELD)
         .replace("__FUSION_MODEL_PATTERN__", _FUSION_MODEL_PATTERN.pattern)
         .replace("__FUSION_DOTTED_PATTERN__", _fusion_dotted_pattern(pipe_id).pattern)
     )

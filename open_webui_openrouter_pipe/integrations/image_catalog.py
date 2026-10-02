@@ -17,7 +17,7 @@ from typing import Any
 import aiohttp
 
 from ..core.warn_latch import warn_level
-from ..models.registry import OpenRouterModelRegistry, _contract_target
+from ..models.registry import OpenRouterModelRegistry, _contract_target, _fingerprint
 from .catalog_client import _build_catalog_client
 from .image_client import OpenRouterImageClient
 
@@ -108,8 +108,9 @@ def _image_catalog_stale(
 ) -> tuple[bool, bool]:
     account_changed = not OpenRouterModelRegistry.image_accounts_match(api_key)
     last_attempt = OpenRouterModelRegistry.last_image_attempt()
+    window = OpenRouterModelRegistry._media_retry_window(cache_seconds, _fingerprint(api_key))
     stale_models = (
-        account_changed or not last_attempt or (time.time() - last_attempt) >= cache_seconds
+        account_changed or not last_attempt or (time.time() - last_attempt) >= window
     )
     contract_attempt = OpenRouterModelRegistry.last_image_contract_attempt()
     stale_contracts = wants_filters and (
@@ -266,6 +267,7 @@ async def _refresh_image_models(
     try:
         models = await client.list_models()
     except (TimeoutError, aiohttp.ClientError, OSError) as exc:
+        OpenRouterModelRegistry.record_media_failure(api_key)
         OpenRouterModelRegistry.record_image_attempt(api_key)
         if wants_filters:
             OpenRouterModelRegistry.record_image_contract_attempt(api_key)
@@ -292,6 +294,7 @@ async def _refresh_image_models(
         return []
 
     OpenRouterModelRegistry.register_image_models(models)
+    OpenRouterModelRegistry.record_media_success(api_key)
     OpenRouterModelRegistry.record_image_attempt(api_key)
     logger.info(
         "Registered %d OpenRouter image-output model(s) into the catalog.",

@@ -1229,7 +1229,14 @@ class ImageGenerationAdapter:
             outcome["provider_document"] = False
             await self._close_status(event_emitter)
             await self._settle(outcome, valves, user, metadata, user_obj, api_model_id)
-            content = await self._emit_failure(event_emitter, exc.evidence())
+            content = await self._pipe._ensure_error_formatter()._emit_templated_error(
+                event_emitter,
+                template=valves.SERVICE_ERROR_TEMPLATE,
+                variables={"error_type": type(exc).__name__, "status_code": "502",
+                           "reason": exc.summary(), "body_excerpt": exc.body_excerpt_block()},
+                log_message=(f"Image generation body was not an OpenRouter document: {exc} "
+                             f"(Content-Type: {exc.content_type}): {exc.body_excerpt[:200]}"),
+            )
         except ImageGenerationError as exc:
             self._logger.warning("Image generation failed for %r: %s", api_model_id, exc)
             await self._close_status(event_emitter)

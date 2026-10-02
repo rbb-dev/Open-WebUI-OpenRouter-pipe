@@ -1079,6 +1079,14 @@ _KEEP_WHAT_STILL_FITS = '''        @model_validator(mode="before")
             return kept'''
 
 
+_PRIORITY_FIELD = (
+    '        priority: int = Field(\n'
+    '            default=0,\n'
+    '            description="Priority level for the filter operations.",\n'
+    '        )'
+)
+
+
 def _unwrap_config_value(value: Any) -> Any:
     """Return the raw value from a PersistentConfig-like object."""
     if value is None:

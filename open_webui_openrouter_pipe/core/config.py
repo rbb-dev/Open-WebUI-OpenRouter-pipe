@@ -187,6 +187,9 @@ _NON_REPLAYABLE_TOOL_ARTIFACTS = frozenset(
         "web_search_call",
         "file_search_call",
         "local_shell_call",
+        "shell_call",
+        "shell_call_output",
+        "local_shell_call_output",
     }
 )
 
@@ -1371,7 +1374,12 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "asked as well, so a changed key refetches the video model list for the same reason. "
             "The image models' published settings are cached on the same "
             "window, and that cache is dropped at once when the base URL or the API key changes, "
-            "rather than being kept for the rest of the window. The 30-second window a failed read of one "
+            "rather than being kept for the rest of the window. The video and image catalogs are gated on "
+            "the same interval and back off on the same ladder after a failed fetch: 5 seconds, then 10, 20, "
+            "40, 80 and 160, capped by this interval whenever it is set below 160, counted per OpenRouter "
+            "account and per media catalog so one account's outage never paces another's, and reset by any "
+            "successful fetch of either. A fetch that returns no models is an answer rather than a fault, so "
+            "it stamps the clock and leaves the count alone. The 30-second window a failed read of one "
             "model's published settings opens is dropped on that same event, so the new "
             "base URL or key makes its first read rather than waiting out a pause that "
             "belongs to the credential before it. A request arriving during a media-catalog "

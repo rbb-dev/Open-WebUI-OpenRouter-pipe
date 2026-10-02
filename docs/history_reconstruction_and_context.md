@@ -184,6 +184,11 @@ it was asked for, so the rebuilt `input` is identical to the one a serial pass p
 ### 5.1 Non-replayable tool artifact types
 Some tool artifacts are intentionally never replayed back to the provider (to avoid wasting context window and to reduce provider-side errors). The pipe filters these by type during history reconstruction.
 
+The filter is pure set membership over the artifact's `type`, so a family is refused whole or not at all: the shell
+family is `shell_call`, `local_shell_call`, `shell_call_output` and `local_shell_call_output`, and all four are in the
+set. An output type kept while its call type is stripped would replay half a round — an answer the provider has no
+call for — so the two spellings of each half are listed together rather than one of each.
+
 ### 5.2 Orphaned function call pairs
 When tool calls are persisted, the pipe attempts to keep tool call/request and tool output/response pairs consistent.
 
@@ -227,6 +232,19 @@ reply, Stop keeps a round's calls before the first one still running. A call ref
 is refused, and on the turn it is answered it is handed to the model in the order the round asked for it, because its
 answer is produced before any queued call has run. A round stored with tool cards on is written as the calls are answered, so a
 Continue replays a refused call's answer ahead of the results that were still running. A call the model sends malformed is answered as Open WebUI's own tool loop answers it on the same route and is kept like any other call; several argument objects sent back to back become one call each.
+
+A **provider-native shell round** is kept in the same place and in the same shape, and is not a special case of the
+pipe's own loop: the model emitted it, the pipe never ran it. Its `shell_call` or `local_shell_call` item, and the
+`shell_call_output` or `local_shell_call_output` item that answers it, are stored as the `function_call` /
+`function_call_output` pair every other round is stored as — named `shell`, carrying the commands the item asked to
+run as its arguments and the item's own stdout as its result. The pair is keyed on the item's `call_id`, so a call and
+its output are one round on one id rather than two, and the round is committed once however many of the family's items
+the turn carried. What the model is handed on a later turn follows the ordinary rule: with `PERSIST_TOOL_RESULTS` off
+the arguments and the result are withheld and the model is told the tool name and whether it succeeded; with it on
+both are handed over whole, since a round the model ran is a fact about the turn whether or not the commands are
+retained. The raw native item is never what is replayed, and never what is stored: the four types are in the
+non-replayable set (§5.1), so a `shell_call` the caller echoes back into a request is stripped before it reaches the
+provider, and the pair behind its marker is what stands in its place.
 
 A call can also be kept in this copy and still be withheld from one request: when the replay budget is applied to that
 turn, the result is replaced in `input` with a model-visible stub, and the tools whose results were replaced are named to

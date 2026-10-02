@@ -161,7 +161,7 @@ class NonStreamingAdapter:
                         yield {"type": "response.output_item.done", "item": item}
                         continue
                     item_type = item.get("type")
-                    if item_type in {"reasoning", "web_search_call", "file_search_call", "image_generation_call", "local_shell_call"} or (
+                    if item_type in {"reasoning", "web_search_call", "file_search_call", "image_generation_call", "local_shell_call", "shell_call", "shell_call_output", "local_shell_call_output"} or (
                         isinstance(item_type, str) and item_type.startswith("openrouter:")
                     ):
                         yield {"type": "response.output_item.done", "item": item}

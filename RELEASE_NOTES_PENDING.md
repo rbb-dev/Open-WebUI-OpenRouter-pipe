@@ -74,6 +74,30 @@
   key costs retention until the key is re-entered, rather than deleting another installation's rows. The live table is
   swept as before throughout.
 
+- **`SERVICE_ERROR_TEMPLATE`** — an admin who has customised this template now sees it on a picture-only image
+  generation whose reply a proxy, CDN or WAF rewrote. That card previously carried its own fixed sentence. The fence
+  and the withheld-on-a-channel behaviour come with it, unchanged; the video leg keeps its own card shape.
+- **Video and image catalogs** — a failed catalogue fetch now backs off instead of waiting out the whole
+  refresh interval. Both media lists already stamped their attempt clock on every outcome; what was missing is
+  that a failure and a success were indistinguishable to the gate, so a thirty-second provider blip cost the
+  picker an hour of missing media rows. The first retry now costs 5 seconds rather than the full hour, and
+  consecutive failures double from there — 10, 20, 40, 80, 160 — capped by `MODEL_CATALOG_REFRESH_SECONDS`
+  whenever that is set below 160, which is the chat model list's own ladder. The count is kept per OpenRouter
+  account and per media catalog, so one key's outage never paces another's media list, and a successful fetch
+  of either resets it. A fetch that returns no models is treated as an answer rather than a fault: it stamps the
+  clock exactly as before and leaves the count alone, so a proxy that is merely quiet is not paced like one that
+  is down. At the shipped default the healthy path is unchanged.
+- **Update tab** — an apply or restore is now refused when the pipe's source was hand-edited inside
+  the same second the tab was drawn. The tab's revision was Open WebUI's whole-second
+  `Function.updated_at`, so a paste in Workspace ▸ Functions that landed in that second left the
+  revision exactly where it was; the update then overwrote the paste and still reported success. The
+  revision the tab sends and the guard checks is now `<updated_at>:<content digest>`, so the write
+  that could not move the revision cannot slip past it. A client that sends only the stamp is still
+  guarded on the stamp alone, so a tab drawn by a worker on the previous version keeps working, and
+  the refusal is the Update tab's existing "this view was out of date" message. The window is narrow
+  and it needs an edit made in the same second as the tab's own load, so this closes a race an
+  administrator had to be holding Apply for; updates are not otherwise riskier — nothing else about
+  the apply path changed.
 - **Config tab** — a save the database refuses to write now raises a durable banner instead of a toast alone.
   The banner names the fault, carries no Reload control, and leaves your staged edits in place, so nothing the
   refusal preserved can be discarded from the tab that preserved it. It clears on the next successful save or
@@ -166,3 +190,20 @@
   copies; and `url_scheme` handed a multi-megabyte string with no colon in it to `urlsplit`, which copies it
   to build a `path`. A record's redaction runs on whatever thread emitted it, so on a busy worker that copy
   landed inside whatever else that thread was doing. Nothing an operator sees changes.
+- **One user's `Set-Cookie` is no longer replayed onto the next user's request** — every
+  `aiohttp.ClientSession` this pipe builds is now given an `aiohttp.DummyCookieJar()`, so a
+  `Set-Cookie` on any response is discarded rather than queued. This was the batch's only
+  cross-user exposure, and it was live: `openrouter.ai` returns one `Set-Cookie` on both
+  `/api/v1/models` and `/api/v1/key`, named `__cf_bm` — Cloudflare's bot-management cookie,
+  measured against a test key on 2026-10-02, values not recorded. Every user's later requests
+  therefore carried the same Cloudflare cookie and Cloudflare saw them as one client. It is
+  **not** an authentication cookie, and no credential left one user and reached another through
+  it. Behind a gateway at `BASE_URL` that sets a session cookie of its own (an auth proxy,
+  `oauth2-proxy`, an nginx `auth_request`), one user's cookie could have reached another user's
+  requests; whether your own gateway does this was not measured. The three affected sessions are
+  the pooled per-event-loop session every concurrent request shares, the vetted transport's
+  session (which fetches model icons, maker pages and admin-configured release assets — addresses
+  somebody else chose), and the one `_ensure_async_subsystems_initialized` opens and hands to
+  plugins as `ctx.pipe._http_session`. Nothing else changes: no valve, no timeout, and nothing
+  in the package read a cookie before or reads one now. Operator-configured gateways and
+  catalog icon hosts were not probed.

@@ -14,6 +14,7 @@ _logger = logging.getLogger(__name__)
 
 _TASK_RESPONSE_MAX_BYTES = 256 * 1024
 _DEFAULT_MAX_HOLD_BYTES = 4 * _TASK_RESPONSE_MAX_BYTES
+_ANSWER_PART_TYPES = frozenset({"text", "output_text", "input_text"})
 
 
 def output_message_text(output: Any) -> str:
@@ -39,6 +40,9 @@ def output_message_text(output: Any) -> str:
 def _content_part_text(item: Any) -> str | None:
     if not isinstance(item, dict):
         return str(item)
+    part_type = item.get("type")
+    if isinstance(part_type, str) and part_type and part_type not in _ANSWER_PART_TYPES:
+        return None
     if item.get("text") is not None:
         return str(item["text"])
     if "content" in item:
@@ -267,8 +271,15 @@ async def read_task_model_response_json(
         raise TaskModelFault("task_model_empty_response")
     if isinstance(content_value, list):
         content_value = normalise_model_content(content_value)
+    part_type = content_value.get("type") if isinstance(content_value, dict) else None
+    if part_type == "refusal" and isinstance(content_value, dict):
+        part_refusal = content_value.get("refusal")
+        if isinstance(part_refusal, str) and part_refusal.strip():
+            raise TaskModelFault("task_model_refusal")
     if isinstance(content_value, dict) and (
-        "text" in content_value or "content" in content_value
+        "text" in content_value
+        or "content" in content_value
+        or (isinstance(part_type, str) and part_type and part_type not in _ANSWER_PART_TYPES)
     ):
         content_value = _content_part_text(content_value) or ""
     if isinstance(content_value, dict):

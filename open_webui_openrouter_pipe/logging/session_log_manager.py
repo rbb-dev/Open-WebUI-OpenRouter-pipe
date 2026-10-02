@@ -86,10 +86,10 @@ def _report_drain_incomplete(
             residual,
         )
         return
-    _truncate_latch(_DEAD_MANAGER_DRAIN_WARNINGS, _MAX_DRAIN_LATCH_KEYS)
+    _truncate_latch(_warned_dead_manager_drain, _MAX_DRAIN_LATCH_KEYS)
     logger.log(
         warn_level(
-            _DEAD_MANAGER_DRAIN_WARNINGS,
+            _warned_dead_manager_drain,
             f"session_log_shutdown_drain_incomplete:{time.monotonic_ns()}",
             cooldown_s=3600.0,
         ),
@@ -221,7 +221,7 @@ _EXCLUDED_KEY_SEP = "\x1f"
 
 _MAX_DRAIN_LATCH_KEYS = 32
 
-_DEAD_MANAGER_DRAIN_WARNINGS: dict[str, float] = {}
+_warned_dead_manager_drain: dict[str, float] = {}
 _warned_drain_incomplete: dict[str, float] = {}
 
 _INCOMPLETE_MARKER_PREFIX = "Session log finalized as incomplete"

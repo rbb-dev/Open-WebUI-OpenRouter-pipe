@@ -2309,6 +2309,10 @@ class RequestOrchestrator:
                 )
                 if escape is not None:
                     await self._note_provider_failure(exc, fusion_inner=fusion_inner)
+                    self.logger.error(
+                        "Unreadable upstream body from %s (Content-Type: %s): %s",
+                        exc.endpoint, exc.content_type, exc.body_excerpt[:200],
+                    )
                     return escape
 
             if (__metadata__ or {}).get("message_id") and is_temporary_chat(

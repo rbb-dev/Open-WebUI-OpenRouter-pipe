@@ -1367,6 +1367,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
       var aa = rl.auth_failures_active || 0;
       var SEEN_REQ_TITLE = 'users whose newest breaker failure is inside the breaker window \\u2014 the same thing the Users w/ fail column counts, so the two agree by construction. The RECORD is a separate thing: it is created by a failure and released when that user\\'s next request succeeds, when a later check finds its window empty, or on the next breaker request write once its newest failure is older than the window, so a tripped user who stops sending requests keeps a record nobody is counting until then.';
       var SEEN_TOOL_TITLE = 'user+tool pairs whose newest breaker failure is inside the breaker window \\u2014 the same thing the Users w/ fail column counts, so the two agree by construction. The RECORD is a separate thing: it is released when that user next invokes that tool and the call succeeds, when a later check finds the window empty, or on the next breaker tool write once its newest failure is older than the window, so a tripped pair for a tool never invoked again keeps a record nobody is counting until then.';
+      var SEEN_AUTH_TITLE = 'people \\u2014 a signed-in user id, or the session id when there is none \\u2014 whose newest sign-in failure is inside the 60-second credential pause. It is not a breaker: nothing here has a threshold or a window, and nothing ends the pause early \\u2014 a later success does not release it, and no request or tool write touches it either, so the count falls only as the sixty seconds run out. While a person is inside the pause, Open WebUI\\'s housekeeping requests for them (titles, follow-ups, tags, summaries) are answered with \\'OpenRouter access is temporarily disabled after an authentication failure\\' instead of being sent; what they type in a chat is still sent.';
       var h = '<div class="tbl-wrap"><table class="tbl"><thead><tr>' +
         '<th>Type</th><th class="r">Seen</th>' +
         '<th class="r">Users w/ fail</th>' +
@@ -1386,7 +1387,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
         '<td class="r">' + ws + 's</td></tr>';
       var authLevel = aa > 0 ? 'warn' : 'ok';
       h += '<tr><td>Auth</td><td class="r">-</td><td class="r">-</td>' +
-        '<td class="r">' + badge(String(aa), authLevel) + '</td>' +
+        '<td class="r" title="' + SEEN_AUTH_TITLE + '">' + badge(String(aa), authLevel) + '</td>' +
         '<td class="r">-</td><td class="r">-</td></tr>';
       h += '</tbody></table></div>';
       $(ID + '-rl-panel').innerHTML = h;

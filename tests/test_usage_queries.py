@@ -42,6 +42,18 @@ def _make_store_host(*, monkeypatch) -> Any:
     engine without it is a shape no deployment has, and every aggregate below would be
     computed over an empty table because the writer refused rather than because the
     query is wrong.
+
+    WARNING -- this twin helper is still on `StaticPool`, and `tests/test_usage_store.py`
+    moved off it for a reason. `StaticPool` hands every thread the SAME DBAPI connection,
+    and `_persist_sync` writes each row inside its own `begin_nested()`, so a row is a
+    SAVEPOINT on that connection. A reader here that checks out and returns the
+    connection issues a ROLLBACK that destroys a savepoint the live writer has open; the
+    release raises "no such savepoint", the row is reported rejected and dropped, and the
+    arm fails as a lost write. Nothing in THIS file fires that path -- the seeds below are
+    written on the test's own thread, so no writer thread is live while a reader polls --
+    which is exactly why the trap is still armed here. Do not add an arm that polls
+    `_rows_in` while a `UsageStore` is committing; copy the file-backed engine from
+    `tests/test_usage_store.py::_make_store_host` if you need to.
     """
     engine = create_engine(
         "sqlite://",

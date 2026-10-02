@@ -25,7 +25,12 @@ from urllib.parse import urlsplit
 import aiohttp
 
 from ..api.gateway.responses_adapter import _record_failed_call
-from ..core.config import _PIPE_METADATA_KEY, Valves, _select_openrouter_http_referer
+from ..core.config import (
+    _PIPE_METADATA_KEY,
+    OWUI_CHAT_ID,
+    Valves,
+    _select_openrouter_http_referer,
+)
 from ..core.costs import maybe_dump_costs_snapshot
 from ..core.errors import (
     OpenRouterAPIError,
@@ -65,6 +70,7 @@ from ..storage.owui_files import (
     declared_file_size,
     get_file_by_id,
     infer_file_mime_type,
+    is_channel_chat,
     is_linkable_chat,
     is_temporary_chat,
     materialize_owui_file_to_temp,
@@ -1259,7 +1265,7 @@ class VideoGenerationAdapter:
             if not withheld_record_written:
                 disclosure_block = self._with_the_withheld_record(disclosure_block, withheld)
             content = self._build_failure_content(
-                job_id=job_id, model_id=api_model_id, reason=exc.evidence()
+                job_id=job_id, model_id=api_model_id, reason=self._unreadable_body_reason(exc)
             )
             if disclosure_block:
                 content = disclosure_block + "\n" + content
@@ -1701,7 +1707,7 @@ class VideoGenerationAdapter:
             )
             failed = True
             elapsed = max(0.0, time.monotonic() - started_at)
-            reason = exc.evidence()
+            reason = self._unreadable_body_reason(exc)
             content = self._build_failure_content(job_id=job_id, model_id=api_model_id, reason=reason)
             if disclosure_block:
                 content = disclosure_block + "\n" + content
@@ -1860,6 +1866,8 @@ class VideoGenerationAdapter:
                 payload = await client.status(job_id, polling_url=polling_url)
                 consecutive_errors = 0
                 polling_url = _clean_str(payload.get("polling_url"))
+            except UpstreamBodyUnreadable:
+                raise
             except Exception as exc:
                 consecutive_errors += 1
                 if consecutive_errors >= int(valves.VIDEO_STATUS_POLL_MAX_ERRORS):
@@ -4006,6 +4014,11 @@ class VideoGenerationAdapter:
             f"{_serialize_kind_marker(self.MODEL_MARKER_KIND, _safe_marker_body(model_id))}\n\n"
             f"{clips}{shortfall}"
         )
+
+    def _unreadable_body_reason(self, exc: Any) -> str:
+        if is_channel_chat(OWUI_CHAT_ID.get()):
+            return exc.summary()
+        return f"{exc.summary()}\n\n{exc.body_excerpt_block()}"
 
     def _build_failure_content(self, *, job_id: str, model_id: str, reason: str) -> str:
         markers = ""

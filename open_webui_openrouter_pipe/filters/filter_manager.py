@@ -50,6 +50,7 @@ from ..core.timing_logger import timed
 from ..core.utils import (
     _ADAPTER_CACHE,
     _KEEP_WHAT_STILL_FITS,
+    _PRIORITY_FIELD,
     _clean_str,
 )
 from ..core.utils import OWUI_FUNCTION_ID_ILLEGAL_RE as _MODEL_FILTER_ID_RE
@@ -79,13 +80,6 @@ _ROUTING_CONTROL_KEYS: dict[str, str] = {
 }
 
 _QUANTIZATION_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
-
-_PRIORITY_FIELD = (
-    '        priority: int = Field(\n'
-    '            default=0,\n'
-    '            description="Priority level for the filter operations.",\n'
-    '        )'
-)
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -1202,10 +1196,7 @@ class FilterManager:
         Tools disabled via the gate parameters are excluded from the template entirely.
         """
         valves_fields = [
-            ('        priority: int = Field(\n'
-            '            default=0,\n'
-            '            description="Priority level for the filter operations.",\n'
-            '        )'),
+            _PRIORITY_FIELD,
         ]
         if enable_web_search:
             valves_fields.extend([
@@ -2824,10 +2815,7 @@ class Filter:
     class Valves(BaseModel):
 __KEEP_WHAT_STILL_FITS__
 
-        priority: int = Field(
-            default=0,
-            description="Priority level for the filter operations.",
-        )
+__PRIORITY_FIELD__
         DIRECT_TOTAL_PAYLOAD_MAX_MB: int = Field(
             default=50,
             ge=1,
@@ -3230,6 +3218,7 @@ __KEEP_WHAT_STILL_FITS__
             .replace("__PIPE_META_KEY__", _PIPE_METADATA_KEY)
             .replace("__ADAPTER_CACHE__", _ADAPTER_CACHE)
             .replace("__KEEP_WHAT_STILL_FITS__", _KEEP_WHAT_STILL_FITS)
+            .replace("__PRIORITY_FIELD__", _PRIORITY_FIELD)
         )
 
     @timed

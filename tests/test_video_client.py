@@ -102,6 +102,12 @@ async def test_submit_rejects_a_non_object_response():
     is not a document is the network path's, so the video leg's caller has to be able to
     tell it apart from a fault OpenRouter reported, which is what the breaker exemption on
     this leg is decided on.
+
+    The excerpt is the other half of the class. The exemption is only defensible if the
+    thing shown in its place is the body that arrived, so the exception has to carry it:
+    `summary()` names the endpoint and the `Content-Type`, both of which the pipe derived
+    itself, and without the excerpt the card is a sentence that could have been written
+    before the request was made.
     """
     async with aiohttp.ClientSession() as session:
         client = await _client(session)
@@ -111,6 +117,11 @@ async def test_submit_rejects_a_non_object_response():
                 await client.submit({"model": "test/video"})
     assert f"{BASE}/videos" in excinfo.value.endpoint
     assert excinfo.value.content_type == "application/json"
+    assert excinfo.value.body_excerpt == repr(["not", "an", "object"]), (
+        f"the excerpt is {excinfo.value.body_excerpt!r}, which is not the payload that arrived; "
+        "the card quotes this string and nothing else, so an exception that dropped it would "
+        "leave the reader a fixed sentence"
+    )
 
 
 @pytest.mark.asyncio

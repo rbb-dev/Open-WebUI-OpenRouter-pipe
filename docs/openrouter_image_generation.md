@@ -220,7 +220,10 @@ models.
 
 See [Configuration valves](#configuration-valves-admin) for the
 image-specific valves; the master `MODEL_CATALOG_REFRESH_SECONDS`
-TTL is shared with the video and chat catalogs.
+TTL is shared with the video and chat catalogs, and the image list
+backs off on the chat catalogue's ladder after a failed fetch (5, 10,
+20, 40, 80, 160 seconds, capped by that interval) rather than waiting
+out the flat one.
 
 ---
 
@@ -1475,7 +1478,13 @@ evidence that the extras were free.
 
 Four valves control the native image-generation subsystem. All are
 visible in Admin → Functions → OpenRouter pipe → Valves. Catalog TTL
-is shared with chat/video catalogs (`MODEL_CATALOG_REFRESH_SECONDS`).
+is shared with chat/video catalogs (`MODEL_CATALOG_REFRESH_SECONDS`),
+and the image list carries the same per-account failure backoff as the
+chat list: 5, 10, 20, 40, 80 and 160 seconds after consecutive failed
+fetches, capped by that interval, counted per OpenRouter account and
+cleared by the next successful fetch. A fetch that returns no image
+models is an answer rather than a fault, so it stamps the clock without
+counting.
 
 | Valve | Default | Range | Purpose |
 |-------|---------|-------|---------|

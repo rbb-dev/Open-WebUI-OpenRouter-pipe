@@ -444,10 +444,10 @@ async def _gate_inline_data_url(
     max_inline_bytes: int,
     *,
     resolve_type: bool,
-) -> tuple[str, ImageRefusal | None]:
+) -> tuple[str, tuple[str, str] | None, ImageRefusal | None]:
     payload_chars = base64_data_url_payload_len(url)
     if payload_chars is None:
-        return url, ImageRefusal(
+        return url, None, ImageRefusal(
             "a data URL that is not base64-encoded, which OpenRouter does not accept",
             "unencoded_inline",
             subject=loggable_link(url),
@@ -455,7 +455,7 @@ async def _gate_inline_data_url(
     if (payload_chars * 3) // 4 > max_inline_bytes:
         folded = base64_data_url_payload_chars(url)
         if folded is None or (folded * 3) // 4 > max_inline_bytes:
-            return url, ImageRefusal(
+            return url, None, ImageRefusal(
                 f"larger than the {max_inline_bytes}-byte inline limit",
                 "oversized_inline",
                 subject=loggable_link(url),
@@ -464,7 +464,7 @@ async def _gate_inline_data_url(
     assert split is not None
     body = "".join(split[1].split())
     if not body or not await _validate_inline_payload(body):
-        return url, ImageRefusal(
+        return url, None, ImageRefusal(
             "not decodable as base64", "undecodable_inline", subject=loggable_link(url),
         )
     head = "data:" + split[0].partition(":")[2]
@@ -474,8 +474,9 @@ async def _gate_inline_data_url(
         and body == split[1]
     )
     if not resolve_type:
-        return (url if unchanged else head + "," + body), None
-    return _resolve_inline_type(head, body, split_from=url if unchanged else "")
+        return (url if unchanged else head + "," + body), (head, body), None
+    resolved, refusal = _resolve_inline_type(head, body, split_from=url if unchanged else "")
+    return resolved, None, refusal
 
 
 async def _gate_inline_tool_pictures(
@@ -494,7 +495,7 @@ async def _gate_inline_tool_pictures(
             kept.extend(admitted)
             refused.extend(not_a_link)
             continue
-        _gated, refusal = await _gate_inline_data_url(
+        _gated, _parts, refusal = await _gate_inline_data_url(
             url, max_inline_bytes, resolve_type=True,
         )
         if refusal is not None:
@@ -1787,9 +1788,10 @@ async def transform_messages_to_input(
                                 subject=loggable_link(url),
                             )
 
+                        gated_split: tuple[str, str] | None = None
                         if is_inline_data_url(url):
                             try:
-                                url, refusal = await _gate_inline_data_url(
+                                url, gated_split, refusal = await _gate_inline_data_url(
                                     url, max_inline_bytes, resolve_type=False,
                                 )
                                 if refusal is not None:
@@ -1948,7 +1950,11 @@ async def transform_messages_to_input(
                                 )
                             url = inlined.data_url
 
-                        split = split_base64_data_url(url)
+                        split = (
+                            gated_split
+                            if gated_split is not None
+                            else split_base64_data_url(url)
+                        )
                         if mode == "reuse" and not (split[1] if split is not None else ""):
                             if is_http_or_https_url(url):
                                 return _refuse(
@@ -2351,8 +2357,8 @@ async def transform_messages_to_input(
 
                         if isinstance(audio_payload, dict) and "data" in audio_payload and "format" in audio_payload:
                             _data = audio_payload.get("data", "")
-                            if isinstance(_data, str) and _inline_payload_bytes(_data) > max_inline_bytes:
-                                return await _refuse_oversized_inline(_inline_payload_bytes(_data))
+                            if isinstance(_data, str) and (_data_bytes := _inline_payload_bytes(_data)) > max_inline_bytes:
+                                return await _refuse_oversized_inline(_data_bytes)
                             cleaned = await _normalize_base64(_data)
                             if not cleaned:
                                 pipe.logger.warning("Audio payload rejected: invalid base64 data.")
@@ -2377,8 +2383,9 @@ async def transform_messages_to_input(
                         if isinstance(audio_payload, dict):
                             raw_data = audio_payload.get("data")
                             if isinstance(raw_data, str):
-                                if _inline_payload_bytes(raw_data) > max_inline_bytes:
-                                    return await _refuse_oversized_inline(_inline_payload_bytes(raw_data))
+                                raw_bytes = _inline_payload_bytes(raw_data)
+                                if raw_bytes > max_inline_bytes:
+                                    return await _refuse_oversized_inline(raw_bytes)
                                 cleaned = await _normalize_base64(raw_data)
                                 if not cleaned:
                                     pipe.logger.warning("Audio payload rejected: invalid base64 data.")
@@ -2411,8 +2418,9 @@ async def transform_messages_to_input(
                                     "audio_remote_url",
                                 )
 
-                            if _inline_payload_bytes(sanitized) > max_inline_bytes:
-                                return await _refuse_oversized_inline(_inline_payload_bytes(sanitized))
+                            sanitized_bytes = _inline_payload_bytes(sanitized)
+                            if sanitized_bytes > max_inline_bytes:
+                                return await _refuse_oversized_inline(sanitized_bytes)
 
                             if sanitized[:5].lower() == "data:":
                                 parsed = await asyncio.to_thread(pipe._multimodal_handler._parse_data_url, sanitized if sanitized.startswith("data:") else f"data:{sanitized.split(':', 1)[1]}")

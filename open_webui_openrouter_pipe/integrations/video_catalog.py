@@ -11,7 +11,7 @@ from typing import Any
 import aiohttp
 
 from ..core.warn_latch import warn_level
-from ..models.registry import OpenRouterModelRegistry
+from ..models.registry import OpenRouterModelRegistry, _fingerprint
 from .catalog_client import _build_catalog_client
 from .video_client import OpenRouterVideoClient
 
@@ -67,10 +67,11 @@ def _video_catalog_stale(
 ) -> tuple[bool, bool]:
     now = time.time()
     last_attempt = OpenRouterModelRegistry.last_video_attempt()
+    window = OpenRouterModelRegistry._media_retry_window(cache_seconds, _fingerprint(api_key))
     stale_list = (
         not OpenRouterModelRegistry.video_accounts_match(api_key)
         or not last_attempt
-        or (now - last_attempt) >= cache_seconds
+        or (now - last_attempt) >= window
     )
     if not wants_modalities:
         return stale_list, False
@@ -147,6 +148,7 @@ async def ensure_video_catalog_loaded(
             try:
                 models = await client.list_models()
             except (TimeoutError, aiohttp.ClientError, OSError) as exc:
+                OpenRouterModelRegistry.record_media_failure(api_key)
                 OpenRouterModelRegistry.record_video_attempt(api_key)
                 if with_modalities:
                     OpenRouterModelRegistry.record_video_modality_attempt()
@@ -177,6 +179,7 @@ async def ensure_video_catalog_loaded(
             _carry_declared_input_modalities(models)
 
             OpenRouterModelRegistry.register_video_models(models)
+            OpenRouterModelRegistry.record_media_success(api_key)
             OpenRouterModelRegistry.record_video_attempt(api_key)
             if with_modalities:
                 OpenRouterModelRegistry.record_video_modality_attempt()

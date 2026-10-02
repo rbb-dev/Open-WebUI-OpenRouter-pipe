@@ -185,6 +185,7 @@ from .models.reasoning_config import ReasoningConfigManager
 from .models.registry import (
     ModelFamily,
     OpenRouterModelRegistry,
+    _fingerprint,
     _is_model_glob,
     _matches_any_model_pattern,
     _parse_model_patterns,
@@ -931,6 +932,7 @@ class Pipe:
             self._http_session = aiohttp.ClientSession(
                 timeout=timeout,
                 connector=connector,
+                cookie_jar=aiohttp.DummyCookieJar(),
             )
 
         if self._multimodal_handler:
@@ -999,7 +1001,8 @@ class Pipe:
         if self._startup_checks_started and not self._startup_checks_pending:
             return
 
-        if api_key_value != self._warmup_failed_key:
+        assert api_key_value is not None
+        if _fingerprint(api_key_value) != self._warmup_failed_key:
             self._warmup_retry_at = 0.0
         elif time.monotonic() < self._warmup_retry_at:
             return
@@ -3172,7 +3175,7 @@ class Pipe:
         except Exception as exc:  # pragma: no cover - depends on IO
             self.logger.warning("OpenRouter warmup failed: %s", exc, exc_info=True)
             self._warmup_failed = True
-            self._warmup_failed_key = api_key
+            self._warmup_failed_key = _fingerprint(api_key or "")
             self._warmup_retry_at = time.monotonic() + _WARMUP_RETRY_SECONDS
             self._startup_checks_complete = False
             self._startup_checks_pending = True
@@ -4941,6 +4944,7 @@ class Pipe:
             connector=connector,
             timeout=timeout,
             json_serialize=json.dumps,
+            cookie_jar=aiohttp.DummyCookieJar(),
         )
 
     @timed

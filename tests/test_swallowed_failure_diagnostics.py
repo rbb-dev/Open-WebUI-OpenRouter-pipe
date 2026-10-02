@@ -402,6 +402,18 @@ class TestWarnLevel:
 _LOG_LEVEL_NAMES = {"DEBUG", "INFO", "WARNING", "WARN", "ERROR", "CRITICAL", "FATAL"}
 
 _NOT_A_WARN_LATCH = {
+    ("orchestrator.py", "_is_api_caller(__metadata__)"): (
+        "chooses WHICH surface reports, not whether a repeat has already been reported. A "
+        "chatless, non-streamed caller is handed an HTTP envelope instead of a card, so on "
+        "that leg this ERROR record is the only server-side trace of a body a proxy "
+        "rewrote -- suppressing a second one inside the window would leave the operator an "
+        "unexplained failure, which is the opposite of what a latch is for. The log call "
+        "itself is unconditional"
+    ),
+    ("orchestrator.py", "escape is not None"): (
+        "the same record one level in: it fires only when an escape was actually built, for "
+        "the same reason as the guard above it"
+    ),
     ("responses_adapter.py", "is_auth_failure"): (
         "chooses WHAT to say -- the message for an auth error vs a generic one -- not "
         "whether it has said it before"

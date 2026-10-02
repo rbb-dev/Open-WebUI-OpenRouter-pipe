@@ -6,7 +6,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import datetime
+import shutil
+import tempfile
 import time
+import weakref
 from types import MethodType, SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
@@ -126,7 +129,7 @@ def _store_persisted_collect_row(host: Any, collect: bool, monkeypatch) -> None:
 
 
 def _make_store_host(collect: bool = True, *, monkeypatch) -> Any:
-    """A store host on an engine that carries the pipe's persisted function row.
+    """A store host on a file-backed, per-thread engine carrying the persisted function row.
 
     `UsageStore._persist_sync` gates every batch on the persisted
     `PIPE_DASHBOARD_USAGE_COLLECT` row, read on the writer thread from the same engine
@@ -135,12 +138,31 @@ def _make_store_host(collect: bool = True, *, monkeypatch) -> Any:
     deployment has: the reader finds nothing and refuses, so every test below would
     measure a closed gate rather than the writer. The row therefore goes in here, with
     collection on by default; `collect=False` is how a test asks for the refusal.
+
+    The engine is a FILE, not `sqlite://` with `StaticPool`, and that is load-bearing.
+    `_persist_sync` writes each row inside its own `session.begin_nested()`, so every row
+    is a SAVEPOINT on the one DBAPI connection in play. `StaticPool` hands that single
+    connection to every thread, so a reader that checks out and returns it -- which
+    `_rows_in` below does, on the test's own thread, while the writer thread is
+    committing -- issues a ROLLBACK that destroys the writer's open savepoint. The
+    release then raises "no such savepoint", `_persist_sync` counts the row as rejected
+    and drops it, and the arm fails as a lost write on a box that was idle. That is B559.
+    A deployment's engine gives each thread its own connection to a file, so a rig that
+    shares one connection is testing a shape nothing ships. The temporary directory is
+    removed when the engine is garbage-collected, which is when the last holder of this
+    database goes -- the engine is the finalizer's anchor because `SimpleNamespace`
+    cannot take a weak reference.
+
+    Any test that wants a different engine must REPLACE both `host._engine` and
+    `host._session_factory` together; the store writes through the factory, and a reader
+    that kept the old engine would be reading a database nobody writes.
     """
+    db_dir = tempfile.mkdtemp(prefix="usage-store-rig-")
     engine = create_engine(
-        "sqlite://",
+        f"sqlite:///{db_dir}/usage.db",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
     )
+    weakref.finalize(engine, shutil.rmtree, db_dir, True)
     host = SimpleNamespace(
         id="openrouter",
         _engine=engine,
@@ -456,6 +478,11 @@ class _FakeClock:
 
     def advance(self, seconds: float) -> None:
         self.now += seconds
+
+
+def _rows_in(host: Any, table_name: str) -> int:
+    with host._engine.begin() as conn:
+        return int(conn.execute(text(f'SELECT COUNT(*) FROM "{table_name}"')).scalar_one())
 
 
 # ── The writer's failure path ──

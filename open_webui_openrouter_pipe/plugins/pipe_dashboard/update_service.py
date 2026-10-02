@@ -597,7 +597,7 @@ class UpdateService:
                 "this_worker": this_worker,
                 "role": self._auto_role,
             },
-            "rev": getattr(row, "updated_at", None),
+            "rev": self._content_token(row),
             "pipe_id": pipe.id,
         }
 
@@ -958,10 +958,23 @@ class UpdateService:
         except (TypeError, ValueError):
             return None
 
-    async def _rev_guard(self, expected: Any) -> int:
+    @staticmethod
+    def _content_token(row: Any) -> str:
+        stamp = getattr(row, "updated_at", None)
+        digest = hashlib.sha256((getattr(row, "content", "") or "").encode("utf-8")).hexdigest()
+        return f"{stamp}:{digest[:16]}"
+
+    @staticmethod
+    def _split_rev(value: Any) -> tuple[int | None, str | None]:
+        if isinstance(value, str) and ":" in value:
+            stamp, _, digest = value.partition(":")
+            return UpdateService._coerce_rev(stamp), digest or None
+        return UpdateService._coerce_rev(value), None
+
+    async def _rev_guard(self, expected: Any) -> int | str:
         row = await self._row()
         current = self._coerce_rev(getattr(row, "updated_at", None))
-        wanted = self._coerce_rev(expected)
+        wanted, digest = self._split_rev(expected)
         if current is None or wanted is None or current != wanted:
             if current is None:
                 reason = "the stored function revision could not be read"
@@ -970,7 +983,16 @@ class UpdateService:
             else:
                 reason = f"function row changed (rev {current} != expected {wanted})"
             raise UpdateError("stale_rev", reason)
-        return current
+        if digest is None:
+            return current
+        _, stored_digest = self._content_token(row).split(":", 1)
+        if stored_digest != digest:
+            raise UpdateError(
+                "stale_rev",
+                f"function code changed within revision {current} (the stored content is "
+                "not the content this client was given)",
+            )
+        return f"{current}:{digest}"
 
     def _require_idle(self) -> None:
         if self._lock.locked() or self._commit_inflight:
@@ -1016,7 +1038,7 @@ class UpdateService:
     async def _commit(
         self,
         content: str,
-        rev: int,
+        rev: int | str,
         request: Any,
         actor: str,
         from_version: str,
@@ -1148,7 +1170,7 @@ class UpdateService:
     async def _shielded_commit(
         self,
         content: str,
-        rev: int,
+        rev: int | str,
         request: Any,
         actor: str,
         from_version: str,

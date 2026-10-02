@@ -3,7 +3,7 @@
 `_budget_shape` measures the string sitting in an `input_file` block's payload key. For
 a stored attachment that key holds a ~36-character identifier, so a 1 MB PDF was charged
 27 bytes -- 0 document tokens -- while the identical bytes inline were charged 8,462.
-The bytes really do travel: `inline_internal_responses_input_files_inplace` swaps the
+The bytes really do travel: `inline_internal_responses_input_files` swaps the
 identifier for the full base64 on the way to the wire, but that runs on the `model_dump`
 copy, AFTER the budget, and `body.input` keeps the reference for every later tool round.
 
@@ -422,7 +422,7 @@ async def test_the_index_resolves_the_one_reference_the_gateway_will_inline(
 ) -> None:
     """The budget must charge for the payload the request actually sends, and read no more.
 
-    `inline_internal_responses_input_files_inplace` is an if/elif chain: it resolves at
+    `inline_internal_responses_input_files` is an if/elif chain: it resolves at
     most ONE reference per block -- `file_id`, else an internal `file_data`, else an
     internal `file_url` -- and skips the block entirely when `file_id` carries the
     provider-side `file-` prefix. The index collected all three keys and `_budget_shape`

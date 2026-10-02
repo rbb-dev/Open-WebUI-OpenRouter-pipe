@@ -37,7 +37,7 @@ _US_JOIN_TIMEOUT = 2.0
 _US_PURGE_INTERVAL_S = 900.0
 _US_PURGE_JITTER_S = 60.0
 _US_LOCK_STALE_S = 600.0
-_purge_lock_warnings: dict[str, float] = {}
+_warned_purge_lock: dict[str, float] = {}
 _US_DROP_WARN_EVERY = 50
 _US_RECONCILE_RETRY_S = 300.0
 _US_POLL_INTERVAL_S = 0.5
@@ -731,7 +731,7 @@ class UsageStore:
             return bool(store._try_acquire_lock_sync(lock_row))
         except Exception:
             logger.log(
-                warn_level(_purge_lock_warnings, f"purge_lock:{self._table_name}", cooldown_s=3600.0),
+                warn_level(_warned_purge_lock, f"purge_lock:{self._table_name}", cooldown_s=3600.0),
                 "usage store: the retention purge could not take its cross-worker lock, so this pass "
                 "was skipped and the lock was left alone (usage_table=%s).", self._table_name,
                 exc_info=True,

@@ -167,6 +167,16 @@ Every finished chat reply hands Open WebUI an `output` array, which it saves aga
 streamed reply publishes it in its closing `response.completed` event, and a non-streamed one returns it with its
 text. It holds the reasoning items, the tool cards that were shown, and the messages.
 
+The `response.output_item.done` ladder resolves an item by its `type`, and an item type it has no arm for is not
+rendered at all — it falls through with the round's debug `title` still set, which only a `logger.debug` reads. The
+types it names are `message`, `reasoning`, `function_call`, `web_search_call`, `file_search_call`,
+`image_generation_call`, the seven `openrouter:*` server-tool types, and the four shell types — `shell_call`,
+`local_shell_call`, `shell_call_output`, `local_shell_call_output`. The shell family is keyed on the item's
+`call_id` rather than its `id`, because a `ShellCallItem` and its `ShellCallOutputItem` share a `call_id` and differ
+in `id`, and keying on `id` opens a second card for one command; the card names the commands the item asked to run and
+carries the item's own stdout or stderr as its result. A type the ladder does not name is still stored verbatim and
+replayed, so a provider-native round the pipe has no card for is remembered rather than lost.
+
 A chat turn that is nothing but tool calls stores `[function_call]` and no message item at all, on both the
 streaming and the non-streaming leg. A message item carrying no text, no annotations and no reasoning details
 is kept in exactly one case: the blank **round divider** that separates one tool round from the next, and it is

@@ -239,6 +239,14 @@ async def test_nonstreaming_responses_non_dict_output_item(pipe_instance_async):
     assert "Hello!" in text_deltas[0].get("delta", "")
 
 
+#: Every type the non-streaming leg has to hand the ladder. The shell family is here in
+#: both spellings and in both halves: the adapter's re-emit set named `local_shell_call`
+#: alone, so on a non-streaming turn a `shell_call` -- the name OpenRouter actually emits
+#: -- was dropped before the ladder ever saw it, and the round was invisible on that leg
+#: however well the streaming leg rendered it. A streaming-only fix is half a fix.
+SHELL_FAMILY = ("shell_call", "local_shell_call", "shell_call_output", "local_shell_call_output")
+
+
 @pytest.mark.asyncio
 async def test_nonstreaming_responses_special_item_types(pipe_instance_async):
     """Test _run_responses yields special item types (line 101)."""
@@ -255,6 +263,12 @@ async def test_nonstreaming_responses_special_item_types(pipe_instance_async):
             {"type": "file_search_call", "id": "file-1", "query": "document"},
             {"type": "image_generation_call", "id": "img-1", "prompt": "cat"},
             {"type": "local_shell_call", "id": "shell-1", "command": "ls"},
+            {"type": "shell_call", "id": "shell-2", "call_id": "call-1",
+             "action": {"type": "exec", "commands": ["ls"]}, "status": "completed"},
+            {"type": "shell_call_output", "id": "shell-3", "call_id": "call-1",
+             "output": [{"stdout": "total 0\n", "stderr": ""}], "status": "completed"},
+            {"type": "local_shell_call_output", "id": "shell-4", "call_id": "call-2",
+             "output": "total 0\n", "status": "completed"},
             {
                 "type": "message",
                 "role": "assistant",
@@ -288,6 +302,8 @@ async def test_nonstreaming_responses_special_item_types(pipe_instance_async):
     item_types = {e.get("item", {}).get("type") for e in item_done_events}
     assert "reasoning" in item_types
     assert "web_search_call" in item_types
+    dropped = [name for name in SHELL_FAMILY if name not in item_types]
+    assert dropped == [], f"the non-streaming leg dropped {dropped} before the ladder saw them: {item_types!r}"
 
 
 @pytest.mark.asyncio

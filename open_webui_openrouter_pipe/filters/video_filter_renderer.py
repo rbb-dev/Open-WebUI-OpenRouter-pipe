@@ -12,6 +12,7 @@ from ..core.config import _OPENROUTER_VIDEO_GEN_FILTER_MARKER, _PIPE_METADATA_KE
 from ..core.utils import (
     _ADAPTER_CACHE,
     _KEEP_WHAT_STILL_FITS,
+    _PRIORITY_FIELD,
     _clean_str,
     scrub_surrogates,
     summarise_names,
@@ -847,10 +848,7 @@ def _json_constant(literal: str) -> float:
 
 class Filter:
     class Valves(BaseModel):
-        priority: int = Field(
-            default=0,
-            description="Priority level for the filter operations.",
-        )
+{_PRIORITY_FIELD}
 
     class UserValves(BaseModel):
 {_KEEP_WHAT_STILL_FITS}
