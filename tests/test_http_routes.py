@@ -72,6 +72,7 @@ def _install_auth_stub(monkeypatch, *, decode=lambda t: {"id": "u1"}, valid=True
     users_mod: Any = types.ModuleType("open_webui.models.users")
     users = Mock()
     users.get_user_by_id = AsyncMock(return_value=user)
+    users.update_last_active_by_id = AsyncMock(return_value=True)
     users_mod.Users = users
     monkeypatch.setitem(sys.modules, "open_webui.utils.auth", auth)
     monkeypatch.setitem(sys.modules, "open_webui.models.users", users_mod)

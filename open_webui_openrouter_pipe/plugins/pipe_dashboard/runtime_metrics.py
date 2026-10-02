@@ -302,7 +302,6 @@ def collect_system_resources() -> dict[str, Any]:
     else:
         out["disk_total"] = int(usage.total)
         out["disk_free"] = int(usage.free)
-        out["disk_path"] = data_path
     return out
 
 

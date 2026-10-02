@@ -388,7 +388,13 @@ the claim that would identify it belongs to the installer, which never runs whil
 valve is off. The two clauses that keep this from reaching too far are unchanged — a row
 carrying another copy's `openrouter_pipe:installed_by` is never selected, and a row that
 carries no marker at all is never written — so the arms select in one order: a row this
-copy installed, else a marked row with no record at all, else nothing. The sweep that
+copy installed, else a marked row with no record at all, else nothing. The two readers that
+consult a family row are held to the same order as the installer and no looser: the one
+that reads the Web Tools filter's per-user configuration for Fusion's panel members, and
+the one that reads the image-generation filter's `IMAGE_GENERATION_MODEL`. Neither reads
+another copy's row, so with two copies in one workspace each reads only its own.
+
+The sweep that
 retires image rows left over from the fixed-variant design obeys the same rule, on the same
 predicate: it selects on the image marker and the off-identity shape, and then writes only
 to a row this copy installed or to a row carrying no record at all, so two copies never

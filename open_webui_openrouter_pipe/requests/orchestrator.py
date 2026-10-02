@@ -1894,6 +1894,7 @@ class RequestOrchestrator:
             )
         if isinstance(__metadata__, dict) and withheld_open_webui_names:
             __metadata__["_pipe_open_webui_owned_names"] = withheld_open_webui_names
+            __metadata__["_pipe_open_webui_hand_back_available"] = bool(completions_body.stream)
 
         context = self._pipe._TOOL_CONTEXT.get()
         if context is not None and _reaches_display_file(exposed_to_origin):

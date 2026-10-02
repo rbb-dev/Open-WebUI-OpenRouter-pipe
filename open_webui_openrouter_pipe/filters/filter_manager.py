@@ -556,6 +556,21 @@ def _byte_identical_foreign_row(rows, desired_source):
     )
 
 
+def _claimable_rows(rows, owner):
+    return [row for row in rows or [] if _claimable_by(row, owner)]
+
+
+def _pick_maintained_row(rows, marker, *, owner, prefer_id=None, tie_break_id=False,
+                         desired_source=None):
+    candidates = [row for row in rows or [] if marker in (getattr(row, "content", "") or "")]
+    claimed = _claimable_rows(candidates, owner)
+    if claimed:
+        return _newest_marked_row(claimed, marker, prefer_id=prefer_id, tie_break_id=tie_break_id)
+    if desired_source is None:
+        return None
+    return _byte_identical_foreign_row(candidates, desired_source)
+
+
 def _sweep_candidate_index(
     rows: list[Any], name: str, marker: str
 ) -> tuple[dict[str, list[Any]], list[Any]]:
@@ -622,6 +637,17 @@ class FilterManager:
 
     def _install_owner(self) -> str:
         return str(getattr(self._pipe, "id", "") or "")
+
+    def _web_tools_gate_kwargs(self) -> dict[str, Any]:
+        return {kwarg: getattr(self.valves, switch) for switch, _toggle, kwarg in WEB_TOOL_SWITCHES}
+
+    def _desired_web_tools_source(self) -> str:
+        return (
+            FilterManager.render_openrouter_web_tools_filter_source(
+                **self._web_tools_gate_kwargs()
+            ).strip()
+            + "\n"
+        )
 
     _unresolved_image_filter_ids: frozenset[str] = frozenset()
     _unresolved_video_filter_ids: frozenset[str] = frozenset()
@@ -1566,18 +1592,22 @@ class FilterManager:
         from open_webui.models.functions import Functions
 
         function_id = _OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID
+        owner = self._install_owner()
         try:
             row = await Functions.get_function_by_id(function_id)
             if (
                 row is None
                 or not getattr(row, "is_active", False)
                 or not _is_web_tools_filter(getattr(row, "content", None))
+                or not _claimable_by(row, owner)
             ):
                 row = None
-                picked = _newest_marked_row(
+                picked = _pick_maintained_row(
                     await Functions.get_functions_by_type("filter", active_only=False),
                     _OPENROUTER_WEB_TOOLS_FILTER_MARKER,
+                    owner=owner,
                     prefer_id=_OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID,
+                    desired_source=self._desired_web_tools_source(),
                 )
                 if (
                     picked is not None
@@ -2130,8 +2160,11 @@ class FilterManager:
                 candidates = rows.all_rows
             else:
                 candidates = await Functions.get_functions_by_type("filter", active_only=False)
-            chosen = _newest_marked_row(
-                candidates, _OPENROUTER_IMAGE_GEN_FILTER_MARKER, tie_break_id=True
+            chosen = _pick_maintained_row(
+                candidates,
+                _OPENROUTER_IMAGE_GEN_FILTER_MARKER,
+                owner=self._install_owner(),
+                tie_break_id=True,
             )
             if chosen is None:
                 return ""

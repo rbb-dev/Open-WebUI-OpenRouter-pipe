@@ -407,7 +407,8 @@ async def test_a_bulk_read_that_fails_still_falls_back_per_id(monkeypatch) -> No
         ({"file_id": _FILE_ID, "file_url": _SECOND_URL}, [_FILE_ID], 8),
         ({"file_url": _SECOND_URL}, [_SECOND_ID], 32_000),
         ({"file_data": _SECOND_URL, "file_url": _INTERNAL_URL}, [_SECOND_ID], 32_000),
-        ({"file_id": "file-provider-123", "file_url": _SECOND_URL}, [], 0),
+        ({"file_id": "file-provider-123", "file_url": _SECOND_URL}, [_SECOND_ID], 32_000),
+        ({"file_id": "file-provider-123"}, [], 0),
         ({"file_id": _FILE_ID, "file_data": _FOUR_MB_DATA_URL}, [_FILE_ID], 8),
         ({"file_data": _UNPARSEABLE_INTERNAL_URL, "file_url": _SECOND_URL}, [], 0),
     ],
@@ -416,7 +417,8 @@ async def test_a_bulk_read_that_fails_still_falls_back_per_id(monkeypatch) -> No
         "id-outranks-url",
         "url-alone",
         "data-outranks-url",
-        "a-provider-side-id-skips-the-block",
+        "a-provider-side-id-does-not-shield-the-url-beside-it",
+        "a-provider-side-id-alone-skips-the-block",
         "id-outranks-an-inline-payload",
         "an-unparseable-internal-reference-consumes-the-block",
     ],
@@ -428,8 +430,9 @@ async def test_the_index_resolves_the_one_reference_the_gateway_will_inline(
 
     `inline_internal_responses_input_files` is an if/elif chain: it resolves at
     most ONE reference per block -- `file_id`, else an internal `file_data`, else an
-    internal `file_url` -- and skips the block entirely when `file_id` carries the
-    provider-side `file-` prefix. The index collected all three keys and `_budget_shape`
+    internal `file_url` -- and skips the block entirely only when `file_id` carries
+    the provider-side `file-` prefix AND the block names no reference of its own
+    beside it. The index collected all three keys and `_budget_shape`
     charged the largest, so a block naming a 1 KB file by id and a 4 MB file by url was
     charged for the 4 MB one the gateway never dispatches.
 

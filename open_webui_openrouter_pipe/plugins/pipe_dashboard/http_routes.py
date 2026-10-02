@@ -8,6 +8,7 @@ validation. Registered as a FastAPI APIRoute before the SPA catch-all.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib
 import inspect
 import logging
@@ -179,6 +180,11 @@ async def _bounded_json_body(request: Request) -> None:
         raise HTTPException(status_code=400, detail="args nested too deeply")
 
 
+def _consume_task_exception(task: asyncio.Task) -> None:
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        task.exception()
+
+
 async def bearer_user(request: Request) -> Any:
     from fastapi import HTTPException
 
@@ -212,6 +218,8 @@ async def bearer_user(request: Request) -> Any:
         trusted_email = request.headers.get(WEBUI_AUTH_TRUSTED_EMAIL_HEADER, "").lower()
         if trusted_email and user.email != trusted_email:
             raise HTTPException(status_code=401)
+    task = asyncio.create_task(Users.update_last_active_by_id(user.id))
+    task.add_done_callback(_consume_task_exception)
     return user
 
 

@@ -127,6 +127,8 @@ _INTERNAL_FILE_PATH = "/api/v1/files/"
 
 _ARTIFACT_GROUP_CONCURRENCY = 8
 
+_AUDIO_URL_REFUSAL = "an audio clip must be base64-encoded; URLs are not supported"
+
 
 def _strip_reasoning_anchor_keys(item: dict[str, Any]) -> dict[str, Any]:
     """Return *item* without the internal anchor keys used only for replay
@@ -1002,9 +1004,16 @@ async def _tool_picture_address_gate(
         else:
             if deadline is None:
                 deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
-            permitted = await pipe._multimodal_handler._is_safe_url(
-                url, seconds=_remaining_address_seconds(deadline),
-            )
+            try:
+                permitted = await pipe._multimodal_handler._is_safe_url(
+                    url, seconds=_remaining_address_seconds(deadline),
+                )
+            except Exception:
+                pipe.logger.warning(
+                    "The address check for a tool's picture could not run, so it was not sent: %s",
+                    loggable_link(url), exc_info=True,
+                )
+                permitted = _NO_VERDICT
             if seen is not None:
                 seen[url] = permitted
         if permitted is not True:
@@ -2418,7 +2427,7 @@ async def transform_messages_to_input(
                             if is_http_or_https_url(sanitized):
                                 pipe.logger.warning("Audio payload rejected: remote URLs are not supported.")
                                 return _refuse_audio(
-                                    "an audio clip must be base64-encoded; URLs are not supported",
+                                    _AUDIO_URL_REFUSAL,
                                     "audio_remote_url",
                                 )
 

@@ -2,6 +2,53 @@
 
 ## Behaviour changes
 
+- **Pipe dashboard, viewer payload** — the live dashboard payload no longer carries the data-dir path, so a viewer
+  holding only a read grant no longer learns the server's filesystem layout from the System tab. The key was published
+  by the system collector as `system.disk_path`, and every key in a payload reaches every socket in the viewers room.
+  The Disk card is unchanged — it renders from `disk_free` and `disk_total`, both of which still ship — and the
+  operator's own log still names the volume, latched to once per 300 s. An operator who wants the path already has it
+  on the admin-only Config tab's `Session log directory` row.
+
+- **Temporary chats, marker records** — three streaming records that named a temporary chat's browser socket id now
+  name it `<not retained>`, as every other operator-visible record already did. They fired on the ordinary path for
+  a temporary chat that reasons or calls a tool: two when the turn's committed artifact rows are addressed by hidden
+  marker lines in the reply (a WARNING when the content was handed back before its markers were added, a DEBUG when
+  they were added), and one when a cancelled turn leaves committed rows with no marker addressing them. Because
+  `SessionLogger.get_logger` pins the package logger at DEBUG for the session archive, the id reached the
+  process-lifetime log buffer — the dashboard's log view — on every such turn. The levels, the marker lists, the row
+  counts and the reason strings are unchanged, so the records still say which turn lost rows and how many; only the
+  chat id is gone. A saved or `channel:` chat's id is still named in full.
+
+- **Provider errors** — a provider error body carrying a character no text encoding can hold (an unpaired
+  surrogate, which `json.loads` accepts and `str.encode("utf-8")` refuses) now reaches the error card with
+  that one character shown as `�`, the replacement character. The same body used to end the turn in an HTTP
+  500 rather than a card, and to lose the operator's WARNING record and the turn's whole session-log archive,
+  because the archive writer's zip write failed on it and lost `meta.json`, `logs.txt` and `logs.jsonl`
+  together. Everything else the provider sent is unchanged and still reaches the card verbatim.
+- **Tool pictures** — a faulted SSRF address pool now costs the picture instead of the reply. The
+  address checks run on a private bounded thread pool, and that pool can refuse to take work: it is
+  shut down when the worker closes, and re-made (with the old one shut down) whenever
+  `MAX_CONCURRENT_REQUESTS` changes — so a dashboard save mid-turn can leave the next check unable
+  to start. The tool-picture arm was the only forwarding path that let that fault escape: the
+  person's own picture, file and video links each degrade to a refusal of their own, and the tool
+  link instead took the whole turn down with an `Unexpected Error` card. One MCP tool's image link
+  was enough to lose the reply. The check now costs that picture and nothing else: the turn is sent
+  with the round's text, the link is not forwarded, and the person sees
+  `Images: skipped 1 (could not be checked in time, so it was not sent).` — the same sentence the
+  arm already used for a check that ran out of budget, because a pool that cannot run has reached
+  no verdict, which is what that sentence already meant. The reader itself is unchanged and still
+  raises, so a teardown race is never turned into a security refusal on any other path.
+
+- **Temporary chats** — the reply hold no longer keeps a temporary chat's socket id. `ReplyMemory` keys a reply's
+  held rounds and thinking on `(user id, chat id, message id)`, and for a temporary chat that chat-id slot is now
+  blank, which is the shape the hand-back budget beside it has always used. Nothing observable changes for a reply:
+  the same rounds are held for the same 15 minutes, under the same 64 MiB pool ceiling, for the same user, and are
+  released at the same point — a reply still reads its own rows back by its own `message id`, which is the slot that
+  was left alone and the only thing telling two replies of one chat apart. A saved chat's and a `channel:` chat's
+  keys are untouched. What changes is who can read the id: a temporary chat's chat id is a credential Open WebUI's
+  own session pool will authorise a request with, and it was the last process-lifetime structure in the pipe still
+  holding one.
+
 - **Video generation, machine callers** — a video turn that fails *before* OpenRouter answers the submission now
   reaches a caller with no chat as an HTTP error instead of a `200` with a Markdown card in it. A rejected job
   leaves with the status the pipe resolved on the status line and the same number in `error.code` (`502` when a
@@ -16,6 +63,8 @@
   refreshes overlap. The pass that could not install the panel reported its verdict on a value shared with the pass that
   overlapped it, so a refusal to write could read as an answer and release the panel; the verdict now travels with the
   answer the pass obtained, and a pass that never obtained one leaves every model's filter list exactly as it was.
+- **Media on the `/chat/completions` leg** — a turn resolved to the chat endpoint — by `DEFAULT_LLM_ENDPOINT=chat_completions`, by a model in `FORCE_CHAT_COMPLETIONS_MODELS`, or by the `AUTO_FALLBACK_CHAT_COMPLETIONS` fallback — now judges every media link its converter copies, by the same rule the `/responses` leg applies at ingress: the transport (`http://` only with `ALLOW_INSECURE_HTTP` **and** an allowlisted host), the scheme, a link naming this Open WebUI's own `/api/v1/files/` endpoint, and the inline size bound. Such a link used to be copied verbatim onto the wire, and the cleartext valve was never asked about it on this leg. A refused block is dropped from the turn and named on it as `[An attached item was not sent: …]`, in the request side's own words, beside whatever else survived — except an `input_file` that also carries a `file_id`, which keeps that id and drops only the refused link, exactly as on the other leg. An admin who allows cleartext HTTP sees the same link forwarded as before, and a `https://` link, a `data:` URL and raw base64 in `file_data` are untouched. One asymmetry is worth naming: a `data:` video sent to a chat-leg model is now held to the same size bound as on the other leg (`BASE64_MAX_SIZE_MB`, not `VIDEO_MAX_SIZE_MB`), so a clip over it is reported as not sent instead of forwarded.
+
 - **Presets** — a request naming a preset in the spelling the pipe itself dispatches (`<base>@preset/<slug>`) is now served instead of being refused as blocked. The pipe publishes presets as `<base>:preset/<slug>` and dispatches them with the `@`; the model-restriction gate read the dispatched spelling as a model of its own, so an id copied out of a request log or a response body came back as the `Blocked model message`. The published row was already enforced under the picker spelling, so nothing new is admitted — the two spellings now name one model. A preset turn also stops being billed to the 128 000-token fallback and picks up its base model's real context window, so a tool result the base's window can hold is no longer trimmed away and one it cannot is no longer shipped whole.
 - **image generation, a rewritten response body** — when something in front of OpenRouter answers the image endpoint with an error page or a WAF challenge instead of an OpenRouter response, the failure card now shows that text as a quoted code block instead of as ordinary message text. The provider's words are still on the card in full — nothing is shortened, rewritten or hidden — but they are contained, so a beacon embedded in the page no longer makes the reader's browser fetch it and a phishing link in it is no longer a live link. The two facts the card leads with, the endpoint that answered and the upstream `Content-Type`, are unchanged and remain ordinary prose. The fence is carried by the value rather than by a placeholder, so it holds on an installation that has never opened a template, and it is sized past the payload's own backtick run, so a page carrying its own fence cannot escape one. This affects every caller of a picture-only image model, on a surface that is on by default, and it is the same rule the text legs' error cards already applied.
 - **Session log** — with `SESSION_LOG_STORE_ENABLED` off, which is the shipped default, the pipe no longer builds the
@@ -35,6 +84,8 @@
   arm's unread pages are the other's evidence - and both the rows and their entries go on the next interval instead. Nothing
   changes on a healthy pass, and a deployment with the Redis cache valve off still sweeps: no client means nothing to invalidate,
   which counts as complete.
+- **Filter rows, two pipe copies** — in a deployment with two pipe copies, each copy now reads only its own filter rows: the Web Tools filter's stored per-user toggles and cost ceiling for internal Fusion's panel members, and the image-generation model. A row stamped with another copy's install record is no longer read as configuration or executed, whatever id it sits on. The isolation the documentation already promised, and the second copy gains its own image-generation filter row after the next model refresh, starting from the pipe's own drawing-model default rather than the first copy's admin's choice.
+
 - **Open-WebUI tool mode** — a call Open WebUI runs now shows its card from the moment the model names the tool, and the dashboard's live view now shows the running tool on those turns (it stayed empty before).
 - **Pipe dashboard, deleted function row** — deleting the pipe's function row now releases the live dashboard on the worker that served the DELETE and lets
   the pipe finish its in-flight requests and close, instead of holding it, its session-log threads and its storage handle until a restart. The stand-down
@@ -299,7 +350,14 @@
   comparison is presence-optional and an API-token caller that sends no such header is unaffected. The
   property the route is built on is unchanged: the comparison reads a request header and never the session
   cookie, so the route stays CSRF-safe regardless of OWUI's CORS/SameSite settings. With the setting off —
-  the default, and every deployment that does not run one — nothing changes at all. The socket leg is
+  the default, and every deployment that does not run one — nothing changes at all. The header's *presence* is
+  not required and an empty value is not a mismatch — both are skipped exactly as Open WebUI skips them, so a
+  proxy that stamps the header on `/` but not on `/api/pipe/dashboard/action` does not lose the admin surface.
+  The check is read from the header name Open WebUI itself bound at startup, so it names the header your
+  deployment is actually using. The same branch now also refreshes the caller's "last active" time, which
+  Open WebUI's does, so an operator reading that field to spot idle admins no longer sees dashboard-only
+  admins as inactive. Both live in the route's own glue and do not follow a hot reload: they take effect at
+  the next worker restart. The socket leg is
   untouched: OWUI performs no such comparison there either.
 - **Video, prior-video frames** — the frame extracted from a prior video is now **read** as the person who
   asked for it, not as the pipe's storage service account. The read that copies a prior video out of Open

@@ -311,7 +311,10 @@ def merge_for_save_with_drops(
             "pipe_dashboard: dropped stored valves the current schema rejects: %s",
             ", ".join(dropped),
         )
-    named = {k for k, v in edits.items() if v is not None and v != ""}
+    named = {
+        k for k, v in edits.items()
+        if v is not None and not (isinstance(v, str) and not v.strip())
+    }
     cleared: set[str] = set()
     applied: set[str] = set()
     merged = dict(stored)
@@ -325,7 +328,7 @@ def merge_for_save_with_drops(
                 cleared.add(key)
                 applied.add(key)
                 continue
-            if value == "":
+            if isinstance(value, str) and not value.strip():
                 continue
         _, nullable = _base_type(fld.annotation)
         if nullable and (value is None or (isinstance(value, str) and not value.strip())):

@@ -25,3 +25,5 @@ open_webui_openrouter_pipe_bundled_compressed_no_plugins.py
 
 # session working area: probe scripts and raw API captures, never shipped
 scratchpad/
+
+.ruff_cache/

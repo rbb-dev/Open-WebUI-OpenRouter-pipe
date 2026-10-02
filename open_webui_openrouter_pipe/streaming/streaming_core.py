@@ -204,7 +204,12 @@ from ..storage.multimodal import (
     image_extension_for_mime,
     resolve_download_type,
 )
-from ..storage.owui_files import is_channel_chat, is_linkable_chat, is_temporary_chat
+from ..storage.owui_files import (
+    is_channel_chat,
+    is_linkable_chat,
+    is_temporary_chat,
+    loggable_chat_id,
+)
 from ..storage.persistence import (
     _UNCLAIMED_LATCH,
     generate_item_id,
@@ -1990,13 +1995,13 @@ class StreamingHandler:
                     self.logger.warning(
                         "Committed artifact row(s) left unaddressed: the content was handed back before its "
                         "markers were added (chat_id=%s markers=%s)",
-                        chat_id,
+                        loggable_chat_id(chat_id),
                         markers,
                     )
                 else:
                     self.logger.debug(
                         "Hidden markers added to the content this turn returns (chat_id=%s markers=%s)",
-                        chat_id,
+                        loggable_chat_id(chat_id),
                         markers,
                     )
                 return current_text
@@ -3694,18 +3699,25 @@ class StreamingHandler:
 
                 hand_back = bool(call_items) and (
                     owui_tool_passthrough
-                    or any(
-                        (
-                            (nm := str(c.get("name") or "")) in offered_function_names
-                            or _origin_tool_name(nm) in _origin_names
-                        )
-                        and nm not in tool_registry
-                        for c in call_items
+                    or (
+                        body.stream
+                        and not fusion_inner_call
+                        and _open_webui_owns_the_round(call_items)
                     )
-                    and any(
-                        str(c.get("name") or "") not in tool_registry
-                        or _origin_tool_name(str(c.get("name") or "")) not in tool_registry
-                        for c in call_items
+                    or (
+                        any(
+                            (
+                                (nm := str(c.get("name") or "")) in offered_function_names
+                                or _origin_tool_name(nm) in _origin_names
+                            )
+                            and nm not in tool_registry
+                            for c in call_items
+                        )
+                        and any(
+                            str(c.get("name") or "") not in tool_registry
+                            or _origin_tool_name(str(c.get("name") or "")) not in tool_registry
+                            for c in call_items
+                        )
                     )
                 )
                 if hand_back and chat_id and message_id and not metadata.get("task"):
@@ -4711,7 +4723,7 @@ class StreamingHandler:
                         "(reason=%s chat_id=%s ulids=%s)",
                         len(pending_ulids),
                         "cancelled" if was_cancelled else "retry_handback",
-                        chat_id,
+                        loggable_chat_id(chat_id),
                         list(pending_ulids),
                     )
                 if pending_items:

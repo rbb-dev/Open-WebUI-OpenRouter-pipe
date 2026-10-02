@@ -285,7 +285,7 @@ Switching a web tool off affects **every** Web Tools filter this pipe maintains,
 - While at least one web tool is still on, every Web Tools filter this pipe maintains that still offers a switched-off tool is rewritten without it, whether it is on or off, so its Integrations toggle disappears at the next model-list refresh, or after the first message that still asks for it. Until then that chat gets neither search nor fetch.
 - With **every** web tool off, every Web Tools filter this pipe maintains is switched off. Nothing is added back. A filter switched off by hand in Open WebUI's Functions list stays off: the pipe keeps its code up to date but never switches it back on. One this version switched off itself comes back on its own when you enable the feature again.
 - Where several copies exist, the pipe maintains and attaches the one with the id `openrouter_web_tools`, or the most recently updated copy if none has that id. Turning a web tool back on revives **the copy the pipe maintains** and leaves the others switched off until an admin switches them on in the Functions list.
-- The per-user configuration that Fusion's panel members and its judge run against is read from that same copy — the one the pipe maintains, whatever id it ends up carrying. A row the pipe does not own is never read as configuration and never loaded as code, so a third-party filter that happens to sit on the id `openrouter_web_tools` neither supplies your settings nor runs inside the pipe.
+- The per-user configuration that Fusion's panel members and its judge run against is read from that same copy — the one the pipe maintains, whatever id it ends up carrying. A row the pipe does not own is never read as configuration and never loaded as code, so a third-party filter that happens to sit on the id `openrouter_web_tools` neither supplies your settings nor runs inside the pipe — with the one exception the installer's own rule makes: a row whose stored source is byte-identical to what this copy would render at that id, which is therefore the pipe's own code. That row is attached rather than written to, which is how two copies of the same build end up sharing one row instead of fighting over the canonical id.
 - If the row you need was one **you** switched off, the pipe will not bring it back; switch it on there.
 - **Upgrading:** a filter that was already off before this version stays off. The pipe only re-arms a filter it switched off itself, and it records that in the filter's own meta. The same record is what makes retirement safe: turning an `AUTO_INSTALL_*` valve off switches off the rows the pipe itself installed and the rows an earlier install of this pipe left behind — the pipe function was renamed or re-created, so its record names an id Open WebUI no longer loads as a pipe — while a copy an admin added by hand — Web Tools, Direct Uploads or anything else — is left alone, as is a row whose id Open WebUI still loads as a pipe. A row that was already off when you upgraded carries no such record. Switch it on in Workspace > Functions if you want it.
 
@@ -363,7 +363,11 @@ nothing. The pipe repairs the rows:
   after it.
 - **With several copies:** the pipe maintains and attaches `openrouter_web_tools` whenever a row with that id exists, and
   otherwise the copy the pipe most recently rewrote. The per-user configuration Fusion's members run against is read
-  from that same copy, by the installer's own rule; a row the pipe does not own is never read or executed.
+  from that same copy, by the installer's own rule, and that rule has two tiers: first the rows this pipe installed
+  or that carry no install record at all, ranked the way the installer ranks them; then, when this pipe has no such
+  row, a row whose stored source is byte-identical to what this copy would render at that id. The second tier is the
+  adoption case, and it is how two copies of the same build share one row. Outside those two tiers, a row the pipe
+  does not own is never read or executed.
 - **Turning a web tool back on** revives **the copy the pipe maintains** and leaves the others switched off until an
   admin switches them on in the Functions list.
 - **A filter switched off by hand stays off:** the pipe keeps its code up to date but never switches it back on.

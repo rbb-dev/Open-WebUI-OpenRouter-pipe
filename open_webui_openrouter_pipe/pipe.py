@@ -1520,10 +1520,18 @@ class Pipe:
         self._tool_pool = pool
         return pool
 
-    async def _run_sync_tool(self, fn: Any, args: dict[str, Any]) -> Any:
+    async def _run_sync_tool(
+        self, fn: Any, args: dict[str, Any], on_enter: Callable[[], None] | None = None
+    ) -> Any:
         ctx = contextvars.copy_context()
+
+        def _invoke() -> Any:
+            if on_enter is not None:
+                on_enter()
+            return fn(**args)
+
         return await asyncio.get_running_loop().run_in_executor(
-            self._ensure_tool_pool(), functools.partial(ctx.run, fn, **args)
+            self._ensure_tool_pool(), functools.partial(ctx.run, _invoke)
         )
 
     def _stop_tool_pool(self) -> None:
@@ -4630,7 +4638,6 @@ class Pipe:
                 [],
                 [],
             )
-        item.holds_slot = True
         breaker = self._ensure_tool_executor()._tool_breaker(context)
         if breaker is not None and not breaker.tool_allows(
             context.user_id, tool_type, gate_name
@@ -4743,6 +4750,10 @@ class Pipe:
 
         deadline = asyncio.timeout(timeout)
         tool_raised = False
+
+        def _mark_entered() -> None:
+            item.holds_slot = True
+
         try:
             timing_mark(f"tool_run:{tool_name}:executing")
             async with deadline:
@@ -4750,6 +4761,7 @@ class Pipe:
                 result = await self._call_tool_callable(
                     await self._ensure_tool_executor()._with_current_chat(fn_to_call, item.tool_cfg, context),
                     call_args,
+                    on_enter=_mark_entered,
                 )
             tool_raised = False
             unreachable = _reports_transport_failure(result)
@@ -4800,11 +4812,15 @@ class Pipe:
             return ("failed", failure, [], [], [])
 
     @timed
-    async def _call_tool_callable(self, fn: ToolCallable, args: dict[str, Any]) -> Any:
+    async def _call_tool_callable(
+        self, fn: ToolCallable, args: dict[str, Any], on_enter: Callable[[], None] | None = None
+    ) -> Any:
         """Call a tool callable (sync or async)."""
         if inspect.iscoroutinefunction(fn):
+            if on_enter is not None:
+                on_enter()
             return await fn(**args)
-        result = await self._run_sync_tool(fn, args)
+        result = await self._run_sync_tool(fn, args, on_enter=on_enter)
         if inspect.isawaitable(result):
             return await result
         return result

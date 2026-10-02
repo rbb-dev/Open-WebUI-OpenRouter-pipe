@@ -287,6 +287,17 @@ _EXPECTED: dict[str, int] = {
     # admin's own template already failed to render, and the generic card below it is the answer if the
     # fallback fails too -- letting it out would replace the failure being reported with a template error.
     "streaming/event_emitter.py": 1,
+    # 1st (B916, H2434-2): the done-callback's `suppress(asyncio.CancelledError, Exception)`
+    # around `task.exception()` in `_consume_task_exception`, attached to the detached
+    # last-active refresh `bearer_user` now fires (mirroring OWUI's own `auth.py:483`).
+    # Same shape and the same reason as the 40th in `pipe.py` and the 4th in
+    # `storage/persistence.py`: the callback exists only to retrieve the exception so a
+    # refresh that raised does not log "Task exception was never retrieved" on the way to
+    # being garbage-collected, and it runs after the route has already answered -- a
+    # retrieval failure has nothing left to affect and must not raise out of a done
+    # callback, where asyncio can only log it. `CancelledError` is swallowed with it
+    # because the callback fires for a cancelled refresh too.
+    "plugins/pipe_dashboard/http_routes.py": 1,
     # 1st: the close of a vetted transport whose connector belongs to a different event
     # loop, in `_retire_vetted_session`. Measured rather than assumed: with one pooled
     # keep-alive connection the cross-loop `session.close()` raises `RuntimeError` ("got

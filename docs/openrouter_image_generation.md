@@ -1618,6 +1618,12 @@ selected model from that same row, so a duplicate left behind by an older
 version does not change which model is drawn. Delete the one you do not want
 from Admin → Functions; the pipe will keep the other one up to date.
 
+That row is the row *this* pipe maintains. A workspace running two pipe copies keeps two
+image-generation rows, and each reads its own, so a second copy never picks up the first
+copy's admin's `IMAGE_GENERATION_MODEL` and starts from the pipe's own drawing-model
+default instead. The second copy gets its row at the next model-list refresh; the entry
+you see under the other copy's id is not yours to edit.
+
 ### A setting I expected is not in the model's panel
 
 That model does not publish it. The panel lists what the model told

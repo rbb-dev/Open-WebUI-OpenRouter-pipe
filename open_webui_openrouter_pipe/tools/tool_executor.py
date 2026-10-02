@@ -163,9 +163,14 @@ except Exception:
 _ASK_USER_GRACE_SECONDS = 15.0
 
 OPEN_WEBUI_OWNED_NAMES_KEY = "_pipe_open_webui_owned_names"
+OPEN_WEBUI_HAND_BACK_AVAILABLE_KEY = "_pipe_open_webui_hand_back_available"
 OPEN_WEBUI_OWNS_SKIPPED_REASON = (
     "Open WebUI runs this tool, and this reply has spent the hand-back budget that would have "
     "handed it back. Answer from what you have, or ask the person."
+)
+OPEN_WEBUI_OWNS_NO_HAND_BACK_REASON = (
+    "Open WebUI runs this tool, and this reply is not streamed, so no hand-back can carry it back "
+    "and no turn of one was ever spent. Answer from what you have, or ask the person."
 )
 
 
@@ -473,6 +478,10 @@ class ToolExecutor:
             names.update(name for name in withheld if isinstance(name, str) and name)
         return frozenset(names)
 
+    def _hand_back_was_available(self, context: _ToolExecutionContext) -> bool:
+        metadata = context.metadata if isinstance(context.metadata, dict) else {}
+        return bool(metadata.get(OPEN_WEBUI_HAND_BACK_AVAILABLE_KEY, True))
+
     def _ask_user_refusal(self, calls: list[dict], tools: dict[str, dict[str, Any]]) -> str | None:
         is_ask_user: list[bool] = []
         raw_names: list[str] = []
@@ -643,6 +652,11 @@ class ToolExecutor:
         _on_complete = context.on_complete
         ask_user_refusal = self._ask_user_refusal(calls, tools)
         owned_by_open_webui = self._open_webui_owned_names(context, tools)
+        owns_reason = (
+            OPEN_WEBUI_OWNS_SKIPPED_REASON
+            if self._hand_back_was_available(context)
+            else OPEN_WEBUI_OWNS_NO_HAND_BACK_REASON
+        )
         breaker_skips: list[tuple[str, str | None]] = []
 
         async def _append_and_notify(index: int, call: dict, result: dict, status: str) -> None:
@@ -688,7 +702,7 @@ class ToolExecutor:
                 if tool_name in owned_by_open_webui:
                     await _append_and_notify(index, call, self._build_tool_output(
                         call,
-                        f"Tool '{tool_name}' skipped: {OPEN_WEBUI_OWNS_SKIPPED_REASON}",
+                        f"Tool '{tool_name}' skipped: {owns_reason}",
                         status="incomplete",
                     ), "incomplete")
                     continue

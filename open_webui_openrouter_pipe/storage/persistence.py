@@ -452,7 +452,7 @@ class ReplyMemory:
         self._unheld_latch = threading.Lock()
 
     def _key(self, chat_id: Any, message_id: Any) -> tuple[Any, Any, Any]:
-        return (self._user_id(), chat_id, message_id)
+        return (self._user_id(), "" if is_temporary_chat(chat_id) else chat_id, message_id)
 
     def _expire(self) -> None:
         cutoff = self._clock() - self._idle_seconds
@@ -625,7 +625,8 @@ class ReplyMemory:
 
     def _holds(self, chat_id: Any) -> bool:
         self._expire()
-        return any(key[1] == chat_id for key in self._replies)
+        want = "" if is_temporary_chat(chat_id) else chat_id
+        return any(key[1] == want for key in self._replies)
 
 
 class ArtifactStore:

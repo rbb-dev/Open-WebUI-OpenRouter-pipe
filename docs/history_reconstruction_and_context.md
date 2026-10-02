@@ -280,7 +280,14 @@ only through the card Open WebUI keeps for it in the browser, and none with card
   first turn -- which is what an API caller, an imported or reordered chat, or a filter posts -- since such a
   round is never the current turn. With `PERSIST_TOOL_RESULTS` off
   the model gets `{}` in place of the arguments and a placeholder result -- `[tool result not retained]`, or
-  `[tool call failed; result not retained]` when the call did not complete. A round of Open WebUI's built-in
+  `[tool call failed; result not retained]` when the call did not complete. The withholding holds on the list shape,
+  and on the flattened shape whenever the hand-off sits next to its result, which is how Open WebUI 0.11.4 builds it
+  (`flush_tool_outputs()` and `flush_tool_images()` run back to back). On a flattened history whose hand-off is
+  separated from its result -- a shape only an API caller, an imported or hand-edited chat, or a filter can build --
+  the round's picture is forwarded: the pipe cannot tell that history apart from a person's own message carrying
+  Open WebUI's fixed hand-off sentence and their own photo, and treating it as the round's hand-off would withhold
+  the person's picture too. What the caller built is the caller's own posted bytes, so nothing the pipe stores is
+  exposed by it (TODO T1163, to reopen only if Open WebUI ever builds the gapped shape). A round of Open WebUI's built-in
   `ask_user` is the exception: its question and the person's typed answer are always handed over, since the answer
   is the person's own words. The round is recognised by the tool behind it, not by the name it was advertised under,
   so a third-party tool that happens to be called `ask_user` is a tool like any other and is withheld. The
@@ -295,7 +302,11 @@ only through the card Open WebUI keeps for it in the browser, and none with card
   line on the assistant message and a store that answers, so a round whose rows are gone is judged by the request's
   tool set as before. The identity is read from the registry **as this request received it**, even on a turn that
   withheld the built-in from the model before the model ever saw it -- ask approval, and `function_calling: "legacy"`,
-  both empty the registry on their way to the model, and neither of them changes what a name in it is.
+  both empty the registry on their way to the model, and neither of them changes what a name in it is. The set
+  those two record is also what the hand-back predicate consults, which is why the fix can read it: a round of
+  names Open WebUI alone can run is a round the pipe cannot be the judge of, so a streamed reply hands it back
+  rather than answering it, and only a reply that could have been handed back and spent its budget is told the
+  budget is what stopped it.
   The exemption is also **per round**, not per call id: a model may reuse one `call_id` across two rounds, and on the
   replay path the exempt round is the one whose own stored call is the built-in, while the other round on that same
   id is withheld. Because each output is paired with its own call, a tool round that shares an id with a built-in

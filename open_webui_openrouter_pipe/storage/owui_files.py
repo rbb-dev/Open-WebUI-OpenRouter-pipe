@@ -697,6 +697,14 @@ def names_an_owui_file_path(url: Any) -> bool:
 _warned_reference_sizes: set[str] = set()
 
 
+def _own_internal_reference(file_data: Any, file_url: Any) -> str | None:
+    if isinstance(file_data, str) and file_data.strip() and names_an_owui_file_path(file_data.strip()):
+        return file_data.strip()
+    if isinstance(file_url, str) and file_url.strip() and names_an_owui_file_path(file_url.strip()):
+        return file_url.strip()
+    return None
+
+
 def _referenced_file_ids(items: Any) -> dict[str, str]:
     found: dict[str, str] = {}
     if not isinstance(items, list):
@@ -711,9 +719,12 @@ def _referenced_file_ids(items: Any) -> dict[str, str]:
             if not isinstance(block, dict) or block.get("type") != "input_file":
                 continue
             raw_id = block.get("file_id")
-            if isinstance(raw_id, str) and raw_id.strip():
-                if not raw_id.strip().startswith("file-"):
-                    found[raw_id] = raw_id.strip()
+            if (
+                isinstance(raw_id, str)
+                and raw_id.strip()
+                and not raw_id.strip().startswith("file-")
+            ):
+                found[raw_id] = raw_id.strip()
                 continue
             for key in ("file_data", "file_url"):
                 raw = block.get(key)
@@ -1149,17 +1160,13 @@ class OwuiFileGateway:
                 internal_file_id: str | None = None
                 named_reference: str | None = None
 
-                if isinstance(file_id, str) and file_id.strip():
-                    candidate_id = file_id.strip()
-                    if candidate_id.startswith("file-"):
-                        continue
-                    internal_file_id = candidate_id
-                elif isinstance(file_data, str) and file_data.strip() and names_an_owui_file_path(file_data.strip()):
-                    named_reference = file_data.strip()
-                    internal_file_id = extract_internal_file_id(file_data.strip())
-                elif isinstance(file_url, str) and file_url.strip() and names_an_owui_file_path(file_url.strip()):
-                    named_reference = file_url.strip()
-                    internal_file_id = extract_internal_file_id(file_url.strip())
+                if isinstance(file_id, str) and file_id.strip() and not file_id.strip().startswith("file-"):
+                    internal_file_id = file_id.strip()
+                else:
+                    own_reference = _own_internal_reference(file_data, file_url)
+                    if own_reference is not None:
+                        named_reference = own_reference
+                        internal_file_id = extract_internal_file_id(own_reference)
 
                 if not internal_file_id:
                     if named_reference is not None:

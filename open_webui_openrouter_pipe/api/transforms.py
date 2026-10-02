@@ -51,7 +51,7 @@ from ..core.fusion_defaults import (
 )
 from ..core.image_detail import image_detail_or_auto
 from ..core.timing_logger import timed
-from ..core.url_scheme import loggable_link
+from ..core.url_scheme import is_absolute_url, loggable_link, url_scheme
 from ..core.utils import (
     OPEN_WEBUI_TOOL_IMAGES_TEXT,
     _coerce_bool,
@@ -71,7 +71,7 @@ from ..core.utils import (
 from ..core.warn_latch import warn_level
 from ..filters.fusion_filter_renderer import _fusion_base_model_id, is_fusion_model
 from ..models.registry import ModelFamily
-from ..storage.owui_files import is_temporary_chat
+from ..storage.owui_files import is_temporary_chat, names_an_owui_file_path
 from ..tools.tool_schema import _strictify_schema
 
 # Pydantic Body Classes
@@ -884,7 +884,59 @@ def _image_file_payload(block: dict[str, Any]) -> dict[str, Any] | None:
     return {"type": "file", "file": {"file_id": file_id.strip()}}
 
 
-def _replay_block_is_usable(block: Any) -> bool:
+_CHAT_INTERNAL_PATH_REFUSAL = (
+    "a link to this Open WebUI's own file endpoint, which no provider can fetch"
+)
+
+
+def _chat_link_refusal_reason(
+    field: str, url: Any, *, allow_insecure: Callable[[str], bool], max_inline_bytes: int,
+) -> str | None:
+    from ..requests.transformer import _tool_picture_gate
+
+    if not isinstance(url, str) or not url.strip():
+        return None
+    candidate = url.strip()
+    if names_an_owui_file_path(candidate):
+        return _CHAT_INTERNAL_PATH_REFUSAL
+    if not url_scheme(candidate):
+        if field == "file_data":
+            return None
+        if field == "file_url" and not is_absolute_url(candidate):
+            return None
+    _, refused = _tool_picture_gate(
+        [candidate], max_inline_bytes=max_inline_bytes, allow_insecure=allow_insecure,
+    )
+    return refused[0][1] if refused else None
+
+
+def _chat_media_url(block: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = block.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+        if isinstance(value, dict):
+            nested = value.get("url")
+            if isinstance(nested, str) and nested.strip():
+                return nested
+    return None
+
+
+def _chat_audio_url_refusal(block: dict[str, Any], *keys: str) -> str | None:
+    from ..requests.transformer import _AUDIO_URL_REFUSAL
+
+    url = _chat_media_url(block, *keys)
+    if not isinstance(url, str):
+        return None
+    candidate = url.strip()
+    if not candidate or url_scheme(candidate) == "data":
+        return None
+    return _AUDIO_URL_REFUSAL
+
+
+def _replay_block_is_usable(block: Any, refused: dict[int, str] | None = None) -> bool:
+    if refused is not None and id(block) in refused:
+        return False
     if not isinstance(block, dict):
         return True
     btype = block.get("type")
@@ -910,7 +962,9 @@ def _replay_block_is_usable(block: Any) -> bool:
     return True
 
 
-def _replay_block_refusal(block: Any) -> str | None:
+def _replay_block_refusal(block: Any, refused: dict[int, str] | None = None) -> str | None:
+    if refused is not None and id(block) in refused:
+        return refused[id(block)]
     if not isinstance(block, dict):
         return None
     btype = block.get("type")
@@ -948,13 +1002,16 @@ def _replay_blocks_or_note(
     siblings: list[Any] | None = None,
     *,
     role: str = "user",
+    refused: dict[int, str] | None = None,
 ) -> list[Any]:
     originals = siblings or blocks
-    survivors = [b for b in blocks if _replay_block_is_usable(b)]
+    survivors = [b for b in blocks if _replay_block_is_usable(b, refused)]
     refusals = [
         r
         for r in (
-            _replay_block_refusal(b) for b in originals if not _replay_block_is_usable(b)
+            _replay_block_refusal(b, refused)
+            for b in originals
+            if not _replay_block_is_usable(b, refused)
         )
         if r
     ]
@@ -966,8 +1023,8 @@ def _replay_blocks_or_note(
     if not refusals:
         if role != "user":
             return blocks
-        if any(_replay_block_is_usable(b) for b in originals):
-            return [b for b in originals if _replay_block_is_usable(b)]
+        if any(_replay_block_is_usable(b, refused) for b in originals):
+            return [b for b in originals if _replay_block_is_usable(b, refused)]
         return [{"type": "text", "text": OPENAI_EMPTY_USER_TURN_FALLBACK}]
     return note
 
@@ -1001,6 +1058,7 @@ async def _responses_input_to_chat_messages(
 
     messages: list[dict[str, Any]] = []
     tool_pictures: list[str] = []
+    media_refusals: dict[int, str] = {}
     pending_reasoning_details: list[Any] = []
 
     async def _hand_over_tool_pictures() -> None:
@@ -1111,6 +1169,7 @@ async def _responses_input_to_chat_messages(
             if not role:
                 continue
 
+            media_refusals.clear()
             raw_content = item.get("content")
 
             if not allow_unknown_fields:
@@ -1159,6 +1218,13 @@ async def _responses_input_to_chat_messages(
                         if btype == "input_image":
                             url = block.get("image_url")
                             if isinstance(url, str) and url.strip():
+                                refusal = _chat_link_refusal_reason(
+                                    "image_url", url, allow_insecure=allow_insecure,
+                                    max_inline_bytes=max_inline_bytes,
+                                )
+                                if refusal is not None:
+                                    media_refusals[id(block)] = refusal
+                                    continue
                                 image_url_obj: dict[str, Any] = {"url": url.strip()}
                                 image_url_obj["detail"] = image_detail_or_auto(block.get("detail"))
                                 blocks_out.append({"type": "image_url", "image_url": image_url_obj})
@@ -1169,6 +1235,14 @@ async def _responses_input_to_chat_messages(
                             continue
                         if btype == "image_url":
                             image_url_val = block.get("image_url")
+                            refusal = _chat_link_refusal_reason(
+                                "image_url", _chat_media_url(block, "image_url"),
+                                allow_insecure=allow_insecure,
+                                max_inline_bytes=max_inline_bytes,
+                            )
+                            if refusal is not None:
+                                media_refusals[id(block)] = refusal
+                                continue
                             if isinstance(image_url_val, dict):
                                 blocks_out.append({"type": "image_url", "image_url": dict(image_url_val)})
                             elif isinstance(image_url_val, str) and image_url_val.strip():
@@ -1177,6 +1251,10 @@ async def _responses_input_to_chat_messages(
                         if btype == "input_audio":
                             audio = block.get("input_audio")
                             if isinstance(audio, dict):
+                                refusal = _chat_audio_url_refusal(block, "input_audio")
+                                if refusal is not None:
+                                    media_refusals[id(block)] = refusal
+                                    continue
                                 blocks_out.append({"type": "input_audio", "input_audio": dict(audio)})
                             elif isinstance(audio, str):
                                 converted = _input_audio_from_string(audio)
@@ -1185,6 +1263,14 @@ async def _responses_input_to_chat_messages(
                             continue
                         if btype == "video_url":
                             video_url = block.get("video_url")
+                            refusal = _chat_link_refusal_reason(
+                                "video_url", _chat_media_url(block, "video_url"),
+                                allow_insecure=allow_insecure,
+                                max_inline_bytes=max_inline_bytes,
+                            )
+                            if refusal is not None:
+                                media_refusals[id(block)] = refusal
+                                continue
                             if isinstance(video_url, dict):
                                 blocks_out.append({"type": "video_url", "video_url": dict(video_url)})
                             elif isinstance(video_url, str) and video_url.strip():
@@ -1194,6 +1280,14 @@ async def _responses_input_to_chat_messages(
                             video = block.get("video_url")
                             if video is None:
                                 video = block.get("url")
+                            refusal = _chat_link_refusal_reason(
+                                "video_url", _chat_media_url(block, "video_url", "url"),
+                                allow_insecure=allow_insecure,
+                                max_inline_bytes=max_inline_bytes,
+                            )
+                            if refusal is not None:
+                                media_refusals[id(block)] = refusal
+                                continue
                             if isinstance(video, str) and video.strip():
                                 blocks_out.append({"type": "video_url", "video_url": {"url": video.strip()}})
                             elif isinstance(video, dict) and video.get("url"):
@@ -1210,18 +1304,35 @@ async def _responses_input_to_chat_messages(
                             if isinstance(filename, str) and filename.strip():
                                 file_payload["filename"] = filename.strip()
                             file_value: str | None = None
+                            file_refusal: str | None = None
                             if isinstance(file_data, str) and file_data.strip():
-                                file_value = file_data.strip()
+                                file_refusal = _chat_link_refusal_reason(
+                                    "file_data", file_data, allow_insecure=allow_insecure,
+                                    max_inline_bytes=max_inline_bytes,
+                                )
+                                if file_refusal is None:
+                                    file_value = file_data.strip()
                             elif isinstance(file_url, str) and file_url.strip():
-                                file_value = file_url.strip()
+                                file_refusal = _chat_link_refusal_reason(
+                                    "file_url", file_url, allow_insecure=allow_insecure,
+                                    max_inline_bytes=max_inline_bytes,
+                                )
+                                if file_refusal is None:
+                                    file_value = file_url.strip()
                             if file_value:
                                 file_payload["file_data"] = file_value
+                            if file_refusal is not None and not (
+                                file_payload.get("file_id") or file_value
+                            ):
+                                media_refusals[id(block)] = file_refusal
                             if file_payload:
                                 blocks_out.append({"type": "file", "file": file_payload})
                             continue
 
                 if isinstance(raw_content, list) and raw_content:
-                    blocks_out = _replay_blocks_or_note(blocks_out, raw_content, role=role)
+                    blocks_out = _replay_blocks_or_note(
+                        blocks_out, raw_content, role=role, refused=media_refusals,
+                    )
 
                 if (
                     not blocks_out
@@ -1283,6 +1394,14 @@ async def _responses_input_to_chat_messages(
                         transformed = dict(block)
                         transformed["type"] = "image_url"
                         url = transformed.pop("image_url", "")
+                        refusal = _chat_link_refusal_reason(
+                            "image_url", _chat_media_url(block, "image_url"),
+                            allow_insecure=allow_insecure,
+                            max_inline_bytes=max_inline_bytes,
+                        )
+                        if refusal is not None:
+                            media_refusals[id(block)] = refusal
+                            continue
                         image_url_obj: dict[str, Any] = {"url": url.strip() if isinstance(url, str) else ""}
                         detail = transformed.pop("detail", None)
                         image_url_obj["detail"] = image_detail_or_auto(detail)
@@ -1298,6 +1417,14 @@ async def _responses_input_to_chat_messages(
                     if btype == "image_url":
                         transformed = dict(block)
                         image_url_val = transformed.get("image_url")
+                        refusal = _chat_link_refusal_reason(
+                            "image_url", _chat_media_url(block, "image_url"),
+                            allow_insecure=allow_insecure,
+                            max_inline_bytes=max_inline_bytes,
+                        )
+                        if refusal is not None:
+                            media_refusals[id(block)] = refusal
+                            continue
                         if isinstance(image_url_val, dict):
                             transformed["image_url"] = dict(image_url_val)
                         elif isinstance(image_url_val, str) and image_url_val.strip():
@@ -1312,6 +1439,10 @@ async def _responses_input_to_chat_messages(
                         transformed = dict(block)
                         audio = transformed.get("input_audio")
                         if isinstance(audio, dict):
+                            refusal = _chat_audio_url_refusal(block, "input_audio")
+                            if refusal is not None:
+                                media_refusals[id(block)] = refusal
+                                continue
                             transformed["input_audio"] = dict(audio)
                             blocks_out.append(transformed)
                         continue
@@ -1319,6 +1450,14 @@ async def _responses_input_to_chat_messages(
                     if btype == "video_url":
                         transformed = dict(block)
                         video_url = transformed.get("video_url")
+                        refusal = _chat_link_refusal_reason(
+                            "video_url", _chat_media_url(block, "video_url"),
+                            allow_insecure=allow_insecure,
+                            max_inline_bytes=max_inline_bytes,
+                        )
+                        if refusal is not None:
+                            media_refusals[id(block)] = refusal
+                            continue
                         if isinstance(video_url, dict):
                             transformed["video_url"] = dict(video_url)
                         elif isinstance(video_url, str) and video_url.strip():
@@ -1341,12 +1480,27 @@ async def _responses_input_to_chat_messages(
                         if isinstance(filename, str) and filename.strip():
                             file_payload["filename"] = filename.strip()
                         file_value: str | None = None
+                        file_refusal: str | None = None
                         if isinstance(file_data, str) and file_data.strip():
-                            file_value = file_data.strip()
+                            file_refusal = _chat_link_refusal_reason(
+                                "file_data", file_data, allow_insecure=allow_insecure,
+                                max_inline_bytes=max_inline_bytes,
+                            )
+                            if file_refusal is None:
+                                file_value = file_data.strip()
                         elif isinstance(file_url, str) and file_url.strip():
-                            file_value = file_url.strip()
+                            file_refusal = _chat_link_refusal_reason(
+                                "file_url", file_url, allow_insecure=allow_insecure,
+                                max_inline_bytes=max_inline_bytes,
+                            )
+                            if file_refusal is None:
+                                file_value = file_url.strip()
                         if file_value:
                             file_payload["file_data"] = file_value
+                        if file_refusal is not None and not (
+                            file_payload.get("file_id") or file_value
+                        ):
+                            media_refusals[id(block)] = file_refusal
                         if file_payload:
                             transformed["file"] = file_payload
                             blocks_out.append(transformed)
@@ -1355,7 +1509,9 @@ async def _responses_input_to_chat_messages(
                     blocks_out.append(dict(block))
 
             if isinstance(raw_content, list) and raw_content:
-                blocks_out = _replay_blocks_or_note(blocks_out, raw_content, role=role)
+                blocks_out = _replay_blocks_or_note(
+                    blocks_out, raw_content, role=role, refused=media_refusals,
+                )
 
             msg["content"] = blocks_out
             _attach_reasoning_details(msg)

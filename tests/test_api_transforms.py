@@ -1480,14 +1480,14 @@ class TestResponsesInputToChatMessages:
                 "type": "message",
                 "role": "user",
                 "content": [
-                    {"type": "image_url", "image_url": {"url": "http://example.com/img.png"}},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}},
                 ],
             }
         ]
         result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
         content = result[0]["content"]
         assert content[0]["type"] == "image_url"
-        assert content[0]["image_url"]["url"] == "http://example.com/img.png"
+        assert content[0]["image_url"]["url"] == "https://example.com/img.png"
 
     @pytest.mark.asyncio
     async def test_image_url_block_string(self):
@@ -1497,13 +1497,13 @@ class TestResponsesInputToChatMessages:
                 "type": "message",
                 "role": "user",
                 "content": [
-                    {"type": "image_url", "image_url": "http://example.com/img.png"},
+                    {"type": "image_url", "image_url": "https://example.com/img.png"},
                 ],
             }
         ]
         result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
         content = result[0]["content"]
-        assert content[0]["image_url"]["url"] == "http://example.com/img.png"
+        assert content[0]["image_url"]["url"] == "https://example.com/img.png"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -1535,7 +1535,7 @@ class TestResponsesInputToChatMessages:
                 "content": [
                     {
                         "type": "input_image",
-                        "image_url": "http://example.com/img.png",
+                        "image_url": "https://example.com/img.png",
                         "detail": given,
                     },
                 ],
@@ -1569,7 +1569,7 @@ class TestResponsesInputToChatMessages:
                 "type": "message",
                 "role": "user",
                 "content": [
-                    {"type": "video_url", "video_url": {"url": "http://example.com/vid.mp4"}},
+                    {"type": "video_url", "video_url": {"url": "https://example.com/vid.mp4"}},
                 ],
             }
         ]
@@ -1585,13 +1585,13 @@ class TestResponsesInputToChatMessages:
                 "type": "message",
                 "role": "user",
                 "content": [
-                    {"type": "video_url", "video_url": "http://example.com/vid.mp4"},
+                    {"type": "video_url", "video_url": "https://example.com/vid.mp4"},
                 ],
             }
         ]
         result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
         content = result[0]["content"]
-        assert content[0]["video_url"]["url"] == "http://example.com/vid.mp4"
+        assert content[0]["video_url"]["url"] == "https://example.com/vid.mp4"
 
     @pytest.mark.asyncio
     async def test_input_file_block_with_data(self):
@@ -1625,14 +1625,14 @@ class TestResponsesInputToChatMessages:
                 "content": [
                     {
                         "type": "input_file",
-                        "file_url": "http://example.com/file.txt",
+                        "file_url": "https://example.com/file.txt",
                     },
                 ],
             }
         ]
         result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
         content = result[0]["content"]
-        assert content[0]["file"]["file_data"] == "http://example.com/file.txt"
+        assert content[0]["file"]["file_data"] == "https://example.com/file.txt"
 
     @pytest.mark.asyncio
     async def test_empty_content_blocks(self):

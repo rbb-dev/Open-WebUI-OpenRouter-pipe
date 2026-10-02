@@ -37,6 +37,7 @@ from .utils import (
     _retry_after_seconds,
     _safe_json_loads,
     _unwrap_config_value,
+    scrub_surrogates,
     wrap_code_block,
 )
 
@@ -164,6 +165,29 @@ class FileUnavailableError(RequiredInternalFileError, ValueError):
 
 # OpenRouterAPIError Class
 
+def _scrub_optional(value: Any) -> Any:
+    return scrub_surrogates(value) if isinstance(value, str) else value
+
+
+def _scrub_structure(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            _scrub_optional(key): _scrub_structure(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_scrub_structure(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_scrub_structure(item) for item in value)
+    return _scrub_optional(value)
+
+
+def _scrub_sequence(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_scrub_optional(item) for item in value]
+    return value
+
+
 class OpenRouterAPIError(RuntimeError):
     """User-facing error raised when OpenRouter rejects a request with status 400."""
 
@@ -197,28 +221,34 @@ class OpenRouterAPIError(RuntimeError):
     ) -> None:
         """Normalize raw OpenRouter metadata into convenient attributes."""
         self.status = status
-        self.reason = reason
-        self.provider = _normalize_optional_str(provider)
-        self.openrouter_message = _normalize_optional_str(openrouter_message)
-        self.openrouter_code = openrouter_code
-        self.upstream_message = _normalize_optional_str(upstream_message)
-        self.upstream_type = _normalize_optional_str(upstream_type)
-        self.openrouter_error_type = _normalize_optional_str(openrouter_error_type)
-        self.request_id = _normalize_optional_str(request_id)
-        self.raw_body = raw_body or ""
-        self.metadata = metadata or {}
-        self.moderation_reasons = _normalize_string_list(moderation_reasons)
-        self.flagged_input = _normalize_optional_str(flagged_input)
-        self.model_slug = _normalize_optional_str(model_slug)
-        self.requested_model = _normalize_optional_str(requested_model)
-        self.metadata_json = metadata_json or _pretty_json(self.metadata)
-        self.provider_raw = provider_raw
-        self.provider_raw_json = provider_raw_json or _pretty_json(provider_raw)
-        self.native_finish_reason = native_finish_reason
-        self.chunk_id = chunk_id
-        self.chunk_created = chunk_created
-        self.chunk_provider = _normalize_optional_str(chunk_provider)
-        self.chunk_model = _normalize_optional_str(chunk_model)
+        self.reason = _scrub_optional(reason)
+        self.provider = _normalize_optional_str(_scrub_optional(provider))
+        self.openrouter_message = _normalize_optional_str(_scrub_optional(openrouter_message))
+        self.openrouter_code = _scrub_optional(openrouter_code)
+        self.upstream_message = _normalize_optional_str(_scrub_optional(upstream_message))
+        self.upstream_type = _normalize_optional_str(_scrub_optional(upstream_type))
+        self.openrouter_error_type = _normalize_optional_str(
+            _scrub_optional(openrouter_error_type)
+        )
+        self.request_id = _normalize_optional_str(_scrub_optional(request_id))
+        self.raw_body = _scrub_optional(raw_body) or ""
+        self.metadata = _scrub_structure(metadata) or {}
+        self.moderation_reasons = _normalize_string_list(
+            _scrub_sequence(moderation_reasons)
+        )
+        self.flagged_input = _normalize_optional_str(_scrub_optional(flagged_input))
+        self.model_slug = _normalize_optional_str(_scrub_optional(model_slug))
+        self.requested_model = _normalize_optional_str(_scrub_optional(requested_model))
+        self.metadata_json = _scrub_optional(metadata_json) or _pretty_json(self.metadata)
+        self.provider_raw = _scrub_structure(provider_raw)
+        self.provider_raw_json = _scrub_optional(provider_raw_json) or _pretty_json(
+            self.provider_raw
+        )
+        self.native_finish_reason = _scrub_optional(native_finish_reason)
+        self.chunk_id = _scrub_optional(chunk_id)
+        self.chunk_created = _scrub_optional(chunk_created)
+        self.chunk_provider = _normalize_optional_str(_scrub_optional(chunk_provider))
+        self.chunk_model = _normalize_optional_str(_scrub_optional(chunk_model))
         self.is_streaming_error = is_streaming_error
         summary = (
             self.upstream_message
