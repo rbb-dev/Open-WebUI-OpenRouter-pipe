@@ -256,7 +256,6 @@ class TestGuessImageMimeType:
         )
         assert result is None
 
-
 # Test _extract_openrouter_og_image
 
 

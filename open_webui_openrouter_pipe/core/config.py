@@ -115,7 +115,7 @@ _BOOLEAN_PLACEHOLDER_RULE = (
 )
 
 _CHANNEL_CARD_RULE = (
-    "On a channel chat, which every member of the room reads, the values behind session_id, user_id, "
+    " On a channel chat, which every member of the room reads, the values behind session_id, user_id, "
     "detail, sanitized_detail, reason, openrouter_message, upstream_message, moderation_reasons, "
     "flagged_excerpt, raw_body, metadata_json, provider_raw_json and body_excerpt are withheld, and the card "
     "is rendered "
@@ -1755,7 +1755,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     # Logging
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
         default_factory=_resolve_log_level_default,
-        description="Select logging level.  Recommend INFO or WARNING for production use. DEBUG is useful for development and debugging.",
+        description="Select logging level. Recommend INFO or WARNING for production use. DEBUG is useful for development and debugging.",
     )
     SESSION_LOG_STORE_ENABLED: bool = Field(
         default=False,
@@ -1769,7 +1769,8 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "A turn whose chat id names a saved chat the caller does not own is not staged either, and is refused by the same rule Open WebUI applies to a chat message (admins excepted), once per hour per chat and caller rather than on every turn, so the refusal is a bounded window of the most recent 32 refusals per latch and an older chat that is refused again is named again; the assembler and the stranded-turn rescue each refuse any bundle whose staged segments do not all name the same user, keeping every segment for the retention sweep to reap and writing no archive under either name. "
             "With it off no DEBUG request or response payload is built at all, whatever Log verbosity level is set, because the redaction and serialisation are skipped rather than done and dropped. That is the whole of what it stops: the in-memory session log is filled with every other record the request makes, at any Log verbosity level, so the dashboard's Log buffers (RAM) counters count those records, not 0 - a live count of the records the pipe is holding, which is not a session-logging indicator. Log verbosity level set to DEBUG still shows those payloads on the console, and puts them back in that buffer. "
             "Turning this off also stops the retention sweep, leaving every archive already on disk untouched until it is re-enabled and the retention window passes. "
-            "A write already inside an assembly pass is read again at the write itself, so one that is already under way when this is switched off publishes nothing and its staged segments stay in the database for a later pass."
+            "A write already inside an assembly pass is read again at the write itself, so one that is already under way when this is switched off publishes nothing and its staged segments stay in the database for a later pass. "
+            "The valve governs starting an archive rather than work already accepted: an archive the write queue already holds - the fallback taken when staging that turn's segments in the database failed, so no staged row is left to write it again from - is written on the way to a stop whatever this is set to, because that queued job is the only copy of the turn."
         ),
     )
     SESSION_LOG_ARCHIVE_API_CALLS: bool = Field(
@@ -1938,7 +1939,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "a segment that lands after that read on a turn whose archive already records the turn as "
             "finished is folded in by that same pass, which writes the turn complete rather than sealing it "
             "again and also preserves the outcome that archive already recorded. Each pass takes the oldest stranded bundles first and seals a "
-            "bundle only if the sealed write succeeds, keeping the segments for a retry otherwise."
+            "bundle only if the sealed write succeeds, keeping the segments for a retry otherwise. "
             "The incomplete marker is written at most once per archive: a pass that finds the turn still stale re-stamps that one marker "
             "rather than adding another - only its count is stable, and its timestamp is the last such pass - and a pass that finds the turn complete retires it. "
             "**Warning:** The minimum is `300` seconds (five minutes): a lower value is refused when the configuration is saved, and a stored one that no longer validates falls back to the default rather than being raised to it. Lowering it toward that floor makes the remaining exposure routine rather than rare, because a turn that outlives the window between two of its segments is then sealed by the next pass."

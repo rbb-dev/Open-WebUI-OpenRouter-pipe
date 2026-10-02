@@ -158,6 +158,19 @@ EXPECTED_LATCHES = {
     # operator whose deployment is video-first with the flood intact.
     "_warned_video_filter_installs",
     "_warned_video_provider_keys",
+    # H3681-1. An archive write that RAISES on the writer thread -- the residual the
+    # mkdir/zip/publish nets inside `write_session_log_archive` do not cover -- used to
+    # answer at DEBUG on the module logger, which is no signal at any level on the one
+    # queue whose jobs are the only copy of their turn. It is a dict rather than a set
+    # because the failure is by hypothesis transient (a misconfigured `~user` directory,
+    # a clock jump) and a permanent latch would hide the recurrence that says the volume
+    # never came back; it is keyed per turn so one broken volume does not mute the next
+    # turn's loss, and it is trimmed to `_MAX_DRAIN_LATCH_KEYS` because a per-turn key in
+    # an unbounded dict grows by one entry for every turn that ever fails. It must stay a
+    # table of its own: sharing `logging_system._warned_archive_write_failed` would fold
+    # this record into that net's cooldown, and the two are different failure classes on
+    # different code paths.
+    "_warned_writer_failed",
     "_warned_write_refusals",
     # Not `_warned` latches, and NOT matched by `_LATCH_RE` below -- they are process-wide
     # RECORDS rather than warn-once latches, so the prefix sweep in conftest cannot reach

@@ -1172,9 +1172,10 @@ for any model, and a contract that does describe it decides the shape of the box
 - **Output size** — either a size tier (`512`, `1K`, `2K`, `4K`) or exact pixels
   such as `1024x1024`. Where a model instead publishes `size` as a numeric range,
   this control is a whole number bounded by that range, names no tier and no pixel
-  form, and sends nothing but a number. A tier sets the same thing as **Resolution** and still
+  form, and sends nothing but a number. A tier *is* a resolution and still
   takes its shape from **Aspect ratio**; what it is measured against depends on
-  the model. Nineteen of the fifty-two publish a tier list of their own, and on those
+  the model. Where a tier and a **Resolution** disagree, this pipe sends the tier
+  and names the one it left off. Nineteen of the fifty-two publish a tier list of their own, and on those
   a tier outside the list is withheld rather than sent, and named. The other
   thirty-three publish no list, so a tier is measured only against those four
   names and then goes out for the company running the model to interpret.
@@ -1248,7 +1249,10 @@ Other consequences worth knowing:
 
 To see what a specific model accepts, type `help` to it in a chat. The reply
 lists the settings read from that model's published list, together with the
-always-present controls that model carries. A value only some of the companies
+always-present controls that model carries, for as long as the model's
+settings panel is installed; with `Show native image models` off the reply
+still describes the model but lists no settings panel, because none is
+installed. A value only some of the companies
 serving the model accept is shown among the choices with a note saying so.
 
 ## What the settings panel looks like
@@ -1369,7 +1373,8 @@ Recraft's typography champion — the only AI image model that can render long-f
 The `## Controls` section covers the settings that model publishes
 together with the ones every panel carries whatever it publishes. A model
 that publishes none of its own says so rather than showing an empty
-section. On a model that answers only with a picture, Provider options,
+section; a model whose panel is not installed is shown with no section at
+all. On a model that answers only with a picture, Provider options,
 Reference images and Reference image links head the list, ahead of
 anything the model publishes. Output size comes after the published lists
 of choices and before the rest of what the model publishes — its number
@@ -1934,9 +1939,9 @@ A read of one model's `/images/models/<id>/endpoints` that fails is paced
 for 30 seconds: the generations in that window make no request and get back
 exactly what the failed read returned, and a read that succeeds clears the
 window. Both the cached records and that window belong to one credential: a
-change of `BASE_URL` or `API_KEY` drops them together at
-`integrations/image.py:594`, so the new credential's first read is made rather
-than paced, and a read that is still in flight when the credential changes
+change of `BASE_URL` or `API_KEY` drops them together, so the new
+credential's first read is made rather than paced, and a read that is still
+in flight when the credential changes
 answers the caller that asked for it and is published to no one.
 
 Key files:

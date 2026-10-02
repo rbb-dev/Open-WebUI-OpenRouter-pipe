@@ -1124,6 +1124,8 @@ class OpenRouterModelRegistry:
             restored["capabilities"] = capabilities
             restored["supported_parameters"] = frozenset(full.get("supported_parameters") or set())
             restored.pop("video_model", None)
+            restored["architecture"] = dict(full.get("architecture") or {})
+            restored.update(_base_spec_fields(full.get("pricing") or {}))
             new_specs[norm_id] = restored
 
         models_by_norm: dict[str, dict[str, Any]] = {}

@@ -365,6 +365,10 @@ async def test_responses_streaming_error_429_rate_limit_with_headers(pipe_instan
     # Check metadata has rate limit info
     meta = exc_info.value.metadata or {}
     assert meta.get("retry_after") == "30" or meta.get("retry_after_seconds") == "30"
+    assert meta.get("rate_limit_type") == "user", (
+        "OpenRouter sent `X-RateLimit-Scope: user` and that value is what the error card reads "
+        f"for **Limit type:**; the metadata carried {meta.get('rate_limit_type')!r}"
+    )
 
 
 @pytest.mark.asyncio
@@ -933,6 +937,11 @@ async def test_responses_nonstreaming_error_429_with_headers(pipe_instance_async
     assert exc_info.value.status == 429
     meta = exc_info.value.metadata or {}
     assert meta.get("retry_after") == "60" or meta.get("retry_after_seconds") == "60"
+    assert meta.get("rate_limit_type") == "organization", (
+        "OpenRouter sent `x-ratelimit-scope: organization` -- the header is case-insensitive and "
+        "this arm is spelled in lower case on purpose -- and that value is what the error card "
+        f"reads for **Limit type:**; the metadata carried {meta.get('rate_limit_type')!r}"
+    )
 
 
 @pytest.mark.asyncio

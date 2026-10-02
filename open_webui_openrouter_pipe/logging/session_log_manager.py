@@ -144,7 +144,20 @@ def _writer_loop(mgr_ref: Any, stop_event: threading.Event, job_queue: queue.Que
         try:
             mgr._write_archive(item)
         except Exception:
-            logger.debug("Session log writer failed", exc_info=True)
+            _truncate_latch(_warned_writer_failed, _MAX_DRAIN_LATCH_KEYS)
+            mgr.logger.log(
+                warn_level(
+                    _warned_writer_failed,
+                    f"session_log_write_failed:{getattr(item, 'chat_id', '')}:"
+                    f"{getattr(item, 'message_id', '')}",
+                    cooldown_s=3600.0,
+                ),
+                "Session log archive write failed on the writer thread "
+                "(chat_id=%s message_id=%s); this turn's archive is lost and will not be retried.",
+                getattr(item, "chat_id", ""),
+                getattr(item, "message_id", ""),
+                exc_info=True,
+            )
         finally:
             with contextlib.suppress(Exception):
                 job_queue.task_done()
@@ -221,6 +234,7 @@ _MAX_DRAIN_LATCH_KEYS = 32
 
 _warned_dead_manager_drain: dict[str, float] = {}
 _warned_drain_incomplete: dict[str, float] = {}
+_warned_writer_failed: dict[str, float] = {}
 
 _INCOMPLETE_MARKER_PREFIX = "Session log finalized as incomplete"
 _INCOMPLETE_MARKER_FUNC = "_assemble_and_write_bundle"

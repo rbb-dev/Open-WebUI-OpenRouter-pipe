@@ -31,7 +31,7 @@ Inputs (high level):
     `tests/test_b591_the_replayed_path_is_the_id_less_shape.py` drives the real host function and
     pins this; re-check it first on any Open WebUI upgrade.
     The id-carrying shape is the pipe's **own** OpenAI-compatible gateway
-    (`api/gateway/chat_completions_adapter.py:168`), where an external caller supplies messages that
+    (`api/gateway/chat_completions_adapter.py`), where an external caller supplies messages that
     keep their own ids. There `message_id` scopes the store's own SELECT, so it is never widened:
     a history carrying distinct ids costs one call per id, each asking only for its own group.
     Those calls are issued **together** under a fixed concurrency ceiling
@@ -306,7 +306,10 @@ only through the card Open WebUI keeps for it in the browser, and none with card
 - An image returned by a tool comes back as a separate message right after the round's results ("Here are the
   images from the tool results above"): Open WebUI builds it from its own record, and the pipe builds the same
   message when its own copy carries the round, so the request is the same whatever the card switch says. It is
-  part of that round's result: handed over in full where it sits, whatever the attachment limit, even when it is
+  adjacent only where the pipe builds the message itself; on replay, a `system`/`developer` message that Open WebUI or a
+  filter placed between a round's results and a handoff Open WebUI itself stored is emitted where it sits and the stored
+  handoff follows it, because the pipe recognises that handoff across those roles and therefore adds no copy of its own.
+  It is part of that round's result: handed over in full where it sits, whatever the attachment limit, even when it is
   not the last message; withheld with the round on an earlier turn while results are not kept; never stored again;
   unlike an image the person attached, never reused on a later question; and it ends the reuse of any older
   picture. Each of its pictures is gated before it is sent, exactly as a picture the person attached is - scheme,

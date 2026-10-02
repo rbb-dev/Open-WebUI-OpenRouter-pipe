@@ -341,6 +341,7 @@ class SessionLogger:
     log_bytes: ClassVar[dict[str, int]] = {}
     log_records_shed: ClassVar[dict[str, int]] = {}
     _session_last_seen: ClassVar[dict[str, float]] = {}
+    _records_in_flight: ClassVar[dict[str, int]] = {}
     log_queue: asyncio.Queue[logging.LogRecord] | None = None
     _main_loop: asyncio.AbstractEventLoop | None = None
     _state_lock = threading.Lock()
@@ -549,6 +550,19 @@ class SessionLogger:
             queue.put_nowait(record)
         except asyncio.QueueFull:
             cls.process_record(record)
+            return
+        rid = getattr(record, "request_id", None)
+        if rid:
+            record._pipe_queued = True  # type: ignore[attr-defined]
+            with cls._state_lock:
+                cls._records_in_flight[rid] = cls._records_in_flight.get(rid, 0) + 1
+
+    @classmethod
+    def records_in_flight(cls, request_id: str | None) -> int:
+        if not request_id:
+            return 0
+        with cls._state_lock:
+            return cls._records_in_flight.get(request_id, 0)
 
     @classmethod
     def _passes_threshold(cls, record: logging.LogRecord) -> bool:
@@ -655,6 +669,11 @@ class SessionLogger:
                     buffer.append(event)
                     cls.log_bytes[request_id] = cls.log_bytes.get(request_id, 0) + size
                     cls._session_last_seen[request_id] = time.time()
+                    if getattr(record, "_pipe_queued", False):
+                        record._pipe_queued = False  # type: ignore[attr-defined]
+                        remaining = cls._records_in_flight.get(request_id, 0)
+                        if remaining:
+                            cls._records_in_flight[request_id] = remaining - 1
         except Exception:  # noqa: BLE001 - never raise from logging hooks
             # Never raise from logging hooks.
             return
@@ -670,6 +689,7 @@ class SessionLogger:
                 cls._session_last_seen.pop(sid, None)
                 cls.log_bytes.pop(sid, None)
                 cls.log_records_shed.pop(sid, None)
+                cls._records_in_flight.pop(sid, None)
 
     @classmethod
     def release(cls, request_id: str | None) -> None:
@@ -680,6 +700,7 @@ class SessionLogger:
             cls._session_last_seen.pop(request_id, None)
             cls.log_bytes.pop(request_id, None)
             cls.log_records_shed.pop(request_id, None)
+            cls._records_in_flight.pop(request_id, None)
 
 
 # Session Log Archive Writer

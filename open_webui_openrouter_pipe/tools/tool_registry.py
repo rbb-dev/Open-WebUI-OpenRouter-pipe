@@ -494,6 +494,8 @@ def _build_collision_safe_tool_specs_and_registry(
                 spec.get("parameters") or {"type": "object", "properties": {}}
             )
             spec["strict"] = True
+        elif not c.get("handed_back") and "strict" not in spec:
+            spec["strict"] = False
         tools_out.append(spec)
         exposed_to_origin[exposed_name] = origin_name
         if builtin_ask_user_names is not None and is_builtin_ask_user(c.get("tool_cfg")):

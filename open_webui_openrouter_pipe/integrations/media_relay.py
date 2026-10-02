@@ -5,11 +5,11 @@ import json
 import re
 import time
 from typing import Any, NamedTuple
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlunsplit
 
 import aiohttp
 
-from ..core.url_scheme import media_type_or_empty
+from ..core.url_scheme import _split, media_type_or_empty
 
 RELAY_HOSTS: tuple[str, ...] = ("litterbox", "catbox")
 
@@ -80,7 +80,7 @@ def _as_the_host_put_it(text: str) -> str:
 
 def _served_by(link: str, origins: tuple[str, ...]) -> bool:
     try:
-        parts = urlsplit(link)
+        parts = _split(link)
     except ValueError:
         return False
     if urlunsplit(parts) != link:

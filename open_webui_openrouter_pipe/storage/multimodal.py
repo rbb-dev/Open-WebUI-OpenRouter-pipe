@@ -29,7 +29,7 @@ from contextvars import ContextVar
 from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import quote, urljoin
 
 # External dependencies
 import aiohttp
@@ -62,6 +62,7 @@ from ..core.errors import (
 from ..core.timing_logger import timed
 from ..core.url_scheme import (
     _same_origin,
+    _split,
     is_http_or_https_url,
     is_inline_data_url,
     loggable_link,
@@ -463,7 +464,10 @@ def _guess_image_mime_type(url: str, content_type: str | None, data: bytes) -> s
         return "image/svg+xml"
 
     if allow_extension_fallback:
-        path = (urlparse(url).path or "").lower()
+        path = (_split(url).path or "").lower()
+        params = path.find(";", path.rfind("/"))
+        if params >= 0:
+            path = path[:params]
         if path.endswith(".svg"):
             return "image/svg+xml"
         if path.endswith(".png"):

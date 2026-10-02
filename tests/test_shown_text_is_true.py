@@ -1514,13 +1514,21 @@ def test_the_withheld_aspect_ratio_notice_does_not_blame_openrouter():
     the pipe's own 2.5% tolerance, so a notice reading "which the video API rejects"
     told the user a false thing about a third party.
     """
+    from open_webui_openrouter_pipe.integrations.image_types import supersede_size_conflicts
     from open_webui_openrouter_pipe.integrations.video import (
         _SIZE_CONTRADICTS_THE_RATIO,
         _SIZE_FIXES_THE_PIXELS,
         _SIZE_IS_A_TIER,
     )
 
-    for notice in (_SIZE_CONTRADICTS_THE_RATIO, _SIZE_FIXES_THE_PIXELS, _SIZE_IS_A_TIER):
+    image_tier = supersede_size_conflicts({"size": "4K", "resolution": "2K"})[0][2]
+
+    for notice in (
+        _SIZE_CONTRADICTS_THE_RATIO,
+        _SIZE_FIXES_THE_PIXELS,
+        _SIZE_IS_A_TIER,
+        image_tier,
+    ):
         assert not re.search(
             r"\b(the video api|openrouter)\b[^.;]{0,40}\b(rejects?|refuses?|will not take)\b",
             notice,

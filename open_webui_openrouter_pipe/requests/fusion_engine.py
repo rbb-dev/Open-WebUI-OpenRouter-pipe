@@ -64,11 +64,17 @@ _LOG_DRAIN_TIMEOUT_SECONDS = 1.0
 _GENERATION_COMPLETE_DISPATCH_TIMEOUT_SECONDS = 5.0
 
 
+async def _await_own_records_processed(rid: str) -> None:
+    while SessionLogger.records_in_flight(rid):
+        await asyncio.sleep(0)
+
+
 async def _drop_member_log_buffer(rid: str) -> None:
-    queue = SessionLogger.log_queue
-    if queue is not None:
+    if SessionLogger.log_queue is not None:
         with contextlib.suppress(Exception, asyncio.CancelledError):
-            await asyncio.wait_for(queue.join(), _LOG_DRAIN_TIMEOUT_SECONDS)
+            await asyncio.wait_for(
+                _await_own_records_processed(rid), _LOG_DRAIN_TIMEOUT_SECONDS
+            )
     SessionLogger.release(rid)
 
 

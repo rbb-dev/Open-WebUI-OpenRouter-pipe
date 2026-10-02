@@ -179,6 +179,8 @@ whitespace in it, restores that stage's shipped default, and a template that has
 is sent to that stage verbatim, whitespace and all. The judge runs at temperature 0 and must return a
 strict five-key JSON analysis; if it fails validation twice the run degrades to
 no-analysis mode (panel answers stay usable, synthesis proceeds from the raw drafts).
+The same no-analysis mode applies to a judge whose own call failed after its analysis
+arrived — a faulted member is not a verdict, so nothing it produced reaches the run.
 The final answer is written by the preset's judge model from the panel drafts plus the
 analysis. The synthesis material — the panel drafts and the analysis as one block — sits
 in the body as a **second leading `system` block**, after that stage's own prompt and

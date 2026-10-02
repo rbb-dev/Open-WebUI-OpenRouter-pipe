@@ -20,7 +20,6 @@ from datetime import UTC
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
-from urllib.parse import urlsplit
 
 import aiohttp
 from starlette.responses import StreamingResponse
@@ -44,6 +43,7 @@ from ..core.errors import (
     UpstreamBodyUnreadable,
     is_sign_in_failure,
 )
+from ..core.url_scheme import _split
 from ..core.utils import (
     _clean_str,
     _csv_set,
@@ -339,7 +339,7 @@ def _host_in_scope(
     if not entries:
         return True
     try:
-        parts = urlsplit(url)
+        parts = _split(url)
         host = parts.hostname
         port = parts.port
     except ValueError:

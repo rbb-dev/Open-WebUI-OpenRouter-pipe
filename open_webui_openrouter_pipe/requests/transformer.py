@@ -17,7 +17,7 @@ import json
 import logging
 import time
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 from ..core.config import (
@@ -916,12 +916,11 @@ def _one_copy_per_round(
     return _move_kept_outputs_after_their_calls(kept)
 
 
-def _handoff_ahead(messages: list[dict[str, Any]], position: int) -> bool:
-    results: list[Any] = [messages[position]]
-    for offset in range(position + 1, len(messages)):
+def _round_results_across(
+    messages: list[dict[str, Any]], offsets: Iterable[int], results: list[Any],
+) -> bool:
+    for offset in offsets:
         message = messages[offset]
-        if is_tool_image_handoff_for_round(results, message):
-            return True
         role = (message.get("role") or "").lower()
         if role == "tool":
             results.append(message)
@@ -929,20 +928,22 @@ def _handoff_ahead(messages: list[dict[str, Any]], position: int) -> bool:
         if role in ("assistant", "system", "developer"):
             continue
         return False
+    return True
+
+
+def _handoff_ahead(messages: list[dict[str, Any]], position: int) -> bool:
+    results: list[Any] = [messages[position]]
+    for offset in range(position + 1, len(messages)):
+        if is_tool_image_handoff_for_round(results, messages[offset]):
+            return True
+        if not _round_results_across(messages, (offset,), results):
+            return False
     return False
 
 
 def _handoff_back(messages: list[dict[str, Any]], position: int) -> bool:
     results: list[Any] = []
-    for offset in range(position - 1, -1, -1):
-        message = messages[offset]
-        role = (message.get("role") or "").lower()
-        if role == "tool":
-            results.append(message)
-            continue
-        if role in ("assistant", "system", "developer"):
-            continue
-        break
+    _round_results_across(messages, range(position - 1, -1, -1), results)
     return is_tool_image_handoff_for_round(results, messages[position])
 
 

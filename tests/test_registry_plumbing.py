@@ -10,6 +10,7 @@ import pytest
 
 import open_webui_openrouter_pipe as ow
 from open_webui_openrouter_pipe.models.registry import _fingerprint
+from tests.doc_truth_anchors import between, doc
 
 
 class DummyResponse:

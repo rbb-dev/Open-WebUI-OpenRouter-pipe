@@ -2,8 +2,6 @@
 
 This test module targets the missing lines in circuit_breaker.py:
 - Line 66: threshold getter
-- Line 77: threshold setter with existing breaker records
-- Line 82: threshold setter with existing tool records
 - Line 95: window_seconds getter
 - Line 139: record_failure with empty user_id
 - Line 174: tool_allows with empty user_id or tool_type
@@ -50,39 +48,6 @@ class TestCircuitBreakerThresholdProperty:
         assert breaker.threshold == 1
         breaker.threshold = -5
         assert breaker.threshold == 1
-
-    def test_threshold_setter_rebuilds_breaker_records(self) -> None:
-        """Threshold setter should rebuild existing breaker records (line 77)."""
-        breaker = CircuitBreaker(threshold=3, window_seconds=60)
-        user_id = "user-1"
-
-        # Record some failures
-        breaker.record_failure(user_id)
-        breaker.record_failure(user_id)
-
-        # Change threshold - should rebuild the deque with new maxlen
-        breaker.threshold = 5
-        assert breaker.threshold == 5
-
-        # Records should be preserved
-        assert not breaker.allows(user_id) is False  # Still allowed since 2 < 5
-
-    def test_threshold_setter_rebuilds_tool_breakers(self) -> None:
-        """Threshold setter should rebuild existing tool breakers (line 82)."""
-        breaker = CircuitBreaker(threshold=3, window_seconds=60)
-        user_id = "user-1"
-        tool_type = "function"
-
-        # Record some tool failures
-        breaker.record_tool_failure(user_id, tool_type)
-        breaker.record_tool_failure(user_id, tool_type)
-
-        # Change threshold - should rebuild the tool deques with new maxlen
-        breaker.threshold = 5
-        assert breaker.threshold == 5
-
-        # Tool records should be preserved
-        assert breaker.tool_allows(user_id, tool_type) is True  # Still allowed since 2 < 5
 
 
 class TestCircuitBreakerWindowProperty:

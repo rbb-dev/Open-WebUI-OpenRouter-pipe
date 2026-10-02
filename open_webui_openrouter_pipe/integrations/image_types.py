@@ -195,7 +195,13 @@ def supersede_size_conflicts(params: dict[str, Any]) -> list[tuple[str, Any, str
         resolution = params.get("resolution")
         if resolution is None or str(resolution).strip().casefold() == str(size).strip().casefold():
             return []
-        return [("resolution", params.pop("resolution"), "sets the same thing")]
+        return [
+            (
+                "resolution",
+                params.pop("resolution"),
+                "is itself a resolution tier, so this pipe sends only one of the two",
+            )
+        ]
     dropped: list[tuple[str, Any, str]] = []
     if "resolution" in params:
         dropped.append(

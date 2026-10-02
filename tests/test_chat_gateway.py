@@ -437,7 +437,11 @@ async def test_chat_completions_streaming_error_with_retry_after(pipe_instance_a
 
     # Should raise with rate limit info
     exc = exc_info.value
-    assert hasattr(exc, "status") or "429" in str(exc) or "Rate" in str(exc)
+    assert exc.status == 429, f"the 429 was not carried on the error: {exc!r}"
+    assert (exc.metadata or {}).get("rate_limit_type") == "user", (
+        "OpenRouter sent `X-RateLimit-Scope: user` and that value is what the error card reads "
+        f"for **Limit type:**; the metadata carried {(exc.metadata or {}).get('rate_limit_type')!r}"
+    )
 
 
 @pytest.mark.asyncio
@@ -1594,8 +1598,11 @@ async def test_chat_completions_streaming_rate_limit_scope(pipe_instance_async):
 
     # Error should be raised with rate limit info
     exc = exc_info.value
-    # Check that exception has metadata or proper message
-    assert hasattr(exc, "status") or "429" in str(exc)
+    assert exc.status == 429, f"the 429 was not carried on the error: {exc!r}"
+    assert (exc.metadata or {}).get("rate_limit_type") == "organization", (
+        "OpenRouter sent `X-RateLimit-Scope: organization` and that value is what the error card "
+        f"reads for **Limit type:**; the metadata carried {(exc.metadata or {}).get('rate_limit_type')!r}"
+    )
 
 
 # ============================================================================
@@ -2167,8 +2174,11 @@ async def test_chat_completions_nonstreaming_with_rate_limit_scope(pipe_instance
         await session.close()
 
     exc = exc_info.value
-    # Exception should contain rate limit info
-    assert hasattr(exc, "status") or "429" in str(exc)
+    assert exc.status == 429, f"the 429 was not carried on the error: {exc!r}"
+    assert (exc.metadata or {}).get("rate_limit_type") == "model", (
+        "OpenRouter sent `X-RateLimit-Scope: model` and that value is what the error card reads "
+        f"for **Limit type:**; the metadata carried {(exc.metadata or {}).get('rate_limit_type')!r}"
+    )
 
 
 @pytest.mark.asyncio

@@ -845,6 +845,7 @@ def render_image_help(
     *,
     endpoint_record: list[dict[str, Any]] | dict[str, Any] | None = None,
     dedicated_image_api: bool,
+    panel_installed: bool = True,
 ) -> str:
     """Describe a model, and list the controls its own contract publishes.
 
@@ -868,7 +869,7 @@ def render_image_help(
 
     rendered = _image_render_template((model_id or "").strip(), image_model)
     records = _published_records(endpoint_record)
-    if not records:
+    if not records or not panel_installed:
         return rendered
 
     spec = build_image_model_filter_spec(

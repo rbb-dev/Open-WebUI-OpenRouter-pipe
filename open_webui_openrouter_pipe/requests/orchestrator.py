@@ -1800,6 +1800,7 @@ class RequestOrchestrator:
                     image_model if isinstance(image_model, dict) else None,
                     endpoint_record=endpoint_record,
                     dedicated_image_api=uses_dedicated_image_api(video_spec),
+                    panel_installed=valves.ENABLE_OPENROUTER_IMAGE_GENERATION,
                 )
                 if __event_emitter__:
                     await self._pipe._event_emitter_handler._emit_unstreamed_answer(

@@ -13,7 +13,8 @@ import json
 import logging
 import re
 from typing import Any
-from urllib.parse import urlparse
+
+from ..core.url_scheme import _split
 
 BUILTIN_CITATION_TOOLS = frozenset(
     {"fetch_url", "view_file", "view_knowledge_file", "query_knowledge_files", "query_chat_files"}
@@ -61,7 +62,7 @@ def _valid_url(value: Any) -> str:
         if code < 0x21 or 0x7F <= code <= 0x9F or 0xD800 <= code <= 0xDFFF:
             return ""
     try:
-        parsed = urlparse(candidate)
+        parsed = _split(candidate)
     except ValueError:
         return ""
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
