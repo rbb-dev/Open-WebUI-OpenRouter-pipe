@@ -37,7 +37,7 @@ you added yourself, or by another install — the pipe installs and maintains it
 `openrouter_fusion_1`, `openrouter_fusion_2` and so on, and identifies that row by the source marker it
 writes into the filter's code rather than by its id. It injects a `{"id": "fusion", …}` entry into the request's `plugins`
 array (the same mechanism as the Web Tools filter). It acts on the fusion models — `openrouter/fusion`,
-`openrouter/fusion-flash`, and any `:tag` variant or `@preset/…` form of them — and —
+`openrouter/fusion-flash`, and any `:tag` variant or `:preset/…` form of them — and —
 unless an admin opts in — no-ops on every other model.
 
 The filter has two distinct roles:
@@ -219,7 +219,7 @@ wiring. They are documented alongside the other pipe valves in
 |-------|---------|--------|
 | `ENABLE_OPENROUTER_FUSION` | `True` | Master switch; installs the filter, auto-wires it to the fusion models only, and gates the pipe's activation injection. `False` deactivates the installed filter on the next `pipes()` call, stops injecting the Fusion plugin entry, and removes an activating `{"id": "fusion"}` entry the request already carried, on any model and either engine — Fusion is then fully off for the first time — and a task or title request never carries one. `AUTO_INSTALL_FUSION_FILTER` is the install valve for that family. Setting it back to `True` re-activates a filter the pipe itself switched off whose family's install valve is still on, on the next `pipes()` call — including an install-by-hand copy, which nothing else brings back; a row that valve has retired stays off until that valve comes back on. A filter an admin switched off by hand — after the pipe had switched it off — stays off. |
 | `AUTO_INSTALL_FUSION_FILTER` | `True` | Install/update the filter function in OWUI. It also delivers the filter's own fixes: they live in the stored row rather than in the pipe, so with it off an installed row keeps whatever code it already had. |
-| `AUTO_ATTACH_FUSION_FILTER` | `True` | Attach the filter to the fusion models **only** (never other models) — including their `:tag` variant and `@preset/…` rows. Neither does a pass that could not install the panel because Open WebUI refused the write: the attached filter and the default it carried stay, and the install is tried again at the next catalog fetch. |
+| `AUTO_ATTACH_FUSION_FILTER` | `True` | Attach the filter to the fusion models **only** (never other models) — including their `:tag` variant and `:preset/…` rows. Neither does a pass that could not install the panel because Open WebUI refused the write: the attached filter and the default it carried stay, and the install is tried again at the next catalog fetch. |
 | `AUTO_DEFAULT_FUSION_FILTER` | `True` | Pre-enable the filter per chat on the fusion models (does not force Fusion to run). |
 
 The fusion models are auto-wired because access to them is already governed by Open
@@ -290,7 +290,7 @@ streaming panel deltas, the cards simply fill in at completion as before.
   [Engine backends](#engine-backends), where the per-request `{"id": "fusion", "enabled": false}` entry and the
   task requests that never deliberate are set out.
 - No effect on **Direct Connections** — Open WebUI does not deliver in-chat embeds on that path. A valve-pinned Fusion model is still refused there with the endpoint-conflict card, as it is anywhere else on the hosted backend.
-- Automatic on the fusion models — `openrouter/fusion`, `openrouter/fusion-flash` and their `:tag` / `@preset/…` forms — whenever Fusion is enabled: the master `ENABLE_OPENROUTER_FUSION` switch is on, the model is a fusion model, the turn is not a Direct Connection, **and** the turn's Fusion entry is not `enabled: false`. The master switch turns it off along with the rest of Fusion, and so does the per-request opt-out — a chat whose Fusion entry is disabled gets no panel and no panel socket. Non-fusion models are never affected.
+- Automatic on the fusion models — `openrouter/fusion`, `openrouter/fusion-flash` and their `:tag` / `:preset/…` forms — whenever Fusion is enabled: the master `ENABLE_OPENROUTER_FUSION` switch is on, the model is a fusion model, the turn is not a Direct Connection, **and** the turn's Fusion entry is not `enabled: false`. The master switch turns it off along with the rest of Fusion, and so does the per-request opt-out — a chat whose Fusion entry is disabled gets no panel and no panel socket. Non-fusion models are never affected.
 
 ### Socket transport — network & CSP requirements (admin)
 
@@ -345,7 +345,7 @@ chat that uses the filter.
 
 | Valve | Default | Effect |
 |-------|---------|--------|
-| `ALLOW_ON_NON_FUSION_MODELS` | `False` | **Off (default):** the filter acts only on the fusion models — `openrouter/fusion`, `openrouter/fusion-flash` and their `:tag` / `@preset/…` / `~` forms. If you attach it to **any other model**, its inlet returns immediately and injects nothing — no Fusion plugin, no `tool_choice` forcing — so a user's *Preset / Panel / Judge / **Always run Fusion*** settings have **no effect** on that model. **On:** the filter adds the Fusion panel (and forcing, if the user enabled *Always run Fusion*) to **any** model it is attached to. This valve is the **only** way to use Fusion on a **non-fusion** model: manually attach the filter to that model, then turn this on. (The model must also support tool calling, since forcing sets `tool_choice="required"` — though the forcing is dropped for a single turn that offers no tool at all.) |
+| `ALLOW_ON_NON_FUSION_MODELS` | `False` | **Off (default):** the filter acts only on the fusion models — `openrouter/fusion`, `openrouter/fusion-flash` and their `:tag` / `:preset/…` / `~` forms. If you attach it to **any other model**, its inlet returns immediately and injects nothing — no Fusion plugin, no `tool_choice` forcing — so a user's *Preset / Panel / Judge / **Always run Fusion*** settings have **no effect** on that model. **On:** the filter adds the Fusion panel (and forcing, if the user enabled *Always run Fusion*) to **any** model it is attached to. This valve is the **only** way to use Fusion on a **non-fusion** model: manually attach the filter to that model, then turn this on. (The model must also support tool calling, since forcing sets `tool_choice="required"` — though the forcing is dropped for a single turn that offers no tool at all.) |
 | `priority` | `0` | Filter execution order. OWUI runs a chat's attached filters sorted by `(priority, id)`, lowest first. |
 
 > **Gotcha:** attaching the filter to another model and enabling *Always run Fusion* does **nothing**

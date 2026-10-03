@@ -77,7 +77,7 @@ from ..core.errors import (
 from ..core.logging_system import SessionLogger, bounded_log_record_text
 
 # Import timing instrumentation
-from ..core.timing_logger import clear_timing_events, timed, timing_mark
+from ..core.timing_logger import timed, timing_mark
 from ..core.url_scheme import is_http_or_https_url, loggable_link
 
 # Imports from core.utils
@@ -4867,7 +4867,6 @@ class StreamingHandler:
             # Clear logs
             if request_id:
                 SessionLogger.release(request_id)
-                clear_timing_events(request_id)
             SessionLogger.cleanup()
 
             chat_id = metadata.get("chat_id")

@@ -86,6 +86,15 @@
   which counts as complete.
 - **Filter rows, two pipe copies** — in a deployment with two pipe copies, each copy now reads only its own filter rows: the Web Tools filter's stored per-user toggles and cost ceiling for internal Fusion's panel members, and the image-generation model. A row stamped with another copy's install record is no longer read as configuration or executed, whatever id it sits on. The isolation the documentation already promised, and the second copy gains its own image-generation filter row after the next model refresh, starting from the pipe's own drawing-model default rather than the first copy's admin's choice.
 
+- **Timing profiler** — `ENABLE_TIMING_LOG` now writes only its file. The pipe used to keep a second,
+  per-request in-memory copy of every timing event alongside `timing.jsonl`, bounded by a request count and a
+  per-record character cap, and three help texts and the storage guide described that copy as something a
+  running request could be read from. No production code ever read it: its two accessors
+  (`get_timing_events`, `format_timing_jsonl`) had no caller outside the test suite, so the copy grew with every
+  event the valve recorded and was bounded only by an eviction cap. That copy and both accessors are gone, along
+  with the `clear_timing_events` release that existed to trim it. Nothing observable changes for anyone reading
+  `timing.jsonl`: the file the valve exists to produce is byte-for-byte what it was, and with the valve off
+  nothing was buffered either way.
 - **Open-WebUI tool mode** — a call Open WebUI runs now shows its card from the moment the model names the tool, and the dashboard's live view now shows the running tool on those turns (it stayed empty before).
 - **Pipe dashboard, deleted function row** — deleting the pipe's function row now releases the live dashboard on the worker that served the DELETE and lets
   the pipe finish its in-flight requests and close, instead of holding it, its session-log threads and its storage handle until a restart. The stand-down

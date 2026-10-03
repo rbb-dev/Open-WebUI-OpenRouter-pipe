@@ -28,7 +28,6 @@ import inspect
 import json
 import threading
 import time
-from collections import OrderedDict, deque
 from collections.abc import Callable
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
@@ -44,20 +43,11 @@ _timing_file_lock = threading.RLock()
 _timing_file_path: Path | None = None
 _timing_file_handle: Any | None = None  # File object when open
 
-# Per-request timing buffer (kept for session log integration if needed)
-_timing_events: OrderedDict[str, deque[dict[str, Any]]] = OrderedDict()
-_timing_lock = threading.RLock()
-
 # Context variables for per-request state
 _timing_enabled: ContextVar[bool] = ContextVar("timing_enabled", default=False)
 _timing_request_id: ContextVar[str | None] = ContextVar(
     "timing_request_id", default=None
 )
-
-# Maximum events per request to prevent unbounded growth
-MAX_TIMING_EVENTS = 10000
-
-MAX_TIMING_REQUESTS = 256
 
 
 # -----------------------------------------------------------------------------
@@ -123,17 +113,6 @@ def _record_event(event: TimingEvent, request_id: str | None = None) -> None:
                 _timing_file_handle.flush()  # Ensure immediate write
             except (OSError, RecursionError, TypeError, ValueError):
                 pass  # Silently ignore write errors to avoid disrupting request flow
-
-    # Also store in per-request buffer for potential session log integration
-    with _timing_lock:
-        if request_id not in _timing_events:
-            if event.event == "exit":
-                return
-            while len(_timing_events) >= MAX_TIMING_REQUESTS:
-                _timing_events.popitem(last=False)
-            _timing_events[request_id] = deque(maxlen=MAX_TIMING_EVENTS)
-        _timing_events[request_id].append(record)
-        _timing_events.move_to_end(request_id)
 
 
 # -----------------------------------------------------------------------------
@@ -258,55 +237,6 @@ def clear_timing_context() -> None:
     """Clear timing context for the current request."""
     _timing_request_id.set(None)
     _timing_enabled.set(False)
-
-
-def get_timing_events(request_id: str) -> list[dict[str, Any]]:
-    """Retrieve timing events for a request (for session log archival).
-
-    Args:
-        request_id: The request ID to get events for
-
-    Returns:
-        List of timing event dictionaries, ready for JSON serialization
-    """
-    with _timing_lock:
-        buffer = _timing_events.get(request_id)
-        return list(buffer) if buffer else []
-
-
-def clear_timing_events(request_id: str) -> None:
-    """Clear timing events for a request after archival.
-
-    Args:
-        request_id: The request ID to clear events for
-    """
-    with _timing_lock:
-        _timing_events.pop(request_id, None)
-
-
-def format_timing_jsonl(request_id: str) -> str:
-    """Format timing events as JSONL string for archive inclusion.
-
-    Args:
-        request_id: The request ID to format events for
-
-    Returns:
-        JSONL-formatted string of timing events, or empty string if none
-    """
-    events = get_timing_events(request_id)
-    if not events:
-        return ""
-    lines = []
-    for evt in events:
-        try:
-            lines.append(json.dumps(evt, ensure_ascii=False, separators=(",", ":")))
-        except (RecursionError, TypeError, ValueError):
-            # Skip malformed events
-            pass
-    result = "\n".join(lines)
-    if result and not result.endswith("\n"):
-        result += "\n"
-    return result
 
 
 def timing_mark(label: str) -> None:

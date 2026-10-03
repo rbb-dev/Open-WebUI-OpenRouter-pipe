@@ -582,6 +582,15 @@ def _foreign_filter_source() -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# The Fusion OFF arm and the Image Generation reactivation arm. Both are the
+# image-gen arm's shape applied to a second family, and both have to name the
+# row the installer names: the preferred id is only a preference, so a filter
+# that collided with it lives on a `_1` suffix while the arm still wrote the
+# literal.
+# ---------------------------------------------------------------------------
+
+_FUSION_ID = "openrouter_fusion"
 _FUSION_MARKER = _OPENROUTER_FUSION_FILTER_MARKER
 _IMAGE_GEN_MARKER = _OPENROUTER_IMAGE_GEN_FILTER_MARKER
 def _marked_source(marker: str) -> str:

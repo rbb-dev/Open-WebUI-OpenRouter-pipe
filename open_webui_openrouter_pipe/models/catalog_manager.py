@@ -402,7 +402,9 @@ def _apply_list_filter_ids(
     previous_ids: list[str] = []
     if isinstance(pipe_meta, dict):
         prev = pipe_meta.get(prune_key)
-        if isinstance(prev, list):
+        if isinstance(prev, str) and prev:
+            previous_ids = [prev]
+        elif isinstance(prev, list):
             previous_ids = [p for p in prev if isinstance(p, str) and p]
     current_set = set(filter_function_ids)
     had = set(normalized)

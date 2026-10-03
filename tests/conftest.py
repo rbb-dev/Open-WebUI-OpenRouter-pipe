@@ -860,7 +860,6 @@ def _reset_dashboard_socket_state():
 
 
 _MODULE_STATE_CONTAINERS = (
-    ("open_webui_openrouter_pipe.core.timing_logger", "_timing_events"),
     ("open_webui_openrouter_pipe.core.logging_system", "_ARCHIVE_CLAIMS"),
     ("open_webui_openrouter_pipe.core.valve_salvage", "_VALVE_SCHEMA_CACHE"),
     ("open_webui_openrouter_pipe.filters.filter_manager", "_PIPE_OFF_LANDED_AT"),
@@ -877,11 +876,14 @@ def _reset_module_state_containers():
     """Empty every module-level container the package writes, at BOTH ends of every test.
 
     A container is one worker's answer, not this test's, and the package never clears
-    them -- right for a live worker, wrong for a test process. The nine here are the
+    them -- right for a live worker, wrong for a test process. The eight here are the
     rows `tests/test_module_state_census.py` lists as reset rather than exempt: the
-    timing buffer, the archive claim table, the stored-valve schema cache, the two
-    filter-manager latches, both dashboard rate limiters, the per-pipe config write
-    locks, and the usage query memo.
+    archive claim table, the stored-valve schema cache, the two filter-manager
+    latches, both dashboard rate limiters, the per-pipe config write
+    locks, and the usage query memo. The timing buffer was the ninth until the
+    timing profiler's per-request in-memory copy was deleted with its two readers
+    (B680, T967); the timing logger keeps no module-level container at all now, so
+    the row went with the thing it named.
 
     `_coarse_state` and `_rate_state` are the pair the census exists for. Both key on
     `time.monotonic()`, and the suite's stub clocks run at 1000.0 -- hours behind the
@@ -898,7 +900,7 @@ def _reset_module_state_containers():
     Deliberately NOT cleared by THIS fixture: the import-time action registry, the
     named-latch registry, the monotone registration-path set, and the cooldown latches
     their own readers age out. A blanket "clear every module-level mutable" sweep would
-    take all of those with the nine, plus the ~82 read-only constant tables, which is
+    take all of those with the eight, plus the ~82 read-only constant tables, which is
     why each exclusion and its reason is written down IN THE CENSUS rather than here:
     naming a container in this docstring would make the census read it as a name
     conftest resets, and a row that says "nobody looks after this" while something else

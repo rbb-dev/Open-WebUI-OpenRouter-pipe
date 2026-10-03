@@ -1156,8 +1156,8 @@ _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
         "replaced by its opening frame."
     ),
     "frame_pixel_cap_used_scaled_frame": (
-        "The previous video's frame was too large to use at full size; a smaller "
-        "version of it was used instead."
+        "The previous video was too large to use at full size; a smaller copy of one "
+        "of its frames was used instead."
     ),
     "frame_pixel_cap_refused_no_frame": (
         "The previous video is too large for the pipe to read, so no frame was used "

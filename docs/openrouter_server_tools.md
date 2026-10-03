@@ -326,9 +326,9 @@ Two per-model custom parameters control Web Tools filter attachment on a per-mod
 | Parameter | Effect |
 | --- | --- |
 | `disable_web_tools_auto_attach` | Prevents auto-attaching the Web Tools filter to this model (the toggle will not appear in Integrations). |
-| `disable_web_tools_default_on` | Prevents auto-enabling the Web Tools filter by default for this model (the toggle appears but starts off on the next sync, and a default the pipe had already seeded for it is released on that same sync). |
+| `disable_web_tools_default_on` | Prevents auto-enabling the Web Tools filter by default for this model (the toggle appears but starts off on the next sync, and a default the pipe had already seeded for it is released on that same sync) — the next sync being the next catalogue or settings change, or a worker restart. |
 
-These parameters are respected even when the global `AUTO_ATTACH_WEB_TOOLS_FILTER` and `AUTO_DEFAULT_WEB_TOOLS_FILTER` valves are enabled: `disable_web_tools_default_on` releases a default the pipe seeded for that model on the next sync, and neither of them detaches a panel the pipe attached. A default seeded under an id the panel no longer resolves is released on that same sync, including after the panel has been reinstalled under a new id, and turning the valve back on reclaims a default re-ticked in between so the next turn-off still removes it.
+These parameters are respected even when the global `AUTO_ATTACH_WEB_TOOLS_FILTER` and `AUTO_DEFAULT_WEB_TOOLS_FILTER` valves are enabled: `disable_web_tools_default_on` releases a default the pipe seeded for that model on the next sync, and neither of them detaches a panel the pipe attached — the next sync being the next catalogue or settings change, or a worker restart. A default seeded under an id the panel no longer resolves is released on that same sync, including after the panel has been reinstalled under a new id, and turning the valve back on reclaims a default re-ticked in between so the next turn-off still removes it.
 
 See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md) for the full list of per-model custom parameters.
 

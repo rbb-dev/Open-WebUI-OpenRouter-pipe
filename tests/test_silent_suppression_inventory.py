@@ -190,11 +190,13 @@ _EXPECTED: dict[str, int] = {
     # served, so the close is the last thing allowed to fail silently. Same reason as
     # the pooled session closes above: the caller is already on its way out and there
     # is nothing left to serve.
-    # 31st and 32nd: the two resets in `_pipe_impl`'s `finally` for a request that was never
-    # enqueued (`clear_timing_events` for its early request id, `clear_timing_context`).
-    # Same reason as the 25th: the request has already been answered with a degraded
-    # result, the resets are bookkeeping on this task's own timing state, and a failure
-    # there must not replace the answer the caller is receiving.
+    # 31st: the reset in `_pipe_impl`'s `finally` for a request that was never enqueued
+    # (`clear_timing_context`). It was the 31st and 32nd while that `finally` also cleared
+    # the request's timing events; the events themselves are gone (B680, T967), so the
+    # suppression that guarded that clear went with it. Same reason as the 25th: the
+    # request has already been answered with a degraded result, the reset is bookkeeping
+    # on this task's own timing state, and a failure there must not replace the answer the
+    # caller is receiving.
     # 33rd (B218, H742-1): the resize of the shared connector in `_shared_request_session`
     # when the concurrency valve was raised. It sets aiohttp's plain `_limit` attribute and
     # then calls the private `_release_waiter()`; if that call is missing or raises, the
@@ -254,15 +256,14 @@ _EXPECTED: dict[str, int] = {
     # round has already reported the call to the model, so a retrieval failure has nothing
     # left to affect and must not raise out of a done callback, where asyncio would only
     # log it.
-    # 41st and 42nd: the two release sites for a discarded request's timing profile, one
-    # in `_stream`'s own `finally` and one beside the counter release in
-    # `_abandon_request_queue`. Both run on a path that is already leaving -- a stream
-    # being closed and a queue being retired -- and a failure in either costs a bounded
-    # profiler slot that `MAX_TIMING_REQUESTS` evicts anyway. Letting it out would replace
-    # the turn's own result, or the drain's delivery of the refusal that settled the
-    # discarded job, with a profiler bookkeeping error; `_stream`'s also swallows
-    # `CancelledError` for the same reason its neighbours do, since a turn being torn
-    # down must not raise out of its own teardown.
+    # The 41st and 42nd, the two release sites for a discarded request's timing profile
+    # (one in `_stream`'s own `finally`, one beside the counter release in
+    # `_abandon_request_queue`), are gone: a function that cleared nothing but carried a
+    # name saying a request's timing state was retained is dead code, and deleting it
+    # took both suppressions with it (B680, T967; see also the 31st above). The file is
+    # what the timing valve keeps, and nothing in the teardown touches it. Those three
+    # removals are what leave 40 of the 43 the base commit's count stood at; the 43rd
+    # below was added after B680 built and is unaffected by them.
     # 43rd: the per-edge `setattr(owner, attr, None)` in `_do_close`'s back-reference
     # clear. The loop drops the seven edges the pipe's own collaborators hold back to it,
     # and every owner is one this constructor just built, so an attribute that cannot be
@@ -271,7 +272,7 @@ _EXPECTED: dict[str, int] = {
     # failing to clear it loudly would abort the rest of the loop and leave the other six
     # edges standing, which is the worse of the two. The clear runs on the teardown path,
     # after every drain has already finished, so a raise here has nothing left to protect.
-    "pipe.py": 43,
+    "pipe.py": 40,
     # 4th (B724): the done-callback's `suppress(asyncio.CancelledError, Exception)` around
     # `task.exception()` in `_schedule_redis_valve_drain_on`'s `_settle`, which releases
     # the Redis valve's ownership latch when a scheduled drain ends however it ends. The

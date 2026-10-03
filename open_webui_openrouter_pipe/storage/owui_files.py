@@ -452,8 +452,8 @@ async def authorize_file_read(file_obj: Any, user: Any, logger: logging.Logger) 
     if not file_id:
         return False
     memo = FILE_READ_AUTH_MEMO.get()
-    memo_key = (str(file_id), requester_id)
-    if memo is not None and memo_key in memo:
+    memo_key = (str(file_id), requester_id) if requester_id else None
+    if memo is not None and memo_key is not None and memo_key in memo:
         return memo[memo_key]
     try:
         from open_webui.utils.access_control.files import (  # type: ignore[import-not-found]
@@ -467,7 +467,7 @@ async def authorize_file_read(file_obj: Any, user: Any, logger: logging.Logger) 
     except Exception as exc:
         logger.warning("has_access_to_file failed for %s: %s", file_id, exc, exc_info=True)
         granted = False
-    if memo is not None:
+    if memo is not None and memo_key is not None:
         memo[memo_key] = granted
     return granted
 

@@ -24,6 +24,8 @@ import inspect
 import re
 from pathlib import Path
 
+import pytest
+
 from open_webui_openrouter_pipe.core.config import UserValves, Valves
 
 ATLAS = Path(__file__).resolve().parents[1] / "docs" / "valves_and_configuration_atlas.md"
@@ -93,3 +95,40 @@ def test_the_atlas_default_column_matches_the_model():
 
 # --- the Fusion help surfaces must not scope to the base id alone ------------
 _BASE = re.compile(r"openrouter/fusion(?![\w-])", re.IGNORECASE)
+# --- every Fusion family form a help surface names must be a real model id ------
+# Six surfaces describe which rows the Fusion filter reaches, and five of them spell
+# the family forms out in backticks. The picker id is the colon spelling --
+# `registry.py:1525-1532` mints `base@preset/slug` *from* `base:preset/slug` -- so a
+# surface that names `@preset/…` names a row the filter no-ops on. The dashboard
+# details are included as guards: they name family forms too, and must keep naming
+# ones the predicate accepts.
+
+_BACKTICKED = re.compile(r"`([^`]+)`")
+_FUSION_ID = re.compile(r"(?:~)?openrouter/fusion(?:-flash)?")
+
+
+def _family_forms(text: str) -> list[str]:
+    return [
+        token
+        for token in dict.fromkeys(_BACKTICKED.findall(text))
+        if token[:1] in {":", "@", "~"} or _FUSION_ID.fullmatch(token)
+    ]
+
+
+def _picker_id(token: str) -> str:
+    concrete = token.replace("…", "email-copywriter").replace("...", "email-copywriter")
+    if _FUSION_ID.fullmatch(concrete):
+        base = concrete
+    elif concrete.startswith("~"):
+        base = "~openrouter/fusion"
+    else:
+        base = "openrouter/fusion" + concrete
+    return "open_webui_openrouter_pipe." + base.replace("/", ".")
+
+
+def _atlas_row(valve: str, path: Path) -> str:
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith(f"| `{valve}`"):
+            return stripped
+    raise AssertionError(f"no `{valve}` row left in {path.name}")

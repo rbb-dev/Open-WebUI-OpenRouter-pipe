@@ -244,18 +244,6 @@ class TestInletBehavior:
         assert intent_meta["confirm_mode"] == "always"
         assert intent_meta["max_clarifications"] == 0
 
-    def test_inlet_writes_admin_defaults_when_user_does_not_override(self):
-        # User valves with no overrides means each field defaults to the
-        # admin-baked value, which the inlet still writes through.
-        _, _, metadata = self._exec_filter_inlet(
-            admin=_admin(VIDEO_INTENT_FRAME_EXTRACTION_INDEX="first"),
-            user_overrides={},
-        )
-        pipe_meta = metadata["openrouter_pipe"]
-        intent_meta = pipe_meta["video_intent"]
-        assert intent_meta["frame_extraction_index"] == "first"
-
-
 # -----------------------------------------------------------------------------
 # resolve_intent_user_setting: metadata-first, admin fallback
 # -----------------------------------------------------------------------------

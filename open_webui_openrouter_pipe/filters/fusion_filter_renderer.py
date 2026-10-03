@@ -141,7 +141,7 @@ __PRIORITY_FIELD__
             description=(
                 "Off (default): this filter acts only on the fusion models — "
                 "`openrouter/fusion`, `openrouter/fusion-flash` and their `:tag` / "
-                "`@preset/…` / `~` forms — and no-ops if attached to anything else. "
+                "`:preset/…` / `~` forms — and no-ops if attached to anything else. "
                 "On: it adds the Fusion panel to any model it is attached to."
             ),
         )

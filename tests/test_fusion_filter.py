@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 import sys
 from types import ModuleType
 
@@ -268,3 +269,42 @@ def test_force_not_applied_when_any_fusion_plugin_disabled():
     body = {"model": FUSION, "plugins": [{"id": "fusion"}, {"id": "fusion", "enabled": False}]}
     out = _inlet(body, valves={"FUSION_FORCE_TOOL_CALL": True})
     assert "tool_choice" not in out
+
+
+# --- every family form the rendered help names is one the inlet acts on --------
+# The `ALLOW_ON_NON_FUSION_MODELS` description is the only Fusion surface an admin
+# reads to learn which rows the filter covers, and every backticked family form in it
+# has to be an id the real inlet recognises. A form spelled wrong there is a row the
+# admin is told is covered and finds the filter does nothing on.
+
+_BACKTICKED = re.compile(r"`([^`]+)`")
+_FUSION_ID = re.compile(r"(?:~)?openrouter/fusion(?:-flash)?")
+
+
+def _family_forms() -> list[str]:
+    """The backticked model-id forms the rendered `ALLOW_ON_NON_FUSION_MODELS`
+    description names, in the order it names them."""
+    source = render_openrouter_fusion_filter_source(marker=MARKER)
+    description = (
+        source.split("ALLOW_ON_NON_FUSION_MODELS: bool = Field(", 1)[1]
+        .split("description=(", 1)[1]
+        .split("),", 1)[0]
+    )
+    return [
+        token
+        for token in dict.fromkeys(_BACKTICKED.findall(description))
+        if token[:1] in {":", "@", "~"} or _FUSION_ID.fullmatch(token)
+    ]
+
+
+def _picker_id(token: str) -> str:
+    """A concrete model id in the form Open WebUI's picker publishes, built from one
+    backticked family form: ``@preset/…`` and ``:preset/…`` become a slug-bearing row."""
+    concrete = token.replace("…", "email-copywriter").replace("...", "email-copywriter")
+    if _FUSION_ID.fullmatch(concrete):
+        base = concrete
+    elif concrete.startswith("~"):
+        base = "~openrouter/fusion"
+    else:
+        base = "openrouter/fusion" + concrete
+    return "open_webui_openrouter_pipe." + base.replace("/", ".")

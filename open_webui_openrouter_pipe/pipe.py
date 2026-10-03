@@ -110,7 +110,6 @@ except ImportError:
 # Timing instrumentation
 from .core.timing_logger import (
     clear_timing_context,
-    clear_timing_events,
     timed,
     timing_mark,
 )
@@ -2489,8 +2488,6 @@ class Pipe:
                 OWUI_CHAT_ID.reset(owui_chat_id_token)
             if not _enqueued:
                 with contextlib.suppress(Exception):
-                    clear_timing_events(_early_request_id)
-                with contextlib.suppress(Exception):
                     clear_timing_context()
 
         if wants_stream and stream_queue is not None:
@@ -2552,8 +2549,6 @@ class Pipe:
                         future.exception()
                     if job.admission_refused and future.cancelled():
                         await self._refuse_at_admission(job, wants_stream=wants_stream)
-                    with contextlib.suppress(Exception):
-                        clear_timing_events(job.request_id)
                     SessionLogger.cleanup()
 
             return _stream()
@@ -2897,8 +2892,6 @@ class Pipe:
                     abandoned.future.set_exception(
                         RuntimeError("Request queue was replaced before this request ran.")
                     )
-            with contextlib.suppress(Exception):
-                clear_timing_events(abandoned.request_id)
             state = getattr(abandoned, "counter_state", None)
             if state is not None and state.get("owned"):
                 Pipe._release_stream_counter(abandoned.pipe, state)
@@ -3450,11 +3443,9 @@ class Pipe:
                 job.liveness_task = job.pipe._start_liveness_heartbeat(job)
 
                 def _mark_done(_task: asyncio.Task, q=queue,
-                               _active: dict[asyncio.Task[None], _PipeJob] = active,
-                               _rid: str = job.request_id) -> None:
+                               _active: dict[asyncio.Task[None], _PipeJob] = active) -> None:
                     _active.pop(_task, None)
                     q.task_done()
-                    clear_timing_events(_rid)
 
                 task.add_done_callback(_mark_done)
 
@@ -3715,7 +3706,6 @@ class Pipe:
                                 exc_info=True,
                             )
                         SessionLogger.release(rid)
-                    clear_timing_events(rid)
 
                 backstop_rid = job.request_id or SessionLogger.request_id.get() or ""
                 if backstop_rid:

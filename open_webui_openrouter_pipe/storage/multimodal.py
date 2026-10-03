@@ -405,7 +405,11 @@ def image_extension_for_mime(mime_type: str | None) -> str:
 def _icon_png_bytes(data: bytes) -> bytes:
     from PIL import Image
 
-    from ..media.image_conversion import open_upright
+    from ..media.image_conversion import (
+        DEEP_SINGLE_BAND_MODES,
+        _rescale_deep_single_band,
+        open_upright,
+    )
 
     measured = image_pixel_size(data)
     if measured is None:
@@ -420,6 +424,8 @@ def _icon_png_bytes(data: bytes) -> bytes:
                 raise _IconPixelBudgetExceeded
             image.load()
             image = open_upright(image)
+            if image.mode in DEEP_SINGLE_BAND_MODES:
+                image = _rescale_deep_single_band(image)
             if image.mode not in ("RGB", "RGBA"):
                 image = image.convert("RGBA")
             output = io.BytesIO()

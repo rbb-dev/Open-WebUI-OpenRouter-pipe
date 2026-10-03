@@ -1035,10 +1035,14 @@ def _tool_picture_verdict_gate(
     admitted: list[str] = []
     refused: list[tuple[str, str, str]] = []
     for url in kept:
-        if url_scheme(url) != "https" or names_an_owui_file_path(url):
+        if names_an_owui_file_path(url) or not is_http_or_https_url(url):
             admitted.append(url)
             continue
-        if verdicts is not None and verdicts.get(url) is True:
+        if verdicts is None:
+            if url_scheme(url) != "https":
+                admitted.append(url)
+                continue
+        elif verdicts.get(url) is True:
             admitted.append(url)
             continue
         refused.append((url, "could not be fetched, so it was not sent", "remote_unfetched"))

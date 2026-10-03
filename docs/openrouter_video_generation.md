@@ -2638,7 +2638,11 @@ Key files:
   in both catalogs keeps its chat context length, feature set, pricing, display
   name and capability flags alongside the video controls — but its tool-calling
   parameters are the video row's own, so `TOOL_CALLING_FILTER` does not apply to
-  it and such a model is invisible to a tool-calling filter. A model only in the
+  it and such a model is invisible to a tool-calling filter. A hybrid takes the
+  video row's description when the chat row publishes none of its own, and is
+  never free while merged, because `spec_derived_flags` stamps any spec carrying
+  a video contract `free: false`; both are the chat row's own values again once
+  it leaves the video catalog. A model only in the
   video catalog registers with the video row's own values. Whether a video model
   takes a picture is read from its `supported_frame_images` list, not from its
   mere presence in `/videos/models`: the `vision` feature and the
@@ -2661,8 +2665,9 @@ Key files:
   video catalog stops listing at all -- whether a sweep that publishes fewer
   rows, and whether the rows are gone because the endpoint was retired
   or because `ENABLE_VIDEO_GENERATION` was turned off after a successful fetch
-  -- is also returned to the chat catalog's own features, capability flags and
-  tool-calling parameters, and loses the video contract with them. The
+  -- is also returned to the chat catalog's own features, capability flags,
+  description, free-model status, architecture and tool-calling parameters,
+  and loses the video contract with them. The
   tool-calling parameters matter because they are the video endpoint's
   passthrough set and not the chat model's; a spec still carrying the video
   row's reads as tool-incapable to `TOOL_CALLING_FILTER` and to the request

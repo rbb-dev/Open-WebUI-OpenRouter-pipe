@@ -1,7 +1,7 @@
 """Coverage-focused tests for timing_logger.py.
 
 Targets missing lines: 86-87, 100, 103, 122-123, 154-158, 168-171, 185-186,
-219-220, 272-273, 287, 292-294, 428-443.
+219-220, 428-443.
 
 Tests:
 - _format_iso_utc exception path (lines 86-87)
@@ -11,10 +11,13 @@ Tests:
 - configure_timing_file failure to open (lines 168-171)
 - close_timing_file exception when closing (lines 185-186)
 - ensure_timing_file_configured close exception on path change (lines 219-220)
-- clear_timing_events (lines 272-273)
-- format_timing_jsonl empty events (line 287)
-- format_timing_jsonl malformed event exception (lines 292-294)
 - @timed async function with timing enabled (lines 428-443)
+
+Every assertion reads the valve's own output, the JSONL file named by
+`TIMING_LOG_FILE`, filtered by `request_id`. The per-request in-memory buffer these
+tests used to read is gone: it was written on every event with `ENABLE_TIMING_LOG` on
+and no production caller ever read it, so a test that read it was pinning a copy rather
+than the record.
 """
 # pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 
@@ -34,13 +37,22 @@ import pytest
 from open_webui_openrouter_pipe.core import timing_logger as tl
 
 
+def _file_events(path, request_id: str) -> list[dict[str, Any]]:
+    """The records `TIMING_LOG_FILE` holds for one request, in write order."""
+    if not path.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and json.loads(line).get("request_id") == request_id
+    ]
+
+
 @pytest.fixture(autouse=True)
 def _reset_timing_state():
     """Reset all timing logger global state before and after each test."""
     tl.close_timing_file()
     tl.clear_timing_context()
-    with tl._timing_lock:
-        tl._timing_events.clear()
     # Reset global file state
     with tl._timing_file_lock:
         tl._timing_file_handle = None
@@ -48,11 +60,10 @@ def _reset_timing_state():
     yield
     tl.close_timing_file()
     tl.clear_timing_context()
-    with tl._timing_lock:
-        tl._timing_events.clear()
     with tl._timing_file_lock:
         tl._timing_file_handle = None
         tl._timing_file_path = None
+
 
 
 class TestFormatIsoUtcExceptionPath:
@@ -96,7 +107,7 @@ class TestRecordEventEarlyReturns:
         tl._record_event(event)
 
         # No events should be recorded
-        assert tl.get_timing_events("req-disabled") == []
+        assert _file_events(path, "req-disabled") == []
         assert path.read_text() == ""
 
     def test_record_event_when_no_request_id(self, tmp_path):
@@ -138,18 +149,21 @@ class TestRecordEventWriteException:
         try:
             # This should not raise - exception is caught silently
             tl.timing_mark("test_mark")
-
-            # Event should still be added to in-memory buffer
-            events = tl.get_timing_events("req-write-error")
-            mark_events = [
-                event
-                for event in events
-                if event["event"] == "mark" and event["label"] == "test_mark"
-            ]
-            assert len(mark_events) == 1
         finally:
             with tl._timing_file_lock:
                 tl._timing_file_handle = original_handle
+
+        # The mark was offered and the write refused, so the request is recorded
+        # nowhere: there is no second copy of a line the file could not take.
+        assert mock_handle.write.call_count == 1, (
+            f"the mark was offered {mock_handle.write.call_count} times, so the arm is "
+            f"not exercising the swallowed write"
+        )
+        assert _file_events(path, "req-write-error") == [], (
+            f"the file holds {_file_events(path, 'req-write-error')!r} for a request whose "
+            f"only write raised"
+        )
+
 
 
 class TestConfigureTimingFileCloseExisting:
@@ -265,82 +279,6 @@ class TestEnsureTimingFileConfiguredCloseException:
         assert tl._timing_file_path.name == "second.jsonl"
 
 
-class TestClearTimingEvents:
-    """Test clear_timing_events function (lines 272-273)."""
-
-    def test_clear_timing_events_removes_request_events(self, tmp_path):
-        """clear_timing_events removes events for specified request."""
-        path = tmp_path / "timing.jsonl"
-        assert tl.configure_timing_file(str(path)) is True
-
-        # Add events for a request
-        tl.set_timing_context("req-clear", enabled=True)
-        tl.timing_mark("mark1")
-        tl.timing_mark("mark2")
-
-        # Verify events exist
-        events = tl.get_timing_events("req-clear")
-        assert len(events) == 2
-
-        # Clear events
-        tl.clear_timing_events("req-clear")
-
-        # Verify events are gone
-        events = tl.get_timing_events("req-clear")
-        assert events == []
-
-    def test_clear_timing_events_nonexistent_request(self):
-        """clear_timing_events handles non-existent request gracefully."""
-        # Should not raise
-        tl.clear_timing_events("nonexistent-request")
-
-        # Verify no events
-        events = tl.get_timing_events("nonexistent-request")
-        assert events == []
-
-
-class TestFormatTimingJsonl:
-    """Test format_timing_jsonl function (lines 287, 292-294)."""
-
-    def test_format_timing_jsonl_empty_events(self):
-        """format_timing_jsonl returns empty string when no events (line 287)."""
-        result = tl.format_timing_jsonl("nonexistent-request")
-        assert result == ""
-
-    def test_format_timing_jsonl_with_malformed_event(self, tmp_path):
-        """format_timing_jsonl skips malformed events (lines 292-294)."""
-        path = tmp_path / "timing.jsonl"
-        assert tl.configure_timing_file(str(path)) is True
-
-        # Add normal events
-        tl.set_timing_context("req-malformed", enabled=True)
-        tl.timing_mark("normal_mark")
-
-        # Manually inject a malformed event into the buffer
-        with tl._timing_lock:
-            buffer = tl._timing_events.get("req-malformed")
-            if buffer is not None:
-                # Add an object that can't be JSON serialized
-                class NonSerializable:
-                    pass
-
-                buffer.append({"label": "bad", "data": NonSerializable()})
-
-        result = tl.format_timing_jsonl("req-malformed")
-
-        # Should contain the normal mark but not crash
-        assert "normal_mark" in result
-        assert result.endswith("\n")
-
-        # Parse the valid lines
-        lines = [l for l in result.strip().split("\n") if l]
-        # At least one valid line (the normal_mark)
-        assert len(lines) >= 1
-        # Verify we can parse the valid event
-        valid_event = json.loads(lines[0])
-        assert valid_event["label"] == "normal_mark"
-
-
 class TestTimedAsyncFunction:
     """Test @timed decorator with async functions when enabled (lines 428-443)."""
 
@@ -360,9 +298,10 @@ class TestTimedAsyncFunction:
         result = asyncio.run(async_operation())
 
         assert result == "async_result"
+        tl.close_timing_file()
 
         # Check events
-        events = tl.get_timing_events("req-async")
+        events = _file_events(path, "req-async")
         assert len(events) == 2
 
         # First event is enter
@@ -392,8 +331,8 @@ class TestTimedAsyncFunction:
         assert result == "async_result"
 
         # No events recorded
-        events = tl.get_timing_events("req-async-disabled")
-        assert events == []
+        tl.close_timing_file()
+        assert _file_events(path, "req-async-disabled") == []
 
     def test_timed_async_function_with_exception(self, tmp_path):
         """@timed records exit even when async function raises."""
@@ -412,7 +351,8 @@ class TestTimedAsyncFunction:
             asyncio.run(async_operation_with_error())
 
         # Check events - should still have enter AND exit
-        events = tl.get_timing_events("req-async-exc")
+        tl.close_timing_file()
+        events = _file_events(path, "req-async-exc")
         assert len(events) == 2
         assert events[0]["event"] == "enter"
         assert events[1]["event"] == "exit"
@@ -438,7 +378,8 @@ class TestTimedSyncFunctionWithException:
             sync_operation_with_error()
 
         # Check events - should still have enter AND exit
-        events = tl.get_timing_events("req-sync-exc")
+        tl.close_timing_file()
+        events = _file_events(path, "req-sync-exc")
         sync_events = [
             event
             for event in events
@@ -464,7 +405,8 @@ class TestTimingScopeWithException:
                 raise ValueError("Scope error")
 
         # Check events - should still have enter AND exit
-        events = tl.get_timing_events("req-scope-exc")
+        tl.close_timing_file()
+        events = _file_events(path, "req-scope-exc")
         assert len(events) == 2
         assert events[0]["event"] == "enter"
         assert events[0]["label"] == "error_scope"
@@ -483,8 +425,9 @@ class TestTimingMarkIntegration:
 
         tl.set_timing_context("req-mark", enabled=True)
         tl.timing_mark("checkpoint_1")
+        tl.close_timing_file()
 
-        events = tl.get_timing_events("req-mark")
+        events = _file_events(path, "req-mark")
         assert len(events) == 1
 
         event = events[0]
@@ -498,11 +441,6 @@ class TestTimingMarkIntegration:
 class TestEdgeCases:
     """Edge case tests for additional coverage."""
 
-    def test_get_timing_events_nonexistent_request(self):
-        """get_timing_events returns empty list for unknown request."""
-        events = tl.get_timing_events("unknown-request-id")
-        assert events == []
-
     def test_multiple_requests_isolated(self, tmp_path):
         """Events from different requests are properly isolated."""
         path = tmp_path / "timing.jsonl"
@@ -515,10 +453,11 @@ class TestEdgeCases:
         # Request 2
         tl.set_timing_context("req-2", enabled=True)
         tl.timing_mark("mark_req2")
+        tl.close_timing_file()
 
         # Verify isolation
-        events_1 = tl.get_timing_events("req-1")
-        events_2 = tl.get_timing_events("req-2")
+        events_1 = _file_events(path, "req-1")
+        events_2 = _file_events(path, "req-2")
 
         assert len(events_1) == 1
         assert events_1[0]["label"] == "mark_req1"
@@ -539,8 +478,9 @@ class TestEdgeCases:
 
         result = my_test_function()
         assert result == 42
+        tl.close_timing_file()
 
-        events = tl.get_timing_events("req-label")
+        events = _file_events(path, "req-label")
         assert len(events) == 2
         # Label should contain function name
         assert "my_test_function" in events[0]["label"]
@@ -583,10 +523,10 @@ class TestTimingScopeContextManager:
             executed = True
 
         assert executed is True
+        tl.close_timing_file()
 
         # No events should be recorded
-        events = tl.get_timing_events("req-scope-disabled")
-        assert events == []
+        assert _file_events(path, "req-scope-disabled") == []
 
         # File should be empty
         assert path.read_text() == ""
@@ -601,8 +541,9 @@ class TestTimingScopeContextManager:
 
         with tl.timing_scope("my_scope"):
             pass  # Do something
+        tl.close_timing_file()
 
-        events = tl.get_timing_events("req-scope-enabled")
+        events = _file_events(path, "req-scope-enabled")
         # Should have enter and exit events
         assert len(events) == 2
         assert events[0]["event"] == "enter"
@@ -625,43 +566,14 @@ class TestTimingScopeContextManager:
         assert result == 42
 
 
-def test_timing_events_buffer_evicts_oldest_requests(monkeypatch):
-    """The in-memory _timing_events dict is bounded: beyond MAX_TIMING_REQUESTS
-    distinct requests the oldest are evicted, so it can't grow once-per-request
-    forever when ENABLE_TIMING_LOG is on (the JSONL file stays complete)."""
-    monkeypatch.setattr(tl, "MAX_TIMING_REQUESTS", 3)
-    with tl._timing_lock:
-        tl._timing_events.clear()
-
-    for i in range(10):
-        tl.set_timing_context(f"req-{i}", enabled=True)
-        tl._record_event(
-            tl.TimingEvent(ts=float(i), wall_ts=1234567890.0 + i, event="mark", label="x")
-        )
-
-    assert len(tl._timing_events) == 3, "buffer must stay bounded at MAX_TIMING_REQUESTS"
-    assert "req-9" in tl._timing_events, "most recent request must be retained"
-    assert "req-0" not in tl._timing_events, "oldest request must be evicted"
-
-
-def test_pipe_teardown_chain_emits_no_timing_events_under_active_context():
-    from open_webui_openrouter_pipe import Pipe
-
-    pipe = Pipe()
-    tl.set_timing_context("req-teardown-probe", enabled=True)
-    pipe.shutdown()
-    assert tl.get_timing_events("req-teardown-probe") == []
-
-
 async def _settle(seconds: float = 0.3) -> None:
     """Let the request's own closing frames finish writing before anything is read.
 
-    The residual the design bounds is written by `@timed` decorators whose `finally`
-    runs *after* the teardown that released the request. Reading the buffer the instant
-    the request returns therefore catches the frames still open at that moment, not the
-    ones the valve leaves behind. The designers measured at settle times 0.05/0.5/2.0 s
-    and got the same number at all three, so a short fixed settle is enough and does not
-    make the assertion a race.
+    The frames measured here are written by `@timed` decorators whose `finally` runs
+    *after* the teardown, so reading the file the instant the request returns catches the
+    spans still open at that moment and not the ones that close on the way out. The
+    designers measured at settle times 0.05/0.5/2.0 s and got the same number at all
+    three, so a short fixed settle is enough and does not make the assertion a race.
     """
     for _ in range(10):
         await asyncio.sleep(0)

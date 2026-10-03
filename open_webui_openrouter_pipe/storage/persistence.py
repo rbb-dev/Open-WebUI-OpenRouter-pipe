@@ -2519,12 +2519,20 @@ class ArtifactStore:
         return {}
 
     @timed
-    def _delete_artifacts_sync(self, artifact_ids: list[str], keep_message_id: str | None = None) -> set[str]:
+    def _delete_artifacts_sync(
+        self,
+        artifact_ids: list[str],
+        keep_message_id: str | None = None,
+        *,
+        purge_cache: bool = True,
+    ) -> set[str]:
         """Synchronously delete artifacts by ULID."""
         if not (artifact_ids and self._session_factory and self._item_model):
             return set()
         model = self._item_model
         kept: set[str] = set()
+        owned: list[tuple[str, str]] = []
+        client = getattr(self, "_redis_client", None)
         with _db_session(self._session_factory) as session:
             query = session.query(model).filter(model.id.in_(artifact_ids))
             if keep_message_id:
@@ -2533,9 +2541,54 @@ class ArtifactStore:
                     for (row_id,) in query.filter(model.message_id == keep_message_id).with_entities(model.id)
                 }
                 query = query.filter(model.message_id != keep_message_id)
+            if purge_cache and client:
+                owned_query = session.query(model.id, model.chat_id).filter(model.id.in_(artifact_ids))
+                if keep_message_id:
+                    owned_query = owned_query.filter(model.message_id != keep_message_id)
+                owned = [(row_id, chat_id) for row_id, chat_id in owned_query.all()]
             query.delete(synchronize_session=False)
             session.commit()
+        if owned:
+            self._schedule_cache_purge(owned)
         return kept
+
+    def _schedule_cache_purge(self, refs: list[tuple[str, str]]) -> None:
+        keys = [key for key in (self._redis_cache_key(chat_id, row_id) for row_id, chat_id in refs) if key]
+        if not keys:
+            return
+        loop = self._redis_valve_loop
+        owner = self._valves_owner
+        owner_loop = getattr(owner, "_redis_loop", None)
+        if (loop is None or loop.is_closed()) and owner_loop is not None and not owner_loop.is_closed():
+            loop = owner_loop
+        if loop is None or loop.is_closed():
+            self.logger.warning(
+                "Redis cache invalidation of %d deleted artifact row(s) could not be scheduled: no "
+                "event loop was resolved from the deleting thread, so their cache entries stay "
+                "readable until REDIS_CACHE_TTL_SECONDS expires them",
+                len(keys),
+            )
+            return
+        client = self._redis_client
+        if client is None:
+            return
+
+        async def _purge() -> None:
+            try:
+                await _await_if_needed(client.delete(*keys))
+            except Exception as exc:
+                self.logger.warning(
+                    "Redis cache invalidation of deleted artifact rows failed: %s", exc, exc_info=True
+                )
+
+        try:
+            asyncio.run_coroutine_threadsafe(_purge(), loop)
+        except Exception as exc:
+            self.logger.warning(
+                "Redis cache invalidation of deleted artifact rows could not be scheduled: %s",
+                exc,
+                exc_info=True,
+            )
 
     @timed
     async def _delete_artifacts(self, refs: list[tuple[str, str]], keep_message_id: str | None = None) -> bool:
@@ -2560,7 +2613,9 @@ class ArtifactStore:
             return False
 
         loop = asyncio.get_running_loop()
-        delete_call = functools.partial(self._delete_artifacts_sync, ids, keep_message_id)
+        delete_call = functools.partial(
+            self._delete_artifacts_sync, ids, keep_message_id, purge_cache=False
+        )
         kept: set[str] = set()
         try:
             async for attempt in _db_retryer():
@@ -3380,7 +3435,8 @@ class ArtifactStore:
                     await _await_if_needed(self._redis_client.delete(*keys))
                 except Exception as exc:
                     self.logger.warning(
-                        "Redis cache invalidation of temporary-chat artifacts failed (best-effort): %s",
+                        "Redis cache invalidation of temporary-chat artifacts failed, so no row "
+                        "is deleted on this pass; the next pass retries: %s",
                         exc, exc_info=True,
                     )
                     return purged, False
@@ -3418,7 +3474,8 @@ class ArtifactStore:
                     await _await_if_needed(self._redis_client.delete(*keys))
                 except Exception as exc:
                     self.logger.warning(
-                        "Redis cache invalidation of expired artifacts failed (best-effort): %s",
+                        "Redis cache invalidation of expired artifacts failed, so no row "
+                        "is deleted on this pass; the next pass retries: %s",
                         exc,
                         exc_info=True,
                     )

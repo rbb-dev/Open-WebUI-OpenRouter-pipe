@@ -1967,10 +1967,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=False,
         description=(
             "When True, record how long each internal step of a request takes. "
-            "Writes to TIMING_LOG_FILE path directly (not session archives); the per-request "
-            "in-memory copy of those events is released when the request ends - by its own "
-            "job completing, by its being refused before it enqueues, or by its being "
-            "discarded without running - so only the file output persists. "
+            "Writes to TIMING_LOG_FILE path directly (not session archives). "
             "Useful for performance profiling and debugging latency issues."
         ),
     )
@@ -2659,11 +2656,11 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     )
     AUTO_ATTACH_FUSION_FILTER: bool = Field(
         default=True,
-        description="Automatically attach the OpenRouter Fusion filter to the fusion models only — `openrouter/fusion`, `openrouter/fusion-flash`, and their `:tag` variant and `@preset/…` rows (so their panel/judge options appear in the Integrations menu). Never attaches to any other model. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. Auto-install off with this on — the install-by-hand mode — no longer detaches on a pass that finds no panel: the attached filter stays and the next catalog fetch tries again. Neither does a pass that could not install the panel because Open WebUI refused the write: the attached filter and the default it carried stay, and the install is tried again at the next catalog fetch.",
+        description="Automatically attach the OpenRouter Fusion filter to the fusion models only — `openrouter/fusion`, `openrouter/fusion-flash`, and their `:tag` variant and `:preset/…` rows (so their panel/judge options appear in the Integrations menu). Never attaches to any other model. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. Auto-install off with this on — the install-by-hand mode — no longer detaches on a pass that finds no panel: the attached filter stays and the next catalog fetch tries again. Neither does a pass that could not install the panel because Open WebUI refused the write: the attached filter and the default it carried stay, and the install is tried again at the next catalog fetch.",
     )
     AUTO_DEFAULT_FUSION_FILTER: bool = Field(
         default=True,
-        description="Mark the OpenRouter Fusion filter as a Default Filter on the fusion models (pre-enabled per chat) — including their `:tag` variant and `@preset/…` rows. Does NOT force Fusion to run — the per-user 'Always run Fusion' toggle is off by default. Reapplied on every catalogue or settings change; turning it off clears the default the pipe seeded, leaving the filter attached. A pass that cannot find the filter it was told to attach leaves the existing one in place and tries again at the next catalog fetch.",
+        description="Mark the OpenRouter Fusion filter as a Default Filter on the fusion models (pre-enabled per chat) — including their `:tag` variant and `:preset/…` rows. Does NOT force Fusion to run — the per-user 'Always run Fusion' toggle is off by default. Reapplied on every catalogue or settings change; turning it off clears the default the pipe seeded, leaving the filter attached. A pass that cannot find the filter it was told to attach leaves the existing one in place and tries again at the next catalog fetch.",
     )
     FUSION_BACKEND: Literal["openrouter", "internal"] = Field(
         default="internal",
@@ -2979,8 +2976,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "measure, which frame - 'first' or 'last' - is substituted for it. It also "
             "decides the frame when the seek to an in-range moment comes back empty, "
             "and the frame the pixel cap makes the pipe substitute for a refused one: "
-            "that substitute is a smaller copy of the frame the cap would not decode, "
-            "and the disclosure footer says so. On a model accepting only a first frame "
+            "that substitute is a smaller copy of one of that video's frames, read at "
+            "ffmpeg's long-edge bound rather than the size the cap refused, and the "
+            "disclosure footer says so. On a model accepting only a first frame "
             "the first frame is substituted there whatever this setting says, and the "
             "disclosure names it. "
             "A request that names a first or last frame directly gets that frame - "

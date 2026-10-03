@@ -2959,7 +2959,7 @@ async def test_delete_artifacts_tolerates_redis_error(pipe_instance) -> None:
             raise RuntimeError("redis down")
 
     store._redis_client = _BoomRedis()
-    store._delete_artifacts_sync = lambda _ids, _keep_message_id=None: set()  # type: ignore[assignment]
+    store._delete_artifacts_sync = lambda _ids, _keep_message_id=None, **_kwargs: set()  # type: ignore[assignment]
 
     await store._delete_artifacts([("chat", "id-1")])
 

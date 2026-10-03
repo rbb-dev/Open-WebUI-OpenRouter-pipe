@@ -538,6 +538,11 @@ _SIZE_PUBLISHED_LIST = (
     "exact pixels can be typed here."
 )
 
+_SIZE_TIER_LIST = (
+    "The output sizes this model publishes are all tiers, and the list {tier_control} "
+    "offers is the whole of them, so nothing outside that list can be typed here."
+)
+
 _SIZE_MEANING: dict[tuple[str, bool], tuple[str, str]] = {
     ("own", True): (_SIZE_TIER_CHECKED, _SIZE_PIXELS_WIN_WITH_TIERS),
     ("own", False): (_SIZE_TIER_CHECKED_NO_RATIO, _SIZE_PIXELS_WIN_WITH_TIERS_NO_RATIO),
@@ -587,11 +592,14 @@ def image_knob_text(name: str, spec: ImageModelFilterSpec) -> tuple[str, str]:
     title, description = IMAGE_KNOB_TITLES.get(name, (name, ""))
     if name != "size":
         return title, description
-    if any(
-        published == name
-        and not any(value in _SIZE_TIERS for value in values)
-        for published, values in spec.enums
-    ):
+    published = dict(spec.enums).get(name)
+    if published is not None:
+        ratio = renders_control(spec, "aspect_ratio")
+        if any(value in _SIZE_TIERS for value in published):
+            return title, (
+                f"{_SIZE_MEANING[('own', ratio)][0]} "
+                f"{_SIZE_TIER_LIST.format(tier_control=IMAGE_KNOB_TITLES[_drawn_tier_source(spec)][0])}"
+            )
         return title, _SIZE_PUBLISHED_LIST
     if any(published == name for published, _low, _high in spec.ranges):
         return title, _SIZE_PUBLISHED_BOUND

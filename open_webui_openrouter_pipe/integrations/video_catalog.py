@@ -196,23 +196,40 @@ async def _sweep_declared_input_modalities(
     ids = sorted(OpenRouterModelRegistry._video_catalog_norms)
     if not ids:
         return
-    known = 0
-    for norm_id in ids:
+    gate = asyncio.Semaphore(_MODALITY_FETCH_CONCURRENCY)
+    read: list[str] = []
+
+    async def _one(norm_id: str) -> bool:
         spec = OpenRouterModelRegistry.spec(norm_id)
         video_model = spec.get("video_model")
         if not isinstance(video_model, dict):
-            continue
+            return False
         wire_id = str(video_model.get("id") or "").strip()
         if not wire_id:
-            continue
+            return False
         try:
-            found = await client.model_modalities(wire_id)
+            async with gate:
+                found = await client.model_modalities(wire_id)
         except (TimeoutError, aiohttp.ClientError, OSError):
-            continue
+            return False
         if not found:
-            continue
+            return False
         video_model["input_modalities"] = list(found)
-        known += 1
+        read.append(wire_id)
+        return True
+
+    try:
+        async with asyncio.timeout(_VIDEO_SWEEP_BUDGET_SECONDS):
+            await asyncio.gather(*(_one(norm_id) for norm_id in ids))
+    except TimeoutError:
+        known = len(read)
+        logger.warning(
+            "The video modality sweep ran past %ds with %d of %d model(s) still unread; "
+            "those keep the input kinds they last published.",
+            _VIDEO_SWEEP_BUDGET_SECONDS, len(ids) - known, len(ids),
+        )
+    else:
+        known = len(read)
     if known < len(ids):
         logger.log(
             warn_level(_warned_video_catalog, "modalities"),

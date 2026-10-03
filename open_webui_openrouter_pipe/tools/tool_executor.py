@@ -39,7 +39,11 @@ from ..core.warn_latch import warn_level
 _OWUI_RESULT_WARN_COOLDOWN_S = 300.0
 _OWUI_RESULT_WARN_CAP = 256
 from ..storage.multimodal import ADDRESS_CHECK_BUDGET_SECONDS
-from ..storage.owui_files import is_temporary_chat, owui_file_content_url
+from ..storage.owui_files import (
+    is_linkable_chat,
+    is_temporary_chat,
+    owui_file_content_url,
+)
 from ..storage.persistence import generate_item_id
 from .tool_registry import OWUI_OWNS_KEY
 from .tool_schema import _advertised_root_params, _declared_parameter_names
@@ -602,7 +606,11 @@ class ToolExecutor:
                         tool_result=raw_result,
                         tool_type=tool_type,
                         direct_tool=is_direct_tool,
-                        metadata=context.metadata,
+                        metadata=(
+                            {**(context.metadata or {}), "chat_id": None, "message_id": None, "session_id": None}
+                            if context.fusion_inner
+                            else context.metadata
+                        ),
                         user=user_obj,
                     )
                     output_text = "" if processed_result is None else str(processed_result)
@@ -1208,12 +1216,40 @@ class ToolExecutor:
             )
             return None
 
+    async def _store_member_picture(
+        self, url: str, context: _ToolExecutionContext
+    ) -> str | None:
+        metadata = context.metadata or {}
+        if not is_linkable_chat(metadata.get("chat_id")):
+            return None
+        payload_chars = base64_data_url_payload_chars(url)
+        if payload_chars is None or not self._pipe._file_gateway.validate_base64_length(payload_chars):
+            return None
+        parsed = split_base64_data_url(url)
+        if parsed is None:
+            return None
+        _header, payload = parsed
+        mime_type = _mime_type_from_header(_header)
+        try:
+            raw = await _decode_data_entry(_compact_base64(payload))
+        except (binascii.Error, ValueError):
+            return None
+        stored = await self._upload_data_entry_safe(raw, mime_type, context)
+        if not isinstance(stored, str) or not stored:
+            return None
+        return owui_file_content_url(stored)
+
     async def _stored_picture_safe(self, url: str, context: _ToolExecutionContext) -> str:
         if _owui_store_tool_result_image is None:
             return url
         try:
             user_obj = await _resolved_user_obj(context)
-            stored = await _owui_store_tool_result_image(context.request, url, context.metadata, user_obj)
+            if context.fusion_inner:
+                stored = await self._store_member_picture(url, context)
+            else:
+                stored = await _owui_store_tool_result_image(
+                    context.request, url, context.metadata, user_obj
+                )
         except Exception:
             self.logger.debug("Could not store a tool's picture; it stays inline", exc_info=True)
             return url

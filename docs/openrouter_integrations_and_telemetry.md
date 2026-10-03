@@ -283,7 +283,7 @@ This is a per-model “master kill switch” for the pipe’s Open WebUI model m
 - Custom param: `disable_web_tools_default_on` (bool-ish)
 - Pipe behavior (when truthy):
   - The pipe will not seed OpenRouter Web Tools into `meta.defaultFilterIds` for that model, even when `AUTO_DEFAULT_WEB_TOOLS_FILTER=True`.
-  - A default the pipe had already seeded for that model is released on the next sync: the id is removed from `meta.defaultFilterIds` and the seeding latch is cleared in the same write, so the row is not rewritten on any sync after that. It comes back on its own if the parameter is later removed.
+  - A default the pipe had already seeded for that model is released on the next sync — that is, the next catalogue or settings change, or a worker restart: the id is removed from `meta.defaultFilterIds` and the seeding latch is cleared in the same write, so the row is not rewritten on any sync after that. It comes back on the next such sync if the parameter is later removed.
   - The OpenRouter Web Tools toggle may still be auto-attached if `AUTO_ATTACH_WEB_TOOLS_FILTER=True` and the model supports it — the release is of the *default*, never of the wiring, so the toggle stays in the Integrations menu to be switched back on.
 
 ### 2.12 `disable_direct_uploads_auto_attach` → preserve the Direct Uploads toggle wiring

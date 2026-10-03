@@ -1412,22 +1412,22 @@ def _render_user_valves_fields(spec: VideoFilterSpec) -> str:
 
 def _render_intent_inlet_block() -> str:
     """Inlet code that pushes user-set intent valves into request metadata.
-
-    The pipe consumer (`integrations/video.py`, `integrations/video_intent.py`)
-    reads ``__metadata__["openrouter_pipe"]["video_intent"]`` first and falls
-    back to the admin Valves when no key is set, so emitting None for an unset
-    user valve preserves the admin default.
     """
     return (
         "            intent_settings: dict[str, Any] = {}\n"
+        '            _enabled = getattr(user_valves, "VIDEO_INTENT_ENABLED", None)\n'
+        "            if _enabled is not None:\n"
+        '                intent_settings["enabled"] = _enabled\n'
+        "            _chosen = user_valves.model_fields_set\n"
         "            for _user_field, _meta_key in (\n"
-        '                ("VIDEO_INTENT_ENABLED", "enabled"),\n'
         '                ("VIDEO_INTENT_MAX_CLARIFICATIONS", "max_clarifications"),\n'
         '                ("VIDEO_INTENT_FRAME_EXTRACTION_INDEX", "frame_extraction_index"),\n'
         '                ("VIDEO_INTENT_CONFIRM_MODE", "confirm_mode"),\n'
         "            ):\n"
+        '                if _user_field not in _chosen:\n'
+        "                    continue\n"
         '                _value = getattr(user_valves, _user_field, None)\n'
-        '                if _value is not None:\n'
+        "                if _value is not None:\n"
         '                    intent_settings[_meta_key] = _value\n'
         '            if intent_settings:\n'
         '                pipe_meta["video_intent"] = intent_settings\n'
