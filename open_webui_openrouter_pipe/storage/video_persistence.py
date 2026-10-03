@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 from ..core.utils import _await_if_needed, _iter_kind_marker_spans
-from .owui_files import is_channel_chat, is_temporary_chat
+from .owui_files import channel_id_for_chat, is_channel_chat, is_temporary_chat
 
 
 def is_local_chat_id(chat_id: str | None) -> bool:
@@ -23,21 +23,21 @@ class VideoPersistence:
     def __init__(self, *, logger: Any) -> None:
         self.logger = logger
 
-    async def load_message_content(self, *, chat_id: str, message_id: str) -> str:
-        message = await self.load_message(chat_id=chat_id, message_id=message_id)
+    async def load_message_content(self, *, chat_id: str, message_id: str, user: Any = None) -> str:
+        message = await self.load_message(chat_id=chat_id, message_id=message_id, user=user)
         if isinstance(message, dict):
             value = message.get("content")
             return value if isinstance(value, str) else ""
         value = getattr(message, "content", "")
         return value if isinstance(value, str) else ""
 
-    async def load_message(self, *, chat_id: str, message_id: str) -> Any | None:
+    async def load_message(self, *, chat_id: str, message_id: str, user: Any = None) -> Any | None:
         if not chat_id or not message_id:
             return None
         if is_temporary_chat(chat_id):
             return None
         if is_channel_chat(chat_id):
-            return await self._load_channel_message(chat_id, message_id)
+            return await self._load_channel_message(chat_id, message_id, user)
         if is_local_chat_id(chat_id):
             return None
         try:
@@ -68,12 +68,50 @@ class VideoPersistence:
         content = getattr(message, "content", None)
         if not isinstance(content, str) or not _iter_kind_marker_spans(content, kind="videojob"):
             return False
-        from .owui_files import channel_id_for_chat
-
         channel_id = channel_id_for_chat(chat_id) or ""
         return str(getattr(message, "channel_id", "") or "") == channel_id
 
-    async def _load_channel_message(self, chat_id: str, message_id: str) -> Any | None:
+    async def _channel_reader_may_read(self, chat_id: str, user: Any) -> bool:
+        user_id = getattr(user, "id", None)
+        if not isinstance(user_id, str) or not user_id:
+            return False
+        channel_id = channel_id_for_chat(chat_id)
+        if not channel_id:
+            return False
+        try:
+            from open_webui.models.access_grants import AccessGrants
+            from open_webui.models.channels import Channels
+        except Exception:
+            self.logger.debug("Open WebUI channels model unavailable", exc_info=True)
+            return False
+        try:
+            channel = await _await_if_needed(Channels.get_channel_by_id(channel_id))
+        except Exception:
+            self.logger.debug("channel row unreadable", exc_info=True)
+            return False
+        if channel is None:
+            return False
+        if getattr(channel, "type", "") in ("group", "dm"):
+            try:
+                return bool(
+                    await _await_if_needed(Channels.is_user_channel_member(channel.id, user_id))
+                )
+            except Exception:
+                self.logger.debug("channel membership unreadable", exc_info=True)
+                return False
+        if getattr(user, "role", None) == "admin":
+            return True
+        try:
+            return bool(await _await_if_needed(AccessGrants.has_access(
+                user_id=user_id, resource_type="channel", resource_id=channel.id,
+                permission="read")))
+        except Exception:
+            self.logger.debug("channel grant unreadable", exc_info=True)
+            return False
+
+    async def _load_channel_message(self, chat_id: str, message_id: str, user: Any = None) -> Any | None:
+        if not await self._channel_reader_may_read(chat_id, user):
+            return None
         try:
             from open_webui.models.messages import Messages  # type: ignore[import-not-found] # noqa: I001
         except Exception:

@@ -359,9 +359,20 @@ def test_every_declared_absence_is_actually_imported_under_a_guard() -> None:
 # than through bare reflection. Guarded, so `is_optional` is True, and the symbol resolves
 # in the installed Open WebUI (`internal/db.py:125`), so it needs no _NEWER_THAN_OUR_FLOOR
 # entry: the fallback for a host that cannot supply it is the bare reflection.
-# Measured on this merged tree (`len(_IMPORTS)` after the change), not carried over: the 78
-# above is B918's own entry on this tree.
-_EXPECTED_SEAM_IMPORTS = 79
+# 79 -> 81 (H3588-1): the channel-turn read guard in `VideoPersistence` asks Open WebUI's
+# own channel predicate before it reads a stored turn --
+# `Channels.get_channel_by_id`, `Channels.is_user_channel_member` and
+# `AccessGrants.has_access(resource_type="channel", permission="read")` -- so the pipe
+# reaches two more Open WebUI modules (`open_webui.models.channels` and
+# `open_webui.models.access_grants`). Both are named imports inside the guard's own
+# guarded `try`, so they are the guarded kind and carry no `_NEWER_THAN_OUR_FLOOR` row.
+# Reading either with a `getattr(..., None)` default would have left this count unchanged
+# and turned the guard into a silent "yes" on a host that cannot supply the models it
+# exists to ask -- the direction this count cannot see. The hoisted `channel_id_for_chat`
+# comes from the pipe's own `.owui_files`, so it adds no entry.
+# Measured on this merged tree (`len(_IMPORTS)` after the change), not carried over: the 79
+# above is B918's and B550's entries on this tree.
+_EXPECTED_SEAM_IMPORTS = 81
 
 
 def test_seam_checklist_covers_every_open_webui_import() -> None:

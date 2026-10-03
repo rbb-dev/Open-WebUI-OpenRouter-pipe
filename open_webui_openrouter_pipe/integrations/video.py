@@ -918,7 +918,7 @@ class VideoGenerationAdapter:
                 message_lock = None  # type: ignore[assignment]
                 return await self._await_existing_task(existing, event_emitter, outcome_sink)
 
-            persisted = await self._persistence.load_message_content(chat_id=chat_id, message_id=message_id)
+            persisted = await self._persistence.load_message_content(chat_id=chat_id, message_id=message_id, user=user_obj)
             if self._looks_like_final_video_content(persisted):
                 await self._emit_completion(event_emitter, persisted)
                 return persisted

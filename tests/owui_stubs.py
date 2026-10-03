@@ -61,6 +61,17 @@ def _install_open_webui_stubs() -> None:
     models_mod = cast(Any, _ensure_module("open_webui.models.models"))
     files_mod = cast(Any, _ensure_module("open_webui.models.files"))
     users_mod = cast(Any, _ensure_module("open_webui.models.users"))
+    # `open_webui.models` carries `__path__ = []` above, so a submodule that is not
+    # registered here is unimportable in-suite. `channels` and `access_grants` are what
+    # the pipe's channel-turn read guard closes over; without these registrations its
+    # own import fails and EVERY channel read refuses, which is indistinguishable from
+    # a broken fix.
+    channels_mod = cast(Any, _ensure_module("open_webui.models.channels"))
+    channels_mod.Channels = types.SimpleNamespace(
+        get_channel_by_id=None, is_user_channel_member=None
+    )
+    grants_mod = cast(Any, _ensure_module("open_webui.models.access_grants"))
+    grants_mod.AccessGrants = types.SimpleNamespace(has_access=None)
 
     routers_pkg = cast(Any, _ensure_module("open_webui.routers"))
     routers_pkg.__path__ = []

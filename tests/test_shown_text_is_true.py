@@ -3319,7 +3319,7 @@ async def _video_withheld_run(
     from open_webui_openrouter_pipe.core.config import EncryptedStr
 
     class _NoPersistence:
-        async def load_message_content(self, *, chat_id: str, message_id: str) -> str:
+        async def load_message_content(self, *, chat_id: str, message_id: str, user: Any = None) -> str:
             return ""
 
     class _RefusingClient:

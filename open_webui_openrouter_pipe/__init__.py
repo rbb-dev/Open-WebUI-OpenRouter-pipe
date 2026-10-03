@@ -106,6 +106,7 @@ if TYPE_CHECKING:
     from .storage.owui_files import (
         extract_internal_file_id,
         is_internal_file_url,
+        names_a_hostless_owui_file_path,
         names_an_owui_file_path,
     )
     from .storage.persistence import (
@@ -226,6 +227,7 @@ __all__ = [
     "generate_item_id",
     "is_internal_file_url",
     "merge_usage_stats",
+    "names_a_hostless_owui_file_path",
     "names_an_owui_file_path",
     "normalize_persisted_item",
     "open_webui_runs_the_calls",
@@ -333,6 +335,7 @@ _LAZY_IMPORTS = {
     "_guess_image_mime_type": (".storage.multimodal", "_guess_image_mime_type"),
     "_extract_openrouter_og_image": (".storage.multimodal", "_extract_openrouter_og_image"),
     "is_internal_file_url": (".storage.owui_files", "is_internal_file_url"),
+    "names_a_hostless_owui_file_path": (".storage.owui_files", "names_a_hostless_owui_file_path"),
     "names_an_owui_file_path": (".storage.owui_files", "names_an_owui_file_path"),
 
     # Tools

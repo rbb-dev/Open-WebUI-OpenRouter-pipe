@@ -389,6 +389,12 @@ class UpdateService:
                 return {"mode": "bundle", "compressed": False}
         return {"mode": "package", "compressed": False}
 
+    def _require_bundle_install(self, row: Any) -> None:
+        if self.detect_mode(getattr(row, "content", "") or "")["mode"] != "bundle":
+            raise UpdateError(
+                "package_mode", "package/stub installs update via the pinned requirement"
+            )
+
     def _require_vetting(self) -> Any:
         vetting = getattr(self._pipe(), "_multimodal_handler", None)
         if vetting is None:
@@ -1243,10 +1249,7 @@ class UpdateService:
             try:
                 row = await self._row()
                 mode = self.detect_mode(getattr(row, "content", "") or "")
-                if mode["mode"] != "bundle":
-                    raise UpdateError(
-                        "package_mode", "package/stub installs update via the pinned requirement"
-                    )
+                self._require_bundle_install(row)
                 rev = await self._rev_guard(args.get("rev"))
                 snap = await self.check(force=True)
                 latest = snap.get("latest")
@@ -1298,6 +1301,7 @@ class UpdateService:
             try:
                 rev = await self._rev_guard(args.get("rev"))
                 row = await self._row()
+                self._require_bundle_install(row)
                 file_id = str(args.get("file_id") or "")
                 try:
                     records = await self._snapshot_records()

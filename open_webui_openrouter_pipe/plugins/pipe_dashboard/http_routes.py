@@ -187,11 +187,11 @@ def _consume_task_exception(task: asyncio.Task) -> None:
 
 async def bearer_user(request: Request) -> Any:
     from fastapi import HTTPException
+    from fastapi.security.utils import get_authorization_scheme_param
 
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
+    scheme, token = get_authorization_scheme_param(request.headers.get("Authorization"))
+    if not token or scheme.lower() != "bearer":
         raise HTTPException(status_code=401)
-    token = auth[len("Bearer "):]
     try:
         from open_webui.env import WEBUI_AUTH_TRUSTED_EMAIL_HEADER
         from open_webui.models.users import Users

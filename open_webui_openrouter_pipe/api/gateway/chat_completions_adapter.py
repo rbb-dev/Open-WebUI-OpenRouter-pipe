@@ -255,6 +255,35 @@ class ChatCompletionsAdapter:
             for block in content:
                 if not isinstance(block, dict):
                     continue
+                if block.get("type") == "image_url":
+                    image_value = block.get("image_url")
+                    picture_value = (
+                        image_value.get("url") if isinstance(image_value, dict) else image_value
+                    )
+                    if not isinstance(picture_value, str) or not picture_value.strip():
+                        continue
+                    picture_value = picture_value.strip()
+                    if not names_an_owui_file_path(picture_value):
+                        continue
+                    try:
+                        inlined = await self._pipe._file_gateway.inline_internal_file_url(
+                            picture_value, chunk_size=chunk_size, max_bytes=max_bytes, user=user,
+                        )
+                    except RequiredInternalFileError:
+                        raise
+                    except Exception as exc:
+                        raise RequiredInternalFileError(
+                            "A referenced picture could not be prepared for the provider.", kind="image",
+                        ) from exc
+                    if not inlined:
+                        raise RequiredInternalFileError(
+                            "A referenced picture could not be prepared for the provider.", kind="image",
+                        )
+                    if isinstance(image_value, dict):
+                        image_value["url"] = inlined.data_url
+                    else:
+                        block["image_url"] = inlined.data_url
+                    continue
                 if block.get("type") != "file":
                     continue
                 file_obj = block.get("file")

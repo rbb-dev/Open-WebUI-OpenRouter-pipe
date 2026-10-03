@@ -132,6 +132,19 @@ async def test_bearer_pending_role_401(monkeypatch):
         await http_routes.bearer_user(_req(headers={"Authorization": "Bearer x"}))
 
 
+#: A JWT-shaped token: base64url segments carrying upper and lower case, digits, `-`
+#: and `_`. Every downstream fixture (`ab3-xyz_123`) is all-lowercase, and
+#: `tok.lower() == tok` holds for those, so they cannot demonstrate that a scheme
+#: comparison which lowercases the whole header also corrupts the credentials. A
+#: lowercased base64url signature never verifies, so this token is the one that does.
+_JWT_SHAPED = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+    ".eyJpZCI6IkFCQ0QiLCJyb2xlIjoiYWRtaW4ifQ"
+    ".SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+)
+assert _JWT_SHAPED.lower() != _JWT_SHAPED
+
+
 def test_ensure_route_before_spa_moves_spa_last():
     spa = SimpleNamespace(name="spa-static-files")
     other = SimpleNamespace(name="api")

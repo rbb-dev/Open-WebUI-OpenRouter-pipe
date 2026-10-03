@@ -170,7 +170,7 @@ class _MemoryPersistence:
         self.persisted: list[str] = []
         self.stored: list[str] = []
 
-    async def load_message_content(self, *, chat_id: str, message_id: str) -> str:
+    async def load_message_content(self, *, chat_id: str, message_id: str, user: Any = None) -> str:
         return self.content
 
     async def store_video_file_from_path(self, **kwargs) -> str:
@@ -3472,7 +3472,7 @@ class _Row:
     def __init__(self) -> None:
         self.content = ""
 
-    async def load(self, *, chat_id: str, message_id: str) -> str:
+    async def load(self, *, chat_id: str, message_id: str, user: Any = None) -> str:
         if chat_id.startswith(("temporary:", "local:", "channel:")):
             return ""
         return self.content

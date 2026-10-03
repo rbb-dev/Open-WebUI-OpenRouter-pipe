@@ -527,7 +527,7 @@ async def test_generate_puts_back_what_was_withheld_when_it_resumes_a_running_jo
     )
 
     class _Persistence:
-        async def load_message_content(self, *, chat_id: str, message_id: str) -> str:
+        async def load_message_content(self, *, chat_id: str, message_id: str, user: Any = None) -> str:
             return stored
 
     class _Client:

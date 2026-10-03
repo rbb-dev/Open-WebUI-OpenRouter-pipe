@@ -1,8 +1,4 @@
 """Authorization chokepoint for the pipe_dashboard dashboard and actions.
-
-Reuses OWUI's own access decision with no access logic composed here:
-read (view) via ``check_model_access``, write (operate) via OWUI's router
-write-formula, and the ``{user, admin}`` role gate via ``get_verified_user``.
 """
 
 from __future__ import annotations
@@ -136,7 +132,17 @@ async def _authorized(
             model = await o.Models.get_model_by_id(mid)
         if permission == "read":
             await o.check_model_access(user, model, bypass_filter=o.BYPASS_MODEL)
-            return True
+            if o.BYPASS_MODEL or (user.role == "admin" and o.BYPASS_ADMIN):
+                return True
+            if model is None:
+                return False
+            if user.role != "admin":
+                return True
+            if user.id == model.user_id:
+                return True
+            return await o.AccessGrants.has_access(
+                user_id=user.id, resource_type="model", resource_id=mid, permission="read",
+            )
         if model is None:
             return False
         if user.role == "admin" and o.BYPASS_ADMIN:

@@ -100,9 +100,11 @@ from ..storage.multimodal import (
     resolve_download_type,
 )
 from ..storage.owui_files import (
+    _INTERNAL_FILE_SUBSTRING,
     InlineFileTooLargeError,
     extract_internal_file_id,
     is_temporary_chat,
+    names_a_hostless_owui_file_path,
     names_an_owui_file_path,
 )
 
@@ -123,7 +125,6 @@ _TOOL_OUTPUT_PRUNE_HEAD_CHARS = 256
 _TOOL_OUTPUT_PRUNE_TAIL_CHARS = 128
 
 _PROSE_KEYS = frozenset({"text", "input_text", "output_text", "summary_text", "content"})
-_INTERNAL_FILE_PATH = "/api/v1/files/"
 
 _ARTIFACT_GROUP_CONCURRENCY = 8
 
@@ -963,14 +964,14 @@ def _tool_picture_gate(
     for url in pictures:
         if (
             is_cleartext_http_url(url)
-            and not names_an_owui_file_path(url)
+            and not names_a_hostless_owui_file_path(url)
             and not allow_insecure(url)
         ):
             refused.append((url, ("served over plain HTTP, which is blocked by security policy; "
                                   "set ALLOW_INSECURE_HTTP and list the host in "
                                   "ALLOW_INSECURE_HTTP_HOSTS to permit it"), "insecure_http"))
             continue
-        if not (url_scheme(url) in ("data", "http", "https") or names_an_owui_file_path(url)):
+        if not (url_scheme(url) in ("data", "http", "https") or names_a_hostless_owui_file_path(url)):
             refused.append((url, "not a link the pipe can resolve into an image", "unusable_link"))
             continue
         if is_inline_data_url(url):
@@ -999,7 +1000,7 @@ async def _tool_picture_address_gate(
     admitted: list[str] = []
     refused: list[tuple[str, str, str]] = []
     for url in pictures:
-        if not (is_http_or_https_url(url) and not names_an_owui_file_path(url)):
+        if not (is_http_or_https_url(url) and not names_a_hostless_owui_file_path(url)):
             admitted.append(url)
             continue
         if seen is not None and url in seen:
@@ -1035,7 +1036,7 @@ def _tool_picture_verdict_gate(
     admitted: list[str] = []
     refused: list[tuple[str, str, str]] = []
     for url in kept:
-        if names_an_owui_file_path(url) or not is_http_or_https_url(url):
+        if names_a_hostless_owui_file_path(url) or not is_http_or_https_url(url):
             admitted.append(url)
             continue
         if verdicts is None:
@@ -1089,11 +1090,11 @@ async def _tool_picture_gate_with_address(
         )
         return [
             url for url in kept
-            if not (is_http_or_https_url(url) and not names_an_owui_file_path(url))
+            if not (is_http_or_https_url(url) and not names_a_hostless_owui_file_path(url))
         ], refused + [
             (url, "could not be fetched, so it was not sent", "remote_unfetched")
             for url in kept
-            if is_http_or_https_url(url) and not names_an_owui_file_path(url)
+            if is_http_or_https_url(url) and not names_a_hostless_owui_file_path(url)
         ]
     kept, refused = _tool_picture_gate(
         pictures,
@@ -2710,9 +2711,12 @@ async def transform_messages_to_input(
 
                 def _carries_url(value: Any) -> bool:
                     if isinstance(value, str):
+                        scheme = url_scheme(value)
                         return (
-                            value.startswith(("http://", "https://", "ftp://", "gopher://", "//"))
-                            or _INTERNAL_FILE_PATH in value
+                            scheme in ("http", "https", "ftp", "gopher")
+                            or (is_absolute_url(value) and not scheme)
+                            or names_an_owui_file_path(value)
+                            or _INTERNAL_FILE_SUBSTRING in value.casefold()
                         )
                     if isinstance(value, dict):
                         return any(

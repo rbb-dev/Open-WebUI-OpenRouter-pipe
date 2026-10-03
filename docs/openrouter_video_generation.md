@@ -2100,7 +2100,9 @@ the final success/failure content (a full replacement, not an append),
 so the pending marker is cleanly replaced — no flash, no duplication.
 
 The marker is keyed on the assistant `message_id`, so only an action that
-re-invokes the pipe *under the same message id* reaches the resume path.
+re-invokes the pipe *under the same message id* reaches the resume path. The
+read behind the marker is authorised too: for a `channel:` chat the requester
+must be admitted to that channel before the stored turn is read at all.
 Open WebUI's **Continue Response** does (it re-sends the existing
 assistant message id); **Regenerate** does not — it mints a fresh
 `uuid4` as a sibling under the same user message, so it starts a new,
@@ -2109,7 +2111,10 @@ separately billed job.
 Every time `pipe()` is invoked for a video chat:
 
 1. The adapter looks up the assistant message and scans for an existing
-   marker. The markers it scans for are ones the pipe itself wrote: every
+   marker. For a `channel:` chat that lookup is authorised against the
+   channel first, against Open WebUI's own predicate: a requester the
+   channel does not admit reads nothing, and the turn starts a new job
+   instead. The markers it scans for are ones the pipe itself wrote: every
    `videojob` marker is serialized by the pipe from a job id OpenRouter
    returned, on a line of its own, and free text interpolated into a rendered
    block beside it is whitespace-flattened onto a single line, so no line of
@@ -2150,7 +2155,9 @@ What does NOT survive:
 - **Chats with no stored row** (chat IDs starting with `temporary:`, `local:` or `channel:`): Open WebUI does
   not persist these to chat storage, so markers can't be written. The
   on-submit `'message'` emit is skipped for all three. `local:` is Open WebUI's legacy
-  spelling of `temporary:`; `channel:` is an ordinary channel invocation, not an edge case.
+  spelling of `temporary:`; `channel:` is an ordinary channel invocation, not an edge case —
+  it is the one that *is* recoverable, and a channel resume additionally requires the
+  requester to be admitted to that channel.
   They complete in-process but aren't recoverable across process
   restarts. What is lost is the chat's own message history, and nothing
   else: a generated video in a `channel:` conversation **is**
@@ -2636,7 +2643,8 @@ Key files:
   — installs filter rows in OWUI Functions table.
 - [`storage/video_persistence.py`](../open_webui_openrouter_pipe/storage/video_persistence.py)
   — thin resume-path helper that reads the persisted chat message to
-  detect prior `videojob` markers.
+  detect prior `videojob` markers; a `channel:` read is authorised
+  against the channel first.
 - [`storage/multimodal.py`](../open_webui_openrouter_pipe/storage/multimodal.py)
   — `_download_remote_url_streaming`: the size- and type-bounded download
   that fetches the finished clip. Video generation is its only caller; the

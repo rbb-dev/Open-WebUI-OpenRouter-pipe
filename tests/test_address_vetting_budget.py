@@ -257,7 +257,7 @@ async def test_the_deployment_wide_slot_is_taken_after_the_addresses_are_resolve
 
 
 class _NoPersistence:
-    async def load_message_content(self, *, chat_id: str, message_id: str) -> str:
+    async def load_message_content(self, *, chat_id: str, message_id: str, user: Any = None) -> str:
         return ""
 
 

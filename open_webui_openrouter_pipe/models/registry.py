@@ -616,6 +616,7 @@ class OpenRouterModelRegistry:
                     cls._zdr_model_ids = None
                     for norm_id, spec in cls._specs.items():
                         cls._stamp_zdr_capable(spec, norm_id, None, cls._specs)
+                    cls._enriched_cache = None
                 logger.warning(
                     "OpenRouter catalog refresh failed (%s). Serving %d cached model(s).",
                     exc,

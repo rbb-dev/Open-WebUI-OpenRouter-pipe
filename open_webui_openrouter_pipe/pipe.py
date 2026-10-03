@@ -4075,6 +4075,7 @@ class Pipe:
             OpenRouterModelRegistry._models,
             OpenRouterModelRegistry._specs,
             OpenRouterModelRegistry._ZDR_KEY.get(),
+            OpenRouterModelRegistry._roster_in_force(),
             valves.MODEL_ID,
             valves.VARIANT_MODELS,
             valves.FREE_MODEL_FILTER,

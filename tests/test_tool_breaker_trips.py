@@ -1119,7 +1119,7 @@ async def test_an_image_request_refused_before_it_is_sent_neither_counts_nor_cle
 
 
 class _VideoMemoryPersistence:
-    async def load_message_content(self, *, chat_id: str, message_id: str) -> str:
+    async def load_message_content(self, *, chat_id: str, message_id: str, user: Any = None) -> str:
         return ""
 
 

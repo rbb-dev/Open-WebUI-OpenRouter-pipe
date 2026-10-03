@@ -603,6 +603,7 @@ class StreamingHandler:
         continuation_newline_pending = bool(body._continues_after_marker)
         refusal_pending: list[str] = []
         continues_after_text = not continuation_newline_pending and bool((CONTINUED_REPLY.get() or "").strip())
+        continues_reply = continuation_newline_pending or continues_after_text
         if event_emitter is None:
             event_emitter = _wrap_event_emitter(None)
 
@@ -1992,6 +1993,11 @@ class StreamingHandler:
                 continuation_newline_pending = False
                 return lead
 
+            def _block_lead(current_text: str) -> str:
+                if not (current_text or continues_reply):
+                    return ""
+                return _continuation_lead(current_text) or "\n\n"
+
             async def _append_assistant_hidden_markers(current_text: str, markers: list[str]) -> str:
                 if not markers:
                     return current_text
@@ -2155,7 +2161,7 @@ class StreamingHandler:
             if _release_armed:
                 self._pipe._artifact_store._reply_memory.release(chat_id, message_id)
             if api_hold_key:
-                self._pipe._artifact_store._api_reply_memory.release("", api_hold_key)
+                self._pipe._artifact_store._api_reply_memory.release(persist_chat_id, persist_message_id)
             raise
 
         try:
@@ -2548,10 +2554,7 @@ class StreamingHandler:
                                         "data": {"description": "Responding to the user…"},
                                     }
                                 )
-                            if assistant_message:
-                                normalized_refusal = (
-                                    _continuation_lead(assistant_message) or "\n\n"
-                                ) + normalized_refusal
+                            normalized_refusal = _block_lead(assistant_message) + normalized_refusal
                             assistant_message += normalized_refusal
                             if not fusion_armed:
                                 await _open_message()
@@ -2829,10 +2832,7 @@ class StreamingHandler:
                                                 "data": {"description": "Responding to the user…"},
                                             }
                                         )
-                                    if assistant_message:
-                                        published = (
-                                            _continuation_lead(assistant_message) or "\n\n"
-                                        ) + published
+                                    published = _block_lead(assistant_message) + published
                                     assistant_message += published
                                     if not fusion_armed:
                                         await _open_message()
@@ -4731,7 +4731,7 @@ class StreamingHandler:
                                 ]
                             _kept.append(_fusion_html)
                             _payload: dict[str, object] = {"embeds": _kept}
-                            if _content:
+                            if _content and not open_webui_keeps_stored_output:
                                 _payload["content"] = _content
                             await _chats_upsert(
                                 resolved_chat_id, resolved_message_id, _payload

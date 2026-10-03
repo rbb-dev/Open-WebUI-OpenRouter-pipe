@@ -273,6 +273,8 @@ streaming panel deltas, the cards simply fill in at completion as before.
   not live.
 - A **browser close** mid-run does not abort the deliberation: Open WebUI runs it as a detached task, so it
   finishes server-side and the full panel + answer are persisted; reopening the chat shows the finished result.
+  On a **Continue** of that answer the panel is added to the stored row and the stored answer itself is left to
+  Open WebUI, which holds the prefix this generation does not carry.
 - A mid-stream **socket drop** has no live replay; reloading restores the complete panel from the persisted state.
 - A Fusion answer cut off by a length or provider cap is a **finished** run, not an interruption: the footer, the clock and the cost render exactly as they do for a completed turn.
 - A **dropped connection or a raised tool** is the other way round, and is not a finished run: the turn wrote no

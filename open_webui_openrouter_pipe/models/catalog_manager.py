@@ -448,6 +448,8 @@ _SYNC_RETRY_FLOOR_SECONDS = 60.0
 
 _ICON_SWEEP_BUDGET_SECONDS = 45
 
+_PROVIDER_OVERLAY_BUDGET_SECONDS = 45
+
 
 def _web_tools_owned(
     pipe_meta: dict,
@@ -1499,10 +1501,12 @@ class ModelCatalogManager:
 
         semaphore = asyncio.Semaphore(10)
         results: dict[str, dict[str, Any]] = {}
+        completed: set[str] = set()
 
         async def _fetch_one(slug: str) -> None:
             async with semaphore:
                 payload = await self._fetch_model_endpoints(session, slug)
+            completed.add(slug)
             if payload is None:
                 return
             data = payload.get("data")
@@ -1553,7 +1557,23 @@ class ModelCatalogManager:
                 },
             }
 
-        await asyncio.gather(*(_fetch_one(slug) for slug in unique), return_exceptions=True)
+        try:
+            async with asyncio.timeout(_PROVIDER_OVERLAY_BUDGET_SECONDS):
+                await asyncio.gather(
+                    *(_fetch_one(slug) for slug in unique),
+                    return_exceptions=True,
+                )
+        except TimeoutError:
+            abandoned = frozenset(s for s in unique if s not in completed)
+            self.logger.warning(
+                "The provider routing endpoint sweep ran past %ds with %d of %d model(s) "
+                "still unfinished; those keep whatever provider data they already had and "
+                "the next pass retries.",
+                _PROVIDER_OVERLAY_BUDGET_SECONDS,
+                len(abandoned),
+                len(unique),
+            )
+            self._provider_overlay_skipped_slugs = skipped | abandoned
         return results
 
     def _merge_provider_overlay(

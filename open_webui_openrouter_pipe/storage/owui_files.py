@@ -694,6 +694,24 @@ def names_an_owui_file_path(url: Any) -> bool:
     return not is_absolute_url(url) and _INTERNAL_FILE_SUBSTRING in url
 
 
+def _picture_reference(block: Any) -> str | None:
+    if not isinstance(block, dict):
+        return None
+    holder = block.get("image_url")
+    url = holder.get("url") if isinstance(holder, dict) else holder
+    if isinstance(url, str) and url.strip():
+        return url.strip()
+    return None
+
+
+def names_a_hostless_owui_file_path(url: Any) -> bool:
+    if not isinstance(url, str) or is_inline_data_url(url):
+        return False
+    if is_absolute_url(url):
+        return False
+    return _INTERNAL_FILE_PATH_RE.match(url_path(url).casefold()) is not None
+
+
 _warned_reference_sizes: set[str] = set()
 
 
@@ -746,15 +764,20 @@ def _names_an_internal_reference(input_items: Any) -> bool:
     for item in input_items if isinstance(input_items, list) else ():
         if not isinstance(item, dict):
             continue
+        if item.get("type") in ("input_image", "image_url"):
+            url = _picture_reference(item)
+            if url is not None and names_an_owui_file_path(url):
+                return True
+            continue
         parts = item.get("output") if item.get("type") == "function_call_output" else item.get("content")
         if not isinstance(parts, list):
             continue
         for part in parts:
             if not isinstance(part, dict):
                 continue
-            if part.get("type") == "input_image":
-                url = part.get("image_url")
-                if isinstance(url, str) and url.strip() and names_an_owui_file_path(url.strip()):
+            if part.get("type") in ("input_image", "image_url"):
+                url = _picture_reference(part)
+                if url is not None and names_an_owui_file_path(url):
                     return True
                 continue
             if part.get("type") != "input_file":
@@ -1112,10 +1135,11 @@ class OwuiFileGateway:
             return request_body
 
         async def _inline_picture(part: dict[str, Any]) -> None:
-            image_url = part.get("image_url")
-            if not (isinstance(image_url, str) and names_an_owui_file_path(image_url.strip())):
+            holder = part.get("image_url")
+            image_url = _picture_reference(part)
+            if image_url is None or not names_an_owui_file_path(image_url):
                 return
-            picture_id = extract_internal_file_id(image_url.strip())
+            picture_id = extract_internal_file_id(image_url)
             inlined = (
                 await self.inline_owui_file_id(picture_id, chunk_size=chunk_size, max_bytes=max_bytes, user=user)
                 if picture_id
@@ -1127,7 +1151,10 @@ class OwuiFileGateway:
                     f"available in Open WebUI storage.",
                     kind="image",
                 )
-            part["image_url"] = inlined.data_url
+            if isinstance(holder, dict):
+                holder["url"] = inlined.data_url
+            else:
+                part["image_url"] = inlined.data_url
 
         if not _names_an_internal_reference(input_items):
             return {**request_body, "input": list(input_items)}
@@ -1137,8 +1164,11 @@ class OwuiFileGateway:
                 continue
             if item.get("type") == "function_call_output" and isinstance(item.get("output"), list):
                 for part in item["output"]:
-                    if isinstance(part, dict) and part.get("type") == "input_image":
+                    if isinstance(part, dict) and part.get("type") in ("input_image", "image_url"):
                         await _inline_picture(part)
+                continue
+            if item.get("type") in ("input_image", "image_url"):
+                await _inline_picture(item)
                 continue
             content = item.get("content")
             if not isinstance(content, list) or not content:
@@ -1146,7 +1176,7 @@ class OwuiFileGateway:
             for block in content:
                 if not isinstance(block, dict):
                     continue
-                if block.get("type") == "input_image":
+                if block.get("type") in ("input_image", "image_url"):
                     await _inline_picture(block)
                     continue
                 if block.get("type") != "input_file":

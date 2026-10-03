@@ -144,3 +144,32 @@ def test_every_prefix_without_a_chat_row_is_recognised(chat_id, expected):
     job in either of those tried to load a message from a chat that does not exist.
     """
     assert is_local_chat_id(chat_id) is expected
+
+
+def _allow(monkeypatch, *, members=("alice",), channel_type="group"):
+    """Admit `members` to the channel, and grant nobody anything on it.
+
+    Every channel read is authorised against the channel before the row is read, so a
+    node that means to measure SCOPING or the MARKER has to say who is asking. Without
+    a requester the lookup refuses for the wrong reason and the node passes vacuously.
+    """
+    import open_webui.models.access_grants as owui_grants
+    import open_webui.models.channels as owui_channels
+
+    async def _get_channel_by_id(channel_id, **_kwargs):
+        return SimpleNamespace(id=channel_id, type=channel_type)
+
+    async def _is_user_channel_member(channel_id, user_id, **_kwargs):
+        return user_id in members
+
+    async def _has_access(**_kwargs):
+        return False
+
+    monkeypatch.setattr(
+        owui_channels.Channels, "get_channel_by_id", _get_channel_by_id, raising=False
+    )
+    monkeypatch.setattr(
+        owui_channels.Channels, "is_user_channel_member", _is_user_channel_member,
+        raising=False,
+    )
+    monkeypatch.setattr(owui_grants.AccessGrants, "has_access", _has_access, raising=False)

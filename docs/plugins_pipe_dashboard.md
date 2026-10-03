@@ -34,12 +34,12 @@ Three admin valves control the feature. They appear in Open WebUI's Settings onc
 
 ## Access
 
-Access is governed by Open WebUI's model access control on this overlay model — there is no separate admin flag, and the switch that follows `PIPE_DASHBOARD_ENABLE` is about *enabled state*, not about who may reach it. Assign users and groups in the model's **Access** editor:
+Access is governed by Open WebUI's model access control on this overlay model — there is no separate admin flag — the flag that decides whether "admin" is a role or a grant is Open WebUI's own `BYPASS_ADMIN_ACCESS_CONTROL` — and the switch that follows `PIPE_DASHBOARD_ENABLE` is about *enabled state*, not about who may reach it. Assign users and groups in the model's **Access** editor:
 
 - A **read** grant makes a **viewer**: open the dashboard and watch the live feed.
 - A **write** grant makes an **operator**: everything a viewer can do, plus use the action buttons. Editing configuration is separate — see [Access](#access) below.
 
-Owners and admins hold both grants. A user with no grant receives an access-denied message.
+Owners hold both grants, and admins hold them too while `BYPASS_ADMIN_ACCESS_CONTROL` is on — with it off an administrator is on the same footing as everyone else and needs the grant. A user with no grant receives an access-denied message.
 
 ---
 
@@ -198,7 +198,9 @@ builds — forks inherit the release workflow, so assets, digests, and the chang
   snapshots the current
   code, so restores are themselves undoable; a restore refused for a concurrent edit takes no
   snapshot at all, so the list is left exactly as it was and no older rollback point is rotated
-  out. Delete double-checks the snapshot is still the one shown in the list before removing
+  out. A restore on a package/stub install is refused before anything is read or written — the
+  attempt never reaches the snapshot store, so it leaves the list and the ring exactly as it was.
+  Delete double-checks the snapshot is still the one shown in the list before removing
   it and refuses with a refresh prompt if it changed. Snapshot records are owned by the primary
   admin account and are ordinary Open WebUI file records under the hood (there is no general file
   browser in the Open WebUI UI, so they stay out of the way, but they are listable through the
@@ -233,8 +235,9 @@ builds — forks inherit the release workflow, so assets, digests, and the chang
 Requirements for the checks and downloads: unauthenticated GitHub API (shared 60/hour budget per
 egress IP — checks are memoized, and only one worker per deployment polls in the background).
 Apply, restore, and snapshot-delete additionally require the acting account to hold the `admin`
-role, as do the two configuration actions behind the Config tab; package/stub installs show a pin-bump
-note instead of an Update button.
+role, as do the two configuration actions behind the Config tab; a package or stub install shows a
+pin-bump note instead of the Update and Restore buttons, and a restore sent there anyway is refused
+with the same `package_mode` outcome as an update.
 
 Every action in this tab — check, apply, restore, snapshot-delete, and the auto-tick — is also
 refused when the server cannot read the *stored* valve set at all. That includes a database

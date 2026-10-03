@@ -4172,7 +4172,7 @@ class Filter:
                     if skipped_id and _row_owner(existing_filters.get(slug)) in ("", pipe_identifier):
                         slug_to_filter_id[slug] = skipped_id
                     self.logger.debug(
-                        "Provider routing slug %s was not fetched this cycle (endpoint cap); "
+                        "Provider routing slug %s was not fetched this cycle (endpoint cap or sweep budget); "
                         "its existing filter row is left exactly as it is.",
                         slug,
                     )

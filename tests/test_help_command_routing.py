@@ -83,7 +83,7 @@ class _MemoryPersistence:
     def __init__(self) -> None:
         self.content = ""
 
-    async def load_message_content(self, *, chat_id: str, message_id: str) -> str:
+    async def load_message_content(self, *, chat_id: str, message_id: str, user: Any = None) -> str:
         return self.content
 
 

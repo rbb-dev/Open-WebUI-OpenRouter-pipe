@@ -32,7 +32,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
-from .utils import _data_url_log_subject, _sanitize_path_component, _stable_crockford_id
+from .utils import (
+    _data_url_log_subject,
+    _sanitize_path_component,
+    _stable_crockford_id,
+    scrub_surrogates,
+)
 from .warn_latch import warn_level
 
 try:
@@ -109,6 +114,15 @@ def _neutralise_log_text(value: str) -> str:
     return value.translate(_LOG_TEXT_NEUTRALISER)
 
 
+_SURROGATE_RE = re.compile("[\ud800-\udfff]")
+
+
+def _scrub_surrogates_if_present(value: str) -> str:
+    if value.isascii() or not _SURROGATE_RE.search(value):
+        return value
+    return scrub_surrogates(value)
+
+
 class _RedactionFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         try:
@@ -132,7 +146,9 @@ class _RedactionFilter(logging.Filter):
                     raw = record.msg % record.args
                 except Exception:  # noqa: BLE001 - logging Filter: self-log re-enters Logger.handle
                     raw = record.msg
-            record.raw_msg = raw
+            record.raw_msg = (
+                _scrub_surrogates_if_present(raw) if isinstance(raw, str) else raw
+            )
         if had_args:
             record.args = ()
         raw_message = getattr(record, "raw_msg", None)
@@ -151,6 +167,7 @@ class _RedactionFilter(logging.Filter):
                 derived = _safe_message(record)
             except Exception:  # noqa: BLE001 - logging Filter: self-log re-enters Logger.handle
                 derived = ""
+            derived = _scrub_surrogates_if_present(derived)
             try:
                 redacted_msg = _data_url_log_subject(derived)
             except Exception:  # noqa: BLE001 - logging Filter: self-log re-enters Logger.handle
@@ -169,6 +186,11 @@ class _RedactionFilter(logging.Filter):
                     raw_exc = "".join(traceback.format_exception(*record.exc_info))
                 except Exception:  # noqa: BLE001, S110 - logging Filter: self-log re-enters Logger.handle
                     pass
+                scrub_changed = False
+                if isinstance(raw_exc, str):
+                    scrubbed_exc = _scrub_surrogates_if_present(raw_exc)
+                    scrub_changed = scrubbed_exc != raw_exc
+                    raw_exc = scrubbed_exc
                 if raw_exc:
                     record.raw_exc_text = raw_exc  # type: ignore[attr-defined]
                     deformed = None
@@ -179,7 +201,7 @@ class _RedactionFilter(logging.Filter):
                         pass
                     if deformed is not None:
                         record.exc_text = deformed  # type: ignore[attr-defined]
-                    if changed and deformed is not None:
+                    if (changed or scrub_changed) and deformed is not None:
                         shaped = None
                         try:
                             shaped = _shaped_exc_info(record.exc_info, deformed)

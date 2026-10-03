@@ -135,11 +135,21 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # beside the module's existing lazy import of that same module for its engine. A host
 # whose `internal.db` cannot supply the type keeps the bare reflection rather than
 # crashing, which is the fallback the helper returns None for.
-# Measured on this merged tree: 25 module-scope and 99 lazy. The count is what the scan
-# finds after the change, not a floor and not either side's arithmetic -- the 98 above is
-# B918's own import on this tree, and B550's earlier port recorded (25, 98) against a
-# tree that did not yet carry T494's or B918's lazy import.
-_EXPECTED_OWUI_IMPORTS = (25, 99)
+# 99 -> 101 (H3588-1): the channel-turn read guard in `VideoPersistence` imports
+# `open_webui.models.channels` (for `Channels`) and `open_webui.models.access_grants`
+# (for `AccessGrants`) lazily, inside the guard's own `try`. The read is a chokepoint
+# that a host without the channels tables must refuse rather than let through, so both
+# are NAMED imports inside a guarded `try` rather than a `getattr` with a `None`
+# default: a guard that disables itself when it cannot find the models it is meant to
+# ask is fail-open on exactly the path that exists to fail closed, and the missing-import
+# arm returns "no" through that same `except`. Two imports, two counts.
+# Measured on this merged tree: 25 module-scope and 101 lazy. The count is what the scan
+# finds after the change, not a floor and not either side's arithmetic -- the 99 above is
+# B918's and B550's imports on this tree, and B550's earlier port recorded (25, 98)
+# against a tree that did not yet carry T494's or B918's lazy import. The module-scope
+# arm is unchanged: the hoisted `channel_id_for_chat` comes from the pipe's own
+# `.owui_files`, not from Open WebUI.
+_EXPECTED_OWUI_IMPORTS = (25, 101)
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),

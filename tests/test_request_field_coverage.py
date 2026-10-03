@@ -127,7 +127,7 @@ class _NoPersistence:
     """The adapter reaches for storage only once a job comes back, which it never does
     here; these two exist so the attribute is not a bare mock that answers anything."""
 
-    async def load_message_content(self, *, chat_id: str, message_id: str) -> str:
+    async def load_message_content(self, *, chat_id: str, message_id: str, user: Any = None) -> str:
         return ""
 
     async def store_video_file_from_path(self, **_kwargs) -> str:

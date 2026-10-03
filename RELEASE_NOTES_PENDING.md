@@ -58,6 +58,12 @@
   well. Nothing else about the request moved; the `task` key is unconditional, since it is what makes the call a task
   call. A saved chat keeps its id on the valve, and so does a `channel:` chat, which is not a temporary chat.
 
+- **Video, channel resume** — a video resume in a `channel:` chat is now authorised against the channel before the stored turn is read, against Open WebUI's own predicate (membership for a `group`/`dm` channel with no admin exemption, a `read` grant or the `admin` role otherwise). A requester the channel does not admit reads nothing, so the turn **starts a new, separately billed job** instead of resuming someone else's stored turn. Open WebUI's own channel route refuses such a requester with a 403 before the pipe is called, so this fires only on a request shaped to bypass that route, and it cannot fire for a member resuming their own turn. Nothing from the other member's turn is read or shown. The identity the check uses is the resolved Open WebUI user, never a caller-supplied one.
+- **Pipe Dashboard, a second administrator** — on an installation with Open WebUI's `ENABLE_ADMIN_WORKSPACE_CONTENT_ACCESS` off (so `BYPASS_ADMIN_ACCESS_CONTROL` is false), an administrator who is neither the owner of the `Pipe Dashboard` model row nor holds a grant on it now loses the dashboard: the view, the live-feed room and the `read`-permission actions, including `config_get`, which returns the whole stored valve set. The dashboard read gate asked Open WebUI's `check_model_access` and took a non-exception for an answer, and that function puts its entire grant decision inside `if user.role != 'admin':` — so it admitted every admin whatever the flags said, while the Open WebUI gates that decide whether a model is visible at all refused him. Administrators now answer the same question Open WebUI does: `BYPASS_MODEL_ACCESS_CONTROL`, or the admin flag, or owner, or a `read` grant; with the bypasses off a model row that cannot be read grants nobody, administrators included. Nothing changes on the shipped default (`BYPASS_ADMIN_ACCESS_CONTROL` is on), on the row's own owner, or for anyone holding a grant. Note that `whoami` is itself a `read` action, so a refused administrator cannot call the action that would have told them their status — the panel falls back to its access-denied card.
+- **Dashboard Update tab, restore on a package or stub install** — Restore is now refused there with the same
+  `package_mode` outcome Update already gave, instead of writing an older bundle snapshot over the install and
+  turning a pinned install into a self-updating bundle one. The tab no longer shows the Restore button on a
+  package or stub install either; its snapshot list and Delete action stay as they were.
 - **Video generation, machine callers** — a video turn that fails *before* OpenRouter answers the submission now
   reaches a caller with no chat as an HTTP error instead of a `200` with a Markdown card in it. A rejected job
   leaves with the status the pipe resolved on the status line and the same number in `error.code` (`502` when a
@@ -223,6 +229,16 @@
   longer leaves the Live card on the retired generation's sessions, and no longer leaves Update and Usage answering
   "unavailable" once the rebuilt instance itself retires: the panel's registrations are taken back down with the
   generation that made them, instead of being pinned for the life of the worker.
+- **Provider routing** — the per-model endpoint sweep behind the routing dropdowns is now bounded as a whole at 45 s
+  instead of running one per-read cap at a time. With 50 slugs listed against a slow or unresponsive OpenRouter
+  endpoints host, the old fan held a metadata pass for roughly 25 minutes while it ran its legs in ten-wide waves,
+  and the metadata-sync key stayed committed the whole time, so every later schedule was refused. The pass now comes
+  back, logs how many of the listed models were still unfinished at `WARNING`, and carries on. An abandoned slug
+  keeps its provider data from the last cycle and has its routing row left exactly as it is — for an admin-enforced
+  routing filter, that is the difference between a stale dropdown and a setting the pipe switched off on its own.
+  Nothing is announced as a spelling problem: a slug whose read *finished and failed* still is, exactly as before.
+  The cost is freshness on a slow host, never correctness, and `HTTP_TOTAL_TIMEOUT_SECONDS` remains the lever for how
+  long a single read may take.
 - **Config tab** — a save the database refuses to write now raises a durable banner instead of a toast alone.
   The banner names the fault, carries no Reload control, and leaves your staged edits in place, so nothing the
   refusal preserved can be discarded from the tab that preserved it. It clears on the next successful save or
@@ -388,16 +404,61 @@
   video turn driven by API automation, with no signed-in user, loses its prior-video frame. That is the
   intended outcome — Open WebUI gates file content on the requester and never on a service account — and the
   only alternative would be a pipe-owned service identity for prior-video reads.
-- **Fallback storage account** — the service account the pipe auto-creates for the pictures a model generates on a
-  user-less turn (API automations) is now created with **no linked identity**, the way Open WebUI itself creates a
-  non-federated user. It used to be written with `oauth={"sub": "openrouter-pipe-storage:…"}` — the marker at the top
-  level, where no OAuth provider key exists — so the row named no identity to Open WebUI's own readers while still
-  satisfying SCIM's listing predicate, which accepts any non-null JSON in that column. The consequence an operator can
-  see: the auto-created account **stops appearing in Open WebUI's SCIM listing**, and therefore in an IdP console
-  that reads that listing. What does not change: the account is still found by `FALLBACK_STORAGE_EMAIL`, still owns the
-  same pictures, and still serves `GET /api/v1/files/…` for them. **There is no migration.** An existing deployment
-  keeps its malformed row until the account is recreated (change `FALLBACK_STORAGE_EMAIL`, or let it be recreated on a
-  fresh install); the pipe cannot rewrite rows already in your database, and the old marker was a per-creation random
-  value recorded nowhere, so it cannot tell which rows were its own. Note separately that with
-  `OAUTH_MERGE_ACCOUNTS_BY_EMAIL` enabled a login whose IdP asserts this address still adopts the account — that arm is
-  keyed on the email, and no change to the account's `oauth` column closes it.
+
+- **Unencodable characters in a provider's reply** — a provider's unencodable characters reach the card and the
+  log record as U+FFFD instead of losing them and the archive.
+- **Fusion, Continue of a Fusion answer** — the terminal snapshot no longer replaces the stored answer with this
+  generation's alone. It was written ungated, so on a Continue -- a turn carrying `assistant_message_id`, which
+  Open WebUI sends only when continuing, and which on the hosted backend (`FUSION_BACKEND='openrouter'`) is how a
+  person presses Continue on a Fusion reply -- the upsert cut the stored message back to the text this generation
+  produced and dropped the half it was continuing from. The panel (`embeds`) is written either way, and a turn
+  Open WebUI is *not* holding still writes `content`: on a first generation the Fusion answer travels as a native
+  output item rather than as `delta.content`, so that write is the only record of it.
+- **A refusal that opens a Continue** — the refusal now starts a block of its own, so the separator Open WebUI's
+  join needs is emitted before it. A refusal-first Continue had none: the refusal arrived glued to whatever followed
+  it, and when the stored reply ended on a hidden marker line the two fused into one line the marker parser no
+  longer read -- the continuation's own segments were lost with it. A stored reply ending on ordinary text gets the
+  blank line it needed for the same reason. Nothing changes on a fresh turn, and nothing changes on a Continue
+  whose stored reply is the empty string: there is no stored line to separate from, and no separator is added.
+- **Unrecognised content block, a link in any letter-case** — an opaque block type (`vendor_widget` and friends)
+  is forwarded verbatim, and the one thing that stops being forwarded is a block that carries a *location*. The
+  test for that was a prefix comparison and a substring search on the raw value, both case-sensitive in a way the
+  URL grammar is not. `HTTPS://169.254.169.254/latest/meta-data/`, `FTP://…`, `Gopher://…`,
+  `HTTPS://OWUI.EXAMPLE.COM/API/V1/FILES/abc/content` and a `//host/x` behind a leading newline are all the same
+  links as their lower-case twins, and every one of them — credentials included — went to the provider inside a
+  block the typed arms would have refused. The pipe's own URL parser now decides, at whatever nesting depth and
+  under whatever key but a prose key, so a block that is refused today stays refused and the mixed-case spellings
+  join it. Two shapes are pinned as staying dropped rather than left to a parser's accidents: a `data:` URL and a
+  `javascript:` URL whose *payload* names the file endpoint, neither of which is a link the provider would dial
+  and both of which were dropped before. One value is deliberately left alone, because it names no address and no
+  endpoint: `Api/V1/Files/abc/content`, with no leading slash.
+- **A tool's picture that names a host** — an absolute URL a tool result carries is now put to the
+  plaintext and address valves like any other link. The pipe has always had a classifier that answers "is
+  this one of my own file endpoints?" from the *path* alone, and the six forwarding gates were reading it
+  as "and therefore this is not a link" — so a path a tool wrote into a URL skipped the checks: a
+  cleartext `http://169.254.169.254/api/v1/files/abc` skipped the plaintext valve, an `https://` one on a
+  link-local or private address skipped the address check entirely, and one written as
+  `https://user:pw@host/api/v1/files/abc/content?token=SECRET` skipped both and reached OpenRouter with
+  the tool's own credentials in it. A path is not an origin, and `ENABLE_SSRF_PROTECTION` and
+  `ALLOW_INSECURE_HTTP` promise to hold on every forwarding site, so the gates now exempt only a
+  **relative, host-less** reference whose parsed path *begins* with `/api/v1/files/` — the spelling Open
+  WebUI itself mints, which stays exempt on every valve and is asked about zero times, as does any
+  letter-case of it. Everything else with that path in it (`file:`, `//host/…`, `\\/\/host/…`,
+  `https://host/…`) goes through the cleartext valve, the scheme gate, the address check and the verdict
+  memo on every leg, and a refused picture is skipped with a status; the turn is not lost. **What this
+  costs:** a deployment whose Open WebUI is on a private or link-local address loses an absolute self-link
+  from a tool (`https://10.0.0.5:3000/api/v1/files/<uuid>/content`) — it is skipped rather than inlined,
+  because the pipe has no configured Open WebUI origin to compare against and comparing paths would reopen
+  the hole above; that is filed as its own item. Five relative spellings that hide the path behind a dot
+  segment, a query value or a fragment (`./api/v1/files/abc`, `/proxy?path=/api/v1/files/abc/content`) are
+  now refused `not a link the pipe can resolve into an image` on the tool gate; they still resolve on
+  every attachment arm, where the host-agnostic classifier is what runs. `/chat/completions` is now part
+  of the same promise: an `image_url` block naming a file reference is resolved from local storage before
+  the request leaves instead of being forwarded as a link. Nothing about the attachment arms, the video
+  arm or the host-agnostic resolve classifier changes.
+- **Task-model failure notices in shared rooms** — when a task model (titles, tags, follow-ups) fails in a `channel:`
+  chat or a saved chat several people share, each member now gets their own one-time notice. The notice used to be
+  latched per conversation, so the first member's notice silenced everyone else in the room for the window. The DEBUG
+  lines that record a suppressed or undelivered notice (`task-failure toast suppressed: …` and `task-failure toast not
+  delivered; latch left open: …`) now name the user id beside the chat id for a saved or `channel:` chat; a temporary
+  chat's line still names no chat.

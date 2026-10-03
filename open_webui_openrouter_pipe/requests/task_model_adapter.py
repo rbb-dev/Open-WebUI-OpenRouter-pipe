@@ -72,10 +72,11 @@ def _task_failure_card(
     return rendered.replace("{", "").replace("}", "")
 
 
-def _task_failure_latch_key(task_type: str, model_id: str, scope: str) -> str:
-    if is_temporary_chat(scope):
+def _task_failure_latch_key(task_type: str, model_id: str, chat_id: str, user_id: str) -> str:
+    if is_temporary_chat(chat_id):
         return ""
-    return f"{model_id}\x1f{scope or '__no_chat_or_user__'}"
+    parts = [part for part in (str(chat_id or ""), str(user_id or "")) if part]
+    return "\x1f".join([model_id, *parts]) if parts else f"{model_id}\x1f__no_chat_or_user__"
 
 
 def _task_failure_was_notified(key: str) -> bool:
@@ -315,10 +316,12 @@ class TaskModelAdapter:
             task=task_type,
         )
         card = _task_failure_card(task_type, source_model_id, made_attempts, error_class, error_id)
+        chat_id = str((owui_metadata or {}).get("chat_id") or "")
         latch_key = _task_failure_latch_key(
             task_type,
             str(source_model_id or ""),
-            str((owui_metadata or {}).get("chat_id") or "") or str(identifier_user_id or ""),
+            chat_id,
+            identifier_user_id,
         )
         log_key = latch_key or "<not retained>"
         if latch_key and not _task_failure_claim(latch_key):
