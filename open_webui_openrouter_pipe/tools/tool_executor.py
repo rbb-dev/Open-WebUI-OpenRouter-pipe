@@ -41,7 +41,7 @@ _OWUI_RESULT_WARN_CAP = 256
 from ..storage.multimodal import ADDRESS_CHECK_BUDGET_SECONDS
 from ..storage.owui_files import (
     is_linkable_chat,
-    is_temporary_chat,
+    is_unheld_chat,
     owui_file_content_url,
 )
 from ..storage.persistence import generate_item_id
@@ -688,12 +688,12 @@ class ToolExecutor:
             else OPEN_WEBUI_OWNS_NO_HAND_BACK_REASON
         )
         breaker_skips: list[tuple[str, str | None]] = []
+        deferred_notifies: list[tuple[dict, dict]] = []
 
         async def _append_and_notify(index: int, call: dict, result: dict, status: str) -> None:
             slots[index] = result
             if _on_complete:
-                with contextlib.suppress(Exception):
-                    await _on_complete(call, result)
+                deferred_notifies.append((call, result))
             await self._pipe._dispatch_plugin_event(
                 "dispatch_on_tool_result",
                 str(resolved_tool_name(call) or "?"),
@@ -810,10 +810,15 @@ class ToolExecutor:
 
         if batches:
             self._ensure_tool_workers(context)
-        if breaker_skips:
+        if breaker_skips or deferred_notifies:
             try:
                 async with asyncio.timeout_at(started_at + context.batch_timeout) if context.batch_timeout else contextlib.nullcontext():
-                    await self._notify_tool_breaker_skips(context, breaker_skips)
+                    for call, result in deferred_notifies:
+                        if _on_complete:
+                            with contextlib.suppress(Exception):
+                                await _on_complete(call, result)
+                    if breaker_skips:
+                        await self._notify_tool_breaker_skips(context, breaker_skips)
             except TimeoutError:
                 pass
 
@@ -1158,7 +1163,7 @@ class ToolExecutor:
         if not url:
             return None
         metadata = context.metadata or {}
-        if is_temporary_chat(metadata.get("chat_id")):
+        if is_unheld_chat(metadata.get("chat_id")):
             return None
         payload_chars = base64_data_url_payload_chars(url)
         if payload_chars is None:

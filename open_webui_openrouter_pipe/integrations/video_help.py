@@ -990,7 +990,19 @@ _KNOB_GATE: dict[str, str | None] = {
 }
 
 
-def _knob_is_active(knob: str, spec: VideoFilterSpec) -> bool:
+_SPEC_GATE_ATTRS: dict[str, str] = {
+    "Duration": "durations",
+    "Aspect ratio": "aspect_ratios",
+    "Resolution": "resolutions",
+    "Size": "size_options",
+    "Frames": "supports_frames",
+}
+
+
+def _knob_is_active(knob: str, spec: VideoFilterSpec, admin_valves: Any = None) -> bool:
+    attr = _SPEC_GATE_ATTRS.get(knob)
+    if attr is not None:
+        return bool(getattr(spec, attr))
     gate = _KNOB_GATE.get(knob)
     if gate is None:
         return True
@@ -1001,7 +1013,9 @@ def _knob_is_active(knob: str, spec: VideoFilterSpec) -> bool:
     if gate == "seed_top_level":
         return spec.supports_seed
     if gate == _INTENT_ADMIN_GATE:
-        return spec.intent_classifier_admin_enabled
+        return spec.intent_classifier_admin_enabled and bool(
+            getattr(admin_valves, "AUTO_ATTACH_VIDEO_FILTERS", True)
+        )
     return gate in spec.allowed_params
 
 
@@ -1098,7 +1112,7 @@ def _render_template(
 
     knob_lines: list[str] = []
     for knob, description in _panel_knob_descriptions(data.get("knob_descriptions")).items():
-        if not _knob_is_active(knob, spec):
+        if not _knob_is_active(knob, spec, admin_valves):
             continue
         knob_lines.append(f"- `{knob}`: {description}")
 

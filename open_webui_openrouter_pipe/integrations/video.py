@@ -3461,12 +3461,14 @@ class VideoGenerationAdapter:
         return
 
     def _intent_breaker_open(self, user_id: str) -> bool:
+        if not user_id or user_id == "anonymous":
+            return False
         now = time.time()
         if now - self._intent_breaker_swept_at >= _INTENT_BREAKER_SWEEP_INTERVAL_SECONDS:
             self._intent_breaker_swept_at = now
             for expired in [k for k, until in self._intent_breaker_until_ts.items() if until <= now]:
                 self._intent_breaker_until_ts.pop(expired, None)
-        key = user_id or ""
+        key = user_id
         until = self._intent_breaker_until_ts.get(key, 0.0)
         if now < until:
             return True
@@ -3475,8 +3477,10 @@ class VideoGenerationAdapter:
 
     def _intent_record_failure(self, user_id: str = "") -> None:
         """Open the in-process circuit breaker for 60 seconds after auth/quota errors."""
+        if not user_id or user_id == "anonymous":
+            return
         now = time.time()
-        key = user_id or ""
+        key = user_id
         self._intent_breaker_until_ts[key] = max(
             self._intent_breaker_until_ts.get(key, 0.0),
             now + _INTENT_BREAKER_SWEEP_INTERVAL_SECONDS,

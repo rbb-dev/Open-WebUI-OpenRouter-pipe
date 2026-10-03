@@ -52,6 +52,7 @@ from ..core.errors import (
 )
 from ..core.fusion_defaults import (
     _REQUIRED_TOOL_CHOICE,
+    FusionPanelTooLargeError,
     find_fusion_entry,
     has_active_fusion_entry,
     resolve_fusion_run,
@@ -1371,6 +1372,14 @@ class RequestOrchestrator:
                     with_producers=True,
                 )
             ),
+            ask_user_round_loader=(
+                None
+                if not fusion_inner
+                else functools.partial(
+                    self._pipe._artifact_store._db_fetch_builtin_ask_user_rounds,
+                    __metadata__.get("chat_id"),
+                )
+            ),
             pruning_turns=valves.TOOL_OUTPUT_RETENTION_TURNS,
             transformer_context=self._pipe,
             user_obj=user_model,
@@ -2170,7 +2179,21 @@ class RequestOrchestrator:
                     if __event_emitter__:
                         await __event_emitter__({"type": "chat:completion", "data": {"done": True}})
                     return ""
-                plan = resolve_fusion_run(find_fusion_entry(responses_body.plugins))
+                try:
+                    plan = resolve_fusion_run(find_fusion_entry(responses_body.plugins))
+                except FusionPanelTooLargeError as exc:
+                    if outcome_sink is not None:
+                        outcome_sink["member_refusal_reason"] = str(exc)
+                    return await self._pipe._ensure_error_formatter()._emit_templated_error(
+                        __event_emitter__,
+                        template=valves.FUSION_PANEL_TOO_LARGE_TEMPLATE,
+                        variables={
+                            "requested_model": responses_body.model or "",
+                            "reason": str(exc),
+                        },
+                        log_message="Fusion panel has more models than a panel can carry",
+                        log_level=logging.WARNING,
+                    )
                 self.logger.info(
                     "Diverting fusion request to internal engine model=%s panel=%s judge=%s",
                     responses_body.model, ",".join(plan.panel_models), plan.judge_model,

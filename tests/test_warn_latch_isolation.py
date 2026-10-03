@@ -65,16 +65,21 @@ EXPECTED_LATCHES = {
     # decision -- warn the first time each, then repeat at DEBUG rather than going
     # silent at every level -- and the two arms are the same shape.
     "_warned_frame_not_materialised",
-    # The four filter-family ensure sites that used to log an installer failure at
+    # The five filter-family ensure sites that used to log an installer failure at
     # WARNING for as long as the fault lasts. A catalogue pass runs on a schedule
     # (hourly by default) and on every worker restart, so a locked Functions table
-    # produced four traceback-bearing WARNINGs an hour, per worker. Keyed on the
+    # produced five traceback-bearing WARNINGs an hour, per worker. Keyed on the
     # family and the exception class -- never on the message, which carries the row
-    # id and the SQL.
+    # id and the SQL. The image row joined the four: it is reached by the same
+    # unreadable Functions table on the same pass cadence, and it sits beside the
+    # latched video-gen twin, so leaving it the last unlatched site of the six meant
+    # a deployment whose image filter table is unreadable still buried the one line
+    # that says why under its own repetitions.
     "_warned_web_tools_filter_ensure",
     "_warned_image_gen_filter_ensure",
     "_warned_fusion_filter_ensure",
     "_warned_direct_uploads_filter_ensure",
+    "_warned_image_filter_ensure",
     "_warned_image_catalog",
     "_warned_dropped_image_param",
     "_warned_image_cost_snapshot",

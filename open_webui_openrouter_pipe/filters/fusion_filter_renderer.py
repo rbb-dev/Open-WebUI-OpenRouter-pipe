@@ -166,7 +166,9 @@ __KEEP_WHAT_STILL_FITS__
             description=(
                 "1-8 model IDs that answer in parallel, comma-separated, e.g. "
                 "'anthropic/claude-opus-latest, openai/gpt-latest'. Each model adds a call. "
-                "Empty = use the preset / Fusion default panel. A video-generation model "
+                "More than 8 is refused on every route, not shortened: the turn stops with an "
+                "error naming the limit and how many models arrived. Empty = use the preset / "
+                "Fusion default panel. A video-generation model "
                 "named here is not answered from as a video job on a panel, judge or "
                 "synthesis turn; it answers the question as an ordinary chat call."
             ),

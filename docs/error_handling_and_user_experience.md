@@ -405,7 +405,7 @@ Some providers reject “reasoning” requests when their own “thinking” mod
 
 When the pipe detects this condition, it can retry once with reasoning disabled by:
 - clearing `reasoning`, or setting it to `{"effort": "none"}`
-- removing the legacy `include_reasoning` flag when any id in `models` fails to list it — and, where the dropped value was `false` and the primary lists `reasoning`, carrying thinking off as `reasoning: {"effort": "none"}` instead; on a request with no `model_fallback` the flag is simply turned off
+- removing the legacy `include_reasoning` flag when any id in `models` fails to list it — and, where the dropped value was `false` and the primary lists `reasoning`, carrying thinking off by merging the row's own effort into the `reasoning` object the request already carries, so its `max_tokens` and `summary` survive instead; on a request with no `model_fallback` the flag is simply turned off
 
 This retry is only available while the attempt has published nothing the reader keeps: once a thinking box or a tool card is on screen the attempt owns the turn, and the error is reported below what the reader already has instead.
 

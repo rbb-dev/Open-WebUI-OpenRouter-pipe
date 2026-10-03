@@ -298,6 +298,10 @@ class FusionRunPlan(NamedTuple):
 _REQUIRED_TOOL_CHOICE = "required"
 
 
+class FusionPanelTooLargeError(Exception):
+    pass
+
+
 def find_fusion_entry(plugins: Any) -> dict[str, Any] | None:
     if not isinstance(plugins, list):
         return None
@@ -321,7 +325,11 @@ def resolve_fusion_run(entry: dict[str, Any] | None) -> FusionRunPlan:
     panel: tuple[str, ...] = ()
     if isinstance(raw_models, list):
         cleaned = list(dict.fromkeys(m.strip() for m in raw_models if isinstance(m, str) and m.strip()))
-        panel = tuple(cleaned[:MAX_FUSION_PANEL_MODELS])
+        if len(cleaned) > MAX_FUSION_PANEL_MODELS:
+            raise FusionPanelTooLargeError(
+                f"Fusion panel accepts 1-{MAX_FUSION_PANEL_MODELS} models, got {len(cleaned)}."
+            )
+        panel = tuple(cleaned)
     panel_from_preset = not panel
     if not panel:
         panel = FUSION_PRESET_PANELS[preset]

@@ -100,6 +100,16 @@ def _normalize_id_list(meta_dict: dict, key: str) -> list[str]:
 _MAKER_SOURCE_KIND = "maker"
 _FRONTEND_SOURCE_KIND = "frontend"
 _APPLY_YIELD_EVERY = 64
+_BUILTIN_TOOL_DEFAULTS_KEY = "builtin_tool_defaults"
+
+
+def _remove_builtin_tool_defaults_marker(meta_dict: dict) -> None:
+    pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
+    if not isinstance(pipe_meta, dict):
+        return
+    pipe_meta.pop(_BUILTIN_TOOL_DEFAULTS_KEY, None)
+    if not pipe_meta:
+        meta_dict.pop(_PIPE_METADATA_KEY, None)
 
 
 def _frontend_catalog_answered(frontend_data: Any) -> TypeGuard[dict[str, Any]]:
@@ -211,6 +221,7 @@ _warned_image_gen_filter_ensure: set[str] = set()
 _warned_video_gen_filter_ensure: set[str] = set()
 _warned_fusion_filter_ensure: set[str] = set()
 _warned_direct_uploads_filter_ensure: set[str] = set()
+_warned_image_filter_ensure: set[str] = set()
 
 _MODEL_ROW_READ_CHUNK = 1000
 
@@ -828,6 +839,20 @@ def file_context_builtin_tool_defaults(
     return {"files": False}
 
 
+def _merged_pipe_builtin_tools(
+    defaults: dict[str, Any],
+    existing_builtin: dict[str, Any] | None,
+    marked: Any,
+) -> tuple[dict[str, Any] | None, list[str] | None]:
+    existing = existing_builtin if isinstance(existing_builtin, dict) else {}
+    named = {key for key in marked if isinstance(key, str)} if isinstance(marked, list) else set()
+    seeded = set(defaults)
+    merged: dict[str, Any] = dict(existing)
+    for key, value in defaults.items():
+        merged.setdefault(key, value)
+    return (merged or None), (sorted(named | seeded) or None)
+
+
 def _merged_capabilities(
     base_caps: dict[str, Any] | None,
     capabilities: dict[str, Any] | None,
@@ -926,9 +951,13 @@ class ModelCatalogManager:
         self._cached_provider_map: dict[str, dict[str, Any]] = {}
         self._provider_overlay_failed_slugs: frozenset[str] = frozenset()
         self._provider_overlay_skipped_slugs: frozenset[str] = frozenset()
+        self._provider_overlay_unreadable_slugs: frozenset[str] = frozenset()
 
     def get_provider_overlay_skipped_slugs(self) -> frozenset[str]:
         return self._provider_overlay_skipped_slugs
+
+    def get_provider_overlay_hold_slugs(self) -> frozenset[str]:
+        return self._provider_overlay_skipped_slugs | self._provider_overlay_unreadable_slugs
 
     def get_cached_provider_map(self) -> dict[str, dict[str, Any]]:
         """Return the cached provider map from the last frontend catalog fetch.
@@ -1485,6 +1514,7 @@ class ModelCatalogManager:
         """
         unique = sorted({(s or "").strip() for s in model_slugs if (s or "").strip()})
         skipped: frozenset[str] = frozenset()
+        unreadable: set[str] = set()
         if len(unique) > _PROVIDER_ROUTING_OVERLAY_MAX_MODELS:
             skipped = frozenset(unique[_PROVIDER_ROUTING_OVERLAY_MAX_MODELS:])
             named = ", ".join(sorted(skipped)[:5])
@@ -1512,12 +1542,15 @@ class ModelCatalogManager:
                 payload = await self._fetch_model_endpoints(session, slug)
             completed.add(slug)
             if payload is None:
+                unreadable.add(slug)
                 return
             data = payload.get("data")
             if not isinstance(data, dict):
+                unreadable.add(slug)
                 return
             endpoints = data.get("endpoints")
             if not isinstance(endpoints, list):
+                unreadable.add(slug)
                 return
 
             providers: set[str] = set()
@@ -1578,6 +1611,7 @@ class ModelCatalogManager:
                 len(unique),
             )
             self._provider_overlay_skipped_slugs = skipped | abandoned
+        self._provider_overlay_unreadable_slugs = frozenset(unreadable)
         return results
 
     def _merge_provider_overlay(
@@ -2009,7 +2043,8 @@ class ModelCatalogManager:
                     )
                     retired_image_filter_ids = _image_filter_manager.retired_image_filter_ids
                 except Exception as exc:
-                    self.logger.warning(
+                    self.logger.log(
+                        _ensure_failure_level(_warned_image_filter_ensure, "image", exc),
                         "OpenRouter Image filter ensure failed: %s", exc, exc_info=True
                     )
                     image_filter_ids_known = False
@@ -2193,7 +2228,7 @@ class ModelCatalogManager:
                             provider_map,
                             models,
                             pipe_identifier,
-                            not_fetched_slugs=self._provider_overlay_skipped_slugs,
+                            not_fetched_slugs=self.get_provider_overlay_hold_slugs(),
                         )
                         if not isinstance(provider_routing_filter_map, dict):
                             provider_routing_filter_map = {}
@@ -3143,16 +3178,24 @@ class ModelCatalogManager:
                 file_context_tool_defaults = file_context_builtin_tool_defaults(
                     capability_defaults, merged_caps
                 )
-                if file_context_tool_defaults:
-                    existing_builtin = meta_dict.get("builtinTools")
-                    merged_builtin: dict[str, Any] = (
-                        dict(existing_builtin) if isinstance(existing_builtin, dict) else {}
-                    )
-                    for key, value in file_context_tool_defaults.items():
-                        merged_builtin.setdefault(key, value)
-                    if merged_builtin != existing_builtin:
+                existing_builtin = meta_dict.get("builtinTools")
+                pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
+                marked = pipe_meta.get(_BUILTIN_TOOL_DEFAULTS_KEY) if isinstance(pipe_meta, dict) else None
+                merged_builtin, merged_marked = _merged_pipe_builtin_tools(
+                    file_context_tool_defaults, existing_builtin, marked
+                )
+                if merged_builtin != existing_builtin:
+                    if merged_builtin is None:
+                        meta_dict.pop("builtinTools", None)
+                    else:
                         meta_dict["builtinTools"] = merged_builtin
-                        meta_updated = True
+                    meta_updated = True
+                if merged_marked != marked:
+                    if merged_marked is None:
+                        _remove_builtin_tool_defaults_marker(meta_dict)
+                    else:
+                        _ensure_pipe_meta(meta_dict)[_BUILTIN_TOOL_DEFAULTS_KEY] = merged_marked
+                    meta_updated = True
 
             if (
                 update_images and profile_image_url
@@ -3416,8 +3459,13 @@ class ModelCatalogManager:
                 builtin_tool_defaults = file_context_builtin_tool_defaults(
                     capability_defaults, merged_caps
                 )
-                if builtin_tool_defaults:
-                    meta_dict["builtinTools"] = {**builtin_tool_defaults}
+                merged_builtin, merged_marked = _merged_pipe_builtin_tools(
+                    builtin_tool_defaults, None, None
+                )
+                if merged_builtin is not None:
+                    meta_dict["builtinTools"] = merged_builtin
+                if merged_marked is not None:
+                    _ensure_pipe_meta(meta_dict)[_BUILTIN_TOOL_DEFAULTS_KEY] = merged_marked
             if update_images and profile_image_url:
                 meta_dict["profile_image_url"] = profile_image_url
             if update_images and image_source_url:

@@ -173,7 +173,11 @@ image models, the video models, and routers that publish a picture among their
 outputs while answering with words.
 
 As with the tools box, the pipe fills it in only where a model has no setting yet,
-so a box you tick yourself is left alone.
+so a box you tick yourself is left alone. The `Files` box inside `Built-in tools` follows
+from the same untick rather than from the valve, and the pipe records which of those boxes
+it filled under the model's own `openrouter_pipe` metadata, so a box you set by hand is
+neither recorded as the pipe's nor changed by it. A row filled by an earlier version
+carries no such record and is left exactly as it is.
 
 There is one visible side effect on video models, and it is the desired one:
 once `File context` is off, attachments the model was sent stay in the chat as
@@ -1297,10 +1301,12 @@ most often — changes nothing on any model: every panel already attached stays
 attached, and the next model catalog fetch tries again. The same holds for the Fusion panel,
 which is installed by the same pass. A log line names it when it happens:
 `OpenRouter Image filter ensure failed` or `OpenRouter Fusion filter ensure
-failed`. The Fusion line — and the Web Tools, Image Gen and Direct Uploads
-ones beside it — is a warn-once line: the first occurrence is a `WARNING` and
-every later refresh that sees the same fault logs it again at `DEBUG`, with the
-traceback still attached.
+failed`. The Fusion line — and the Web Tools, Image Gen, Direct Uploads and
+Image ones beside it — is a warn-once line: the first occurrence of each cause
+is a `WARNING` and every later refresh that sees the same fault logs it again
+at `DEBUG`, with the traceback still attached. The image line is keyed per
+cause, which here is the exception class, so a fault that changes kind warns
+again at `WARNING`.
 
 A single model's install failing is a different line, and a quieter one: it is
 named once per model per kind of failure, at WARNING, and every later
@@ -1328,14 +1334,20 @@ record has drifted is repaired on the next sync rather than drifting forever.
 An id that record does not name — one you attached by hand — is never detached.
 The one case the record cannot cover is a model upgraded from a release that
 never wrote one, with a superseded panel still attached from before: with no
-record there is nothing to scope the release to, and adopting the id instead
-would make the drift permanent. Detach that panel once by hand and the next
-sync records the current one. The one exception is a panel this pass itself
-retires as superseded: the sweep knows exactly which ids it deactivated, so with
-`AUTO_INSTALL_IMAGE_FILTERS` or `AUTO_ATTACH_IMAGE_FILTERS` on — the branch that
-runs the sweep as part of the install — those ids come off both `filterIds` and
-`defaultFilterIds` on the same pass whether or not the model ever had a record,
-and that is the configuration in which no hand-detaching is needed.
+record there is nothing to scope the *attachment* release to, and adopting the
+id instead would make the drift permanent. Detach that panel once by hand and
+the next sync records the current one. The one exception is a panel this pass
+itself retires as superseded: the sweep knows exactly which ids it deactivated,
+so with `AUTO_INSTALL_IMAGE_FILTERS` or `AUTO_ATTACH_IMAGE_FILTERS` on — the
+branch that runs the sweep as part of the install — those ids come off both
+`filterIds` and `defaultFilterIds` on the same pass whether or not the model
+ever had a record, and that is the configuration in which no hand-detaching is
+needed.
+The **default-on** release is not record-scoped and needs no such hand-work: a
+panel the retirement sweep switched off this pass is dropped from
+`defaultFilterIds` too, whether or not the ownership record ever named it, so
+an upgraded model releases that default on its own. The hand-detach above is
+about the attachment only.
 `AUTO_DEFAULT_IMAGE_FILTERS` additionally starts each new chat with the panel
 already switched on.
 
@@ -1603,20 +1615,20 @@ completed since install. Check:
 
 - `AUTO_INSTALL_IMAGE_FILTERS=True` and `AUTO_ATTACH_IMAGE_FILTERS=True`.
 - Admin → Functions has an entry named after that model.
-- The pipe's log has no `OpenRouter Image filter ensure failed` or
-  `OpenRouter Fusion filter ensure failed` line. Either line means the
-  installer could not run for that whole refresh — usually a locked or
-  dropped database — and it left every model exactly as it was rather than
-  detaching anything. A restart re-runs the installer; the next model catalog
-  fetch retries on its own.
+- The pipe's log has no **WARNING** for `OpenRouter Image filter ensure failed`
+  or `OpenRouter Fusion filter ensure failed`. Either means the installer could
+  not run for that whole refresh — usually a locked or dropped database — and it
+  left every model exactly as it was rather than detaching anything. A restart
+  re-runs the installer; the next model catalog fetch retries on its own.
 - `OpenRouter Fusion filter ensure failed`, `OpenRouter Web Tools filter
-  ensure failed`, `OpenRouter Image Gen filter ensure failed` and `OpenRouter
-  Direct Uploads filter ensure failed` are warn-once lines: the first
-  occurrence of each cause is `WARNING`, and a fault that outlives one
-  catalogue pass repeats at `DEBUG` with the traceback still attached. Grep
-  for them at `DEBUG` too before concluding the installer is fine.
-  (`OpenRouter Image filter ensure failed` is not one of them and stays at
-  `WARNING` for as long as the fault lasts.)
+  ensure failed`, `OpenRouter Image Gen filter ensure failed`, `OpenRouter
+  Direct Uploads filter ensure failed` and `OpenRouter Image filter ensure
+  failed` are warn-once lines: the first occurrence of each cause is `WARNING`,
+  and a fault that outlives one catalogue pass repeats at `DEBUG` with the
+  traceback still attached. The image line warns once per cause — per exception
+  class, for as long as the fault lasts — so a worker that has been up for hours
+  with the fault live shows nothing at `WARNING` for it; look for that line at
+  `DEBUG` too before concluding the installer ran fine.
 - Restart the pipe to force a fresh `pipes()` cycle, or toggle
   `AUTO_ATTACH_IMAGE_FILTERS` off → save → on → save.
 

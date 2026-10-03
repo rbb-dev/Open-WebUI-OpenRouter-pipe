@@ -11,6 +11,7 @@ from typing import Any
 from ..core.config import _OPENROUTER_VIDEO_GEN_FILTER_MARKER, _PIPE_METADATA_KEY
 from ..core.utils import (
     _ADAPTER_CACHE,
+    _DROP_UNUSABLE_PRIORITY,
     _KEEP_WHAT_STILL_FITS,
     _PRIORITY_FIELD,
     _clean_str,
@@ -798,7 +799,7 @@ import logging
 import math
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError, ValidationInfo, field_validator, model_validator
 
 {_ADAPTER_CACHE}
 
@@ -848,6 +849,7 @@ def _json_constant(literal: str) -> float:
 
 class Filter:
     class Valves(BaseModel):
+{_DROP_UNUSABLE_PRIORITY}
 {_PRIORITY_FIELD}
 
     class UserValves(BaseModel):

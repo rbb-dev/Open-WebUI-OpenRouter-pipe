@@ -62,6 +62,7 @@ from tenacity import (
 
 from ..core.timing_logger import timed
 from ..core.utils import (
+    BUILTIN_ASK_USER_ROUND_KEY,
     _await_if_needed,
     is_picture_output,
     tool_output_text_and_pictures,
@@ -2511,6 +2512,39 @@ class ArtifactStore:
                 self.logger.debug(
                     "Unreadable artifact rows notice could not be delivered", exc_info=True
                 )
+
+    async def _db_fetch_builtin_ask_user_rounds(
+        self, chat_id: str | None, message_id: str | None, item_ids: list[str]
+    ) -> dict[str, dict]:
+        if not (chat_id and item_ids):
+            return {}
+        try:
+            rows = await self._db_fetch_direct(chat_id, message_id, list(item_ids))
+        except Exception as exc:
+            self.logger.warning(
+                "ask_user round fetch failed for chat_id=%s: %s",
+                loggable_chat_id(chat_id), exc, exc_info=True,
+            )
+            return {}
+        stamped_call_ids: set[str] = set()
+        for row in rows.values():
+            if (
+                isinstance(row, dict)
+                and row.get("type") == "function_call"
+                and BUILTIN_ASK_USER_ROUND_KEY in row
+            ):
+                call_id = str(row.get("call_id") or "")
+                if call_id:
+                    stamped_call_ids.add(call_id)
+        return {
+            ulid: row
+            for ulid, row in rows.items()
+            if isinstance(row, dict) and (
+                BUILTIN_ASK_USER_ROUND_KEY in row
+                or (row.get("type") == "function_call_output"
+                    and str(row.get("call_id") or "") in stamped_call_ids)
+            )
+        }
 
     @timed
     async def _db_fetch_direct(

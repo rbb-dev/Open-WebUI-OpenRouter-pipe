@@ -1947,7 +1947,7 @@ class StreamingHandler:
                         await event_emitter(
                             {
                                 "type": "status",
-                                "data": {"description": "⚠️ Tool storage unavailable", "done": False},
+                                "data": {"description": "⚠️ Tool storage unavailable", "done": True},
                             }
                         )
                     return []
@@ -4595,6 +4595,17 @@ class StreamingHandler:
                         "terminal frames are unaffected",
                         exc_info=True,
                     )
+            if not (was_cancelled or handed_back_for_retry):
+                try:
+                    await _flush_pending("finalize")
+                except (asyncio.CancelledError, Exception) as _exc:
+                    if isinstance(_exc, asyncio.CancelledError):
+                        _finalise_cancelled = _exc
+                    self.logger.warning(
+                        "Could not finish the turn's committed artifact rows; the turn's stored "
+                        "record and its terminal publications still run",
+                        exc_info=True,
+                    )
             if (not error_occurred) and (not was_cancelled) and event_emitter:
                 effective_start = stream_started_at or request_started_at
                 elapsed = max(0.0, perf_counter() - effective_start)
@@ -4816,8 +4827,16 @@ class StreamingHandler:
                         sorted({str(row.get("item_type")) for row in pending_items}),
                     )
             else:
-                await _flush_pending("finalize")
-                assistant_message = await _mark_committed_rows(assistant_message)
+                try:
+                    assistant_message = await _mark_committed_rows(assistant_message)
+                except (asyncio.CancelledError, Exception) as _exc:
+                    if isinstance(_exc, asyncio.CancelledError):
+                        _finalise_cancelled = _exc
+                    self.logger.warning(
+                        "Could not finish the turn's committed artifact rows; the turn's stored "
+                        "record and its terminal publications still run",
+                        exc_info=True,
+                    )
 
             if (
                 chat_id

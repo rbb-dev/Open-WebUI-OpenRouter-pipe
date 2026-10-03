@@ -1676,7 +1676,7 @@ class Pipe:
                 models,
                 self.id,
                 rows,
-                not_fetched_slugs=catalog_manager.get_provider_overlay_skipped_slugs(),
+                not_fetched_slugs=catalog_manager.get_provider_overlay_hold_slugs(),
             )
             return True
         except Exception as exc:

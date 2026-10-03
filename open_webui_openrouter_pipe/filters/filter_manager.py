@@ -49,6 +49,7 @@ from ..core.config import (
 from ..core.timing_logger import timed
 from ..core.utils import (
     _ADAPTER_CACHE,
+    _DROP_UNUSABLE_PRIORITY,
     _KEEP_WHAT_STILL_FITS,
     _PRIORITY_FIELD,
     _clean_str,
@@ -3763,7 +3764,7 @@ __KEEP_WHAT_STILL_FITS__
             "ORDER": f'        ORDER: Literal[{order_literal}] = Field(default=_NO_PREF, description="Provider priority order")',
             "ALLOW_FALLBACKS": '        ALLOW_FALLBACKS: bool = Field(default=True, description="Allow backup providers if preferred unavailable")',
             "REQUIRE_PARAMETERS": '        REQUIRE_PARAMETERS: bool = Field(default=False, description="Only use providers supporting all request params")',
-            "DATA_COLLECTION": '        DATA_COLLECTION: Literal[_NO_PREF, "allow", "deny"] = Field(default=_NO_PREF, description="Data collection policy")',
+            "DATA_COLLECTION": '        DATA_COLLECTION: Literal[_NO_PREF, "allow", "deny"] = Field(default=_NO_PREF, description="Data collection policy; a stored no-preference written as a null is read as no preference, and a value outside the three options is still refused")',
             "ZDR": '        ZDR: bool = Field(default=False, description="Zero Data Retention - only ZDR endpoints")',
             "ENFORCE_DISTILLABLE_TEXT": '        ENFORCE_DISTILLABLE_TEXT: bool = Field(default=False, description="Only use providers whose author allows text distillation")',
             "ONLY": f'        ONLY: Literal[{only_ignore_literal}] = Field(default=_NO_PREF, description="Use only this provider")',
@@ -3835,25 +3836,19 @@ __KEEP_WHAT_STILL_FITS__
                 return field.get_default(call_default_factory=True)
             return value
 ''' if dropped else ""
-        priority_guard = '''
-        @field_validator("priority", mode="before")
+        null_choice_guard = '''
+        @field_validator("DATA_COLLECTION", mode="before")
         @classmethod
-        def _drop_unusable_priority(cls, value: Any, info: ValidationInfo) -> Any:
-            field = cls.model_fields[info.field_name]
-            table = _adapters_for(cls)
-            adapter = table.get(info.field_name)
-            if adapter is None:
-                adapter = table[info.field_name] = TypeAdapter(field.annotation)
-            try:
-                adapter.validate_python(value)
-            except ValidationError:
-                _warn_unusable_setting(info.field_name, value, field.get_default())
-                return field.get_default(call_default_factory=True)
+        def _null_means_no_preference(cls, value: Any, info: ValidationInfo) -> Any:
+            if value is None:
+                return _NO_PREF
             return value
-'''
+''' if "DATA_COLLECTION" in drawn else ""
+        priority_guard = _DROP_UNUSABLE_PRIORITY
 
         admin_controls = (
             f"{rendered_controls}\n{stale_choice_guard}{stale_value_guard}"
+            f"{null_choice_guard}"
             if visibility in ("admin", "both")
             else ""
         )
@@ -3869,7 +3864,7 @@ __KEEP_WHAT_STILL_FITS__
     class UserValves(BaseModel):
         """User-level provider routing preferences (can override admin defaults)."""
 {rendered_controls}
-{stale_choice_guard}{stale_value_guard}'''
+{stale_choice_guard}{stale_value_guard}{null_choice_guard}'''
 
         # Generate init based on visibility
         init_body = "        self.log = logging.getLogger(f\"openrouter.provider.{MODEL_SLUG}\")\n        self.log.setLevel(SRC_LOG_LEVELS.get(\"OPENAI\", logging.INFO))"
@@ -4184,7 +4179,7 @@ class Filter:
                     if skipped_id and _row_owner(existing_filters.get(slug)) in ("", pipe_identifier):
                         slug_to_filter_id[slug] = skipped_id
                     self.logger.debug(
-                        "Provider routing slug %s was not fetched this cycle (endpoint cap or sweep budget); "
+                        "Provider routing slug %s was not fetched this cycle; "
                         "its existing filter row is left exactly as it is.",
                         slug,
                     )

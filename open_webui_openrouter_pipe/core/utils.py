@@ -1117,6 +1117,37 @@ _KEEP_WHAT_STILL_FITS = '''        @model_validator(mode="before")
             return kept'''
 
 
+_DROP_UNUSABLE_PRIORITY = '''        @field_validator("priority", mode="before")
+        @classmethod
+        def _drop_unusable_priority(cls, value: Any, info: ValidationInfo) -> Any:
+            field = cls.model_fields[info.field_name]
+            table = _adapters_for(cls)
+            adapter = table.get(info.field_name)
+            if adapter is None:
+                adapter = table[info.field_name] = TypeAdapter(field.annotation)
+            try:
+                adapter.validate_python(value)
+            except ValidationError:
+                kept = field.get_default()
+                marker = (info.field_name, str(value), str(kept))
+                seen = cls.__dict__.get("_warned_unusable_priority")
+                if seen is None:
+                    seen = set()
+                    setattr(cls, "_warned_unusable_priority", seen)
+                if marker not in seen:
+                    seen.add(marker)
+                    logging.getLogger(__name__).warning(
+                        "Filter valve %s: stored value %r is not usable by this filter "
+                        "build; using the field default %r",
+                        info.field_name,
+                        value,
+                        kept,
+                    )
+                return field.get_default(call_default_factory=True)
+            return value
+'''
+
+
 _PRIORITY_FIELD = (
     '        priority: int = Field(\n'
     '            default=0,\n'

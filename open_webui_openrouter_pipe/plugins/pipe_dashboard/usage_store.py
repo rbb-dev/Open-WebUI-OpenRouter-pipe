@@ -30,6 +30,7 @@ from ...storage.persistence import (
     _db_session,
     _sanitize_table_fragment,
     generate_item_id,
+    raw_valve_column_decodes,
 )
 
 logger = logging.getLogger(__name__)
@@ -620,12 +621,12 @@ class UsageStore:
         except Exception:
             logger.debug("usage store could not read the persisted collect valve", exc_info=True)
             return False, False
-        if isinstance(raw, str) and raw.strip() and not isinstance(stored, dict):
+        if stored == {} and not raw_valve_column_decodes(raw):
             return False, False
         if not isinstance(stored, dict):
             return False, False
         if not bool(stored.get("ENABLE_PLUGIN_SYSTEM", False)):
-            return False, False
+            return False, True
         return bool(stored.get("PIPE_DASHBOARD_USAGE_COLLECT", False)), True
 
     def _persist_sync(self, rows: list[dict[str, Any]]) -> bool:
@@ -640,9 +641,15 @@ class UsageStore:
         _collect_on, _read_ok = self._stored_collect_flag(store)
         if not _collect_on:
             if not _read_ok:
-                logger.warning(
+                logger.log(
+                    warn_level(
+                        self._warned,
+                        "collect_valve_unreadable",
+                        cooldown_s=_US_PERSIST_WARN_COOLDOWN_S,
+                    ),
                     "usage store: the persisted PIPE_DASHBOARD_USAGE_COLLECT valve "
-                    "could not be read; no usage rows are being written"
+                    "could not be read (a rotated WEBUI_SECRET_KEY with valve encryption "
+                    "on does this); no usage rows are being written",
                 )
             return True
         session_factory = getattr(store, "_session_factory", None)

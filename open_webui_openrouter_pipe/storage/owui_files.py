@@ -313,6 +313,15 @@ def is_linkable_chat(chat_id: Any) -> bool:
     return bool(normalized) and not normalized.startswith(_unlinkable_chat_prefixes())
 
 
+def is_unheld_chat(chat_id: Any) -> bool:
+    return is_temporary_chat(chat_id) or (
+        isinstance(chat_id, str)
+        and bool(chat_id.strip())
+        and not is_linkable_chat(chat_id)
+        and not is_channel_chat(chat_id)
+    )
+
+
 @lru_cache(maxsize=1)
 def temporary_chat_prefixes() -> tuple[str, ...]:
     published = _published_chat_id_values()

@@ -151,6 +151,12 @@
   artifact store is closed, so a write slower than the 5-second job-drain budget finishes instead of being dropped with the store closing
   under it. The drain's budget is unchanged, so `close()` stays bounded; on the normal path there is nothing to wait for. The log an
   operator most wants — the turn a reload or a shutdown killed mid-answer — is the one that was at risk.
+- **Usage collection, a rotated `WEBUI_SECRET_KEY`** — when the stored valve row cannot be read (a `WEBUI_SECRET_KEY`
+  rotation with an older worker still serving), the usage writer now refuses and says so in one latched WARNING naming
+  the read. Until now it emptied the Usage tab with no pipe-side line. The refusal itself is unchanged — nothing is
+  written, and the batch is dropped rather than held — and a row that is merely unset, or plain JSON from an install
+  that never turned Open WebUI's valve encryption on, is still read as an ordinary off and does not warn.
+
 - **Video generation, machine callers** — a video turn that fails *before* OpenRouter answers the submission now
   reaches a caller with no chat as an HTTP error instead of a `200` with a Markdown card in it. A rejected job
   leaves with the status the pipe resolved on the status line and the same number in `error.code` (`502` when a
@@ -468,8 +474,20 @@
   per model per kind of failure, at WARNING, and repeats at DEBUG with the same message and traceback. A
   catalogue of a few hundred models against a database that is refusing writes cost a few hundred identical
   lines on *every* refresh, which buried the one line that names the model. A model that starts failing
-  *differently* warns again at WARNING. The whole-pass lines (`OpenRouter Image filter ensure failed` and its
-  siblings) are unchanged.
+  *differently* warns again at WARNING. The whole-pass lines are a separate latch, and the image one has
+  now moved with it: `OpenRouter Image filter ensure failed` warns once per cause — per exception class,
+  for as long as the fault lasts — and every later failure of the same kind is recorded at `DEBUG`, where
+  the Fusion, Web Tools, Image Gen and Direct Uploads lines already warned that way.
+- **`Files` boxes** — the pipe's own untick of the `Files` box inside `Built-in tools` is now recorded on
+  the model, under its `openrouter_pipe` metadata as `builtin_tool_defaults`, and it is unticked only on a
+  pass where the pipe unticked `File context` itself. A `Files` box you unticked by hand is no longer changed
+  as a side effect of that, and is never recorded as the pipe's. A model row written by an earlier release
+  carries no such record and keeps the box it has; an older pipe ignores the unknown key.
+- **temporary chats in the log** — a temporary chat's browser socket id is no longer written to the pipe's
+  log on the Direct Uploads path or on the dropped-row path; both records now read `<not retained>` in its
+  place, the same literal the video-intent path already used. The artifact-replay records join them, so the
+  pipe has one spelling for a withheld chat id rather than two. A saved chat's id is still named in full on
+  every one of them, and the record's counts and row fields are unchanged.
 - **`ModelFamily.capabilities`** — removed. It was an accessor no production code called, kept only for tests;
   `spec["capabilities"]` is still written, still read by `list_models()`, and still merged into Open WebUI's
   `meta.capabilities`, so nothing about a model's checkboxes in the model editor changes. A third-party

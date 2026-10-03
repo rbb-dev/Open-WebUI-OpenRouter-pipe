@@ -254,7 +254,7 @@ Provider routing is **not applied** to task model requests (title generation, ta
 
 The full provider list for each routed model comes from OpenRouter's public per-model endpoints API (`/api/v1/models/{author}/{slug}/endpoints`, no auth). Each endpoint entry carries a `tag` (for example `deepinfra/fp4` or `venice`); the segment before the `/` is the provider routing slug, and OpenRouter documents that a base slug used in `order`/`only`/`ignore` matches every endpoint variant of that provider. Endpoint entries also supply the provider display name and quantization levels for the dropdowns. Only the models named in the routing valves are fetched (at most 50 per sync, taken from the sorted union of both routing valves, each under the timeout valves that govern every other OpenRouter request), once per metadata sync cycle. The sweep is also bounded **as a whole at 45 s**: that is a fan budget, not a per-read cap, so each read keeps taking the operator's timeout valves and `HTTP_TOTAL_TIMEOUT_SECONDS` stays the lever for how long one read may take, while the size of the routing list no longer decides how long one metadata pass takes.
 
-OpenRouter's frontend catalog (`/api/frontend/v1/catalog/models`) now returns a single featured endpoint per model, so it can no longer supply the full provider list. It remains the source for model display names, and its single-endpoint data acts as a degraded fallback when the endpoints API cannot be reached — in that case the previous sync's richer data is retained where available, and any model the frontend catalog did not return this cycle keeps its previous entry too, so one frontend-catalog timeout cannot silently empty the provider dropdown for the models the catalog still lists. A warning names the affected models. A slug dropped by the 50-model fetch cap is a separate case, and a quieter one: it keeps whatever provider entry the previous cycle left it, its routing row is left exactly as it is, and it is named by the cap warning rather than reported as a fetch failure. A slug the 45 s sweep budget abandons is that same case, reached by a different route: the cap warning names the slugs it dropped, whereas the budget warning names only how many legs were still unfinished, because `_fetch_model_endpoints` swallows its own exceptions and answers `None`, so a slug that was read and found nothing cannot be told apart from one that was never read. Either way the treatment is identical — the previous cycle's entry, a routing row left exactly as it is, and nothing announced as a spelling problem — and a slug whose read *was* finished and *did* fail is still named by the "check slug spelling" warning.
+OpenRouter's frontend catalog (`/api/frontend/v1/catalog/models`) now returns a single featured endpoint per model, so it can no longer supply the full provider list. It remains the source for model display names, and its single-endpoint data acts as a degraded fallback when the endpoints API cannot be reached — in that case the previous sync's richer data is retained where available, and any model the frontend catalog did not return this cycle keeps its previous entry too, so one frontend-catalog timeout cannot silently empty the provider dropdown for the models the catalog still lists. A warning names the affected models. A slug dropped by the 50-model fetch cap is a separate case, and a quieter one: it keeps whatever provider entry the previous cycle left it, its routing row is left exactly as it is, and it is named by the cap warning rather than reported as a fetch failure. A slug the 45 s sweep budget abandons is that same case, reached by a different route: the cap warning names the slugs it dropped, whereas the budget warning names only how many legs were still unfinished, because `_fetch_model_endpoints` swallows its own exceptions and answers `None`, so a slug that was read and found nothing cannot be told apart from one that was never read. Either way the treatment is identical — the previous cycle's entry, a routing row left exactly as it is, and nothing announced as a spelling problem — and a slug whose read *was* finished and *did* fail is still named by the "check slug spelling" warning. A read that did not answer is a fourth kind of case, and the quietest of them: when none of the three sources gives endpoint data for a slug this cycle, its row is held exactly as the cap case holds it -- same state, same reason, and named by the log. A read that failed is not evidence that the model has no providers, so a transient endpoints-API error, a non-dict body or a payload without an `endpoints` list all leave the row on and attached. Only a read that ANSWERS and reports no providers retires a row, and that is the case the next paragraph describes.
 
 ### Variant endpoint filtering
 
@@ -305,8 +305,9 @@ on the row keeps its stored value, and the repaired key still counts as explicit
 so a user's own preference is not silently replaced by the admin's. `DATA_COLLECTION` is
 the exception: its three options are a fixed set that cannot change between builds, so a
 value outside them is still refused rather than quietly turned into a policy the operator
-never chose. The same healing is on the user-side class, because a user row is rebuilt the
-same way.
+never chose. The one value it does read is a stored null — what a client writes when the
+control is unset — and that becomes "(no preference)", which is what it meant. The same
+healing is on the user-side class, because a user row is rebuilt the same way.
 
 Open WebUI builds the admin and user classes straight from the stored row with no error
 handling around it, so a single value the current build cannot accept would otherwise
@@ -323,14 +324,25 @@ When a model is removed from routing valves:
 
 A model that stays in the routing valves but whose catalog entry currently reports no
 providers is detached and disabled the same way, and is not re-advertised on a later
-pass. The row is not deleted either, so settings survive if providers come back. A
-deactivation the pipe itself performs comes back by itself when providers return; only an
-admin's own hand-switch-off survives the same cycle, and for that one switch it back on in
-the Functions list. Such a re-enable is the operator taking the row back: while the model
-is still in the routing valves the row stays on and the pipe writes nothing to it, neither
-`is_active: False` nor a new switch-off stamp, and it holds there on every later pass. Take
-the model out of the routing valves and the pipe retires the row again on the next
-model-list refresh, exactly as it would have done without the re-enable.
+pass. That holds only for a read which ANSWERED and named no providers. A slug the
+endpoints read did not answer for is in neither set: its row is not retired either, and
+the spelling warning it does raise names it among the models the endpoints data is
+missing for rather than as a retirement. In both cases the row is not deleted, so
+settings survive if providers come back.
+
+A deactivation the pipe itself performs comes back by itself when providers return.
+An admin's own hand-switch-off survives too, and for that one switch it back on in the
+Functions list. Such a re-enable is the operator taking the row back: while the model is
+still in the routing valves the row stays on and the pipe writes nothing to it, neither
+`is_active: False` nor a new switch-off stamp, and it holds there on every later pass
+whose own write lands in a **later** second than the pipe's.
+
+The second is the whole of it. The stamp is whole seconds, so a hand-off landing in the
+same second as the pipe's own switch-off is not told apart from it: `updated_at` still
+reads as the pipe's own, and the row is re-armed on the next pass that runs inside that
+second. A second later, the re-enable sticks for good. Take the model out of the routing
+valves and the pipe retires the row again on the next model-list refresh, exactly as it
+would have done without the re-enable.
 
 A row left switched off by a pass that was cancelled between its insert and its activation
 is not one of those. The insert stamps the row as the pipe's own switch-off, so it is

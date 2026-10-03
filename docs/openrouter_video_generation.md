@@ -133,7 +133,11 @@ video and image models, whatever `DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS` is set
 to. Left on — Open WebUI's own default — an attachment makes Open WebUI run an
 extra billed round-trip that turns the conversation into search queries and
 pastes the retrieved text into what was meant to be a video prompt. As with the
-tools box, the pipe fills it in only where a model has no setting yet.
+tools box, the pipe fills it in only where a model has no setting yet. The `Files` box inside
+`Built-in tools` follows from that same untick, and the pipe records which of those boxes it
+filled under the model's own `openrouter_pipe` metadata, so a box you set by hand is neither
+recorded as the pipe's nor changed by it; a row filled by an earlier version carries no such
+record and is left exactly as it is.
 
 Turning it off has a second, wanted effect: attachments a video model was sent
 then stay in the chat as normal attachments as well, instead of being taken out
@@ -1385,7 +1389,9 @@ generation job and returns the model's help blurb directly:
 - **Controls**: every control this model's filter draws — the model's own
   settings, each with a one-sentence description tailored to it, then the
   four reuse-of-previous-video controls, which read the same on every
-  model because they are pipe behaviour.
+  model because they are pipe behaviour. With `AUTO_ATTACH_VIDEO_FILTERS`
+  off there is no panel carrying those four on the model, so they are left
+  off the card too; the model's own controls are unaffected.
 - **Tips & pitfalls**: 3–4 practical bullets — what works, what fails,
   prompt patterns.
 
@@ -2284,7 +2290,7 @@ Functions → OpenRouter pipe → Valves; the per-model filter ones live on each
 |-------|---------|-------|---------|
 | `ENABLE_VIDEO_GENERATION` | `True` | bool | Master kill switch. A video-generation model is never answered from as a Fusion panel, judge or synthesis member: a Fusion turn that names one takes the ordinary chat path and starts no job. False removes all video models from `pipes()` output and deactivates all installed per-model video filter rows at the next model-list refresh; the rows are identified by their source, so a hand-made copy of one of these filters' source is switched off too. `AUTO_INSTALL_VIDEO_FILTERS` is the install valve for that family. Turning it back on re-activates a filter the pipe itself switched off whose family's install valve, `AUTO_INSTALL_VIDEO_FILTERS`, is still on; a row that valve has retired stays off until that valve comes back on. |
 | `AUTO_INSTALL_VIDEO_FILTERS` | `True` | bool | Install per-model filter rows in OWUI Functions table on `pipes()`. A model whose catalogue entry publishes no video contract is left as it is: any filter it already has is kept, and none is installed for it, and the same holds for a model whose install this pass could not write. With this off, an installed row whose stored source is out of date is logged but never rewritten, so every fix to that filter stays undelivered until it is on. Turning this off retires the rows the pipe installed for it - switched off, not deleted, so their settings survive - and turning it back on brings them back; a copy an admin installed by hand carries no such record and is left alone. A row an earlier install of this pipe wrote — the pipe function was renamed or re-created, so its record names an id Open WebUI no longer loads as a pipe — is retired too. |
-| `AUTO_ATTACH_VIDEO_FILTERS` | `True` | bool | Attach each filter to its corresponding video model row. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next catalog fetch. |
+| `AUTO_ATTACH_VIDEO_FILTERS` | `True` | bool | Attach each filter to its corresponding video model row. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone, and a `help` reply on a video model no longer lists the four reuse-of-previous-video controls, because the panel carrying them is not on the model. A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next catalog fetch. |
 | `AUTO_DEFAULT_VIDEO_FILTERS` | `True` | bool | Keep per-model filter enabled by default per chat (**re-asserted on every catalog metadata sync** — admins who manually disable a filter will see it re-defaulted on the next sync; set to `False` to opt out). A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next catalog fetch. |
 | `VIDEO_INITIAL_POLL_DELAY_SECONDS` | `5.0` | 0.0–60.0 | Wait before the first poll on a freshly submitted job. |
 | `VIDEO_POLL_INTERVAL_SECONDS` | `5.0` | 1.0–60.0 | Base polling interval. |

@@ -189,7 +189,9 @@ class PipeDashboardPlugin(PluginBase):
                 "request, with no restart and whether or not the dashboard model itself is on. "
                 "Turning it off stops records written by the background abandon sweep as well as by the "
                 "request path, on every worker including ones that have served no request, with no "
-                "restart; a request already in flight when you switch it off still records its own usage."
+                "restart; a request already in flight when you switch it off still records its own usage. "
+                "A stored row this server cannot decrypt counts as off, and the refusal is reported in the "
+                "log naming the read."
             ),
         )),
         "PIPE_DASHBOARD_USAGE_RETENTION_DAYS": (int, Field(

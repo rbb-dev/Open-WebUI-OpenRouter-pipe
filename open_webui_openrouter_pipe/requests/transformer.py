@@ -185,19 +185,19 @@ def _as_replayed(item: dict[str, Any], fallback_id: Any = None) -> list[dict[str
     )
 
 
+def _round_own_stamp(item: dict[str, Any]) -> Any:
+    return item.get(BUILTIN_ASK_USER_ROUND_KEY)
+
+
 def _round_keeps_its_ask_user_answer(
     call_id: Any,
     name: str,
     ask_user_names: frozenset[str],
-    recorded_rounds: frozenset[tuple[str, str]],
-    builtin_rounds: frozenset[tuple[str, str]],
+    own_stamp: Any = None,
 ) -> bool:
-    key = (str(call_id or ""), name)
-    if key in builtin_rounds:
-        return True
-    if key in recorded_rounds:
-        return False
-    return name in ask_user_names
+    if own_stamp is None:
+        return name in ask_user_names
+    return bool(own_stamp)
 
 
 def _orphaned_round_markers(
@@ -232,33 +232,38 @@ def _orphaned_round_markers(
     return orphaned_calls, orphaned_outputs
 
 
-def _replay_round_name(item_type: str, name: str, call_id: Any, pending: dict[str, list[str]]) -> str:
+def _replay_round_name(
+    item_type: str,
+    name: str,
+    own_stamp: Any,
+    call_id: Any,
+    pending: dict[str, list[tuple[str, Any]]],
+) -> tuple[str, Any]:
     key = str(call_id or "")
     if item_type == "function_call":
-        pending.setdefault(key, []).append(name)
-        return name
+        pending.setdefault(key, []).append((name, own_stamp))
+        return name, own_stamp
     if item_type == "function_call_output":
         queue = pending.get(key) or []
-        return queue.pop(0) if queue else ""
-    return name
+        return queue.pop(0) if queue else ("", None)
+    return name, own_stamp
 
 
 def _without_tool_result(
     item: dict[str, Any],
     name: str,
     ask_user_names: frozenset[str],
-    recorded_rounds: frozenset[tuple[str, str]],
-    builtin_rounds: frozenset[tuple[str, str]],
+    own_stamp: Any = None,
 ) -> list[dict[str, Any]] | None:
     item_type = item.get("type")
     if item_type == "function_call":
         exempt = _round_keeps_its_ask_user_answer(
-            item.get("call_id"), name, ask_user_names, recorded_rounds, builtin_rounds
+            item.get("call_id"), name, ask_user_names, own_stamp
         )
         return None if exempt else [{**item, "arguments": "{}"}]
     if item_type == "function_call_output":
         if _round_keeps_its_ask_user_answer(
-            item.get("call_id"), name, ask_user_names, recorded_rounds, builtin_rounds
+            item.get("call_id"), name, ask_user_names, own_stamp
         ):
             return None
         text = tool_output_text_and_pictures(item.get("output"))[0]
@@ -1145,7 +1150,7 @@ def _tool_images_message(
     ]}
 
 
-_TEMPORARY_CHAT_LOG_SUBJECT = "<temporary chat>"
+_TEMPORARY_CHAT_LOG_SUBJECT = "<not retained>"
 
 
 def _chat_log_subject(chat_id: Any) -> Any:
@@ -1259,6 +1264,10 @@ async def transform_messages_to_input(
     artifact_loader: Callable[
         [str | None, str | None, list[str]],
         Awaitable[dict[str, dict[str, Any]] | tuple[dict[str, dict[str, Any]], dict[str, str]]],
+    ]
+    | None = None,
+    ask_user_round_loader: Callable[
+        [str | None, list[str]], Awaitable[dict[str, dict[str, Any]]]
     ]
     | None = None,
     pruning_turns: int = 0,
@@ -1536,7 +1545,9 @@ async def transform_messages_to_input(
 
         artifact_groups: dict[str | None, dict[str, dict]] = {}
         artifact_producers: dict[str | None, dict[str, str]] = {}
-        if artifact_loader and chat_id and openwebui_model_id:
+        ask_user_loader = ask_user_round_loader if openwebui_model_id else None
+        full_loader = artifact_loader if chat_id and openwebui_model_id else None
+        if full_loader or ask_user_loader:
             wanted_by_group: dict[str | None, list[str]] = {}
             for entry_index, entry in enumerate(messages):
                 entry_role = (entry.get("role") or "").lower()
@@ -1551,14 +1562,48 @@ async def transform_messages_to_input(
                 for segment in _marker_segments_for(entry_text, entry_spans):
                     if segment.get("type") == "marker" and segment["marker"] not in group_markers:
                         group_markers.append(segment["marker"])
+
+            async def _load_ask_user_group(
+                loader: Callable[[str | None, list[str]], Awaitable[dict[str, dict[str, Any]]]],
+                load_group_id: str | None,
+                load_group_markers: list[str],
+            ) -> tuple[str | None, dict[str, dict]]:
+                try:
+                    return load_group_id, await loader(
+                        load_group_id, load_group_markers
+                    )
+                except Exception:
+                    logger.warning(
+                        "ask_user round loader failed for message_id=%s",
+                        load_group_id, exc_info=True,
+                    )
+                    return load_group_id, {}
+
+            if ask_user_loader:
+                for group_id, loaded in await asyncio.gather(
+                    *(
+                        _load_ask_user_group(ask_user_loader, gid, group_markers)
+                        for gid, group_markers in wanted_by_group.items()
+                        if group_markers
+                    )
+                ):
+                    artifact_groups[group_id] = loaded
+
             async def _load_group(
                 gate: asyncio.Semaphore,
+                loader: Callable[
+                    [str | None, str | None, list[str]],
+                    Awaitable[
+                        dict[str, dict[str, Any]]
+                        | tuple[dict[str, dict[str, Any]], dict[str, str]]
+                    ],
+                ],
                 load_group_id: str | None,
                 load_group_markers: list[str],
             ) -> tuple[str | None, dict[str, dict], dict[str, str]]:
                 async with gate:
                     try:
-                        loaded = await artifact_loader(
+                        loaded = await loader(
                             chat_id, load_group_id, load_group_markers
                         )
                         if isinstance(loaded, tuple):
@@ -1575,10 +1620,10 @@ async def transform_messages_to_input(
                 for group_id, group_markers in wanted_by_group.items()
                 if group_markers
             ]
-            if pending_groups:
+            if full_loader and pending_groups:
                 gate = asyncio.Semaphore(_ARTIFACT_GROUP_CONCURRENCY)
                 for group_id, loaded, producers in await asyncio.gather(
-                    *(_load_group(gate, gid, markers) for gid, markers in pending_groups)
+                    *(_load_group(gate, full_loader, gid, markers) for gid, markers in pending_groups)
                 ):
                     artifact_groups[group_id] = loaded
                     artifact_producers[group_id] = producers
@@ -1597,8 +1642,7 @@ async def transform_messages_to_input(
                 normalized_rows[key] = normalize_persisted_item(row)
             return normalized_rows[key]
 
-        recorded_rounds: set[tuple[str, str]] = set()
-        builtin_rounds: set[tuple[str, str]] = set()
+        ask_user_round_stamps: dict[tuple[str | None, str], list[Any]] = {}
         for entry_index, entry in enumerate(messages):
             if (entry.get("role") or "").lower() != "assistant":
                 continue
@@ -1617,18 +1661,20 @@ async def transform_messages_to_input(
                 stored = _normalized_row(payload)
                 if not isinstance(stored, dict) or stored.get("type") != "function_call":
                     continue
-                if BUILTIN_ASK_USER_ROUND_KEY not in stored:
-                    continue
                 call_id = str(stored.get("call_id") or "")
                 if not call_id:
                     continue
-                round_key = (call_id, str(stored.get("name") or ""))
-                if stored.get(BUILTIN_ASK_USER_ROUND_KEY):
-                    builtin_rounds.add(round_key)
-                else:
-                    recorded_rounds.add(round_key)
-        stamped_ask_user_rounds = frozenset(builtin_rounds)
-        recorded_ask_user_rounds = frozenset(recorded_rounds)
+                ask_user_round_stamps.setdefault((group_id, call_id), []).append(
+                    _round_own_stamp(stored)
+                )
+
+        def _chat_round_stamp(group_id: str | None, call_id: str, ordinal: int) -> Any:
+            queue = ask_user_round_stamps.get((group_id, call_id))
+            if not queue or ordinal >= len(queue):
+                return None
+            return queue[ordinal]
+
+        chat_round_ordinals: dict[tuple[int, str], int] = {}
 
         missing_artifact_markers: list[str] = []
         deferred_vision_skips = 0
@@ -1701,8 +1747,15 @@ async def transform_messages_to_input(
 
                 round_name = tool_name_at[idx] or ""
                 issuer = issuer_at[idx]
+                ordinal_key = (issuer, call_id)
+                ordinal = chat_round_ordinals.get(ordinal_key, 0)
+                chat_round_ordinals[ordinal_key] = ordinal + 1
+                issuer_entry = messages[issuer] if issuer >= 0 else None
+                issuer_group = None
+                if isinstance(issuer_entry, dict):
+                    issuer_group = issuer_entry.get("message_id") or _message_identifier(issuer_entry)
                 round_exempt = _round_keeps_its_ask_user_answer(
-                    call_id, round_name, ask_user_names, recorded_ask_user_rounds, stamped_ask_user_rounds
+                    call_id, round_name, ask_user_names, _chat_round_stamp(issuer_group, call_id, ordinal)
                 )
                 if not round_exempt and not (
                     issuer >= 0 and issuer in window_armed_at and not is_picture_output(raw_content)
@@ -3253,7 +3306,7 @@ async def transform_messages_to_input(
                 orphaned_output_ids: set[str] = set()
                 orphaned_call_markers: set[str] = set()
                 orphaned_output_markers: set[str] = set()
-                if artifact_loader and chat_id and openwebui_model_id and markers:
+                if (full_loader or ask_user_loader) and markers:
                     batch = artifact_groups.get(msg_id) or {}
                     group_producers = artifact_producers.get(msg_id) or {}
                     db_artifacts = {marker: batch[marker] for marker in markers if marker in batch}
@@ -3287,7 +3340,7 @@ async def transform_messages_to_input(
                             sorted(orphaned_output_ids),
                         )
 
-                replay_pending: dict[str, list[str]] = {}
+                replay_pending: dict[str, list[tuple[str, Any]]] = {}
                 for segment in segments:
                     if segment["type"] == "marker":
                         artifact_payload = db_artifacts.get(segment["marker"])
@@ -3348,15 +3401,15 @@ async def transform_messages_to_input(
                                     msg_id,
                                 )
                                 continue
-                            replay_round_name = _replay_round_name(
-                                item_type, str(item.get("name") or ""), item.get("call_id"), replay_pending
+                            replay_round_name, replay_round_stamp = _replay_round_name(
+                                item_type, str(item.get("name") or ""), _round_own_stamp(item),
+                                item.get("call_id"), replay_pending,
                             )
                             replay_round_exempt = _round_keeps_its_ask_user_answer(
                                 item.get("call_id"),
                                 replay_round_name,
                                 ask_user_names,
-                                recorded_ask_user_rounds,
-                                stamped_ask_user_rounds,
+                                replay_round_stamp,
                             )
                             if item_type == "function_call_output" and not (
                                 replay_round_exempt
@@ -3368,8 +3421,7 @@ async def transform_messages_to_input(
                                     item,
                                     replay_round_name,
                                     ask_user_names,
-                                    recorded_ask_user_rounds,
-                                    stamped_ask_user_rounds,
+                                    replay_round_stamp,
                                 )
                                 if withheld_items is not None:
                                     openai_input.extend(_from_pipe_storage(withheld) for withheld in withheld_items)
@@ -3404,6 +3456,7 @@ async def transform_messages_to_input(
                     appended_text_chunks[-1]["reasoning_details"] = msg_reasoning_details
 
             if msg_tool_calls:
+                live_round_ordinals: dict[str, int] = {}
                 for index, tool_call in enumerate(msg_tool_calls):
                     if not isinstance(tool_call, dict):
                         continue
@@ -3431,8 +3484,11 @@ async def transform_messages_to_input(
                             args_text = json.dumps(arguments or {}, ensure_ascii=False)
                         except (TypeError, ValueError):
                             args_text = "{}"
+                    live_ordinal = live_round_ordinals.get(tool_call_id, 0)
+                    live_round_ordinals[tool_call_id] = live_ordinal + 1
                     if _tool_round_withheld(msg_turn_index) and not _round_keeps_its_ask_user_answer(
-                        tool_call_id, name, ask_user_names, recorded_ask_user_rounds, stamped_ask_user_rounds
+                        tool_call_id, name, ask_user_names,
+                        _chat_round_stamp(msg_id, tool_call_id, live_ordinal),
                     ):
                         args_text = "{}"
 

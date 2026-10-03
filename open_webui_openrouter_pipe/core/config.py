@@ -567,6 +567,27 @@ DEFAULT_ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE = (
     "{{/if}}\n"
 )
 
+DEFAULT_FUSION_PANEL_TOO_LARGE_TEMPLATE = (
+    "### ⚠️ Fusion Panel Too Large\n\n"
+    "This request asked for more Fusion panel models than a panel can carry, so no panel ran.\n\n"
+    "**Error ID:** `{error_id}`\n"
+    "{{#if requested_model}}\n"
+    "**Model:** `{requested_model}`\n"
+    "{{/if}}\n"
+    "{{#if reason}}\n"
+    "**Reason:** {reason}\n"
+    "{{/if}}\n"
+    "{{#if timestamp}}\n"
+    "**Time:** {timestamp}\n"
+    "{{/if}}\n\n"
+    "**What to do:**\n"
+    "- Remove models from the Fusion panel until it fits the limit, then send the message again\n"
+    "- Or clear `FUSION_ANALYSIS_MODELS` in the Fusion filter to fall back to the preset panel\n"
+    "{{#if support_email}}\n"
+    "\n**Support:** {support_email}\n"
+    "{{/if}}\n"
+)
+
 DEFAULT_DIRECT_UPLOAD_FAILURE_TEMPLATE = (
     "### ⚠️ Direct Upload Issue\n\n"
     "OpenRouter Direct Uploads could not be applied to this request.\n\n"
@@ -2113,6 +2134,19 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "missing stored files, or other checks that fail before the request is sent)."
         ),
     )
+    FUSION_PANEL_TOO_LARGE_TEMPLATE: str = Field(
+        default=DEFAULT_FUSION_PANEL_TOO_LARGE_TEMPLATE,
+        description=(
+            "Markdown template used when a Fusion request carries more panel models than a panel can carry. "
+            "A panel runs one model at a time in parallel and OpenRouter accepts 1-8 of them, so a longer list "
+            "is refused with this card rather than shortened: the extra members are named in the reason, and no "
+            "panel member is called at all. The same limit holds on both engines -- on the internal backend the "
+            "pipe runs the panel itself and refuses here, and on the hosted backend OpenRouter applies its own "
+            "1-8 rule. Every other route into a Fusion panel (the Fusion filter, a preset) is already inside the "
+            "limit, so this card is for a hand-edited plugin entry, an API caller posting `plugins` directly, or a "
+            "per-chat panel edit."
+        ),
+    )
 
     AUTHENTICATION_ERROR_TEMPLATE: str = Field(
         default=DEFAULT_AUTHENTICATION_ERROR_TEMPLATE,
@@ -2442,7 +2476,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     )
     UPDATE_MODEL_CAPABILITIES: bool = Field(
         default=True,
-        description="When enabled, automatically sync model capabilities (vision, file_upload, web_search, etc.) to Open WebUI model metadata. OpenRouter's catalog publishes no capability verdicts, so the pipe derives them from the model's own row: `vision` and image output from its input and output modalities, `web_search` from whether its pricing names a paid web search. Four of the boxes are the pipe's own rather than the row's — `file_upload` (the pipe's direct-upload blocklist) and `code_interpreter`, `status_updates` and `usage`, which every chat model gets whatever its row says; on an image-only or video model the whole set is the pipe's. Four checkboxes are written only where the model has no setting of its own yet, so a value set by hand is kept: `web_search`, `citations`, `File context` and `Built-in tools` — the last two being the pipe's own rule for a model that answers with a picture or a clip and no text, not anything read from the row. Disable to manage capabilities manually.",
+        description="When enabled, automatically sync model capabilities (vision, file_upload, web_search, etc.) to Open WebUI model metadata. OpenRouter's catalog publishes no capability verdicts, so the pipe derives them from the model's own row: `vision` and image output from its input and output modalities, `web_search` from whether its pricing names a paid web search. Four of the boxes are the pipe's own rather than the row's — `file_upload` (the pipe's direct-upload blocklist) and `code_interpreter`, `status_updates` and `usage`, which every chat model gets whatever its row says; on an image-only or video model the whole set is the pipe's. Four checkboxes are written only where the model has no setting of its own yet, so a value set by hand is kept: `web_search`, `citations`, `File context` and `Built-in tools` — the last two being the pipe's own rule for a model that answers with a picture or a clip and no text, not anything read from the row. The `Files` box inside Built-in tools is unticked only where the pipe unticked `File context` on that same pass, and the boxes it filled are recorded under the model's own openrouter_pipe metadata as `builtin_tool_defaults`, so a box you set by hand is neither recorded as the pipe's nor changed by it; a row filled before that record existed keeps its box. Disable to manage capabilities manually.",
     )
     DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS: bool = Field(
         default=True,
@@ -2648,7 +2682,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     )
     AUTO_ATTACH_VIDEO_FILTERS: bool = Field(
         default=True,
-        description="Automatically attach the OpenRouter Video Generation filter to OpenRouter video-generation models. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next catalog fetch.",
+        description="Automatically attach the OpenRouter Video Generation filter to OpenRouter video-generation models. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone, and a help reply on a video model no longer lists the four reuse-of-previous-video controls, because the panel carrying them is not on the model. A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next catalog fetch.",
     )
     AUTO_DEFAULT_VIDEO_FILTERS: bool = Field(
         default=True,
@@ -3151,6 +3185,10 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "endpoints host a slug the budget abandons is treated exactly like a capped one: it keeps the provider data "
             "from the last cycle, its routing entry offers fewer providers, its routing row is left as it is, and the "
             "log counts what was still unfinished at WARNING without naming it. "
+            "A slug whose provider read fails rather than answering keeps its routing row, its attachment and its "
+            "stored provider list for that sync, and the log names it: a read that did not answer is not evidence "
+            "that the model has no providers. A read that answers and reports none is different - that row is "
+            "detached and switched off, and the log says to check the slug's spelling. "
             "Leave empty to disable admin provider routing filters. This is a per-model list: "
             "clicking Global on one of its rows in Workspace > Functions would apply that model's "
             "preferences to every model, and the pipe reverts the click on the next model-list refresh."
@@ -3171,6 +3209,10 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "seconds, so on a slow endpoints host a slug the budget abandons is treated exactly like a capped one: it "
             "keeps the provider data from the last cycle, its routing entry offers fewer providers, its routing row "
             "is left as it is, and the log counts what was still unfinished at WARNING without naming it. "
+            "A slug whose provider read fails rather than answering keeps its routing row, its attachment and its "
+            "stored provider list for that sync, and the log names it: a read that did not answer is not evidence "
+            "that the model has no providers. A read that answers and reports none is different - that row is "
+            "detached and switched off, and the log says to check the slug's spelling. "
             "Leave empty to disable user provider routing filters. This is a per-model list: "
             "clicking Global on one of its rows in Workspace > Functions would apply that model's "
             "preferences to every model, and the pipe reverts the click on the next model-list refresh."

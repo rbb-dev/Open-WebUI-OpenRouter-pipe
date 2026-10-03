@@ -323,6 +323,10 @@ class ResponsesBody(BaseModel):
             Awaitable[dict[str, dict[str, Any]] | tuple[dict[str, dict[str, Any]], dict[str, str]]],
         ]
         | None = None,
+        ask_user_round_loader: Callable[
+            [str | None, list[str]], Awaitable[dict[str, dict[str, Any]]]
+        ]
+        | None = None,
         pruning_turns: int = 0,
         transformer_context: Any | None = None,
         transformer_valves: Pipe.Valves | None = None,
@@ -417,6 +421,7 @@ class ResponsesBody(BaseModel):
                 chat_id=chat_id,
                 openwebui_model_id=openwebui_model_id,
                 artifact_loader=artifact_loader,
+                ask_user_round_loader=ask_user_round_loader,
                 pruning_turns=pruning_turns,
                 replayed_reasoning_refs=replayed_reasoning_refs,
                 user_obj=user_obj,
@@ -1941,7 +1946,12 @@ def _drop_include_reasoning_for_unsupported_fallbacks(
         if dropped is False:
             primary = str(request_payload.get("model") or "")
             if "reasoning" in ModelFamily.supported_parameters(primary):
-                request_payload["reasoning"] = _fallback_off_carry(primary)
+                existing = request_payload.get("reasoning")
+                merged = dict(existing) if isinstance(existing, dict) else {}
+                substitute = _fallback_off_carry(primary)
+                merged.pop("effort", None)
+                merged.update(substitute)
+                request_payload["reasoning"] = merged
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 "Dropped include_reasoning=%r: fallback %r does not list it.",

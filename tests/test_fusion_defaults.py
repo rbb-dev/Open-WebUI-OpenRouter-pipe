@@ -18,6 +18,7 @@ from open_webui_openrouter_pipe.core.fusion_defaults import (
     DEFAULT_FUSION_SYNTHESIS_SYSTEM_PROMPT,
     FUSION_PRESET_JUDGES,
     FUSION_PRESET_PANELS,
+    FusionPanelTooLargeError,
     FusionRunPlan,
     MAX_FUSION_MAX_TOOL_CALLS,
     MAX_FUSION_PANEL_MODELS,
@@ -137,11 +138,6 @@ class TestResolveFusionRun:
         assert plan.panel_models == FUSION_PRESET_PANELS["general-high"]
         assert plan.judge_model == "c/z"
 
-    def test_panel_capped_at_eight(self):
-        models = [f"v/m{i}" for i in range(12)]
-        plan = resolve_fusion_run({"id": "fusion", "analysis_models": models})
-        assert plan.panel_models == tuple(models[:8])
-
     def test_panel_entries_sanitized(self):
         plan = resolve_fusion_run({"id": "fusion", "analysis_models": [" a/x ", "", 7, "b/y"]})
         assert plan.panel_models == ("a/x", "b/y")
@@ -187,8 +183,3 @@ class TestPanelDedup:
     def test_duplicate_models_deduped_order_preserved(self):
         plan = resolve_fusion_run({"id": "fusion", "analysis_models": ["a/x", "b/y", "a/x", "a/x", "c/z"]})
         assert plan.panel_models == ("a/x", "b/y", "c/z")
-
-    def test_dedup_applies_before_cap(self):
-        models = ["dup/m", "dup/m"] + [f"v/m{i}" for i in range(9)]
-        plan = resolve_fusion_run({"id": "fusion", "analysis_models": models})
-        assert plan.panel_models == ("dup/m",) + tuple(f"v/m{i}" for i in range(7))

@@ -24,6 +24,7 @@ from ..core.config import (
 )
 from ..core.utils import (
     _ADAPTER_CACHE,
+    _DROP_UNUSABLE_PRIORITY,
     _KEEP_WHAT_STILL_FITS,
     _PRIORITY_FIELD,
     scrub_surrogates,
@@ -911,7 +912,7 @@ import logging
 import math
 from typing import Annotated, Any, Literal, Optional
 
-from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError, ValidationInfo, field_validator, model_validator
 
 {_ADAPTER_CACHE}
 
@@ -969,6 +970,7 @@ class Filter:
     toggle = True
 
     class Valves(BaseModel):
+{_DROP_UNUSABLE_PRIORITY}
 {_PRIORITY_FIELD}
 
     class UserValves(BaseModel):
