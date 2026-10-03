@@ -325,6 +325,24 @@ def _prior_videos_in(cleaned: str, message_index: int, start: int) -> list[dict[
     return results
 
 
+def _message_text_and_attachments(message: dict[str, Any]) -> tuple[str, int]:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content, 0
+    if not isinstance(content, list):
+        return "", 0
+    text_parts: list[str] = []
+    attached = 0
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") == "text":
+            text_parts.append(str(part.get("text") or ""))
+        elif part.get("type") in ("image_url", "input_image"):
+            attached += 1
+    return "\n".join(text_parts), attached
+
+
 def _scan_messages(messages: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
     if not isinstance(messages, list):
         return [], [], 0
@@ -334,25 +352,22 @@ def _scan_messages(messages: Any) -> tuple[list[dict[str, Any]], list[dict[str, 
     conversation: list[dict[str, Any]] = []
     prior_videos: list[dict[str, Any]] = []
     clarifications = 0
-    for index, message in enumerate(messages):
+    windowed = False
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
         if not isinstance(message, dict):
+            continue
+        if windowed:
+            if index < end and message.get("role") == "assistant" and any(
+                True for _ in _iter_kind_marker_spans(
+                    _message_text_and_attachments(message)[0], kind=INTENT_CLARIFICATION,
+                )
+            ):
+                clarifications += 1
             continue
         role = message.get("role", "user")
         content = message.get("content")
-        raw = ""
-        attached = 0
-        if isinstance(content, str):
-            raw = content
-        elif isinstance(content, list):
-            text_parts: list[str] = []
-            for part in content:
-                if not isinstance(part, dict):
-                    continue
-                if part.get("type") == "text":
-                    text_parts.append(str(part.get("text") or ""))
-                elif part.get("type") in ("image_url", "input_image"):
-                    attached += 1
-            raw = "\n".join(text_parts)
+        raw, attached = _message_text_and_attachments(message)
         cleaned = strip_intent_blocks(raw)
         text = neutralise_control_tokens(cleaned)
         conversation.append({
@@ -362,12 +377,16 @@ def _scan_messages(messages: Any) -> tuple[list[dict[str, Any]], list[dict[str, 
             "has_video_marker": bool(_VIDEO_TAG_RE.search(text)) if role == "assistant" else False,
             "attached_image_count": attached,
         })
-        if index < end and message.get("role") == "assistant" and any(
+        if index < end and role == "assistant" and any(
             True for _ in _iter_kind_marker_spans(raw, kind=INTENT_CLARIFICATION)
         ):
             clarifications += 1
-        if message.get("role") == "assistant" and isinstance(content, str) and content:
+        if role == "assistant" and isinstance(content, str) and content:
             prior_videos.extend(_prior_videos_in(cleaned, index, len(prior_videos)))
+        if len(conversation) > _MAX_CONVERSATION_ROWS and len(prior_videos) > _MAX_PRIOR_VIDEOS:
+            windowed = True
+    conversation.reverse()
+    prior_videos.reverse()
     return conversation, prior_videos, clarifications
 
 

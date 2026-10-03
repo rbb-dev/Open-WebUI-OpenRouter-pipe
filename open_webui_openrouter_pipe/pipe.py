@@ -176,7 +176,11 @@ from .core.warn_latch import warn_level
 from .integrations.anthropic import _is_anthropic_model_id
 
 # Import logging
-from .logging.session_log_manager import SessionLogManager, resolve_message_id
+from .logging.session_log_manager import (
+    SESSION_LOG_OWNERSHIP_MEMO,
+    SessionLogManager,
+    resolve_message_id,
+)
 
 # Import model management
 from .models.catalog_manager import ModelCatalogManager, every_web_tool_is_off
@@ -392,6 +396,8 @@ _VALVE_DRAIN_MAX_FLUSHES = 64
 _TOOL_THREAD_CAP: int = 8
 
 _TOOL_CANCEL_GRACE_SECONDS: float = 5.0
+
+_PERSIST_DRAIN_SECONDS: float = 5.0
 
 _PD_LIVENESS_INTERVAL_S: float = 60.0
 
@@ -855,6 +861,7 @@ class Pipe:
         self._video_user_active_jobs: dict[str, set[str]] = {}
         self._active_jobs: dict[asyncio.Task[None], _PipeJob] = {}
         self._abandoned_tool_tasks: set[asyncio.Task[Any]] = set()
+        self._session_log_persists: set[asyncio.Task[Any]] = set()
         self._video_message_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._video_message_lock_refs: dict[tuple[str, str], int] = {}
 
@@ -2932,6 +2939,29 @@ class Pipe:
             return
         session_log_manager.stop_workers()
 
+    async def _drain_session_log_persists(self) -> None:
+        registered = getattr(self, "_session_log_persists", None)
+        if not registered:
+            return
+        running = asyncio.get_running_loop()
+        pending = [
+            task for task in list(registered) if not task.done() and task.get_loop() is running
+        ]
+        if not pending:
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*pending, return_exceptions=True), timeout=_PERSIST_DRAIN_SECONDS
+            )
+        except (TimeoutError, asyncio.CancelledError):
+            self.logger.debug(
+                "Session-log persist drain gave up after %ss with %d write(s) outstanding",
+                _PERSIST_DRAIN_SECONDS,
+                len(pending),
+            )
+        except Exception:
+            self.logger.debug("Session-log persist drain failed", exc_info=True)
+
     @timed
     async def _stop_log_worker(self) -> None:
         """Stop this instance's log worker and clear the queue."""
@@ -3069,6 +3099,8 @@ class Pipe:
                 await drain()
             except Exception:
                 self.logger.debug("Shutdown drain %s failed", drain.__name__, exc_info=True)
+
+        await self._drain_session_log_persists()
 
         pending_shutdown: list[Any] = []
         with contextlib.suppress(Exception):
@@ -3555,6 +3587,9 @@ class Pipe:
                 tokens.append((OWUI_REQUEST, OWUI_REQUEST.set(job.request)))
                 tokens.append((OWUI_CHAT_ID, OWUI_CHAT_ID.set(str(job.metadata.get("chat_id") or ""))))
                 tokens.append((FILE_READ_AUTH_MEMO, FILE_READ_AUTH_MEMO.set({})))
+                tokens.append(
+                    (SESSION_LOG_OWNERSHIP_MEMO, SESSION_LOG_OWNERSHIP_MEMO.set({}))
+                )
                 tokens.append((REQUEST_VALIDATED_IPS, REQUEST_VALIDATED_IPS.set({})))
                 tool_queue: asyncio.Queue[list[_QueuedToolCall] | None] = asyncio.Queue(maxsize=50)
                 per_request_tool_sem = asyncio.Semaphore(job.valves.MAX_PARALLEL_TOOLS_PER_REQUEST)
@@ -3683,7 +3718,7 @@ class Pipe:
                         resolved_chat_id = str(job.metadata.get("chat_id") or "")
                         resolved_message_id = resolve_message_id(job.metadata)
                         try:
-                            await asyncio.shield(
+                            persist = asyncio.ensure_future(
                                 self._session_log_manager.persist_segment_to_db(
                                     job.valves,
                                     user_id=resolved_user_id,
@@ -3699,6 +3734,9 @@ class Pipe:
                                     task=str(job.metadata.get("task") or ""),
                                 )
                             )
+                            self._session_log_persists.add(persist)
+                            persist.add_done_callback(self._session_log_persists.discard)
+                            await asyncio.shield(persist)
                         except Exception:
                             self.logger.debug(
                                 "Failed to persist session log segment (chat_id=%s message_id=%s request_id=%s terminal=%s)",

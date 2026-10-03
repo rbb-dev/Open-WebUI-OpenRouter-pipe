@@ -1553,8 +1553,8 @@ class StreamingHandler:
 
                 payload = dict(call)
                 exposed = str(payload.get("name") or "").strip()
-                if is_builtin_ask_user(tool_registry.get(exposed)):
-                    payload[BUILTIN_ASK_USER_ROUND_KEY] = True
+                if exposed == ASK_USER_ROUND_NAME or _origin_tool_name(exposed) == ASK_USER_ROUND_NAME:
+                    payload[BUILTIN_ASK_USER_ROUND_KEY] = is_builtin_ask_user(tool_registry.get(exposed))
                 return _tool_rows([payload], cid)
 
             def _handed_back_round_rows(
@@ -4639,7 +4639,7 @@ class StreamingHandler:
                     was_cancelled, error_occurred, fusion_no_usable_member, handed_back
                 )
                 try:
-                    await asyncio.shield(
+                    persist = asyncio.ensure_future(
                         self._pipe._session_log_manager.persist_segment_to_db(
                             valves,
                             user_id=resolved_user_id,
@@ -4655,6 +4655,9 @@ class StreamingHandler:
                             task=str(metadata.get("task") or ""),
                         )
                     )
+                    self._pipe._session_log_persists.add(persist)
+                    persist.add_done_callback(self._pipe._session_log_persists.discard)
+                    await asyncio.shield(persist)
                 except (asyncio.CancelledError, Exception):
                     self.logger.debug(
                         "Failed to persist session log segment (chat_id=%s message_id=%s request_id=%s terminal=%s)",

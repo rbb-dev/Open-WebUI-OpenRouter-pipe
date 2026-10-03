@@ -66,6 +66,11 @@ class TaskModelFault(RuntimeError):
         self.detail = detail
 
 
+def _schema_verdict(value: Any, schema_keys: frozenset[str] | None) -> None:
+    if schema_keys is not None and isinstance(value, dict) and not schema_keys & value.keys():
+        raise TaskModelFault("task_model_invalid_schema")
+
+
 def normalise_model_content(value: Any) -> str:
     """Best-effort conversion of model content fragments to string.
 
@@ -203,9 +208,13 @@ async def read_task_model_response_json(
         if len(content) > _TASK_RESPONSE_MAX_BYTES:
             raise TaskModelFault("task_model_response_too_large", f"{len(content)}")
         try:
-            return json.loads(content)
+            parsed = json.loads(content)
         except json.JSONDecodeError as exc:
             raise TaskModelFault("task_model_invalid_json", f"{exc}") from exc
+        if not isinstance(parsed, dict):
+            raise TaskModelFault("task_model_invalid_schema")
+        _schema_verdict(parsed, schema_keys)
+        return parsed
 
     if isinstance(response, str):
         text = response.strip()
@@ -214,9 +223,13 @@ async def read_task_model_response_json(
         if len(text) > _TASK_RESPONSE_MAX_BYTES:
             raise TaskModelFault("task_model_response_too_large", f"{len(text)}")
         try:
-            return json.loads(text)
+            parsed = json.loads(text)
         except json.JSONDecodeError as exc:
             raise TaskModelFault("task_model_invalid_json", f"{exc}") from exc
+        if not isinstance(parsed, dict):
+            raise TaskModelFault("task_model_invalid_schema")
+        _schema_verdict(parsed, schema_keys)
+        return parsed
 
     if not isinstance(response, dict):
         raise TypeError(f"unexpected task model response type: {type(response).__name__}")
@@ -246,9 +259,13 @@ async def read_task_model_response_json(
             raise TaskModelFault("task_model_response_too_large", f"{len(joined)}")
         if joined:
             try:
-                return json.loads(joined)
+                parsed = json.loads(joined)
             except json.JSONDecodeError as exc:
                 raise TaskModelFault("task_model_invalid_json", f"{exc}") from exc
+            if not isinstance(parsed, dict):
+                raise TaskModelFault("task_model_invalid_schema")
+            _schema_verdict(parsed, schema_keys)
+            return parsed
 
     choices = response.get("choices")
     if not isinstance(choices, list) or not choices:
@@ -289,8 +306,7 @@ async def read_task_model_response_json(
             measured = _TASK_RESPONSE_MAX_BYTES + 1
         if measured > _TASK_RESPONSE_MAX_BYTES:
             raise TaskModelFault("task_model_response_too_large", f"{measured}")
-        if schema_keys is not None and not schema_keys & content_value.keys():
-            raise TaskModelFault("task_model_invalid_schema")
+        _schema_verdict(content_value, schema_keys)
         return content_value
     if isinstance(content_value, str):
         if not content_value.strip():
@@ -298,8 +314,12 @@ async def read_task_model_response_json(
         if len(content_value) > _TASK_RESPONSE_MAX_BYTES:
             raise TaskModelFault("task_model_response_too_large", f"{len(content_value)}")
         try:
-            return json.loads(content_value)
+            parsed = json.loads(content_value)
         except json.JSONDecodeError as exc:
             raise TaskModelFault("task_model_invalid_json", f"{exc}") from exc
+        if not isinstance(parsed, dict):
+            raise TaskModelFault("task_model_invalid_schema")
+        _schema_verdict(parsed, schema_keys)
+        return parsed
 
     raise TypeError(f"unexpected task model content type: {type(content_value).__name__}")

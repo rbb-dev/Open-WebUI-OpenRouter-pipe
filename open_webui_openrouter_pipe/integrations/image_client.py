@@ -91,7 +91,11 @@ def _over_ceiling_reason(what: str, max_decoded_bytes: int) -> str:
 
 
 def _own_decoded(blob: str) -> int:
-    return (len(blob.rstrip("=")) // 4) * 3
+    length = len(blob)
+    if length < 4:
+        return 0
+    pad = blob[-4:].count("=")
+    return (length // 4) * 3 - pad
 
 
 _IMAGE_BODY_EXCERPT_CHARS = 200
@@ -160,7 +164,7 @@ def _image_stream_completed(event: dict[str, Any], state: dict[str, Any]) -> str
         state["over_ceiling_seen"] = True
         state["data"].append({"_over_ceiling": True, "decoded": own})
     else:
-        entry: dict[str, Any] = {"b64_json": blob}
+        entry: dict[str, Any] = {"b64_json": blob, "_decoded": own}
         media_type = event.get("media_type")
         if isinstance(media_type, str) and media_type:
             entry["media_type"] = media_type
@@ -444,7 +448,9 @@ class OpenRouterImageClient:
             if not isinstance(blob, str) or not blob:
                 rejected.append(clamp_text(f"an entry with keys {sorted(entry)} carried no inline base64"))
                 continue
-            own_decoded = _own_decoded(blob)
+            own_decoded = entry.get("_decoded")
+            if not isinstance(own_decoded, int):
+                own_decoded = _own_decoded(blob)
             raw_media_type = entry.get("media_type")
             declared = raw_media_type if isinstance(raw_media_type, str) else ""
             probe = _decoded_prefix(blob)

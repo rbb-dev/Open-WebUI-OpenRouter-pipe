@@ -15,6 +15,7 @@ import contextlib
 import json
 import logging
 import mimetypes
+import sys
 import time
 import uuid
 from collections import OrderedDict
@@ -356,8 +357,13 @@ _DATA_ENTRY_WHITESPACE = {
 }
 
 
+_DATA_ENTRY_WHITESPACE_CHECK = {
+    code: None for code in range(sys.maxunicode) if chr(code).isspace()
+}
+
+
 def _compact_base64(payload: str) -> str:
-    if any(char.isspace() for char in payload):
+    if len(payload.translate(_DATA_ENTRY_WHITESPACE_CHECK)) != len(payload):
         return payload.translate(_DATA_ENTRY_WHITESPACE)
     return payload
 

@@ -68,7 +68,7 @@ Messages with `role` of `system` or `developer` are preserved as separate messag
 
 ## 3. User messages (content blocks → `input_*`)
 
-User messages are converted into a single `type: "message"` item with a `content` list. The pipe transforms certain known block types; unknown block types pass through unchanged, except that a network or internal-storage URL they carry is treated as untrusted input and the block is dropped. That reading is case-invariant: it is the pipe's own URL parser that decides, so any letter-case of `http`, `https`, `ftp` or `gopher`, a scheme-relative `//host/…` behind leading whitespace, and any spelling of an Open WebUI file path are all the same link. That is the live arm (`requests/transformer.py`). The `/chat/completions` conversion leg (`_responses_input_to_chat_messages`) has its own rule, and it is a different one: its strict arm — the only arm production reaches, since no caller passes `allow_unknown_fields` — drops a block whose type it does not enumerate and names nothing, because a block it cannot read is not evidence of a void attachment. The permissive arm, reached by no production caller, forwards such a block as itself; that fidelity is its contract, and the two arms are not made to agree.
+User messages are converted into a single `type: "message"` item with a `content` list. The pipe transforms certain known block types; unknown block types pass through unchanged, except that a network or internal-storage URL they carry is treated as untrusted input and the block is dropped, and except that a `data:`-scheme string leaf inside one, at any depth and under any key, is measured against `BASE64_MAX_SIZE_MB` on the same terms a typed block's payload is and the block is refused when one of them is over it. That reading is case-invariant: it is the pipe's own URL parser that decides, so any letter-case of `http`, `https`, `ftp` or `gopher`, a scheme-relative `//host/…` behind leading whitespace, and any spelling of an Open WebUI file path are all the same link. That is the live arm (`requests/transformer.py`). The `/chat/completions` conversion leg (`_responses_input_to_chat_messages`) has its own rule, and it is a different one: its strict arm — the only arm production reaches, since no caller passes `allow_unknown_fields` — drops a block whose type it does not enumerate and names nothing, because a block it cannot read is not evidence of a void attachment. The permissive arm, reached by no production caller, forwards such a block as itself; that fidelity is its contract, and the two arms are not made to agree — with one exception, which is the only place they do agree: a block naming a link only this server can read (an Open WebUI file path, a bare path on this server's disk, or a `file:` URL) is refused and named on both arms, because the backstop sits in the replay guard every block passes rather than in either arm's readers.
 
 ### 3.1 Text
 Open WebUI may provide user content as a string or as block objects. Text is normalized into:
@@ -290,9 +290,12 @@ only through the card Open WebUI keeps for it in the browser, and none with card
   exposed by it (TODO T1163, to reopen only if Open WebUI ever builds the gapped shape). A round of Open WebUI's built-in
   `ask_user` is the exception: its question and the person's typed answer are always handed over, since the answer
   is the person's own words. The round is recognised by the tool behind it, not by the name it was advertised under,
-  so a third-party tool that happens to be called `ask_user` is a tool like any other and is withheld. The
-  identity is carried two ways, and both are read before the request's own tool set: the pipe stamps the round's
-  own stored call when it runs the built-in, so a later turn reads the round's record rather than re-deciding it,
+  so a third-party tool that happens to be called `ask_user` is a tool like any other and is withheld -- and that
+  is now true on the **write** side as well as the read side, not only where a stored row is judged. The
+  identity is carried two ways, and both are read before the request's own tool set: the pipe stamps **every**
+  ask_user-shaped round it records, on the run path and on the hand-back path alike, with `True` for Open WebUI's
+  builtin and `False` for any other tool carrying that name, so a stamp is never absent and a later turn reads a
+  record rather than re-deciding it,
   and the bare name `ask_user` is reserved for the built-in, so a user's own tool of that name is advertised (and,
   with tool cards on, displayed) as `ask_user__<digest>` and a round recorded before this change stays
   grandfathered until it ages out of `TOOL_OUTPUT_RETENTION_TURNS`. A round the pipe answers back to Open WebUI
@@ -312,7 +315,8 @@ only through the card Open WebUI keeps for it in the browser, and none with card
   id is withheld. Because each output is paired with its own call, a tool round that shares an id with a built-in
   round still counts as a tool round for the picture-reuse window, and so still closes it. It also does not apply
   inside an internal Fusion step, where the built-in is not offered to the model at all and a round it names is
-  withheld like any other. The stored rows are left
+  withheld like any other. A round whose stored rows are gone is judged by the request's tool set as before; that
+  fallback is the whole purpose of a missing row and this change does not touch it. The stored rows are left
   alone, so turning the setting back on hands the full results over again.
 - An image returned by a tool comes back as a separate message right after the round's results ("Here are the
   images from the tool results above"): Open WebUI builds it from its own record, and the pipe builds the same
@@ -323,7 +327,7 @@ only through the card Open WebUI keeps for it in the browser, and none with card
   It is part of that round's result: handed over in full where it sits, whatever the attachment limit, even when it is
   not the last message; withheld with the round on an earlier turn while results are not kept; never stored again;
   unlike an image the person attached, never reused on a later question; and it ends the reuse of any older
-  picture. Each of its pictures is gated before it is sent, exactly as a picture the person attached is - scheme,
+  picture. Each of its pictures is gated before it is sent, exactly as a picture the person attached is - scheme, and with `image_url` spelled as an object read rather than stringified -
   plain `http://`, inline size, and the address an `http(s)` link names - and a refused one is named on the turn
   that round is answered on. The message itself is sent only when at least one picture survived: a round of
   nothing but refused pictures goes to the model as its text alone, because a message carrying the sentence with no

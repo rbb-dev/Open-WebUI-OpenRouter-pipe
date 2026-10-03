@@ -384,21 +384,25 @@ _VIDEO_DECODE_QUANTUM_CHARS = 1024 * 1024
 _B64_SCAN_QUANTUM = 1024 * 1024
 
 
-def _b64_scan_chunk(core: str, at: int, stop: int) -> str:
-    return core[at : min(at + _B64_SCAN_QUANTUM, stop)]
+def _b64_scan_chunk(core: str, start: int, stop: int) -> str:
+    return core[start : min(start + _B64_SCAN_QUANTUM, stop)]
+
+
+async def _strip_b64_whitespace(core: str) -> str:
+    if not any(char in core for char in _B64_WHITESPACE):
+        return core
+    parts: list[str] = []
+    for start in range(0, len(core), _B64_SCAN_QUANTUM):
+        piece = _b64_scan_chunk(core, start, len(core))
+        if any(char in piece for char in _B64_WHITESPACE):
+            parts.append(await asyncio.to_thread(piece.translate, _B64_DROP_WHITESPACE))
+        else:
+            parts.append(piece)
+    return "".join(parts)
 
 
 async def _decoded_length(b64: str) -> int:
-    core = b64
-    if any(char in core for char in _B64_WHITESPACE):
-        parts: list[str] = []
-        for at in range(0, len(core), _B64_SCAN_QUANTUM):
-            piece = _b64_scan_chunk(core, at, len(core))
-            if any(char in piece for char in _B64_WHITESPACE):
-                parts.append(await asyncio.to_thread(piece.translate, _B64_DROP_WHITESPACE))
-            else:
-                parts.append(piece)
-        core = "".join(parts)
+    core = await _strip_b64_whitespace(b64)
     length = len(core)
     if length == 0:
         return 0
@@ -408,20 +412,21 @@ async def _decoded_length(b64: str) -> int:
     body_length = length - pad
     if pad > 2 or body_length < 0 or body_length % 4 != (4 - pad) % 4:
         raise binascii.Error("Invalid base64-encoded string")
-    for at in range(0, body_length, _B64_SCAN_QUANTUM):
+    for start in range(0, body_length, _B64_SCAN_QUANTUM):
         if not await asyncio.to_thread(
-            _B64_ALPHABET.issuperset, _b64_scan_chunk(core, at, body_length)
+            _B64_ALPHABET.issuperset, _b64_scan_chunk(core, start, body_length)
         ):
             raise binascii.Error("Invalid base64-encoded string")
     return (length // 4) * 3 - pad
 
 
 async def _decoded_payload(b64: str) -> bytes:
+    core = await _strip_b64_whitespace(b64)
     out = bytearray()
     try:
-        for at in range(0, len(b64), _VIDEO_DECODE_QUANTUM_CHARS):
+        for start in range(0, len(core), _VIDEO_DECODE_QUANTUM_CHARS):
             out += await asyncio.to_thread(
-                base64.b64decode, b64[at : at + _VIDEO_DECODE_QUANTUM_CHARS], validate=True
+                base64.b64decode, core[start : start + _VIDEO_DECODE_QUANTUM_CHARS], validate=True
             )
     except (binascii.Error, ValueError):
         return await asyncio.to_thread(base64.b64decode, b64, validate=False)

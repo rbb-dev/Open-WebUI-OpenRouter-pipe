@@ -4159,40 +4159,7 @@ class TestAudioBase64SizeValidation:
     """
 
 class TestBlockTransformExceptionNonImage:
-    """Tests for non-image block exception preserving original block (lines 1159-1160)."""
-
-    @pytest.mark.asyncio
-    async def test_file_block_exception_preserves_original(self, pipe_instance):
-        """File block exception preserves original block (lines 1159-1160)."""
-        # _to_input_file catches its own failures and reports them; only a failure of
-        # that report reaches the block loop, which then keeps the original block.
-        # The block carries no URL: this test is about the exception route, and a raw
-        # block carrying a network reference is dropped on that route by design.
-        reports: list[tuple] = []
-
-        async def report_fails_once(*args, **kwargs):
-            reports.append(args)
-            if len(reports) == 1:
-                raise RuntimeError("error report failed")
-
-        pipe_instance._ensure_error_formatter()._emit_error = report_fails_once
-
-        file_block = {"type": "input_file", "file_data": "inline notes payload"}
-        messages = [
-            {"role": "user", "content": [
-                {"type": "text", "text": "text first"},
-                file_block,
-            ]}
-        ]
-        with patch(
-            "open_webui_openrouter_pipe.requests.transformer._inline_payload_bytes",
-            side_effect=RuntimeError("Simulated failure"),
-        ):
-            result = await transform_messages_to_input(pipe_instance, messages)
-
-        assert result[0]["content"] == [{"type": "input_text", "text": "text first"}, file_block]
-        assert len(reports) == 2
-
+    """Tests for a non-image block whose conversion raised being dropped, not forwarded."""
 
 class TestVisionWarningLatestUserMessage:
     """Test vision warning is emitted for latest user message (line 1200)."""

@@ -2719,11 +2719,26 @@ async def transform_messages_to_input(
                         return any(_carries_url(item) for item in value)
                     return False
 
-                def _identity_block(b: dict[str, Any]) -> dict[str, Any] | None:
+                def _oversized_inline_payload(value: Any) -> bool:
+                    if isinstance(value, str):
+                        return url_scheme(value) == "data" and _inline_payload_bytes(value) > max_inline_bytes
+                    if isinstance(value, dict):
+                        return any(_oversized_inline_payload(item) for item in value.values())
+                    if isinstance(value, (list, tuple)):
+                        return any(_oversized_inline_payload(item) for item in value)
+                    return False
+
+                def _identity_block(b: dict[str, Any]) -> dict[str, Any] | ImageRefusal | None:
                     if _carries_url(b):
                         nonlocal dropped_unknown_block
                         dropped_unknown_block = True
                         return None
+                    if _oversized_inline_payload(b):
+                        return ImageRefusal(
+                            f"larger than the {max_inline_bytes}-byte inline limit",
+                            "oversized_inline_unknown",
+                            subject="an unrecognised content block",
+                        )
                     return b
 
                 block_transform = {
@@ -2899,8 +2914,11 @@ async def transform_messages_to_input(
                             f"Block transformation error for '{block_type}': {exc}",
                             show_error_message=False
                         )
-                        if not is_image_block and not _carries_url(block):
-                            converted_blocks.append(block)
+                        if not is_image_block:
+                            reason = "an attached file could not be prepared, so it was not sent"
+                            refused_files.append(reason)
+                            if block_type in _MEDIA_BLOCK_TYPES:
+                                status_files.append(reason)
 
                 if (
                     latest_user_message

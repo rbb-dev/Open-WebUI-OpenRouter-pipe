@@ -23,6 +23,7 @@ import threading
 import time
 import weakref
 from collections.abc import Callable, Collection, MutableMapping, Sequence
+from contextvars import ContextVar
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -232,6 +233,10 @@ _EXCLUDED_KEY_SEP = "\x1f"
 
 _MAX_DRAIN_LATCH_KEYS = 32
 
+SESSION_LOG_OWNERSHIP_MEMO: ContextVar[dict[tuple[str, str], bool] | None] = ContextVar(
+    "session_log_ownership_memo", default=None
+)
+
 _warned_dead_manager_drain: dict[str, float] = {}
 _warned_drain_incomplete: dict[str, float] = {}
 _warned_writer_failed: dict[str, float] = {}
@@ -263,11 +268,12 @@ def _window_rows(
     offered: list[tuple[str, str]] = []
     held: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
+    excluded = exclude if isinstance(exclude, (set, frozenset)) else frozenset(exclude)
     for chat_id, message_id in rows:
         if not (isinstance(chat_id, str) and isinstance(message_id, str)):
             continue
         key = (chat_id, message_id)
-        if key in seen or key in exclude:
+        if key in seen or key in excluded:
             continue
         seen.add(key)
         if refusable(chat_id):
@@ -490,8 +496,6 @@ class SessionLogManager:
         "_unreadable_archive_warnings",
         "_stale_filter_warnings",
         "_read_fault_warnings",
-        "_captured_turns",
-        "_captured_row_ids",
         "_capture_exempt",
         "_rescue_pending",
         "_ownership_skips",
@@ -657,6 +661,21 @@ class SessionLogManager:
                 *args,
             )
 
+    async def _caller_may_stage(self, chat_id: str, user_id: str) -> bool:
+        memo = SESSION_LOG_OWNERSHIP_MEMO.get()
+        if memo is None:
+            return await self._caller_owns_chat(chat_id, user_id) or await self._caller_is_admin(
+                user_id
+            )
+        memo_key = (str(chat_id), str(user_id))
+        if memo_key in memo:
+            return memo[memo_key]
+        allowed = await self._caller_owns_chat(chat_id, user_id) or await self._caller_is_admin(
+            user_id
+        )
+        memo[memo_key] = allowed
+        return allowed
+
     async def _caller_owns_chat(self, chat_id: str, user_id: str) -> bool:
         try:
             from open_webui.models.chats import Chats
@@ -701,8 +720,8 @@ class SessionLogManager:
                 f"session_log_not_owned:{chat_id}:{user_id}",
                 cooldown_s=3600.0,
             ),
-            "Session log segment not staged (chat is not the caller's): user_id=%s "
-            "chat_id=%s message_id=%s request_id=%s",
+            "Session log segment not staged (Open WebUI did not confirm the chat is the "
+            "caller's): user_id=%s chat_id=%s message_id=%s request_id=%s",
             user_id,
             chat_id,
             message_id,
@@ -986,8 +1005,7 @@ class SessionLogManager:
         if (
             not surrogate_in_play
             and is_linkable_chat(chat_id)
-            and not await self._caller_owns_chat(chat_id, user_id)
-            and not await self._caller_is_admin(user_id)
+            and not await self._caller_may_stage(chat_id, user_id)
         ):
             self._latch_ownership_skip(user_id, chat_id, message_id, request_id)
             return
@@ -1153,6 +1171,7 @@ class SessionLogManager:
                 >= _UNREADABLE_ARCHIVE_CAPTURE_AFTER
             ]:
                 self._rescue_pending.pop(_turn, None)
+            self._truncate_capture_record()
             for _latch_name in self._FAULT_LATCHES:
                 _truncate_latch(getattr(self, _latch_name), _MAX_DRAIN_LATCH_KEYS)
 
@@ -1225,13 +1244,14 @@ class SessionLogManager:
                 _record(turns, assembled, stale_arm=not terminal)
             if over_budget or not contended:
                 break
-            set_aside.extend(contended)
+            set_aside.extend(key for key in contended if key not in set_aside)
             candidates = self._candidate_turns(
                 model,
                 session_factory,
                 batch_size,
                 stale_finalize_seconds,
-                (*backed_off, *set_aside),
+                self._backoff_exclusion(lock_stale_seconds),
+                tuple(set_aside),
             )
 
     def _rescue_exempt(self, key: tuple[str, str]) -> bool:
@@ -1272,9 +1292,11 @@ class SessionLogManager:
         batch_size: int,
         stale_finalize_seconds: float,
         backed_off: Sequence[tuple[str, str]],
+        set_aside: Sequence[tuple[str, str]] = (),
     ) -> list[tuple[bool, tuple[str, str]]]:
-        terminal_excluded = tuple(
-            key for key in backed_off if key not in self._assembly_failure_stale_arm
+        terminal_excluded = (
+            *tuple(key for key in backed_off if key not in self._assembly_failure_stale_arm),
+            *set_aside,
         )
         turns = [(True, turn) for turn in self._list_terminal_messages(
             model, session_factory, limit=batch_size, exclude=terminal_excluded
@@ -1284,7 +1306,7 @@ class SessionLogManager:
             session_factory,
             stale_finalize_seconds=stale_finalize_seconds,
             limit=batch_size,
-            exclude=backed_off,
+            exclude=(*backed_off, *set_aside),
         )]
         return turns
 
@@ -1556,6 +1578,17 @@ class SessionLogManager:
     # =========================================================================
     # Bundle Assembly
     # =========================================================================
+
+    def _truncate_capture_record(self) -> None:
+        keep = int(_MAX_DRAIN_LATCH_KEYS)
+        row_ids = self._captured_row_ids
+        excess = len(row_ids) - keep
+        if excess > 0:
+            for stale in sorted(row_ids, key=lambda k: row_ids[k])[:excess]:
+                row_ids.pop(stale, None)
+                self._captured_turns.discard(stale)
+        for orphan in [k for k in self._captured_turns if k not in row_ids]:
+            self._captured_turns.discard(orphan)
 
     def _capture_unassemblable_turn(
         self,

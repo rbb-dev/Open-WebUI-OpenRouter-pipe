@@ -2,6 +2,16 @@
 
 ## Behaviour changes
 
+- **Session log assembler, one offer per pass** — a turn the assembler already offered, or already failed, inside a
+  pass is not offered again by that pass, and a turn whose assembly lock another pass holds is offered once per pass
+  instead of once per re-listing round. The pass re-lists itself after meeting a lock-contended turn so the window
+  keeps moving, but the exclusion it re-lists with was a snapshot taken before the loop, so a turn that failed in this
+  pass — and a contended turn whose last failure was the stale-finalize seal, which the completed-turn listing's
+  exemption had released — came back every round until the pass ran out its wall-clock budget, spending the whole
+  `SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS` on SQL and never reaching the turns behind it. Nothing else changes: the
+  backoff is still `SESSION_LOG_LOCK_STALE_SECONDS`, a turn whose only failure was the stale-finalize pass is still
+  offered by the completed-turn listing straight away, and contention still books nothing.
+
 - **Pipe dashboard, viewer payload** — the live dashboard payload no longer carries the data-dir path, so a viewer
   holding only a read grant no longer learns the server's filesystem layout from the System tab. The key was published
   by the system collector as `system.disk_path`, and every key in a payload reaches every socket in the viewers room.
@@ -111,6 +121,11 @@
   undo that write and no tick-back, so untick the box in the model editor, or wait for the marker work
   (B682/T971) that can tell a pipe-written entry from an admin's.
 
+- **Pipe shutdown no longer drops a session-log write that was still in flight** — a turn cancelled by `close()` writes its terminal
+  segment from its own cleanup, and that write is now given a budget of its own: it is registered when it starts and awaited before the
+  artifact store is closed, so a write slower than the 5-second job-drain budget finishes instead of being dropped with the store closing
+  under it. The drain's budget is unchanged, so `close()` stays bounded; on the normal path there is nothing to wait for. The log an
+  operator most wants — the turn a reload or a shutdown killed mid-answer — is the one that was at risk.
 - **Video generation, machine callers** — a video turn that fails *before* OpenRouter answers the submission now
   reaches a caller with no chat as an HTTP error instead of a `200` with a Markdown card in it. A rejected job
   leaves with the status the pipe resolved on the status line and the same number in `error.code` (`502` when a
@@ -157,6 +172,12 @@
   with the `clear_timing_events` release that existed to trim it. Nothing observable changes for anyone reading
   `timing.jsonl`: the file the valve exists to produce is byte-for-byte what it was, and with the valve off
   nothing was buffered either way.
+- **Video attachments, the size the pipe measures** — a clip whose real video size is below the
+  model's published pixel floor is now withheld with a notice naming that size, where before an `.avi` or ProRes
+  `.mov` was measured wrong and sent for the model to refuse; and a clip whose cover art came first is no longer
+  withheld, because the cover's size is no longer read as the video's. The declared geometry is now the picture
+  stream's own, read off the field ffmpeg writes it in, so a cover-art stream is skipped and a sub-floor clip is
+  left out with a notice a person can act on.
 - **Open-WebUI tool mode** — a call Open WebUI runs now shows its card from the moment the model names the tool, and the dashboard's live view now shows the running tool on those turns (it stayed empty before).
 - **Pipe dashboard, deleted function row** — deleting the pipe's function row now releases the live dashboard on the worker that served the DELETE and lets
   the pipe finish its in-flight requests and close, instead of holding it, its session-log threads and its storage handle until a restart. The stand-down
@@ -551,3 +572,13 @@
   lines that record a suppressed or undelivered notice (`task-failure toast suppressed: …` and `task-failure toast not
   delivered; latch left open: …`) now name the user id beside the chat id for a saved or `channel:` chat; a temporary
   chat's line still names no chat.
+- **error templates** — a stored operator row that fences a value on its own lines now renders a code block that
+  closes on its own opening run. When the provider body carried a fence run long enough to widen the block, the
+  template's own closer stopped being recognised and the card's closing guidance was swallowed into a block that ran
+  to the end of the card; an indented opener row was rewritten from column 0 and emitted a run the closer did not
+  match. No shipped template fences a value, so a card from one of the built-in templates is byte-identical.
+- **attachments** — a content block whose conversion raises is now dropped and named in the `Files: skipped N (…)`
+  status on your turn, as every other refused attachment already is, instead of being forwarded in the shape
+  Open WebUI handed it over — a block the provider does not accept, carrying text the pipe had not finished
+  preparing. The turn itself is unchanged: the model goes on with whatever else it carried, and a turn whose only
+  block faulted still says so in-band. A block the pipe has no converter for is still passed through untouched.

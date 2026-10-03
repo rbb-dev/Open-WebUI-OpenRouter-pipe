@@ -98,6 +98,22 @@ A test module may not construct a `Pipe` at import time; `Pipe.id` is a class at
 
 That budget also stops at the end of the run. The timeout cannot cover interpreter shutdown, where `concurrent.futures.thread._python_exit` joins every `ThreadPoolExecutor` worker with `t.join()` and the alarm has already been reset — so a test that leaves a non-daemon thread running hangs the process instead of failing a test, and the symptom is a wall rather than a name. `tests/conftest.py` therefore names those threads separately and fails the session with the node ids, which is why a leak is reported against the test that caused it rather than against whichever one ran next.
 
+### Measuring an allocation peak (`tests/_scoped_allocation.py`)
+
+An allocation-peak row asks "how many payload-sized buffers were live at once", and the only instrument CPython offers is `tracemalloc`. `tracemalloc.start()` takes only `nframe` — there is no filtered or sampled snapshot on this interpreter — so `get_traced_memory()` reports the **whole process**, and any other thread in the same pytest worker that allocates while a window is open is inside the number. On a farm shared with about seventy agents that is not a rounding error: one 4 MiB buffer held by a neighbouring test's worker for the window moved a matching-arm peak from 1.01x to 2.01x, against a bound of 1.1x.
+
+`gc.collect()`, `gc.freeze()` and `gc.disable()` do not fix it (measured on this tree: 7/10, 10/10, 6/10 and 8/10 breaches with and without each), and a sampled snapshot measures 0.00x, because the buffers are freed before a sample lands. **A fresh interpreter is what makes the peak per-test**: a number measured in a process that was started for it cannot contain another test's leftover work.
+
+So `tests/_scoped_allocation.py` measures in a child — `scoped_peak(measure)` is the window, `scoped_peaks(module, registry, rows)` runs it. The conventions, all of which the helper depends on:
+
+- **One interpreter per file, not per row.** `scoped_peaks` answers every row the calling module registers, and the calling fixture is `scope="module"`. One interpreter per measurement costs ~2.43 s each against ~2.5 s for a whole file, most of which is importing the pipe.
+- **An arm is a `Pipe`-taking callable returning `(warm_up, measure)`**, two zero-argument async callables. The warm-up runs before the window opens, exactly where an in-process test ran it; returning it rather than running it is what keeps the warm-up out of the peak.
+- **`_turn`, `_specs` and `_sent` stay in the test module.** The child imports the module and calls the registered arm, so there is one definition of the turn under test.
+- **`owui_stubs` is imported before anything from the package**, and this is load-bearing rather than stylistic: the suite installs its own `open_webui` stand-ins, and a child that reaches the real one logs an `ImportError` for `STORAGE_PROVIDER`, catches it and **exits 0** — reporting a number from a different code path with nothing to say so. `PROBE-DONE` on stderr is the companion guard: a child that died before printing reports nothing rather than an empty answer.
+- **An arm reports what the parent still has to assert.** `digest_urls` carries a URL across the boundary as a length and a SHA-256 (with its head for the failure message), so a cost row can still prove the picture that reached the provider is the one that was attached — a cost row is satisfied by refusing — without moving megabytes of base64 over stdout. It hashes in slices rather than through one `url.encode()`, because the digest is taken inside the window and a whole-payload copy would put the measuring harness in the number.
+
+A new peak row goes in the file whose arm registry already exists; a new file gets its own registry and a module-scoped fixture. The bounds do not move when an instrument changes: they are what the arm is held to, not what the instrument is.
+
 ### Running tests
 
 Run a single file first, then the full suite. Both inherit the timeout above; a caller does not need to supply one.

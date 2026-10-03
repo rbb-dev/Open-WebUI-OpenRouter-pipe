@@ -53,7 +53,7 @@ _MOV_DURATION = re.compile(r"Processing st:\s*(\d+),[^\n]*duration:\s*(\d+)")
 _TIME_BASE = re.compile(r"1/(\d+)\s*:")
 _PICTURE_CODEC = re.compile(r"Video:\s*(?:png|mjpeg|bmp|gif|webp|tiff)\b")
 _VIDEO_STREAM = re.compile(r"Stream #\d+:\d+.*Video:")
-_VIDEO_STREAM_SIZE = re.compile(r"(?<=\s)(\d{1,5})x(\d{1,5})(?![0-9x])")
+_VIDEO_STREAM_SIZE = re.compile(r",\s*(\d{1,5})x(\d{1,5})(?![\dx])")
 _VIDEO_STREAM_RATE = re.compile(r"(\d+(?:\.\d+)?)\s+(?:fps|tbr)\b")
 _AUDIO_STREAM = re.compile(r"Stream #\d+:\d+.*Audio:")
 _CONTAINER_DURATION = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
@@ -318,6 +318,7 @@ class VideoMetadata:
     fps: float
     has_audio: bool
     duration_is_stream: bool = False
+    pictures_seconds: float | None = None
 
 
 @dataclass
@@ -481,21 +482,28 @@ def _pinned_probe(path: Path) -> dict[str, Any]:
     except (OSError, subprocess.SubprocessError) as exc:
         raise FrameExtractionError(_without_paths(f"header read failed: {exc}")) from exc
     stderr = proc.stderr or ""
-    width, height = 0, 0
-    fps = 0.0
-    seen_video = False
+    picture: tuple[tuple[int, int] | None, float] | None = None
+    measured: tuple[int, int, float] | None = None
     for line in stderr.splitlines():
-        if _VIDEO_STREAM.search(line):
-            seen_video = True
-            size = _VIDEO_STREAM_SIZE.search(line)
-            if size is not None:
-                width, height = int(size.group(1)), int(size.group(2))
-            rate = _VIDEO_STREAM_RATE.search(line)
-            if rate is not None:
-                fps = float(rate.group(1))
-            break
-    if not seen_video:
+        if not _VIDEO_STREAM.search(line):
+            continue
+        size = _VIDEO_STREAM_SIZE.search(line)
+        rate = _VIDEO_STREAM_RATE.search(line)
+        found = (
+            (int(size.group(1)), int(size.group(2))) if size is not None else (0, 0),
+            float(rate.group(1)) if rate is not None else 0.0,
+        )
+        if _PICTURE_CODEC.search(line):
+            if picture is None:
+                picture = found
+            continue
+        measured = (found[0][0], found[0][1], found[1])
+        break
+    if measured is None and picture is not None:
+        measured = (picture[0][0], picture[0][1], picture[1])
+    if measured is None:
         raise FrameExtractionError("header read found no video stream to measure")
+    width, height, fps = measured
     duration = 0.0
     found = _CONTAINER_DURATION.search(stderr)
     if found is not None:
@@ -626,7 +634,12 @@ async def probe_video(path: Path) -> VideoMetadata:
 async def _pictures_own_length(meta: VideoMetadata, path: Path) -> float:
     if meta.duration_is_stream or not meta.has_audio:
         return meta.duration_seconds
-    video_s = await _video_track_seconds(path)
+    if meta.pictures_seconds is not None:
+        video_s = meta.pictures_seconds
+    else:
+        video_s = await _video_track_seconds(path)
+        if video_s is not None:
+            meta.pictures_seconds = video_s
     if video_s is None:
         return meta.duration_seconds
     if meta.duration_seconds - video_s <= _TRACK_LENGTH_TOLERANCE_S:

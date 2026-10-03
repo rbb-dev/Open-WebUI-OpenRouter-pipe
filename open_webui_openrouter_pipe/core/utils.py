@@ -254,10 +254,18 @@ def is_text_part_output(output: Any) -> bool:
     )
 
 
+def _picture_link(part: Any) -> str:
+    value = part.get("image_url")
+    if isinstance(value, dict):
+        value = value.get("url")
+    return value.strip() if isinstance(value, str) and value.strip() else ""
+
+
 def tool_output_text_and_pictures(output: Any) -> tuple[str, list[str]]:
     if is_picture_output(output) or is_text_part_output(output):
         text = "".join(str(part.get("text") or "") for part in output if part.get("type") == "input_text")
-        return text, [str(part["image_url"]) for part in output if part.get("type") == "input_image" and part.get("image_url")]
+        links = [_picture_link(part) for part in output if part.get("type") == "input_image"]
+        return text, [link for link in links if link]
     return (output if isinstance(output, str) else ("" if output is None else str(output))), []
 
 
@@ -742,13 +750,15 @@ def _render_error_template(template: str, values: dict[str, Any]) -> str:
                 fence_open = True
                 fence_carried_content = False
                 pending_opener = len(rendered_lines)
-        elif stripped and set(stripped) == set(emit_marker) and len(stripped) >= len(emit_marker):
+        elif stripped and set(stripped) == set(emit_marker) and len(stripped) >= len(fence_marker):
             fence_open = False
             closed_here = True
             if not fence_carried_content:
                 del rendered_lines[pending_opener:]
                 emit_marker = ""
                 continue
+            if len(emit_marker) > len(stripped):
+                remainder = remainder[: len(remainder) - len(remainder.lstrip())] + emit_marker
         elif stripped:
             fence_carried_content = True
         remainder = _TEMPLATE_PLACEHOLDER_RE.sub(_replace, remainder)
@@ -756,9 +766,9 @@ def _render_error_template(template: str, values: dict[str, Any]) -> str:
             widened = _body_fence(emit_marker, remainder)
             if len(widened) > len(emit_marker):
                 emit_marker = widened
-                rendered_lines[pending_opener] = line_prefix + widened + rendered_lines[pending_opener][
-                    len(fence_marker) + len(line_prefix) :
-                ]
+                rendered_lines[pending_opener] = rendered_lines[pending_opener].replace(
+                    fence_marker, widened, 1
+                )
         _emit(remainder)
     return "\n".join(rendered_lines).strip()
 

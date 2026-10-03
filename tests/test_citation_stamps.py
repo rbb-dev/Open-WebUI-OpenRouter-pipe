@@ -96,6 +96,14 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # `Users.get_user_by_id`, on the same refusal path only, because the role is not in scope
 # at either call site -- `streaming_core.py` is handed a bare `user_id: str` and `pipe.py`
 # the job. Both raise into a caller that handles them, which is the lazy contract.
+# B1011: those two lazy imports are unchanged, but the gate no longer runs them once per
+# segment. `_caller_may_stage` reads them once per request id through
+# `SESSION_LOG_OWNERSHIP_MEMO`, the per-request ContextVar `pipe.py` arms beside
+# `FILE_READ_AUTH_MEMO` and resets in the same `finally`, so the two round trips a turn
+# costs are charged once per request instead of once per segment (an owner is one read;
+# a non-owner is two, because the admin question follows the ownership one only when it
+# says no). Nothing became less guarded: with no memo armed the helper calls the two
+# readers directly, and both are still function-local behind the same broad `except`.
 # 95 -> 97: the usage write gate reads the persisted collect valve on the writer thread.
 # `UsageStore._stored_collect_flag` imports `Function` and `decrypt_valves` lazily, inside
 # the read, for the same reason the other lazy readers do: a module-scope `open_webui` import

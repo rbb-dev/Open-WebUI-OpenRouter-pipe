@@ -51,7 +51,12 @@ from ..core.fusion_defaults import (
 )
 from ..core.image_detail import image_detail_or_auto
 from ..core.timing_logger import timed
-from ..core.url_scheme import is_absolute_url, loggable_link, url_scheme
+from ..core.url_scheme import (
+    is_absolute_url,
+    is_inline_data_url,
+    loggable_link,
+    url_scheme,
+)
 from ..core.utils import (
     OPEN_WEBUI_TOOL_IMAGES_TEXT,
     _coerce_bool,
@@ -836,6 +841,34 @@ def _replay_payload_is_present(value: Any) -> bool:
     return False
 
 
+_FETCHABLE_MEDIA_SCHEMES = frozenset({"data", "http", "https"})
+_MEDIA_LINK_KEYS = ("image_url", "video_url", "url")
+
+
+def _block_media_link(block: Any) -> str | None:
+    if not isinstance(block, dict):
+        return None
+    for key in _MEDIA_LINK_KEYS:
+        value = block.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, dict):
+            nested = value.get("url")
+            if isinstance(nested, str) and nested.strip():
+                return nested.strip()
+    return None
+
+
+def _media_link_is_server_only(value: Any) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    if names_an_owui_file_path(value):
+        return True
+    if is_inline_data_url(value):
+        return False
+    return url_scheme(value) not in _FETCHABLE_MEDIA_SCHEMES
+
+
 def _input_audio_from_string(value: str) -> dict[str, Any] | None:
     from ..requests.transformer import _map_audio_format
 
@@ -875,6 +908,17 @@ def _image_file_payload(block: dict[str, Any]) -> dict[str, Any] | None:
 _CHAT_INTERNAL_PATH_REFUSAL = (
     "a link to this Open WebUI's own file endpoint, which no provider can fetch"
 )
+_UNUSABLE_LINK_REFUSAL = "not a link the pipe can resolve into an image"
+
+
+def _server_only_media_verdict(link: str) -> tuple[str, str]:
+    if names_an_owui_file_path(link):
+        return _CHAT_INTERNAL_PATH_REFUSAL, "internal_reference"
+    return _UNUSABLE_LINK_REFUSAL, "unusable_link"
+
+
+def _server_only_media_refusal(link: str) -> str:
+    return _server_only_media_verdict(link)[0]
 
 
 def _chat_link_refusal_reason(
@@ -922,17 +966,29 @@ def _chat_audio_url_refusal(block: dict[str, Any], *keys: str) -> str | None:
     return _AUDIO_URL_REFUSAL
 
 
-def _replay_block_is_usable(block: Any, refused: dict[int, str] | None = None) -> bool:
+def _replay_block_is_usable(
+    block: Any,
+    refused: dict[int, str] | None = None,
+    *,
+    stripped: dict[int, str] | None = None,
+) -> bool:
     if refused is not None and id(block) in refused:
         return False
     if not isinstance(block, dict):
         return True
+    if _media_link_is_server_only(_block_media_link(block)):
+        return False
     btype = block.get("type")
     if btype in {"text", "input_text", "output_text"}:
         text = block.get("text")
         if not isinstance(text, str):
             return False
-        return bool(strip_hidden_marker_lines(text).strip())
+        if stripped is not None and id(text) in stripped:
+            return bool(stripped[id(text)].strip())
+        cleaned = strip_hidden_marker_lines(text)
+        if stripped is not None:
+            stripped[id(text)] = cleaned
+        return bool(cleaned.strip())
     if btype in {"file", "input_file"}:
         payload = block.get("file")
         if isinstance(payload, dict):
@@ -955,6 +1011,9 @@ def _replay_block_refusal(block: Any, refused: dict[int, str] | None = None) -> 
         return refused[id(block)]
     if not isinstance(block, dict):
         return None
+    link = _block_media_link(block)
+    if link is not None and _media_link_is_server_only(link):
+        return _server_only_media_refusal(link)
     btype = block.get("type")
     if btype in {"image_url", "input_image"}:
         return "an image carried no picture data"
@@ -991,15 +1050,24 @@ def _replay_blocks_or_note(
     *,
     role: str = "user",
     refused: dict[int, str] | None = None,
+    refused_out: list[tuple[str, str, str]] | None = None,
+    stripped: dict[int, str] | None = None,
 ) -> list[Any]:
     originals = siblings or blocks
-    survivors = [b for b in blocks if _replay_block_is_usable(b, refused)]
+    if refused_out is not None:
+        for original in originals:
+            link = _block_media_link(original)
+            if link is None or not _media_link_is_server_only(link):
+                continue
+            reason, cause = _server_only_media_verdict(link)
+            refused_out.append((link, reason, cause))
+    survivors = [b for b in blocks if _replay_block_is_usable(b, refused, stripped=stripped)]
     refusals = [
         r
         for r in (
             _replay_block_refusal(b, refused)
             for b in originals
-            if not _replay_block_is_usable(b, refused)
+            if not _replay_block_is_usable(b, refused, stripped=stripped)
         )
         if r
     ]
@@ -1011,8 +1079,10 @@ def _replay_blocks_or_note(
     if not refusals:
         if role != "user":
             return blocks
-        if any(_replay_block_is_usable(b, refused) for b in originals):
-            return [b for b in originals if _replay_block_is_usable(b, refused)]
+        if any(_replay_block_is_usable(b, refused, stripped=stripped) for b in originals):
+            return [
+                b for b in originals if _replay_block_is_usable(b, refused, stripped=stripped)
+            ]
         return [{"type": "text", "text": OPENAI_EMPTY_USER_TURN_FALLBACK}]
     return note
 
@@ -1193,6 +1263,7 @@ async def _responses_input_to_chat_messages(
                     continue
 
                 blocks_out: list[dict[str, Any]] = []
+                stripped_texts: dict[int, str] = {}
                 if isinstance(raw_content, list):
                     for block in raw_content:
                         if not isinstance(block, dict):
@@ -1204,12 +1275,16 @@ async def _responses_input_to_chat_messages(
                                 cleaned = strip_hidden_marker_lines(text)
                                 if not cleaned:
                                     continue
+                                stripped_texts[id(text)] = cleaned
+                                stripped_texts[id(cleaned)] = cleaned
                                 blocks_out.append(
                                     _to_text_block(cleaned, cache_control=block.get("cache_control"))
                                 )
                             continue
                         if btype == "input_image":
                             url = block.get("image_url")
+                            if isinstance(url, dict):
+                                url = url.get("url")
                             if isinstance(url, str) and url.strip():
                                 refusal = _chat_link_refusal_reason(
                                     "image_url", url, allow_insecure=allow_insecure,
@@ -1325,6 +1400,8 @@ async def _responses_input_to_chat_messages(
                 if isinstance(raw_content, list) and raw_content:
                     blocks_out = _replay_blocks_or_note(
                         blocks_out, raw_content, role=role, refused=media_refusals,
+                        refused_out=refused_out,
+                        stripped=stripped_texts,
                     )
 
                 if (
@@ -1365,6 +1442,7 @@ async def _responses_input_to_chat_messages(
                 continue
 
             blocks_out: list[dict[str, Any]] = []
+            stripped_texts: dict[int, str] = {}
             if isinstance(raw_content, list):
                 for block in raw_content:
                     if not isinstance(block, dict):
@@ -1379,6 +1457,8 @@ async def _responses_input_to_chat_messages(
                             cleaned = strip_hidden_marker_lines(text)
                             if not cleaned:
                                 continue
+                            stripped_texts[id(text)] = cleaned
+                            stripped_texts[id(cleaned)] = cleaned
                             transformed["text"] = cleaned
                             blocks_out.append(transformed)
                         continue
@@ -1387,6 +1467,8 @@ async def _responses_input_to_chat_messages(
                         transformed = dict(block)
                         transformed["type"] = "image_url"
                         url = transformed.pop("image_url", "")
+                        if isinstance(url, dict):
+                            url = url.get("url")
                         refusal = _chat_link_refusal_reason(
                             "image_url", _chat_media_url(block, "image_url"),
                             allow_insecure=allow_insecure,
@@ -1504,6 +1586,8 @@ async def _responses_input_to_chat_messages(
             if isinstance(raw_content, list) and raw_content:
                 blocks_out = _replay_blocks_or_note(
                     blocks_out, raw_content, role=role, refused=media_refusals,
+                    refused_out=refused_out,
+                    stripped=stripped_texts,
                 )
 
             msg["content"] = blocks_out

@@ -87,6 +87,7 @@ The pipe **skips persistence** when any of the following are true:
 - `SESSION_LOG_DIR` is empty or only whitespace.
 - `SESSION_LOG_ZIP_PASSWORD` is empty/unconfigured.
 - The request produced no captured log lines.
+- Open WebUI did not confirm that the chat is the caller's. The pipe asks Open WebUI's own `Chats.is_chat_owner`, and an admin is the same exception Open WebUI admits; it fails closed, so nothing is staged and the refusal is logged naming the `user_id`, `chat_id`, `message_id` and `request_id`. That answer is Open WebUI's, not the pipe's: `is_chat_owner` swallows every database error and answers False, so a chats-table outage reads here as a refusal rather than as an outage, and the pipe cannot tell the two apart because Open WebUI does not.
 - The chat is a temporary chat, which Open WebUI keeps only in the browser; the pipe stores nothing for it either. In Open-WebUI tool mode the tool rounds and thinking of a streamed reply are held in memory for that reply only, and only for the user who opened that reply, and dropped when the pipe answers its last call back, or when the provider refuses a call-back the pipe was waiting for, or when the reply is stopped, or after 15 minutes unused. A reply dropped under the pool's byte ceiling is reported as holding none of the rows it was offered in that flush, so the archive names no marker for a round that is no longer in memory.
 
 If persistence is skipped, the request still completes normally; the archive is simply not written.

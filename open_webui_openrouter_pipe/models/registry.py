@@ -415,6 +415,7 @@ class OpenRouterModelRegistry:
     _id_map: ClassVar[dict[str, str]] = {}
     _zdr_model_ids: set[str] | None = None
     _zdr_stamped_specs: dict[str, dict[str, Any]] | None = None
+    _zdr_stamp_roster: set[str] | None = None
     _zdr_rosters: ClassVar[dict[str, set[str]]] = {}
     _ZDR_KEY: ContextVar[str | None] = ContextVar(
         "owui_zdr_key_ctx",
@@ -529,8 +530,7 @@ class OpenRouterModelRegistry:
     def _adopt_roster_for(cls, api_key: str) -> None:
         roster = cls._zdr_roster_for(api_key)
         if (
-            roster is not None
-            and roster is cls._zdr_model_ids
+            roster is cls._zdr_stamp_roster
             and cls._specs is cls._zdr_stamped_specs
         ):
             return
@@ -538,6 +538,7 @@ class OpenRouterModelRegistry:
         for norm_id, spec in cls._specs.items():
             cls._stamp_zdr_capable(spec, norm_id, roster, cls._specs)
         cls._enriched_cache = None
+        cls._zdr_stamp_roster = roster
         cls._zdr_stamped_specs = cls._specs
 
     @classmethod
@@ -617,6 +618,8 @@ class OpenRouterModelRegistry:
                     for norm_id, spec in cls._specs.items():
                         cls._stamp_zdr_capable(spec, norm_id, None, cls._specs)
                     cls._enriched_cache = None
+                    cls._zdr_stamp_roster = None
+                    cls._zdr_stamped_specs = None
                 logger.warning(
                     "OpenRouter catalog refresh failed (%s). Serving %d cached model(s).",
                     exc,
