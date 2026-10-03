@@ -76,6 +76,41 @@
   never checked. Open WebUI 0.11.4 emits no `file_url` of its own, so this only reaches a custom filter, agent or
   API caller that writes one by hand.
 
+- **Multi-worker Redis deployments** — an admin save of the dashboard configuration, or an unattended update,
+  no longer closes the Redis client that Open WebUI's own websocket bookkeeping shares. The pipe took its
+  cross-worker lease over the cached client and then tore that client down when it released the lease, so on
+  any install with `WEBSOCKET_MANAGER=redis` and `WEBSOCKET_REDIS_URL` set, every configuration save and
+  every leader-election poll cut connections that `MODELS`, `SESSION_POOL`, `USAGE_POOL` and the two cleanup
+  locks were using. The client survives — the cache still holds it and redis-py reconnects — so the visible
+  effect was the `Session pool cleanup failed. Retrying.` and `Unknown receive error` lines around a save,
+  plus reconnect churn, rather than an outright outage. The lease is still released exactly when it was
+  taken, and a deployment without a distributed lock is unaffected: there was never a client to close.
+
+- **Web-Tools filter valves, the default the pipe seeded** — turning *both* Web-Tools filter valves off
+  (`AUTO_ATTACH_WEB_TOOLS_FILTER` **and** `AUTO_INSTALL_WEB_TOOLS_FILTER`) now also releases the default the
+  pipe had seeded for the panel, on the same pass that takes the panel off `filterIds`. The family-off arm
+  cleared the filter list and left the seeded `defaultFilterIds` entry behind against a panel that no longer
+  ran, and the entry could not be removed by the pipe afterwards. The three sibling families already
+  consulted their own family-off flag here. A blank panel id that means "the installer did not answer" is
+  unchanged: nothing is released and the install is retried, and turning the family back on re-seeds the
+  default. `AUTO_ATTACH_WEB_TOOLS_FILTER`'s own help text now says the release needs
+  `AUTO_INSTALL_WEB_TOOLS_FILTER` off as well, which is what detachment has always keyed on.
+- **Native image filters, a superseded panel** — a panel the pipe retires as superseded now leaves the model
+  rows it was still attached to on that same pass: the id comes off `filterIds` **and** `defaultFilterIds`,
+  with either image valve on. The sweep's verdict reached the filter list only on the branch that computes it
+  itself, and never reached the default list on either branch, so a deactivated filter could stay attached and
+  default-on. An id the pipe did not retire is untouched.
+- **`meta.builtinTools` the pipe wrote from a File-context untick** — the pipe now writes
+  `builtinTools.files = false` only on the media models whose own media rule produced the `file_context`
+  untick this pass. On a text or vision model the only source of that untick was the operator's own tick in
+  the model editor, and the pipe answered it with Open WebUI's own off-switch for `list_chat_files`,
+  `query_chat_files`, `grep_chat_files` and `view_file` — the tools `file_context` off is there to turn *on*.
+  An operator who unticked the box now keeps the chat-file tools. A media model the pipe really is correcting,
+  and a Files default an admin ticked in the editor, are both unchanged.
+  **Rows already carrying `builtinTools.files = false` from an earlier build keep it**: there is no valve to
+  undo that write and no tick-back, so untick the box in the model editor, or wait for the marker work
+  (B682/T971) that can tell a pipe-written entry from an admin's.
+
 - **Video generation, machine callers** — a video turn that fails *before* OpenRouter answers the submission now
   reaches a caller with no chat as an HTTP error instead of a `200` with a Markdown card in it. A rejected job
   leaves with the status the pipe resolved on the status line and the same number in `error.code` (`502` when a
@@ -128,6 +163,19 @@
   happens whether or not `PIPE_DASHBOARD_ENABLE` is on, and it is per worker: on a multi-worker deployment the other workers release their own generation at
   their next hot reload, exactly as Open WebUI keeps its own per-worker function cache. The action route and the socket gate still refuse once the row is
   gone; nothing about the authorization answer changes.
+- **Pipe dashboard, usage collection switched on after start** — an install whose dashboard model is off but whose usage
+  collection was switched on after the worker booted now records usage, and runs the abandon sweep, without a restart.
+  The reaper used to be armed only from the boot path and from the model-list pass *below* the dashboard-off return, so
+  a collect-only install that was flipped on later never reached it: sessions were tracked, abandoned ones accumulated
+  with nothing to finalize them, and the Usage tab's **Failed** count was short exactly the rows nobody was looking at.
+  The reaper is now armed by the first request that starts tracking and by the model-list pass above that return, so it
+  comes up within one chat turn or one model-list request, whether or not `PIPE_DASHBOARD_ENABLE` is on. No query is
+  added to the request path: every one of those sites reads the valve copy Open WebUI rebinds before the call.
+- **Pipe dashboard, session tracker bound** — the tracked-session registry is now bounded. At the bound the stalest entry
+  is finalized as `failed` — one usage row, carrying that request's own cost and tokens — and a latched warning names
+  the bound that was reached. The **Active** tile and the Live table are unchanged: the tile still describes the whole
+  tracked population and the table still renders its 30 newest rows, and a tracker under the bound tracks everything it
+  is asked to.
 - **`/chat/completions`** — a streaming body the provider accepted and then lost is no longer re-sent.
   The `/responses` leg already stopped re-POSTing one; the fallback leg did not, so the same shape cost
   `1 + TRANSIENT_RETRY_MAX_ATTEMPTS` POSTs for a request OpenRouter had already accepted and begun

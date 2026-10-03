@@ -259,7 +259,9 @@ class EventEmitterHandler:
                 continuing = CONTINUED_REPLY.get() is not None
                 if not done:
                     if on_channel or continuing:
-                        await self._publish_card(event_emitter, shown, on_channel, continuing)
+                        await self._publish_card(
+                            event_emitter, shown, on_channel, continuing, terminal=False
+                        )
                     else:
                         await event_emitter({
                             "type": "chat:message:error",
@@ -374,7 +376,7 @@ class EventEmitterHandler:
                 "type": "status",
                 "data": {"description": "The request could not be completed. See details below.", "done": True},
             })
-            await self._publish_card(event_emitter, shown, on_channel, continuing)
+            await self._publish_card(event_emitter, shown, on_channel, continuing, terminal=terminal)
             completion: dict[str, Any] = {"done": terminal}
             if shown and (on_channel or not continuing):
                 completion["content"] = shown
@@ -394,14 +396,16 @@ class EventEmitterHandler:
         shown: str,
         on_channel: bool,
         continuing: bool,
+        *,
+        terminal: bool = True,
     ) -> None:
         if on_channel:
             await event_emitter({"type": "chat:message", "data": {"content": shown}})
         if on_channel or continuing:
-            await event_emitter({
-                "type": "chat:message:error",
-                "data": {"error": {"content": shown}, "done": True},
-            })
+            data: dict[str, Any] = {"error": {"content": shown}}
+            if terminal:
+                data["done"] = True
+            await event_emitter({"type": "chat:message:error", "data": data})
         if not on_channel and not continuing:
             await event_emitter({"type": "chat:message", "data": {"content": shown}})
 

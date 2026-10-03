@@ -409,7 +409,9 @@ The sweep that
 retires image rows left over from the fixed-variant design obeys the same rule, on the same
 predicate: it selects on the image marker and the off-identity shape, and then writes only
 to a row this copy installed or to a row carrying no record at all, so two copies never
-stamp `switched_off_by_pipe` onto each other's rows. What no valve can
+stamp `switched_off_by_pipe` onto each other's rows. The ids it deactivates come off both
+`filterIds` and `defaultFilterIds` on the model rows they were attached to, on that same
+pass, whichever of the two image valves is on. What no valve can
 recover is the id: a row keeps the id it was installed under, so an admin who wants the
 canonical id back removes the row holding it and lets the next refresh install a fresh
 one.

@@ -62,6 +62,7 @@ from ..media import (
     make_thumbnail,
     probe_video,
 )
+from ..media.frame_extraction import _without_paths
 from ..models.registry import OpenRouterModelRegistry
 from ..requests.fusion_engine import asks_for_help, latest_user_text
 from ..requests.orchestrator import _is_api_caller, _provider_error_response
@@ -3954,7 +3955,8 @@ class VideoGenerationAdapter:
                     path.unlink(missing_ok=True)
                 except OSError as exc:
                     self.logger.warning(
-                        "prior-video temp unlink failed for %s: %s", path, exc,
+                        "prior-video temp unlink failed for %s: %s",
+                        _without_paths(str(path)), _without_paths(str(exc)),
                     )
 
         return thumb_urls

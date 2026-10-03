@@ -155,14 +155,14 @@ async def _read_attachment(
     file_obj = await get_file_by_id(file_id, logger)
     if not file_obj:
         raise FileUnavailableError(
-            f"{label} '{file_id}' could not be loaded."
+            f"{label} could not be loaded."
         )
     b64 = await gateway.read_file_record_base64(
         file_obj, chunk_size, max_bytes, user=user_model
     )
     if not b64:
         raise FileUnavailableError(
-            f"{label} '{file_id}' could not be encoded."
+            f"{label} could not be encoded."
         )
     attachment_bytes[memo_key] = (b64, file_obj)
     return b64, file_obj

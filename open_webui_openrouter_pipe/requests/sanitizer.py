@@ -252,7 +252,10 @@ def _sanitize_request_input(
             if not (isinstance(call_id, str) and call_id.strip()):
                 return item, gated
             output = item.get("output")
-            if is_text_part_output(output):
+            if isinstance(output, list) and not output:
+                output = ""
+                changed = True
+            elif is_text_part_output(output):
                 output = tool_output_text_and_pictures(output)[0]
                 changed = True
             elif not isinstance(output, str) and not is_picture_output(output):

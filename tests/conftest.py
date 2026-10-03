@@ -10,6 +10,7 @@ import owui_stubs  # noqa: F401 - Open WebUI/sqlalchemy/tenacity stand-ins + env
 import contextlib
 import os
 import tempfile
+import threading
 from typing import Any
 
 import asyncio
@@ -255,6 +256,60 @@ from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry, 
 from tests.pipe_limits import reset_all_slots
 
 
+#: Real paths the session was asked to collect, when every argument is a plain file and
+#: no selection filter is in play. Empty means the guard stands down. Resolved once in
+#: `pytest_configure` because the decision depends only on the command line.
+_WANTED_FILES: set[str] = set()
+
+
+def _decide_fast_path(config) -> bool:
+    """Whether narrowing collection to the named files is safe for this invocation.
+
+    Stand down unless ALL of: at least one argument, every argument's path part is an
+    existing file, and neither `-k` nor `-m` is in play. A directory argument means "all
+    of this", and a selection filter changes which tests RUN -- declining files there
+    would drop tests the caller asked to keep. `::` is stripped because a node id is a
+    file plus a selector.
+    """
+    paths = []
+    for arg in config.args:
+        path = arg.split("::", 1)[0]
+        if path not in paths:
+            paths.append(path)
+    if not paths:
+        return False
+    if any(not os.path.isfile(path) for path in paths):
+        return False
+    if config.getoption("-k", default=None) or config.getoption("-m", default=None):
+        return False
+    return True
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_configure(config):
+    if _decide_fast_path(config):
+        _WANTED_FILES.update(
+            os.path.realpath(arg.split("::", 1)[0]) for arg in config.args
+        )
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_ignore_collect(collection_path, config):
+    """Skip files the session did not ask for, before a collector is built for them.
+
+    `_pytest.main.Session._collect_one_node` consults `self._collection_cache` only when
+    `handle_dupes` is true, and pytest computes that as `not (len(matchparts) == 1 and
+    isinstance(matchparts[0], Path) and matchparts[0].is_file())` -- False for a bare file
+    argument. So each file named on the command line re-walks the whole `tests/` tree,
+    building one `Module` node per file and keeping one. Declining the rest here is free:
+    this hook is consulted before a collector is constructed, where `pytest_collect_file`
+    would build the node first and decline it afterwards (measured slower than no guard).
+    """
+    if _WANTED_FILES and os.path.isfile(str(collection_path)):
+        return os.path.realpath(str(collection_path)) not in _WANTED_FILES
+    return None
+
+
 _WARN_LATCH_PREFIX = "_warned"
 _PIPE_MARKER_NAME = "OWUI_OPENROUTER_PIPE_MARKER"
 
@@ -403,6 +458,76 @@ def _repair_package_logger() -> bool:
         return False
     logger.propagate = True
     return True
+
+
+#: Node ids whose test left a non-daemon thread running, collected during the run and
+#: reported once at session finish. See `pytest_runtest_protocol` for why a per-test
+#: timeout cannot see this at all.
+_LEAKED_THREADS: list[str] = []
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_protocol(item, nextitem):
+    """Name the test that left a non-daemon thread running for the interpreter to join.
+
+    The timeout the suite now arms bounds a hung TEST. This is the hang that follows the
+    last one: `concurrent.futures.thread._python_exit` is registered through
+    `threading._register_atexit` and joins every worker with `t.join()`, by which point
+    `SIGALRM` has been reset to `SIG_DFL` and the plugin's timer thread is gone. A
+    `ThreadPoolExecutor` worker is non-daemon, so a test that starts one and never shuts
+    it down hands the run a process that cannot exit -- the symptom is a wall, and the
+    cause is a test that passed.
+
+    The post-yield body runs after every finalizer for the item, which is the first moment
+    a thread the test started can be told apart from one it joined. Threads that existed
+    before are recorded by identity, so an idle pool carried over from an earlier test is
+    not attributed to this one. The names accumulate and are reported once, at session
+    finish: failing each item here would attribute the damage to whichever test happened
+    to run next, which is the failure mode this exists to remove.
+    """
+    before = {t.ident for t in threading.enumerate()}
+    try:
+        result = yield
+    except BaseException:
+        _record_leaked_threads(item, before)
+        raise
+    _record_leaked_threads(item, before)
+    return result
+
+
+def _record_leaked_threads(item, before: set) -> None:
+    for thread in threading.enumerate():
+        if thread.ident not in before and not thread.daemon:
+            _LEAKED_THREADS.append(
+                f"{item.nodeid} left non-daemon thread {thread.name!r} running"
+            )
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Fail the session, naming every test that left a non-daemon thread running.
+
+    Reported here rather than per item because the thread outlives the test that made it:
+    the interpreter reaches `threading._shutdown()` long after the last protocol, and a
+    failure raised inside an item would be repaired or cancelled by that item's own
+    teardown long before anything joined it.
+    """
+    if not _LEAKED_THREADS:
+        return
+    report = session.config.get_terminal_writer()
+    report.line("")
+    report.line(
+        f"{len(_LEAKED_THREADS)} test(s) left a non-daemon thread running:", red=True
+    )
+    for name in _LEAKED_THREADS:
+        report.line(f"  {name}", red=True)
+    report.line(
+        "The interpreter joins non-daemon threads at exit (concurrent.futures.thread."
+        "_python_exit -> t.join()), after the timeout's alarm has been reset, so a "
+        "leaked thread hangs the run rather than failing a test. Shut the executor down, "
+        "or join the thread, in the test named above.",
+        red=True,
+    )
+    session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
 @pytest.hookimpl(wrapper=True)

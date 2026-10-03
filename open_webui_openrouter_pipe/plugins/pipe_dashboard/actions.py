@@ -35,7 +35,7 @@ from .dashboard_socket import (
     publish_valves_changed,
     read_config_rev,
 )
-from .update_service import UpdateError, UpdateService, _distributed_lock
+from .update_service import UpdateError, _distributed_lock
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +79,6 @@ async def _acquire_config_lease() -> _ConfigLease | None:
         )
         return None
     if not acquired:
-        UpdateService._dispose_lock(lock)
         raise _ClientMessage(
             "another administrator is saving the configuration on another worker, so nothing "
             "was saved; try again in a moment"
@@ -99,7 +98,6 @@ async def _release_config_lease(lease: _ConfigLease | None) -> None:
             "pipe_dashboard: the cross-worker configuration lease could not be released",
             exc_info=True,
         )
-    UpdateService._dispose_lock(lock)
 
 
 class _OptionalKey(NamedTuple):

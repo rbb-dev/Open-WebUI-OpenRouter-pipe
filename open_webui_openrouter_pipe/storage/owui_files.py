@@ -538,7 +538,12 @@ async def materialize_owui_file_to_temp(
     try:
         local_path = await asyncio.to_thread(storage.get_file, str(raw_path))
     except Exception as exc:
-        logger.warning("Storage.get_file failed for %s: %s", raw_path, exc)
+        from ..media.frame_extraction import _without_paths
+
+        logger.warning(
+            "Storage.get_file failed for %s: %s",
+            _without_paths(str(raw_path)), _without_paths(str(exc)),
+        )
         raise RequiredInternalFileError(
             "A referenced file could not be retrieved from storage."
         ) from exc
@@ -1143,8 +1148,7 @@ class OwuiFileGateway:
             )
             if not inlined:
                 raise FileUnavailableError(
-                    f"A referenced picture ({picture_id or image_url}) is no longer "
-                    f"available in Open WebUI storage.",
+                    "A referenced picture is no longer available in Open WebUI storage.",
                     kind="image",
                 )
             if isinstance(holder, dict):
@@ -1196,8 +1200,7 @@ class OwuiFileGateway:
                 if not internal_file_id:
                     if named_reference is not None:
                         raise FileUnavailableError(
-                            f"A referenced file ({named_reference}) is no longer "
-                            f"available in Open WebUI storage.",
+                            "A referenced file is no longer available in Open WebUI storage.",
                         )
                     continue
 
@@ -1209,8 +1212,7 @@ class OwuiFileGateway:
                 )
                 if not result:
                     raise FileUnavailableError(
-                        f"A referenced file ({internal_file_id}) is no longer "
-                        f"available in Open WebUI storage.",
+                        "A referenced file is no longer available in Open WebUI storage.",
                     )
 
                 block["file_data"] = result.data_url

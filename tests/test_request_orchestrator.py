@@ -3590,7 +3590,9 @@ async def test_sniff_audio_format_empty_prefix(monkeypatch):
     asserted, because either alone is satisfied by a build that quietly drops the
     attachment -- one payload would be wrong, and a silent turn would be worse. The
     refusal the person reads is the encoding failure, not the missing-format error: the
-    read never gets as far as a format to be missing.
+    read never gets as far as a format to be missing. The attachment's own id is absent
+    from the turn on purpose (B936, H3595-2): a reference is what leaks, so no
+    file-error message carries one.
     """
     pipe = Pipe()
 
@@ -3664,8 +3666,11 @@ async def test_sniff_audio_format_empty_prefix(monkeypatch):
             "an attachment whose bytes could not be read must not reach the provider on "
             f"any endpoint; got {captured_payloads!r}"
         )
-        assert "Native audio attachment 'audio_empty' could not be encoded." in consumed, (
+        assert "Native audio attachment could not be encoded." in consumed, (
             f"the turn must name the refusal that stopped the upload; got {consumed!r}"
+        )
+        assert "audio_empty" not in consumed, (
+            f"the turn must not carry the requester's own reference; got {consumed!r}"
         )
 
     finally:

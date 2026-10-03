@@ -2280,31 +2280,6 @@ async def test_rate_limit_reset_header_case_insensitive(svc, fake_functions, fak
     assert out["last_check_error"]["reset"] == "424242"
 
 
-@pytest.mark.asyncio
-async def test_contended_lock_client_disposed(svc, wired, monkeypatch):
-    xlock = _FakeXLock(available=False)
-    monkeypatch.setattr(us, "_distributed_lock", lambda *a, **k: xlock)
-    with pytest.raises(us.UpdateError):
-        await svc.apply(
-            {"rev": wired.functions.row.updated_at}, actor="admin", actor_id="u1", request=_request()
-        )
-    assert xlock.redis.closed == 1
-    assert xlock.redis.connection_pool.disconnected == 1
-
-
-@pytest.mark.asyncio
-async def test_released_lock_client_disposed(svc, wired, monkeypatch):
-    xlock = _FakeXLock()
-    monkeypatch.setattr(us, "_distributed_lock", lambda *a, **k: xlock)
-    out = await svc.apply(
-        {"rev": wired.functions.row.updated_at}, actor="admin", actor_id="u1", request=_request()
-    )
-    assert out["ok"] is True
-    await _wait_for(lambda: bool(xlock.redis.closed))
-    assert xlock.redis.closed == 1
-    assert xlock.redis.connection_pool.disconnected == 1
-
-
 # ── leader election ──────────────────────────────────────────────────────────
 
 
@@ -2317,6 +2292,7 @@ class _FakeLease:
         self.lock_name = "lease"
         self.redis = self
         self.closed = 0
+        self.releases = 0
         self.connection_pool = None
 
     def close(self):
@@ -2338,6 +2314,7 @@ class _FakeLease:
         return False
 
     def release_lock(self):
+        self.releases += 1
         if self.store.get(self.lock_name) == self.lock_id:
             del self.store[self.lock_name]
 
@@ -2510,63 +2487,6 @@ async def test_no_redis_acts_as_solo_leader(svc, wired, monkeypatch):
     await asyncio.wait([task], timeout=5.0)
     assert ticks == [1]
     assert svc._auto_role == "solo"
-
-
-@pytest.mark.asyncio
-async def test_follower_probe_lease_disposed(svc, wired, monkeypatch):
-    store: dict = {"lease": "someone-else"}
-    leases: list = []
-
-    def _mk(*a, **k):
-        lease = _FakeLease(store)
-        leases.append(lease)
-        return lease
-
-    monkeypatch.setattr(us, "_distributed_lock", _mk)
-    monkeypatch.setattr(us, "_PD_UPDATE_AUTO_JITTER", (0.0, 0.0))
-    sleeps: list = []
-
-    async def _sleep(seconds):
-        sleeps.append(seconds)
-        if len(sleeps) >= 2:
-            raise asyncio.CancelledError()
-        await asyncio.sleep(0)
-
-    monkeypatch.setattr(svc, "_sleep", _sleep)
-    task = asyncio.get_event_loop().create_task(svc.run_auto_loop())
-    await asyncio.wait([task], timeout=5.0)
-    assert leases and leases[0].closed >= 1
-
-
-@pytest.mark.asyncio
-async def test_cancelled_leader_lease_disposed(svc, wired, monkeypatch):
-    store: dict = {}
-    leases: list = []
-
-    def _mk(*a, **k):
-        lease = _FakeLease(store)
-        leases.append(lease)
-        return lease
-
-    monkeypatch.setattr(us, "_distributed_lock", _mk)
-    monkeypatch.setattr(us, "_PD_UPDATE_AUTO_JITTER", (0.0, 0.0))
-    ticks: list = []
-
-    async def _tick():
-        ticks.append(1)
-        return 10_000.0
-
-    monkeypatch.setattr(svc, "_auto_tick", _tick)
-
-    async def _fast(seconds):
-        await asyncio.sleep(0)
-
-    monkeypatch.setattr(svc, "_sleep", _fast)
-    task = asyncio.get_event_loop().create_task(svc.run_auto_loop())
-    await _wait_for(lambda: bool(ticks))
-    task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
-    assert leases and any(lease.closed for lease in leases)
 
 
 def test_pipe_init_attaches_registry_last():

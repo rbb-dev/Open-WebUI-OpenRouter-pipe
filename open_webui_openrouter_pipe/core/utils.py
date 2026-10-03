@@ -38,6 +38,7 @@ from .config import (
     _application_secret,
 )
 from .url_scheme import (
+    _STRIPPED_SCHEME_BYTES,
     base64_data_url_payload_len,
     loggable_link,
     media_type_or_empty,
@@ -260,10 +261,23 @@ def tool_output_text_and_pictures(output: Any) -> tuple[str, list[str]]:
     return (output if isinstance(output, str) else ("" if output is None else str(output))), []
 
 
-_DATA_URL_LOG_SCAN = re.compile(r"""(?<![A-Za-z0-9+.-])data:[^\s"')\]}]*""", re.IGNORECASE)
+_DATA_URL_LOG_SCAN = re.compile(
+    r"""(?<![A-Za-z0-9+.-])d[\t\r\n]*a[\t\r\n]*t[\t\r\n]*a[\t\r\n]*:(?:[^\s"')\]}]|[\t\r\n])*""",
+    re.IGNORECASE,
+)
 _DATA_URL_LOG_MARKER_RE = re.compile(r"\s*\[redacted\]")
 _DATA_URL_NAME_PARAM = re.compile(r";name=[^;,]*", re.IGNORECASE)
-_DATA_URL_PRESENT = re.compile("data:", re.IGNORECASE)
+_DATA_URL_PRESENT = re.compile(r"d[\t\r\n]*a[\t\r\n]*t[\t\r\n]*a[\t\r\n]*:", re.IGNORECASE)
+
+
+def _base64_run_end(text: str, body_at: int, stop: int) -> int:
+    newline = text.find("\n", body_at, stop + 1)
+    end = stop if newline < 0 else newline
+    while True:
+        step = _BASE64_FOLD_STEP.match(text, end)
+        if step is None or step.end() > stop:
+            return end
+        end = step.end()
 
 
 def _is_a_bare_media_type(head: str) -> bool:
@@ -294,11 +308,12 @@ def _data_url_tokens(text: str) -> str:
         ):
             continue
         if comma >= 0 and ";base64" not in head.lower():
-            newline = text.find("\n", stop)
+            newline = text.find("\n", comma_at)
             end = len(text) if newline < 0 else newline
         else:
-            end = _folded_base64_end(text, stop)
-        candidate = head.split()[0] if head.split() else head
+            end = _base64_run_end(text, comma_at + 1 if comma >= 0 else stop, stop)
+        flat = head.translate(_STRIPPED_SCHEME_BYTES).split()
+        candidate = flat[0] if flat else head
         out.append(text[last:start])
         out.append(f"data:{media_type_or_empty(candidate[len('data:') :])} [redacted]")
         last = end

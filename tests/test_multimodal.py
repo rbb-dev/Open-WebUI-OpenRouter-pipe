@@ -906,9 +906,10 @@ class TestInlineInternalResponsesInputFilesInplace:
     async def test_raises_when_inlining_fails(self, pipe_instance_async, monkeypatch):
         """Should raise a named, typed error when inlining fails.
 
-        The `match` is the sentence the person is shown, so it names the file
-        rather than describing the mechanism: a bare `ValueError` here is not
-        caught by the pipe's typed handler and became the internal-error card.
+        The `match` is the sentence the person is shown, anchored to the whole of
+        it: a bare `ValueError` here is not caught by the pipe's typed handler
+        and became the internal-error card. The sentence carries no reference on
+        purpose (B936, H3595-2), so the file id is pinned absent from it.
         """
         monkeypatch.setattr(owui_files_module, "get_file_by_id", AsyncMock(return_value=None))
 
@@ -921,10 +922,17 @@ class TestInlineInternalResponsesInputFilesInplace:
             }]
         }
 
-        with pytest.raises(ValueError, match="A referenced file .* is no longer available"):
+        with pytest.raises(
+            ValueError,
+            match=r"\AA referenced file is no longer available in Open WebUI storage\.\Z",
+        ) as raised:
             await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
                 body, chunk_size=1024, max_bytes=1024 * 1024
             )
+
+        assert "owui-file-123" not in str(raised.value), (
+            f"the message carries the requester's own reference: {str(raised.value)!r}"
+        )
 
     @pytest.mark.asyncio
     async def test_skips_non_list_content(self, pipe_instance_async):

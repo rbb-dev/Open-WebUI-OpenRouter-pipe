@@ -74,34 +74,6 @@ def _forwarded_block(result: list[dict[str, Any]], btype: str) -> dict[str, Any]
     return None
 
 
-_NETWORK_URL_PREFIXES = ("http://", "https://", "ftp://", "gopher://", "//")
-_STORAGE_PATH = "/api/v1/files/"
-
-
-def _urls(node: Any) -> list[str]:
-    """Every string in the transformed input that a provider would fetch.
-
-    The assertion is deliberately about the whole subtree rather than one key: a fix
-    that empties the offending value but leaves a copy of the reference under a sibling
-    key has not closed anything, and neither has one that moves it.
-    """
-    found: list[str] = []
-
-    def walk(value: Any) -> None:
-        if isinstance(value, str):
-            if value.startswith(_NETWORK_URL_PREFIXES) or _STORAGE_PATH in value:
-                found.append(value)
-        elif isinstance(value, dict):
-            for item in value.values():
-                walk(item)
-        elif isinstance(value, (list, tuple)):
-            for item in value:
-                walk(item)
-
-    walk(node)
-    return found
-
-
 @pytest.fixture
 def pipe_instance(request):
     """Return a fresh Pipe instance for tests."""

@@ -186,6 +186,21 @@ def _build_output_items(
     return output
 
 
+def _content_list_carries_an_answer(content: list[Any], message: Any) -> bool:
+    if _chat_message_text(message).strip():
+        return True
+    return any(
+        (isinstance(part, str) and part.strip())
+        or (
+            isinstance(part, dict)
+            and isinstance(part.get("type"), str)
+            and part["type"].strip()
+            and part["type"] != "text"
+        )
+        for part in content
+    )
+
+
 def _choice_carries_an_answer(choice: Any) -> bool:
     if not isinstance(choice, dict):
         return False
@@ -194,7 +209,7 @@ def _choice_carries_an_answer(choice: Any) -> bool:
     content = message.get("content")
     if isinstance(content, str) and content.strip():
         return True
-    if isinstance(content, list) and content:
+    if isinstance(content, list) and content and _content_list_carries_an_answer(content, message):
         return True
     for key in ("tool_calls", "images", "annotations", "reasoning_details"):
         value = message.get(key)

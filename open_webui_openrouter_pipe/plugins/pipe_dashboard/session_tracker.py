@@ -25,6 +25,7 @@ from .usage_store import usage_ts_from_epoch
 logger = logging.getLogger(__name__)
 
 _ST_ACTIVE_CAP = 30
+_ST_ACTIVE_HARD_CAP = 8192
 _ST_RECENT_CAP = 300
 _ST_RECENT_MAX_AGE_S = 10800.0
 _ST_ABANDON_S = 7200.0
@@ -97,6 +98,7 @@ class SessionTracker:
         self._pricing_fn = pricing_fn
         self._name_fn = name_fn
         self._warned_name_fn: set[str] = set()
+        self._warned_active_cap: set[str] = set()
         self._pid = os.getpid()
         self.on_finalize: Callable[[dict[str, Any]], None] | None = None
 
@@ -145,6 +147,14 @@ class SessionTracker:
         }
         with self._lock:
             self._active[request_id] = entry
+            evicted = self._evict_stale_locked()
+        if evicted is not None:
+            callback = self.on_finalize
+            if callback is not None:
+                try:
+                    callback(evicted)
+                except Exception:
+                    logger.debug("finalize callback failed", exc_info=True)
 
     @staticmethod
     def _task_name(task: Any) -> str:
@@ -329,6 +339,32 @@ class SessionTracker:
             self._recent.append(entry)
             self._trim_recent_locked()
             return dict(entry)
+
+    def _evict_stale_locked(self) -> dict[str, Any] | None:
+        if len(self._active) < _ST_ACTIVE_HARD_CAP:
+            return None
+        victim_id = min(
+            self._active,
+            key=lambda rid: self._active[rid].get("seen") or self._active[rid].get("started") or 0.0,
+        )
+        self._stream_stamps.pop(victim_id, None)
+        entry = self._active.pop(victim_id)
+        entry["status"] = "failed"
+        entry["done"] = time.time()
+        entry["current_tool"] = None
+        entry["savings"] = self._cache_savings(entry)
+        self._fold_task_into_parent(entry)
+        self._recent.append(entry)
+        self._trim_recent_locked()
+        logger.log(
+            warn_level(self._warned_active_cap, "active_registry_hard_cap"),
+            "pipe_dashboard: the tracked-session registry reached its hard cap of %d "
+            "entries (%d requested) and the least-recently-seen request was finalized as "
+            "failed to make room",
+            _ST_ACTIVE_HARD_CAP,
+            len(self._active),
+        )
+        return dict(entry)
 
     def sweep(self) -> None:
         cutoff = time.time() - _ST_ABANDON_S

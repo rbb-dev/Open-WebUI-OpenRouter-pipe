@@ -184,6 +184,9 @@ class PipeDashboardPlugin(PluginBase):
                 "Off by default; records are purged after the configured retention. "
                 "A request that never reaches a terminal state is recorded as `failed` after two hours "
                 "of silence, and that happens on a timer rather than when someone is looking. "
+                "That reaper is armed by the first request that starts tracking and by the model-list "
+                "pass, so turning collection on brings it up within one chat turn or one model-list "
+                "request, with no restart and whether or not the dashboard model itself is on. "
                 "Turning it off stops records written by the background abandon sweep as well as by the "
                 "request path, on every worker including ones that have served no request, with no "
                 "restart; a request already in flight when you switch it off still records its own usage."
@@ -344,7 +347,8 @@ class PipeDashboardPlugin(PluginBase):
         except RuntimeError:
             logger.debug("No event loop — abandon-sweep task deferred")
             return
-        if self._sweep_task is None or self._sweep_task.done():
+        sweep_task = getattr(self, "_sweep_task", None)
+        if sweep_task is None or sweep_task.done():
             self._sweep_task = loop.create_task(self._sweep_loop(), name="openrouter-dashboard-sweep")
 
     async def _sweep_loop(self) -> None:
@@ -394,6 +398,7 @@ class PipeDashboardPlugin(PluginBase):
             "BYPASS_ADMIN_ACCESS_CONTROL is on; with it off an admin needs the model grant too."
         )
         _dashboard_on, _gate_read_ok = await persisted_dashboard_enabled(self.ctx.pipe)
+        self._maybe_start_sweep()
         # Write a clean display name into OWUI's Models table so the UI shows
         # "Pipe Dashboard" instead of the ugly concatenated format.
         await self._ensure_model_overlay(_display_name, _description, _dashboard_on, _gate_read_ok)
@@ -505,6 +510,7 @@ class PipeDashboardPlugin(PluginBase):
                     str(kwargs.get("request_id") or "")
                 )
             ):
+                self._maybe_start_sweep()
                 try:
                     self._tracker.start(
                         str(kwargs.get("request_id") or ""),

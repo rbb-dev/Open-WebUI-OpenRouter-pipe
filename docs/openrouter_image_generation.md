@@ -1326,7 +1326,12 @@ The one case the record cannot cover is a model upgraded from a release that
 never wrote one, with a superseded panel still attached from before: with no
 record there is nothing to scope the release to, and adopting the id instead
 would make the drift permanent. Detach that panel once by hand and the next
-sync records the current one.
+sync records the current one. The one exception is a panel this pass itself
+retires as superseded: the sweep knows exactly which ids it deactivated, so with
+`AUTO_INSTALL_IMAGE_FILTERS` or `AUTO_ATTACH_IMAGE_FILTERS` on — the branch that
+runs the sweep as part of the install — those ids come off both `filterIds` and
+`defaultFilterIds` on the same pass whether or not the model ever had a record,
+and that is the configuration in which no hand-detaching is needed.
 `AUTO_DEFAULT_IMAGE_FILTERS` additionally starts each new chat with the panel
 already switched on.
 
@@ -1844,13 +1849,17 @@ pipes()
           ├─ each install in own try/except — partial failures isolated
           └─ retire rows left over from the fixed-variant design
              (only rows this copy installed, or that carry no
-             openrouter_pipe:installed_by record at all)
+             openrouter_pipe:installed_by record at all); the ids it
+             retires come off filterIds and defaultFilterIds alike on
+             that branch, whichever of the two image valves is on
 
   └─ catalog_manager._update_or_insert_model_with_metadata()
         ├─ pipe_capabilities.image_output gate
         ├─ web_tools_supported = ... and not picture_only
         ├─ _apply_list_filter_ids(meta_dict)       — writes filterIds
+        │     (retired_ids: the ids this pass deactivated, off both lists)
         └─ _apply_list_default_filter_ids(meta_dict) — writes defaultFilterIds
+              (retired_ids reach the prune here too)
 
 settings-row inlet (Open WebUI runs this before the pipe sees the body)
   ├─ model gate: every id form OWUI produces, and no other model

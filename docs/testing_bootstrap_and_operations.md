@@ -88,15 +88,19 @@ Do not `pip download open-webui==0.11.4` and unzip it instead. A wheel carries n
 
 You do not need to import any bootstrap module in individual test files.
 
+`pytest.ini` also sets `timeout = 60` with `timeout_method = thread`, so a hung test is failed and named on every path — including a hand-typed `pytest tests/`, which bypasses `scripts/gate.sh` entirely. The value is the repository's own CI budget, and CI's `--timeout=60 --timeout-method=thread` still overrides it, as does any other `--timeout` on the command line. A `@pytest.mark.timeout(...)` marker wins over both.
+
 A probe subprocess that imports the real `open_webui` must be given its own `DATA_DIR`: the import builds a chromadb store under it, so a probe that inherits the ambient one races every concurrent collection for the same directory. The assignment must be **unconditional** — `os.environ['DATA_DIR'] = ...`, not `setdefault`. The parent process exports `DATA_DIR` and `tests/owui_stubs.py` sets it before any test runs, so a child always inherits a set value and a `setdefault` there is a line that reads compliant and does nothing.
 
 Give it from a fixture rather than at module import — a process-wide timeout does not cover a module-import probe, so a probe that costs tens of seconds there runs entirely outside the budget CI enforces on tests. `pytest.ini` sets no `--timeout` of its own; the only per-test ceiling in this repository is `--timeout=60` in `.github/workflows/verify.yml`, so "the budget the suite enforces" describes a CI run and not a local or agent run. `tests/test_a_test_module_starts_no_probe_at_import.py` is the census that keeps a module-scope probe from being added, and `tests/test_a_probe_script_path_is_not_shared_across_workers.py` is the one that keeps a probe's *script* off a path another worker can name.
 
 A test module may not construct a `Pipe` at import time; `Pipe.id` is a class attribute and needs no instance. `Pipe.__init__` wires the package logger, claims the id in `_LifecycleRegistry` and starts the session-log machinery, so an import-time `Pipe()` decides the logger baseline of every later test in the same worker in an order the collector chooses.
 
+That budget also stops at the end of the run. The timeout cannot cover interpreter shutdown, where `concurrent.futures.thread._python_exit` joins every `ThreadPoolExecutor` worker with `t.join()` and the alarm has already been reset — so a test that leaves a non-daemon thread running hangs the process instead of failing a test, and the symptom is a wall rather than a name. `tests/conftest.py` therefore names those threads separately and fails the session with the node ids, which is why a leak is reported against the test that caused it rather than against whichever one ran next.
+
 ### Running tests
 
-Run a single file first, then the full suite:
+Run a single file first, then the full suite. Both inherit the timeout above; a caller does not need to supply one.
 
 ```bash
 PYTHONPATH=. .venv/bin/pytest tests/test_multimodal_inputs.py -q

@@ -1022,29 +1022,12 @@ class UpdateService:
             raise UpdateError("update_in_progress", "another update is already running on this worker")
 
     @staticmethod
-    def _dispose_lock(lock: Any | None) -> None:
-        client = getattr(lock, "redis", None)
-        if client is None:
-            return
-        try:
-            client.close()
-        except Exception:
-            logger.debug("update: redis client close failed", exc_info=True)
-        pool = getattr(client, "connection_pool", None)
-        if pool is not None:
-            try:
-                pool.disconnect()
-            except Exception:
-                logger.debug("update: redis pool disconnect failed", exc_info=True)
-
-    @staticmethod
     async def _acquire_cross_worker() -> Any | None:
         lock = _distributed_lock()
         if lock is None:
             return None
         acquired = await asyncio.to_thread(lock.aquire_lock)
         if not acquired:
-            UpdateService._dispose_lock(lock)
             raise UpdateError("update_in_progress", "another worker is applying an update")
         return lock
 
@@ -1056,7 +1039,6 @@ class UpdateService:
             await asyncio.to_thread(lock.release_lock)
         except Exception:
             logger.warning("update: cross-worker lock release failed", exc_info=True)
-        UpdateService._dispose_lock(lock)
 
     async def _commit(
         self,
@@ -1639,16 +1621,14 @@ class UpdateService:
                 try:
                     acquired = await asyncio.to_thread(lease.aquire_lock)
                 except Exception as exc:
-                    probe, lease = lease, None
-                    self._dispose_lock(probe)
+                    lease = None
                     self._auto_last = {"code": "lease_unavailable", "ts": _now(), "message": str(exc)}
                     logger.warning("update: the leader lease could not be reached; retrying", exc_info=True)
                     await self._sleep(self._next_backoff())
                     continue
                 if not acquired:
                     self._auto_role = "follower"
-                    probe, lease = lease, None
-                    self._dispose_lock(probe)
+                    lease = None
                     await self._sleep(_PD_UPDATE_FOLLOWER_POLL_S)
                     continue
                 self._auto_role = "leader"
@@ -1661,12 +1641,10 @@ class UpdateService:
                         released.release_lock()
                     except Exception:
                         logger.warning("update: leader lease release failed", exc_info=True)
-                    self._dispose_lock(released)
         except asyncio.CancelledError:
             if lease is not None:
                 try:
                     lease.release_lock()
                 except Exception:
                     logger.debug("update: leader lease release on cancel failed", exc_info=True)
-                self._dispose_lock(lease)
             return

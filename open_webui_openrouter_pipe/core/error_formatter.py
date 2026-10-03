@@ -499,10 +499,10 @@ class ErrorFormatter:
             if not continuing:
                 await event_emitter({"type": "chat:message", "data": {"content": shown}})
             if on_channel or continuing:
-                await event_emitter({
-                    "type": "chat:message:error",
-                    "data": {"error": {"content": shown}, "done": True},
-                })
+                error_data: dict[str, Any] = {"error": {"content": shown}}
+                if terminal:
+                    error_data["done"] = True
+                await event_emitter({"type": "chat:message:error", "data": error_data})
             await self._pipe._event_emitter_handler._emit_completion(
                 event_emitter,
                 content=shown if on_channel else "",

@@ -818,8 +818,12 @@ def media_capability_defaults(
     return defaults
 
 
-def file_context_builtin_tool_defaults(capabilities: dict[str, Any]) -> dict[str, Any]:
-    if capabilities.get("file_context") is not False:
+def file_context_builtin_tool_defaults(
+    capability_defaults: dict[str, Any] | None, merged_caps: dict[str, Any]
+) -> dict[str, Any]:
+    if (capability_defaults or {}).get("file_context") is not False:
+        return {}
+    if merged_caps.get("file_context") is not False:
         return {}
     return {"files": False}
 
@@ -2003,6 +2007,7 @@ class ModelCatalogManager:
                     image_filter_function_ids, image_filter_ids_unresolved = (
                         await _image_filter_manager.ensure_openrouter_image_filter_function_ids(models, rows=install_rows, refused_out=refused_this_build)
                     )
+                    retired_image_filter_ids = _image_filter_manager.retired_image_filter_ids
                 except Exception as exc:
                     self.logger.warning(
                         "OpenRouter Image filter ensure failed: %s", exc, exc_info=True
@@ -2933,6 +2938,7 @@ class ModelCatalogManager:
                     not auto_default_filter
                     or web_tools_panel_withheld
                     or web_tools_attach_valve_off
+                    or web_tools_family_off
                 )
                 and (
                     seeded_by_pipe
@@ -3134,7 +3140,9 @@ class ModelCatalogManager:
                     meta_dict["capabilities"] = merged_caps
                     meta_updated = True
 
-                file_context_tool_defaults = file_context_builtin_tool_defaults(merged_caps)
+                file_context_tool_defaults = file_context_builtin_tool_defaults(
+                    capability_defaults, merged_caps
+                )
                 if file_context_tool_defaults:
                     existing_builtin = meta_dict.get("builtinTools")
                     merged_builtin: dict[str, Any] = (
@@ -3286,6 +3294,7 @@ class ModelCatalogManager:
                 filter_function_ids=image_ids_now,
                 auto_default=auto_default_image_filter,
             )
+            image_detached |= set(retired_image_filter_ids)
             if _apply_list_filter_ids(
                 meta_dict,
                 filter_function_ids=image_filter_function_ids,
@@ -3404,7 +3413,9 @@ class ModelCatalogManager:
                 merged_caps = _merged_capabilities(None, capabilities, capability_defaults)
                 if merged_caps:
                     meta_dict["capabilities"] = merged_caps
-                builtin_tool_defaults = file_context_builtin_tool_defaults(merged_caps)
+                builtin_tool_defaults = file_context_builtin_tool_defaults(
+                    capability_defaults, merged_caps
+                )
                 if builtin_tool_defaults:
                     meta_dict["builtinTools"] = {**builtin_tool_defaults}
             if update_images and profile_image_url:
@@ -3445,6 +3456,7 @@ class ModelCatalogManager:
                 filter_function_ids=image_filter_function_ids,
                 auto_default=auto_default_image_filter,
             )
+            image_detached |= set(retired_image_filter_ids)
             image_hands_off = (
                 "image_filter_ids" in hands_off
                 or not image_filter_ids_known

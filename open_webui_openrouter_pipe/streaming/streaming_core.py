@@ -4353,9 +4353,13 @@ class StreamingHandler:
                                     "Not forwarding a tool's picture (%s): %s [cause=%s]",
                                     loggable_link(url), reason, cause,
                                 )
+                            notice = _tool_picture_notice(round_refusals)
                             await self._pipe._event_emitter_handler._emit_status(
-                                event_emitter, _tool_picture_notice(round_refusals), done=False,
+                                event_emitter, notice, done=False,
                             )
+                            notices = getattr(body, "_attachment_notices", None)
+                            if isinstance(notices, list):
+                                notices.append(notice)
                         body.input.extend(budgeted_outputs)
                         input_is_sanitized = False
                         shipped_budget = _sanitize_request_input(

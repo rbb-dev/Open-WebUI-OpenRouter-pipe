@@ -1194,11 +1194,47 @@ class TestResolveMessageId:
         assert set(key.split(".")) == {"b", "title_generation"}
 
     def test_user_message_children_fallback(self):
+        """One child, or nothing: an ambiguous `childrenIds` resolves to no message id.
+
+        This rung used to take `childrenIds[0]` whatever the list held, which named the
+        turn the archive belonged to by guessing. On a fan-out turn the frontend appends
+        every selected model's assistant reply to the user message's `childrenIds` before
+        it clones history and POSTs that message as `user_message` (`Chat.svelte:3687-3692`,
+        `:3734`, `:3846-3847`, `:4024`), so two or more means "one of several answers" --
+        which is not the turn the task ran on, and filing it there is worse than not
+        filing it: a reader who finds no file knows to look, and a reader who finds a file
+        under a sibling turn does not.
+
+        The one-child arm is the one that must keep working, and it is asserted beside the
+        refusing arm so a build that swallowed the whole rung and answered `""` to
+        everything cannot pass it. The non-list arm is there for the same reason: dropping
+        the type test would raise a `TypeError` on a string `childrenIds`, and
+        `resolve_message_id` swallows that into `""`, which would look exactly like a
+        correct refusal.
+        """
         from open_webui_openrouter_pipe.logging.session_log_manager import resolve_message_id
 
-        metadata = {"task": "title_generation", "user_message": {"childrenIds": ["c-1", "c-2"]}}
-        key = resolve_message_id(metadata)
-        assert set(key.split(".")) == {"c-1", "title_generation"}
+        one = {"task": "title_generation", "user_message": {"childrenIds": ["c-1"]}}
+        assert resolve_message_id(one) == "c-1.title_generation", (
+            "a user message with exactly one assistant reply stopped resolving, which is "
+            "the arm the Continue turn, the tool-approval resume and a chat's first turn "
+            "all depend on"
+        )
+
+        many = {"task": "title_generation", "user_message": {"childrenIds": ["c-1", "c-2"]}}
+        assert resolve_message_id(many) == "", (
+            f"an ambiguous childrenIds still resolves to {resolve_message_id(many)!r}"
+        )
+
+        untyped = {"task": "title_generation", "user_message": {"childrenIds": "c-1"}}
+        assert resolve_message_id(untyped) == "", (
+            f"a childrenIds that is not a list resolves to {resolve_message_id(untyped)!r}"
+        )
+        assert resolve_message_id(one) == "c-1.title_generation", (
+            "the one-child arm stopped firing once a non-list childrenIds had been seen, "
+            "so the refusal above is being produced by a swallowed TypeError rather than "
+            "by the rule"
+        )
 
     # -- the head budget -----------------------------------------------------------------
     #

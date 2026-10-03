@@ -650,6 +650,7 @@ class FilterManager:
         )
 
     _unresolved_image_filter_ids: frozenset[str] = frozenset()
+    _retired_image_filter_ids: frozenset[str] = frozenset()
     _unresolved_video_filter_ids: frozenset[str] = frozenset()
     _unresolved_fusion_filter_id: bool = False
 
@@ -671,6 +672,7 @@ class FilterManager:
         self._provider_routing_state_hash = ""
         self.logger = logger
         self._unresolved_image_filter_ids = frozenset()
+        self._retired_image_filter_ids = frozenset()
         self._unresolved_video_filter_ids = frozenset()
         self._unresolved_fusion_filter_id = False
 
@@ -682,6 +684,10 @@ class FilterManager:
     @property
     def unresolved_image_filter_ids(self) -> frozenset[str]:
         return self._unresolved_image_filter_ids
+
+    @property
+    def retired_image_filter_ids(self) -> frozenset[str]:
+        return self._retired_image_filter_ids
 
     @property
     def unresolved_video_filter_ids(self) -> frozenset[str]:
@@ -2673,6 +2679,7 @@ class FilterManager:
         filter of their own.
         """
         retired: set[str] = set()
+        self._retired_image_filter_ids = frozenset()
         try:
             from open_webui.models.functions import Functions
 
@@ -2686,6 +2693,7 @@ class FilterManager:
                 active = await Functions.get_functions_by_type("filter", active_only=True)
         except Exception as exc:
             self.logger.debug("Could not list filters to retire old ones: %s", exc, exc_info=True)
+            self._retired_image_filter_ids = frozenset(retired)
             return retired
 
         panels = _index_active_image_panels(active)
@@ -2718,6 +2726,7 @@ class FilterManager:
             self.logger.info(
                 "Retired superseded image filter %r; each model now has its own.", row_id
             )
+        self._retired_image_filter_ids = frozenset(retired)
         return retired
 
     async def _retire_variant_video_filters(

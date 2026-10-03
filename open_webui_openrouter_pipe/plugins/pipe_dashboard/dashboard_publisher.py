@@ -450,9 +450,15 @@ async def _set_active_flag(client: Any, namespace: str, *, wake: bool) -> None:
             logger.debug("Failed to publish dashboard wake", exc_info=True)
 
 
-async def _write_own_slice(client: Any, worker_key: str, pipe: Any) -> bool:
+async def _write_own_slice(
+    client: Any, worker_key: str, pipe: Any
+) -> tuple[dict[str, Any] | None, bool]:
     try:
         payload = _collect_worker_payload(pipe)
+    except Exception:
+        logger.debug("Dashboard collect failed (pid=%d)", os.getpid(), exc_info=True)
+        return None, False
+    try:
         await client.set(
             worker_key,
             json.dumps(payload, separators=(",", ":")),
@@ -460,8 +466,8 @@ async def _write_own_slice(client: Any, worker_key: str, pipe: Any) -> bool:
         )
     except Exception:
         logger.debug("Dashboard publish failed (pid=%d)", os.getpid(), exc_info=True)
-        return False
-    return True
+        return payload, False
+    return payload, True
 
 
 def _is_superseded(pipe: Any) -> bool:
@@ -519,7 +525,7 @@ async def _build_emit_payload(
     agg_state = agg_state if agg_state is not None else {}
 
     if client is not None:
-        wrote = await _write_own_slice(client, worker_key, pipe)
+        own_payload, wrote = await _write_own_slice(client, worker_key, pipe)
         worker_payloads = await _read_redis_workers(client, namespace)
         degraded = False
         read_ok = False
@@ -544,7 +550,9 @@ async def _build_emit_payload(
         collect_failed = False
         if (_PD_HOST_TAG, pid) not in local_pids:
             try:
-                worker_payloads.append(expand_worker_payload(_collect_worker_payload(pipe)))
+                if own_payload is None:
+                    raise RuntimeError("this worker's own payload was never collected")
+                worker_payloads.append(expand_worker_payload(own_payload))
             except Exception:
                 collect_failed = True
                 logger.debug("Local worker payload collect error", exc_info=True)

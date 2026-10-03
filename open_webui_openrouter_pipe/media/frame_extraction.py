@@ -46,6 +46,7 @@ _MAX_SEEK_SECONDS = 1e12
 _FRAME_READ_CHUNK_BYTES = 64 * 1024
 _FRAME_READ_SLACK_BYTES = 256 * 1024
 _VIDEO_HEAD = re.compile(r"Video:")
+_ABSOLUTE_PATH_RUN = re.compile(r"(?<![A-Za-z0-9_.])/(?:[^\s'\"]+/)*[^\s'\"]*")
 _STREAM_INDEX = re.compile(r"Stream #\d+:(\d+)")
 _MATROSKA_DURATION = re.compile(r"DURATION\s*:\s*(\d+):(\d+):([\d.]+)")
 _MOV_DURATION = re.compile(r"Processing st:\s*(\d+),[^\n]*duration:\s*(\d+)")
@@ -219,6 +220,10 @@ def _ensure_extraction_semaphore() -> asyncio.Semaphore:
         sem = asyncio.Semaphore(_MAX_CONCURRENT_EXTRACTIONS)
         _extraction_semaphores[loop] = sem
     return sem
+
+
+def _without_paths(text: str, limit: int = 200) -> str:
+    return _ABSOLUTE_PATH_RUN.sub("<path>", str(text))[:limit]
 
 
 class FrameExtractionError(Exception):
@@ -474,7 +479,7 @@ def _pinned_probe(path: Path) -> dict[str, Any]:
             timeout=_PROBE_TIMEOUT_S, check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        raise FrameExtractionError(f"header read failed: {exc}") from exc
+        raise FrameExtractionError(_without_paths(f"header read failed: {exc}")) from exc
     stderr = proc.stderr or ""
     width, height = 0, 0
     fps = 0.0
@@ -600,7 +605,7 @@ def _probe_video_sync(path: Path, cancel: threading.Event | None = None) -> Vide
             duration_is_stream=duration_is_stream,
         )
     except Exception as exc:
-        raise FrameExtractionError(f"probe_video failed: {exc}") from exc
+        raise FrameExtractionError(_without_paths(f"probe_video failed: {exc}")) from exc
 
 
 async def probe_video(path: Path) -> VideoMetadata:
@@ -766,7 +771,7 @@ def _extract_frame_imageio_sync(
     except FrameExtractionError:
         raise
     except Exception as exc:
-        raise FrameExtractionError(f"imageio extract failed: {exc}") from exc
+        raise FrameExtractionError(_without_paths(f"imageio extract failed: {exc}")) from exc
 
 
 async def _extract_frame_ffmpeg(
@@ -854,7 +859,10 @@ async def _extract_frame_ffmpeg(
             stderr = await stderr_task
             if proc.returncode != 0:
                 raise FrameExtractionError(
-                    f"ffmpeg returned {proc.returncode}: {stderr.decode('utf-8', errors='replace')[:200]}",
+                    _without_paths(
+                        f"ffmpeg returned {proc.returncode}: "
+                        f"{stderr.decode('utf-8', errors='replace')}"
+                    ),
                     returncode=proc.returncode,
                 )
             if not stdout:
@@ -890,7 +898,7 @@ async def _extract_frame_ffmpeg(
                     await proc.wait()
             if stderr_task is not None and not stderr_task.done():
                 stderr_task.cancel()
-            raise FrameExtractionError(f"ffmpeg extract failed: {exc}") from exc
+            raise FrameExtractionError(_without_paths(f"ffmpeg extract failed: {exc}")) from exc
     if saw_damage is not None:
         saw_damage.append(walked_past_damage)
     if hop_index is not None:
@@ -1006,7 +1014,7 @@ async def _extract_frame_with_budget(
     """
     logger = logger or logging.getLogger(__name__)
     if not path.exists():
-        raise FrameExtractionError(f"video file not found: {path}")
+        raise FrameExtractionError(_without_paths(f"video file not found: {path}"))
     _refuse_unsafe_input(path)
     if target == "at_timestamp" and not _is_finite_non_negative(timestamp_seconds):
         raise FrameExtractionError(

@@ -982,6 +982,13 @@ async def resolve_intent(
             return fallback
 
         def _build_form_data(model_id: str) -> dict[str, Any]:
+            task_metadata: dict[str, Any] = {
+                "task": INTENT_SCHEMA_NAME,
+                **_intent_chat_metadata(valves, chat_id),
+            }
+            leg_message_id = str((metadata or {}).get("message_id") or "")
+            if leg_message_id:
+                task_metadata["openrouter_pipe_task_message_id"] = leg_message_id
             return merge_task_model_params(
                 {
                     "model": model_id,
@@ -996,7 +1003,7 @@ async def resolve_intent(
                         schema=INTENT_JSON_SCHEMA,
                         model_id=model_id,
                     ),
-                    "metadata": {"task": INTENT_SCHEMA_NAME, **_intent_chat_metadata(valves, chat_id)},
+                    "metadata": task_metadata,
                 },
                 task_model_params,
                 owned_by=task_model_owned_by(request, model_id),

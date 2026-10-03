@@ -953,6 +953,13 @@ def _handoff_back(messages: list[dict[str, Any]], position: int) -> bool:
     return is_tool_image_handoff_for_round(results, messages[position])
 
 
+def _is_tool_image_handoff_at(messages: list[dict[str, Any]], position: int) -> bool:
+    return bool(position) and (
+        is_tool_image_handoff(messages[position - 1], messages[position])
+        or _handoff_back(messages, position)
+    )
+
+
 def _tool_picture_gate(
     pictures: list[str],
     *,
@@ -1292,9 +1299,12 @@ async def transform_messages_to_input(
                         "Not forwarding a tool's picture (%s): %s [cause=%s]",
                         loggable_link(url), reason, refusal_cause,
                     )
+                notice = _tool_picture_notice(_deferred_tool_refusals)
                 await pipe._event_emitter_handler._emit_status(
-                    event_emitter, _tool_picture_notice(_deferred_tool_refusals), done=False,
+                    event_emitter, notice, done=False,
                 )
+                if attachment_notices is not None:
+                    attachment_notices.append(notice)
                 _deferred_tool_refusals.clear()
 
         def _compute_turn_indices() -> tuple[list[int | None], int]:
@@ -1308,10 +1318,7 @@ async def transform_messages_to_input(
                 role = (msg.get("role") or "").lower()
                 turn_idx: int | None = None
 
-                if role == "user" and position and (
-                    is_tool_image_handoff(messages[position - 1], msg)
-                    or _handoff_back(messages, position)
-                ):
+                if role == "user" and _is_tool_image_handoff_at(messages, position):
                     turn_idx = current_turn if current_turn >= 0 else None
                 elif role == "user":
                     if last_dialog_role != "user":
@@ -1401,24 +1408,14 @@ async def transform_messages_to_input(
             if (message.get("role") or "").lower() == "user"
             and turn_indices[position] is not None
             and turn_indices[position] == total_turns - 1
-            and not (
-                position
-                and (
-                    is_tool_image_handoff(messages[position - 1], message)
-                    or _handoff_back(messages, position)
-                )
-            )
+            and not _is_tool_image_handoff_at(messages, position)
         ]
         last_person_position = current_turn_people[-1] if current_turn_people else -1
         tool_handoff_positions = [
             position
             for position, message in enumerate(messages)
             if (message.get("role") or "").lower() == "user"
-            and position
-            and (
-                is_tool_image_handoff(messages[position - 1], message)
-                or _handoff_back(messages, position)
-            )
+            and _is_tool_image_handoff_at(messages, position)
         ]
         last_tool_handoff_index = tool_handoff_positions[-1] if tool_handoff_positions else -1
         person_images_this_turn = False
@@ -1707,10 +1704,7 @@ async def transform_messages_to_input(
                 continue
 
             if role == "user":
-                tool_images = bool(idx) and (
-                    is_tool_image_handoff(messages[idx - 1], msg)
-                    or _handoff_back(messages, idx)
-                )
+                tool_images = _is_tool_image_handoff_at(messages, idx)
                 if tool_images:
                     last_image_blocks, last_image_turn = [], None
                 if tool_images and _tool_round_withheld(msg_turn_index):
@@ -3382,9 +3376,12 @@ async def transform_messages_to_input(
             replay_refusals.extend(refused_shown)
             row[_REPLAY_GATED_PICTURES_KEY] = admitted
         if replay_refusals:
+            notice = _tool_picture_notice(replay_refusals)
             await pipe._event_emitter_handler._emit_status(
-                event_emitter, _tool_picture_notice(replay_refusals), done=False,
+                event_emitter, notice, done=False,
             )
+            if attachment_notices is not None:
+                attachment_notices.append(notice)
 
         openai_input = _reinterleave_reasoning_by_anchor(openai_input)
 

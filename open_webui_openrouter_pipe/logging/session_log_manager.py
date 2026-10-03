@@ -326,6 +326,9 @@ def _inherited_message_id(metadata: dict[str, Any]) -> str:
     mid = metadata.get("message_id")
     if mid:
         return str(mid)
+    task_mid = metadata.get("openrouter_pipe_task_message_id")
+    if task_mid:
+        return str(task_mid)
     if not metadata.get("task"):
         return ""
     task_body = metadata.get("task_body") or {}
@@ -340,7 +343,7 @@ def _inherited_message_id(metadata: dict[str, Any]) -> str:
     user_message = metadata.get("user_message") or {}
     if isinstance(user_message, dict):
         children = user_message.get("childrenIds")
-        if isinstance(children, list) and children:
+        if isinstance(children, list) and len(children) == 1:
             candidate = children[0]
             if candidate:
                 return str(candidate)

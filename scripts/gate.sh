@@ -6,6 +6,12 @@
 #   scripts/gate.sh release                     ~11min ONCE, before commits are presented
 #
 # Run the cheapest tier that can answer the question being asked.
+#
+# Collection cost: the farm-runner image exports PYTHONDONTWRITEBYTECODE, and that
+# silences pytest's assertion-rewrite cache, so every run re-parses, re-writes and
+# re-compiles every test module it collects (measured here: 18.75 s to rewrite 278
+# modules against 0.15 s to load their cache). Every pytest run below therefore goes
+# through run_pytest, which drops the variable from the environment it hands on.
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2
 # shellcheck disable=SC1091
@@ -54,6 +60,13 @@ BANNER
 step() { printf '\n== %s\n' "$1"; }
 keep() { "$@" || rc=1; }
 
+# Run a command with the image's bytecode suppression removed, so pytest can write and
+# then read its assertion-rewrite cache (see the header). It is an `env` passthrough
+# rather than a pytest wrapper so the two bundled call sites can still set
+# OWUI_PIPE_BUNDLE_PATH in the same breath: run_pytest OWUI_PIPE_BUNDLE_PATH="$b" \
+# python -m pytest ...
+run_pytest() { env -u PYTHONDONTWRITEBYTECODE "$@"; }
+
 build_bundles() {
   step "build bundles (all four)"
   keep python scripts/bundle_v2.py                          >/dev/null
@@ -80,7 +93,7 @@ collect_no_plugins() {
   for b in open_webui_openrouter_pipe_bundled_no_plugins.py \
            open_webui_openrouter_pipe_bundled_compressed_no_plugins.py; do
     out=$(mktemp); err=$(mktemp)
-    if env OWUI_PIPE_BUNDLE_PATH="$b" python -m pytest tests/ -q --collect-only >"$out" 2>"$err"; then
+    if run_pytest OWUI_PIPE_BUNDLE_PATH="$b" python -m pytest tests/ -q --collect-only >"$out" 2>"$err"; then
       # stderr was never redirected before, so the success path must neither swallow it nor
       # re-emit the collected node-id list pytest printed to stdout:
       cat "$err" >&2
@@ -120,7 +133,7 @@ case "${1:-}" in
     shift
     [ $# -gt 0 ] || { echo "gate targeted: give pytest node ids or -k expression"; exit 2; }
     step "targeted run -- proves ONLY the nodes named below"
-    python -m pytest "$@" -q
+    run_pytest python -m pytest "$@" -q
     rc=$?
     echo
     echo "NOTE: a targeted run is evidence about these nodes ONLY."
@@ -130,12 +143,12 @@ case "${1:-}" in
   batch)
     [ "${2:-}" = "--flat" ] && require_deliberate_bundle_run "the flat bundled suite" "7 minutes" "$@"
     build_bundles
-    step "package suite"; keep python -m pytest tests/ -q
+    step "package suite"; keep run_pytest python -m pytest tests/ -q --durations=25
     static_checks
     collect_no_plugins
     if [ "${2:-}" = "--flat" ]; then
       step "flat bundled suite (imports / module structure / test doubles changed)"
-      keep env OWUI_PIPE_BUNDLE_PATH=open_webui_openrouter_pipe_bundled.py python -m pytest tests/ -q
+      keep run_pytest OWUI_PIPE_BUNDLE_PATH=open_webui_openrouter_pipe_bundled.py python -m pytest tests/ -q
     fi
     echo
     echo "NOTE: batch tier does NOT run the four bundled suites."
@@ -148,11 +161,11 @@ case "${1:-}" in
     require_deliberate_bundle_run "the release tier, which runs all four bundled suites" "25 minutes" "$@"
     export STRICT_PRESCRIPTIONS=1
     build_bundles
-    step "package suite"; keep python -m pytest tests/ -q
+    step "package suite"; keep run_pytest python -m pytest tests/ -q
     static_checks
     for b in "${BUNDLES[@]}"; do
       step "bundled suite: $b"
-      keep env OWUI_PIPE_BUNDLE_PATH="$b" python -m pytest tests/ -q
+      keep run_pytest OWUI_PIPE_BUNDLE_PATH="$b" python -m pytest tests/ -q
     done
     step "compileall"; keep python -m compileall -q open_webui_openrouter_pipe >/dev/null
     ;;
