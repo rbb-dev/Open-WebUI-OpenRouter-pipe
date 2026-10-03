@@ -16,7 +16,6 @@ import json
 import logging
 import mimetypes
 import sys
-import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
@@ -54,6 +53,7 @@ if TYPE_CHECKING:
 
     from ..core.circuit_breaker import CircuitBreaker
     from ..pipe import Pipe
+    from ..requests.transformer import _AddressBudget
 
 from ..streaming.event_emitter import EventEmitter
 
@@ -255,17 +255,19 @@ class _ToolExecutionContext:
     messages: list[dict[str, Any]] = field(default_factory=list)
     parallel_tools: int = 0
     address_verdicts: dict[str, bool | None] = field(default_factory=dict)
-    address_deadline: float | None = None
+    address_budget: _AddressBudget | None = None
 
 
 def _request_address_budget(
     context: _ToolExecutionContext | None,
-) -> tuple[dict[str, bool | None] | None, float | None]:
+) -> tuple[dict[str, bool | None] | None, _AddressBudget | None]:
     if context is None:
         return None, None
-    if context.address_deadline is None:
-        context.address_deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
-    return context.address_verdicts, context.address_deadline
+    if context.address_budget is None:
+        from ..requests.transformer import _AddressBudget
+
+        context.address_budget = _AddressBudget(ADDRESS_CHECK_BUDGET_SECONDS)
+    return context.address_verdicts, context.address_budget
 
 
 async def _read_user_row(context: _ToolExecutionContext) -> Any:
@@ -1122,10 +1124,10 @@ class ToolExecutor:
             shown.append(entry)
             if isinstance(entry, dict) and entry.get("type") == "image" and isinstance(url, str) and url:
                 candidates.append(url)
-        seen, deadline = _request_address_budget(context)
+        seen, budget = _request_address_budget(context)
         pictures, refused = await _tool_picture_gate_with_address(
             pipe, candidates, max_inline_bytes=max_inline_bytes,
-            seen=seen, deadline=deadline,
+            seen=seen, budget=budget,
         )
         for refused_url, reason, cause in refused:
             self.logger.warning(

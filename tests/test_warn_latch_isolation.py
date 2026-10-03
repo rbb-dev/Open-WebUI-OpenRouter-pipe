@@ -32,6 +32,15 @@ EXPECTED_LATCHES = {
     # never on an archive write, which would fire per turn.
     "_warned_bzip2_compresslevel",
     "_warned_chat_chunk_parse",
+    # The chat-write ownership gate's unreadable arm (storage/owui_files.py). A dict on an
+    # OrderedDict rather than a set: the chats table being unreachable is transient by
+    # hypothesis, and a permanent latch would hide the recurrence that says it never came
+    # back. Keyed on the exception class rather than the chat id, which is caller-supplied,
+    # so the table cannot grow per turn; trimmed by `bounded_warn_level` so a cause the
+    # pipe has not seen in a while warns again. It carries the `_warned` prefix so the
+    # per-test reset reaches it: one test that drives the gate is otherwise enough to
+    # silence the WARNING the next test asserts is still emitted.
+    "_warned_chat_write_ownership",
     "_warned_collectors",
     # The dead-manager arm of that same report, kept beside its sibling on purpose. The
     # manager is already gone by the time the drain runs, so the loss is reported through

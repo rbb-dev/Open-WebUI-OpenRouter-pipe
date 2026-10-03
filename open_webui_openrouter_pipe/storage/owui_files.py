@@ -22,6 +22,7 @@ import re
 import shutil
 import tempfile
 import uuid
+from collections import OrderedDict
 from collections.abc import Iterable
 from contextvars import ContextVar
 from functools import lru_cache
@@ -40,7 +41,7 @@ from ..core.url_scheme import (
     media_type_or_empty,
     url_path,
 )
-from ..core.warn_latch import warn_level
+from ..core.warn_latch import bounded_warn_level, warn_level
 
 try:
     from open_webui.models.files import Files  # type: ignore[import-not-found]
@@ -360,6 +361,34 @@ def is_channel_chat(chat_id: Any) -> bool:
 
 def is_temporary_chat(chat_id: Any) -> bool:
     return isinstance(chat_id, str) and chat_id.strip().startswith(temporary_chat_prefixes())
+
+
+_warned_chat_write_ownership: OrderedDict[str, None] = OrderedDict()
+
+
+async def caller_may_write_chat(chat_id: Any, user_id: Any) -> bool:
+    if not is_linkable_chat(chat_id):
+        return False
+    principal = str(user_id or "")
+    if not principal:
+        return False
+    try:
+        from open_webui.models.chats import Chats
+        from open_webui.models.users import Users
+
+        if await Chats.is_chat_owner(chat_id, principal):
+            return True
+        return getattr(await Users.get_user_by_id(principal), "role", None) == "admin"
+    except Exception as exc:
+        logging.getLogger(__name__).log(
+            bounded_warn_level(_warned_chat_write_ownership, type(exc).__name__, 16),
+            "Chat message write refused: Open WebUI's chat ownership check is unavailable "
+            "(chat_id=%s user_id=%s). Refusing rather than writing under an unverified id.",
+            chat_id,
+            principal,
+            exc_info=True,
+        )
+        return False
 
 
 NO_CHAT_ID_KEY = "__no_chat_id__"

@@ -282,17 +282,26 @@ def _undated_for_lookup(norm: str, pipe_id: str | None | object) -> str:
     return f"{ModelFamily._DATE_RE.sub('', _norm_for_lookup(name, pipe_id))}:{suffix}"
 
 
+def _suffix_spellings(value: str) -> list[str]:
+    out = [value]
+    base, _, _tag = value.rpartition(":")
+    if base:
+        out.append(base)
+        if ModelFamily._DATE_RE.search(base):
+            out.append(ModelFamily._DATE_RE.sub("", base))
+    return out
+
+
 @lru_cache(maxsize=4096)
 def _lookup_candidates(norm: str, pipe_id: str | None | object) -> tuple[str, ...]:
-    candidates = [norm]
-    base, _, _tag = norm.rpartition(":")
-    if base:
-        candidates.append(base)
-        if ModelFamily._DATE_RE.search(base):
-            candidates.append(ModelFamily._DATE_RE.sub("", base))
-    undated = _undated_for_lookup(norm, pipe_id)
-    if undated not in candidates:
-        candidates.append(undated)
+    candidates: list[str] = []
+    for spelling in _suffix_spellings(norm):
+        for candidate in (spelling, _norm_for_lookup(spelling, pipe_id)):
+            if candidate not in candidates:
+                candidates.append(candidate)
+    for spelling in _suffix_spellings(_undated_for_lookup(norm, pipe_id)):
+        if spelling not in candidates:
+            candidates.append(spelling)
     return tuple(candidates)
 
 

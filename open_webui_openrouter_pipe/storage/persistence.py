@@ -756,7 +756,7 @@ class ArtifactStore:
             )
             return False
         else:
-            if not reached:
+            if not reached or raw is None:
                 return False
             unreadable = not raw_valve_column_decodes(raw)
         if len(memo) >= _STORED_VALVE_UNREADABLE_MEMO_MAX:
@@ -915,6 +915,8 @@ class ArtifactStore:
         if encryption_key != self._encryption_key:
             self._fernet = None
             self._fernet_key_source = None
+        if self._session_factory is None:
+            self._ensure_db_handle()
         self._apply_artifact_encryption_key(plaintext, valves.ARTIFACT_ENCRYPTION_KEY)
         self._encrypt_all = valves.ENCRYPT_ALL
         self._compression_min_bytes = valves.MIN_COMPRESS_BYTES
@@ -1085,14 +1087,7 @@ class ArtifactStore:
 
         return engine, schema, details
 
-    @timed
-    def _init_artifact_store(
-        self,
-        pipe_identifier: str | None = None,
-        *,
-        table_fragment: str | None = None,
-    ) -> None:
-        """Initialize the per-pipe SQLAlchemy model + executor for artifact storage."""
+    def _ensure_db_handle(self) -> tuple[Any | None, str | None]:
         engine: Any | None = None
         schema: str | None = None
 
@@ -1137,14 +1132,30 @@ class ArtifactStore:
             self._item_model = None
             self._artifact_table_name = None
             self._artifact_store_signature = None
+            return None, None
+
+        if self._engine is not engine or self._session_factory is None:
+            self._engine = engine
+            self._session_factory = sessionmaker(
+                autocommit=False,
+                autoflush=False,
+                bind=engine,
+                expire_on_commit=False,
+            )
+        self._owui_schema = schema.strip() or None if isinstance(schema, str) else None
+        return engine, schema
+
+    @timed
+    def _init_artifact_store(
+        self,
+        pipe_identifier: str | None = None,
+        *,
+        table_fragment: str | None = None,
+    ) -> None:
+        engine, schema = self._ensure_db_handle()
+        if not engine or self._session_factory is None:
             return
 
-        session_factory = sessionmaker(
-            autocommit=False,
-            autoflush=False,
-            bind=engine,
-            expire_on_commit=False,
-        )
         base = declarative_base()
 
         pipe_identifier = pipe_identifier or self.id
@@ -1231,8 +1242,6 @@ class ArtifactStore:
             self._artifact_store_signature = None
             return
 
-        self._engine = engine
-        self._session_factory = session_factory
         self._item_model = item_model
         self._artifact_table_name = table_name
         self._artifact_store_signature = (table_fragment, self._table_key)

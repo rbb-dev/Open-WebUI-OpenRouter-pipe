@@ -151,13 +151,21 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # default: a guard that disables itself when it cannot find the models it is meant to
 # ask is fail-open on exactly the path that exists to fail closed, and the missing-import
 # arm returns "no" through that same `except`. Two imports, two counts.
-# Measured on this merged tree: 25 module-scope and 101 lazy. The count is what the scan
+# 101 -> 103 (H4215-1/2/3): the chat-write ownership gate (`caller_may_write_chat` in
+# storage/owui_files.py) reads Open WebUI's own `Chats.is_chat_owner` and, for the admin
+# arm, `Users.get_user_by_id`, both lazily and both inside the helper. They are lazy for
+# the reason every other lazy reader here keeps: a module-scope import would make the pipe
+# fail to import on a host that cannot supply those tables, where the read is reached only
+# on a chat-message write, and both raise into a caller that catches them and refuses,
+# which is the fail-closed contract the gate requires. Two imports, two counts again, on
+# top of H3588-1's two.
+# Measured on this merged tree: 25 module-scope and 103 lazy. The count is what the scan
 # finds after the change, not a floor and not either side's arithmetic -- the 99 above is
 # B918's and B550's imports on this tree, and B550's earlier port recorded (25, 98)
 # against a tree that did not yet carry T494's or B918's lazy import. The module-scope
 # arm is unchanged: the hoisted `channel_id_for_chat` comes from the pipe's own
 # `.owui_files`, not from Open WebUI.
-_EXPECTED_OWUI_IMPORTS = (25, 101)
+_EXPECTED_OWUI_IMPORTS = (25, 103)
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),

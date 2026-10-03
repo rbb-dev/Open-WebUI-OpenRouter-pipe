@@ -89,7 +89,8 @@ async def _settle_member_dispatch(sink: dict[str, Any]) -> None:
 def _inner_metadata(metadata: Any) -> dict[str, Any]:
     base = dict(metadata) if isinstance(metadata, dict) else {}
     outer_chat_id = base.get("chat_id")
-    for key in ("chat_id", "message_id", "model"):
+    for key in ("chat_id", "message_id", "model", "_pipe_exposed_to_origin",
+                "_pipe_builtin_ask_user_names", "_pipe_open_webui_owned_names"):
         base.pop(key, None)
     raw_pipe_meta = base.get(_PIPE_METADATA_KEY)
     pipe_meta = copy.deepcopy(raw_pipe_meta) if isinstance(raw_pipe_meta, dict) else {}
@@ -278,7 +279,7 @@ async def run_fusion_member(
             messages=outer_ctx.messages,
             parallel_tools=invocation.valves.MAX_PARALLEL_TOOLS_PER_REQUEST,
             address_verdicts=outer_ctx.address_verdicts,
-            address_deadline=outer_ctx.address_deadline,
+            address_budget=outer_ctx.address_budget,
         )
         token = pipe._TOOL_CONTEXT.set(ctx)
     collector = FusionCollector(model, live_queue)

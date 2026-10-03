@@ -268,12 +268,11 @@ class EventEmitterHandler:
                             "data": {"error": {"content": shown}},
                         })
                 else:
-                    completion: dict[str, Any] = {
-                        "error": {"message": error_message},
-                        "done": terminal,
-                    }
+                    completion: dict[str, Any] = {"done": terminal}
                     if on_channel or continuing:
                         await self._publish_card(event_emitter, shown, on_channel, continuing)
+                    else:
+                        completion["error"] = {"message": error_message}
                     if shown and (on_channel or not continuing):
                         completion["content"] = shown
                     await event_emitter({"type": "chat:completion", "data": completion})

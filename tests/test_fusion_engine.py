@@ -1202,3 +1202,19 @@ async def test_no_model_in_a_fusion_turn_is_offered_or_runs_open_webuis_ask_user
 
 
 _MARKER_ULID = "01ARZ3NDEKTSV4RRFFQ6"
+
+
+def _outer_tool_context(pipe):
+    from open_webui_openrouter_pipe.tools.tool_executor import _ToolExecutionContext
+
+    return _ToolExecutionContext(
+        queue=asyncio.Queue(maxsize=10),
+        per_request_semaphore=asyncio.Semaphore(2),
+        global_semaphore=None,
+        timeout=5.0,
+        batch_timeout=5.0,
+        idle_timeout=None,
+        user_id="u1",
+        event_emitter=None,
+        batch_cap=1,
+    )

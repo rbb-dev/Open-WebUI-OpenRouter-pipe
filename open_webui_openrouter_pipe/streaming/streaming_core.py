@@ -135,6 +135,7 @@ from ..requests.sanitizer import (
     budget_model_id,
 )
 from ..requests.transformer import (
+    _AddressBudget,
     _gate_round_output_pictures,
     _tool_picture_notice,
     _tool_picture_verdicts_for_input,
@@ -198,7 +199,6 @@ def _member_notice_text(event: Any) -> str:
 from ..storage.multimodal import (
     _SNIFF_PREFIX_BYTES,
     ADDRESS_CHECK_BUDGET_SECONDS,
-    ADDRESS_CHECK_SECONDS,
     _decode_base64_in_quanta,
     _sniff_evidence,
     canonical_image_mime,
@@ -207,6 +207,7 @@ from ..storage.multimodal import (
     resolve_download_type,
 )
 from ..storage.owui_files import (
+    caller_may_write_chat,
     is_channel_chat,
     is_linkable_chat,
     is_temporary_chat,
@@ -258,8 +259,12 @@ async def _chats_message(chat_id: Any, message_id: Any) -> dict[str, Any] | None
     return await Chats.get_message_by_id_and_message_id(str(chat_id), str(message_id))
 
 
-async def _chats_upsert(chat_id: Any, message_id: Any, payload: dict[str, Any]) -> None:
+async def _chats_upsert(
+    chat_id: Any, message_id: Any, payload: dict[str, Any], user_id: Any
+) -> None:
     if Chats is None or not is_linkable_chat(chat_id):
+        return
+    if not await caller_may_write_chat(chat_id, user_id):
         return
     await Chats.upsert_message_to_chat_by_id_and_message_id(str(chat_id), str(message_id), payload)
 
@@ -817,7 +822,7 @@ class StreamingHandler:
             surrogate_carry: dict[str, str] = {"assistant": "", "reasoning": ""}
             storage_context_cache: tuple[Request | None, Any | None] | None = None
             processed_image_item_ids: set[str] = set()
-            address_deadline: float | None = None
+            address_budget: _AddressBudget | None = None
             opened_image_windows: set[str] = set()
             generated_image_count = 0
             skipped_image_reasons: list[str] = []
@@ -988,9 +993,9 @@ class StreamingHandler:
 
             @timed
             async def _materialize_image_from_str(data_str: str) -> str | None:
-                nonlocal address_deadline
-                if address_deadline is None:
-                    address_deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
+                nonlocal address_budget
+                if address_budget is None:
+                    address_budget = _AddressBudget(ADDRESS_CHECK_BUDGET_SECONDS)
                 text = (data_str or "").strip()
                 if not text:
                     return None
@@ -1008,13 +1013,11 @@ class StreamingHandler:
                     return None
                 if is_http_or_https_url(text):
                     if not is_linkable_chat(chat_id):
-                        unlinkable_verdict = await self._pipe._multimodal_handler._is_safe_url(
-                            text,
-                            seconds=min(
-                                ADDRESS_CHECK_SECONDS,
-                                address_deadline - time.monotonic(),
-                            ),
-                        )
+                        with address_budget.address_check() as _unlinkable_seconds:
+                            unlinkable_verdict = await self._pipe._multimodal_handler._is_safe_url(
+                                text,
+                                seconds=_unlinkable_seconds,
+                            )
                         if unlinkable_verdict is not True:
                             skipped_image_reasons.append(
                                 "unlinkable_chat_unchecked"
@@ -1025,10 +1028,8 @@ class StreamingHandler:
                         return text
                     downloaded = await self._pipe._multimodal_handler._download_remote_url(
                         text,
-                        seconds=min(
-                            ADDRESS_CHECK_SECONDS,
-                            address_deadline - time.monotonic(),
-                        ),
+                        seconds=address_budget.take(),
+                        charge=address_budget.charge,
                     )
                     if downloaded:
                         mime_type = _resolved_stored_mime(downloaded["mime_type"], downloaded["data"])
@@ -1038,13 +1039,11 @@ class StreamingHandler:
                         if stored:
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_REMOTE_SAVED, done=False)
                             return f"/api/v1/files/{stored}/content"
-                    rechecks = await self._pipe._multimodal_handler._is_safe_url(
-                        text,
-                        seconds=min(
-                            ADDRESS_CHECK_SECONDS,
-                            address_deadline - time.monotonic(),
-                        ),
-                    )
+                    with address_budget.address_check() as _recheck_seconds:
+                        rechecks = await self._pipe._multimodal_handler._is_safe_url(
+                            text,
+                            seconds=_recheck_seconds,
+                        )
                     if rechecks is not True:
                         skipped_image_reasons.append(
                             "unchecked" if rechecks is None else "unfetchable"
@@ -2233,14 +2232,14 @@ class StreamingHandler:
                     event_iter = event_source
                 else:
                     if not input_is_sanitized:
-                        _replay_seen, _replay_deadline = _request_address_budget(
+                        _replay_seen, _replay_address_budget = _request_address_budget(
                             self._pipe._TOOL_CONTEXT.get()
                         )
                         _replay_budget = _sanitize_request_input(
                             self._pipe, body,
                             verdicts=await _tool_picture_verdicts_for_input(
                                 self._pipe, body.input,
-                                seen=_replay_seen, deadline=_replay_deadline,
+                                seen=_replay_seen, budget=_replay_address_budget,
                             ),
                         )
                         await _warn_if_futile(_replay_budget)
@@ -3843,14 +3842,14 @@ class StreamingHandler:
                             len(call_items),
                         )
                     if not input_is_sanitized:
-                        _replay_seen, _replay_deadline = _request_address_budget(
+                        _replay_seen, _replay_address_budget = _request_address_budget(
                             self._pipe._TOOL_CONTEXT.get()
                         )
                         _replay_budget = _sanitize_request_input(
                             self._pipe, body,
                             verdicts=await _tool_picture_verdicts_for_input(
                                 self._pipe, body.input,
-                                seen=_replay_seen, deadline=_replay_deadline,
+                                seen=_replay_seen, budget=_replay_address_budget,
                             ),
                         )
                         await _warn_if_futile(_replay_budget)
@@ -4328,7 +4327,7 @@ class StreamingHandler:
                         if loop_index > max_loops:
                             break
                         round_refusals: list[tuple[str, str, str]] = []
-                        _round_seen, _round_deadline = _request_address_budget(
+                        _round_seen, _round_budget = _request_address_budget(
                             self._pipe._TOOL_CONTEXT.get()
                         )
                         for position, round_output in enumerate(budgeted_outputs):
@@ -4342,7 +4341,7 @@ class StreamingHandler:
                                     self._pipe._multimodal_handler._is_insecure_http_allowed
                                 ),
                                 seen=_round_seen,
-                                deadline=_round_deadline,
+                                budget=_round_budget,
                             )
                             if round_refused:
                                 budgeted_outputs[position] = {**round_output, "output": gated_output}
@@ -4366,7 +4365,7 @@ class StreamingHandler:
                             self._pipe, body,
                             verdicts=await _tool_picture_verdicts_for_input(
                                 self._pipe, body.input,
-                                seen=_round_seen, deadline=_round_deadline,
+                                seen=_round_seen, budget=_round_budget,
                             ),
                         )
                         await _warn_if_futile(shipped_budget)
@@ -4399,7 +4398,8 @@ class StreamingHandler:
                     if (not was_cancelled) and chat_id and message_id:
                         with contextlib.suppress(Exception):
                             await _chats_upsert(
-                                chat_id, message_id, {"error": {"content": limit_note}}
+                                chat_id, message_id, {"error": {"content": limit_note}},
+                                user_id or metadata.get("user_id") or "",
                             )
 
             if (
@@ -4758,7 +4758,7 @@ class StreamingHandler:
                 and not was_cancelled and not error_occurred
             ):
                 try:
-                    if resolved_chat_id and resolved_message_id:
+                    if resolved_chat_id and resolved_message_id and not fusion_inner_call:
                         _fusion_html = build_fusion_embed_html(
                             fusion_state, _fusion_model_names(), final=True
                         )
@@ -4780,7 +4780,8 @@ class StreamingHandler:
                             if _content and not open_webui_keeps_stored_output:
                                 _payload["content"] = _content
                             await _chats_upsert(
-                                resolved_chat_id, resolved_message_id, _payload
+                                resolved_chat_id, resolved_message_id, _payload,
+                                user_id or metadata.get("user_id") or "",
                             )
 
                         await asyncio.shield(_persist_fusion_snapshot())
@@ -4978,7 +4979,9 @@ class StreamingHandler:
                             stored_message.get(field), payload[field], key_fn=key_fn
                         )
                 try:
-                    await _chats_upsert(chat_id, message_id, payload)
+                    await _chats_upsert(
+                        chat_id, message_id, payload, user_id or metadata.get("user_id") or ""
+                    )
                 except Exception as exc:
                     self.logger.warning(
                         "Failed to persist %s for chat_id=%s message_id=%s: %s",

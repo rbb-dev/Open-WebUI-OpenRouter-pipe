@@ -219,6 +219,11 @@ class ResponsesBody(BaseModel):
             return round(numeric)
         raise ValueError(f"Invalid integer value: {value!r}")
 
+    @field_validator("verbosity", mode="before")
+    @classmethod
+    def _strip_verbosity(cls, value: Any) -> Any:
+        return cls._strip_blank_string(value)
+
     @field_validator("models", mode="before")
     @classmethod
     def _coerce_models_list(cls, value: Any) -> Any:
@@ -561,6 +566,16 @@ def _has_server_tool(tools: Any) -> bool:
 
 # Request Filtering
 
+_ALLOWED_REASONING_SUBFIELDS = ("effort", "max_tokens", "exclude", "enabled", "summary", "context", "mode")
+
+
+def _reduce_reasoning(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return None
+    reduced = {name: value[name] for name in _ALLOWED_REASONING_SUBFIELDS if name in value}
+    return reduced or None
+
+
 def _filter_openrouter_chat_request(payload: dict[str, Any]) -> dict[str, Any]:
     """Filter payload to fields accepted by OpenRouter's /chat/completions."""
     if not isinstance(payload, dict):
@@ -568,6 +583,12 @@ def _filter_openrouter_chat_request(payload: dict[str, Any]) -> dict[str, Any]:
     filtered: dict[str, Any] = {}
     for key, value in payload.items():
         if key in ALLOWED_OPENROUTER_CHAT_FIELDS:
+            if value is None:
+                continue
+            if key == "reasoning":
+                value = _reduce_reasoning(value)
+                if value is None:
+                    continue
             if key == "metadata":
                 value = _sanitize_openrouter_metadata(value)
                 if value is None:
@@ -669,6 +690,8 @@ def _chat_tools_to_responses_tools(tools: Any) -> list[dict[str, Any]]:
             spec["cache_control"] = tool["cache_control"]
         if isinstance(fn, dict):
             spec["strict"] = fn.get("strict", False)
+        elif "strict" in tool:
+            spec["strict"] = tool["strict"]
 
         out.append(spec)
 
@@ -1087,6 +1110,39 @@ def _replay_blocks_or_note(
     return note
 
 
+def _reconcile_tool_pairs(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    answered = {
+        message["tool_call_id"]
+        for message in messages
+        if message.get("role") == "tool" and isinstance(message.get("tool_call_id"), str)
+    }
+    claimed = {
+        tool_call["id"]
+        for message in messages
+        if message.get("role") == "assistant"
+        for tool_call in (message.get("tool_calls") or ())
+        if isinstance(tool_call.get("id"), str)
+    }
+    reconciled: list[dict[str, Any]] = []
+    for message in messages:
+        role = message.get("role")
+        if role == "tool" and message.get("tool_call_id") not in claimed:
+            continue
+        if role != "assistant" or not message.get("tool_calls"):
+            reconciled.append(message)
+            continue
+        answered_calls = [
+            tool_call for tool_call in message["tool_calls"] if tool_call.get("id") in answered
+        ]
+        if answered_calls:
+            reconciled.append({**message, "tool_calls": answered_calls})
+            continue
+        content = message.get("content")
+        if (isinstance(content, str) and content.strip()) or message.get("reasoning_details"):
+            reconciled.append({key: value for key, value in message.items() if key != "tool_calls"})
+    return reconciled
+
+
 async def _responses_input_to_chat_messages(
     input_value: Any,
     *,
@@ -1130,12 +1186,12 @@ async def _responses_input_to_chat_messages(
                 "A tool's picture reached the chat-completions handover with no pipe, so the "
                 "address the provider would reach could not be checked; every http(s) one is refused"
             )
-        _handover_seen, _handover_deadline = _request_address_budget(
+        _handover_seen, _handover_budget = _request_address_budget(
             pipe._TOOL_CONTEXT.get() if pipe is not None else None
         )
         kept, refused = await _tool_picture_gate_with_address(
             pipe, tool_pictures, max_inline_bytes=max_inline_bytes,
-            seen=_handover_seen, deadline=_handover_deadline,
+            seen=_handover_seen, budget=_handover_budget,
         )
         if refused and refused_out is not None:
             refused_out.extend(refused)
@@ -1663,7 +1719,7 @@ async def _responses_input_to_chat_messages(
 
     await _hand_over_tool_pictures()
     _flush_pending_reasoning()
-    return messages
+    return _reconcile_tool_pairs(messages)
 
 
 # Payload Transforms
@@ -2336,12 +2392,7 @@ def _filter_openrouter_request(payload: dict[str, Any]) -> dict[str, Any]:
                 continue
 
         if key == "reasoning":
-            if not isinstance(value, dict):
-                continue
-            allowed_reasoning = {}
-            for field_name in ("effort", "max_tokens", "exclude", "enabled", "summary", "context", "mode"):
-                if field_name in value:
-                    allowed_reasoning[field_name] = value[field_name]
+            allowed_reasoning = _reduce_reasoning(value) or {}
             if "max_tokens" in allowed_reasoning:
                 budget = _coerced_token_cap(allowed_reasoning["max_tokens"])
                 if budget is None:

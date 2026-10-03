@@ -27,6 +27,7 @@ from ...core.config import (
 from ...core.costs import chat_usage_to_responses_usage
 from ...core.errors import (
     EmptyAnswerError,
+    OpenRouterAPIError,
     RequiredInternalFileError,
     UpstreamBodyUnreadable,
     _build_openrouter_api_error,
@@ -393,7 +394,7 @@ class ChatCompletionsAdapter:
         assistant_text_parts: list[str] = []
         latest_usage: dict[str, Any] = {}
         seen_citation_urls: set[str] = set()
-        unhandled_citations_signalled = False
+        unhandled_citation_types: set[str] = set()
         latest_message_annotations: list[dict[str, Any]] = []
         recorded_annotation_urls: set[str] = set()
         recorded_annotation_keys: set[str] = set()
@@ -590,7 +591,7 @@ class ChatCompletionsAdapter:
                 image_output_item, images_emitted, refusal_text_seen, provider_refusal_full, \
                 tool_calls_completed, \
                 truncating_reason, delivered_any, saw_choice_chunk, assistant_text_seen, \
-                unhandled_citations_signalled, message_text_published, message_refusal_published
+                unhandled_citation_types, message_text_published, message_refusal_published
             try:
                 chunk_obj = json.loads(data_blob.decode("utf-8"))
             except (RecursionError, UnicodeDecodeError, ValueError) as exc:
@@ -850,14 +851,7 @@ class ChatCompletionsAdapter:
                         images_emitted = True
 
             if annotations:
-                if not unhandled_citations_signalled:
-                    unhandled_types = _unhandled_citation_types(annotations)
-                    if unhandled_types:
-                        unhandled_citations_signalled = True
-                        yield {
-                            "type": "openrouter_pipe.unhandled_citations",
-                            "types": sorted(unhandled_types),
-                        }
+                unhandled_citation_types.update(_unhandled_citation_types(annotations))
                 for url, title, content in _parse_url_citation_annotations(annotations):
                     if url in seen_citation_urls:
                         continue
@@ -932,6 +926,7 @@ class ChatCompletionsAdapter:
             async for attempt in retryer:
                 with attempt:
                     body_complete = False
+                    accepted = False
                     if attempt.retry_state.attempt_number > 1:
                         tool_calls_by_index.clear()
                         tool_call_added.clear()
@@ -950,6 +945,7 @@ class ChatCompletionsAdapter:
                         delta_reasoning_anon.clear()
                         message_reasoning_anon.clear()
                         seen_citation_urls.clear()
+                        unhandled_citation_types.clear()
                         latest_message_annotations = []
                         recorded_annotation_urls.clear()
                         recorded_annotation_keys.clear()
@@ -992,6 +988,7 @@ class ChatCompletionsAdapter:
                                     extra_metadata=extra_meta or None,
                                 )
 
+                            accepted = True
                             buf = bytearray()
                             scanned = 0
                             excerpt = bytearray()
@@ -1000,7 +997,7 @@ class ChatCompletionsAdapter:
 
                             async def _chunks():
                                 async for raw in resp.content.iter_any():
-                                    yield raw
+                                    yield raw, False
                                 if done:  # noqa: B023 - shares the loop's state by design
                                     return
                                 tail = bytes(buf)  # noqa: B023
@@ -1010,11 +1007,11 @@ class ChatCompletionsAdapter:
                                 pending = list(event_data_parts)  # noqa: B023
                                 event_data_parts.clear()  # noqa: B023
                                 for part in pending:
-                                    yield b"data: " + part + b"\n\n"
+                                    yield b"data: " + part + b"\n\n", True
                                 if tail:
-                                    yield tail + b"\n\n"
+                                    yield tail + b"\n\n", True
 
-                            async for chunk in _chunks():
+                            async for chunk, synthetic in _chunks():
                                 if not chunk:
                                     continue
                                 if not first_chunk_received:
@@ -1022,7 +1019,7 @@ class ChatCompletionsAdapter:
                                     timing_mark("chat_first_chunk")
                                 body_bytes_seen = True
                                 buf.extend(chunk)
-                                if len(excerpt) < _BODY_EXCERPT_CHARS:
+                                if not synthetic and len(excerpt) < _BODY_EXCERPT_CHARS:
                                     excerpt.extend(chunk[: _BODY_EXCERPT_CHARS - len(excerpt)])
                                 sse_lines, scanned = _split_sse_lines(buf, scanned)
                                 for stripped in sse_lines:
@@ -1088,11 +1085,18 @@ class ChatCompletionsAdapter:
                                 cut_off = True
                             break
                     except Exception as producer_exc:
-                        if not body_complete and isinstance(
-                            producer_exc, (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError)
+                        if (
+                            accepted
+                            and not body_complete
+                            and not isinstance(producer_exc, OpenRouterAPIError)
+                            and (body_bytes_seen
+                                 or not isinstance(producer_exc, aiohttp.ClientConnectionError))
                         ):
                             raise AcceptedResponseLostBody(str(producer_exc)) from producer_exc
                         raise
+
+        if unhandled_citation_types:
+            yield {"type": "openrouter_pipe.unhandled_citations", "types": sorted(unhandled_citation_types)}
 
         if cut_off:
             refusal_cut, _ = _refusal_split(

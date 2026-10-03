@@ -457,8 +457,12 @@ Operational guidance:
   - When `ENABLE_STRICT_TOOL_CALLING=True` and the pipe runs the tool (not `Open-WebUI` mode,
     and not under `ask` approval in a saved chat), the tools it advertises on the Responses route
     carry `strict: true`. A tool the pipe does not strictify is sent there with an explicit
-    `strict: false`, so that endpoint's own `true` default never applies to a schema the pipe
-    did not strictify. OpenRouter strips `strict` from a tool on Anthropic models unless the
+    `strict: false`, which is insurance rather than a workaround: measured on 2026-10-02 against
+    OpenRouter's own `/responses`, a function tool with no `strict` key is treated as non-strict
+    (200), and only `strict: true` enforces the strict-schema rules (400 on a non-strict schema),
+    so OpenRouter applies no tool-level default today. A tool that arrived already in Responses
+    shape keeps whatever `strict` it carried, and one that carried none is sent with none.
+    OpenRouter strips `strict` from a tool on Anthropic models unless the
     `structured-outputs-2025-11-13` header is passed; the pipe does not pass that header, so on
     those models the field does not take effect and the call routes normally.
 

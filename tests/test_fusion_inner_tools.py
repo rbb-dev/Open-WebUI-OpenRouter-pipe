@@ -1,13 +1,57 @@
 
+"""A Fusion panel member's own registry facts, and what of the outer turn's it may read.
+
+The class below measures the boundary from the producer's side: `_inner_metadata` clears
+`chat_id`, `message_id` and `model`, and it also clears the three `_pipe_*` keys the OUTER
+turn's tool ingest wrote onto its metadata -- `_pipe_exposed_to_origin`,
+`_pipe_builtin_ask_user_names` and `_pipe_open_webui_owned_names`. Each of the three is a
+fact about one turn's registry, and a member runs its own ingest pass, so an inherited one
+is a fact about a registry the member does not have.
+
+`_pipe_open_webui_owned_names` is the honest odd one out: the outer turn writes it only when
+it withheld Open WebUI's tools, which needs `tool_approval_mode == "ask"` or
+`function_calling == "legacy"`; `params` is not cleared, so the member inherits the mode,
+re-enters the same withhold and rewrites the key with its own set. Dropping that one name
+from the cleared tuple fails no node here, and that is what this file records rather than
+pretending otherwise: the clear is defence in depth on an arm production cannot reach in
+the shape that would make it bite.
+"""
+
 import asyncio
+import contextlib
+import copy
+import logging
 import math
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from open_webui_openrouter_pipe import EncryptedStr
 from open_webui_openrouter_pipe.core.circuit_breaker import CircuitBreaker
-from open_webui_openrouter_pipe.tools.tool_executor import _ToolExecutionContext, _resolved_user_obj
+from open_webui_openrouter_pipe.core.config import _PIPE_METADATA_KEY, Valves
+from open_webui_openrouter_pipe.core.utils import BUILTIN_ASK_USER_ROUND_KEY
+from open_webui_openrouter_pipe.requests.fusion_engine import (
+    FusionInnerInvocation,
+    run_fusion_member,
+)
+from open_webui_openrouter_pipe.requests.orchestrator import RequestOrchestrator
+from open_webui_openrouter_pipe.tools.tool_executor import (
+    OPEN_WEBUI_OWNS_SKIPPED_REASON,
+    _resolved_user_obj,
+    _ToolExecutionContext,
+)
+from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import (
+    ROW_WITH_TOOLS,
+    answer_round,
+    call,
+    calls_round,
+    install,
+    offered,
+    outputs_in,
+    resolved_tool,
+)
+from tests.test_fusion_engine import _prepare_pipe
 
 
 async def _echo_tool(**kwargs: Any) -> str:
@@ -212,3 +256,42 @@ class _Row:
         self.id = uid
         self.role = "user"
         self.name = "n"
+
+
+CHAT = "saved-chat"
+MESSAGE = "saved-msg"
+
+
+@contextlib.asynccontextmanager
+async def _outer_tool_context(pipe, metadata):
+    """The outer turn's `_ToolExecutionContext`, as `pipe.py` builds it for a chat request.
+
+    `run_fusion_member` builds no member context without one (`fusion_engine.py:235,254`), and
+    the executor refuses before it reads anything, so every arm here needs it.
+    """
+    ctx = _ToolExecutionContext(
+        queue=asyncio.Queue(maxsize=50),
+        per_request_semaphore=asyncio.Semaphore(4),
+        global_semaphore=None,
+        timeout=5.0,
+        batch_timeout=5.0,
+        idle_timeout=None,
+        user_id="u1",
+        event_emitter=None,
+        batch_cap=4,
+        request=None,
+        user={"id": "u1"},
+        metadata=metadata,
+        request_id="r1",
+        messages=[{"role": "user", "content": "q"}],
+    )
+    executor = pipe._ensure_tool_executor()
+    ctx.workers.append(asyncio.create_task(executor._tool_worker_loop(ctx)))
+    token = pipe._TOOL_CONTEXT.set(ctx)
+    try:
+        yield ctx
+    finally:
+        pipe._TOOL_CONTEXT.reset(token)
+        for worker in ctx.workers:
+            worker.cancel()
+        await asyncio.gather(*ctx.workers, return_exceptions=True)

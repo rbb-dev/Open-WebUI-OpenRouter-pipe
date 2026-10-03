@@ -164,6 +164,15 @@ class AcceptedResponseLostBody(aiohttp.ClientPayloadError, RuntimeError):
     pass
 
 
+_LOST_BODY_READ_ERRORS = (
+    aiohttp.ClientPayloadError,
+    aiohttp.ServerDisconnectedError,
+    aiohttp.ServerTimeoutError,
+    aiohttp.ClientOSError,
+    asyncio.TimeoutError,
+)
+
+
 def _should_retry_nonstreaming(exc: BaseException | None) -> bool:
     if exc is None:
         return False
@@ -205,7 +214,7 @@ def _transient_retry_policy(valves: Any, *, retry: Any) -> AsyncRetrying:
 async def _decode_json_body(resp: Any, logger: Any, endpoint: str) -> Any:
     try:
         return await resp.json()
-    except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError) as exc:
+    except _LOST_BODY_READ_ERRORS as exc:
         raise AcceptedResponseLostBody(str(exc)) from exc
     except Exception:
         logger.debug(
@@ -216,7 +225,7 @@ async def _decode_json_body(resp: Any, logger: Any, endpoint: str) -> Any:
         try:
             text = await resp.text()
             return json.loads(text)
-        except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError) as exc:
+        except _LOST_BODY_READ_ERRORS as exc:
             raise AcceptedResponseLostBody(str(exc)) from exc
         except Exception as exc:
             raise UpstreamBodyUnreadable(
@@ -435,6 +444,7 @@ class ResponsesAdapter:
                             saw_data_line = False
                             delivered_any = False
                             body_complete = False
+                            accepted = False
                             buf = bytearray()
                             scanned = 0
                             excerpt = bytearray()
@@ -495,6 +505,7 @@ class ResponsesAdapter:
                                             extra_metadata=extra_meta or None,
                                         )
 
+                                    accepted = True
                                     chunk_count = 0
                                     async for chunk in resp.content.iter_chunked(4096):
                                         chunk_count += 1
@@ -586,8 +597,8 @@ class ResponsesAdapter:
                                         "Producer encountered error while streaming from OpenRouter"
                                     )
                                 producer_reported = True
-                                if not body_complete and isinstance(
-                                    producer_exc, (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError)
+                                if accepted and not body_complete and not isinstance(
+                                    producer_exc, OpenRouterAPIError
                                 ):
                                     raise AcceptedResponseLostBody(str(producer_exc)) from producer_exc
                                 raise

@@ -915,7 +915,8 @@ class MultimodalHandler:
         self,
         url: str,
         timeout_seconds: int | None = None,
-        seconds: float | None = None
+        seconds: float | None = None,
+        charge: Callable[[float], None] | None = None
     ) -> dict[str, Any] | None:
         """Download file or image from remote URL with exponential backoff retry logic.
 
@@ -981,7 +982,7 @@ class MultimodalHandler:
         if not is_http_or_https_url(url):
             return None
 
-        pinned = await self._prepare_pinned_request(url, seconds)
+        pinned = await self._prepare_pinned_request(url, seconds, charge)
         if pinned is None:
             self.logger.error(
                 "Remote download blocked by security policy (SSRF or HTTP disabled by default): %s",
@@ -1592,7 +1593,8 @@ class MultimodalHandler:
         return (request_url, headers, extensions)
 
     async def _prepare_pinned_request(
-        self, url: str, seconds: float | None = None
+        self, url: str, seconds: float | None = None,
+        charge: Callable[[float], None] | None = None,
     ) -> tuple[str, dict[str, str], dict[str, Any]] | None:
         """Validate `url` against the SSRF guard and return (request_url,
         headers, extensions) for an IP-pinned httpx request, or None if blocked.
@@ -1604,6 +1606,7 @@ class MultimodalHandler:
         """
         if seconds is None:
             seconds = ADDRESS_CHECK_SECONDS
+        started = time.monotonic()
         try:
             ips = await asyncio.wait_for(
                 _run_address(self, self._request_ips_blocking, url),
@@ -1615,6 +1618,9 @@ class MultimodalHandler:
                 loggable_link(url), seconds,
             )
             return None
+        finally:
+            if charge is not None:
+                charge(time.monotonic() - started)
         if ips is None:
             return None
         if not ips:

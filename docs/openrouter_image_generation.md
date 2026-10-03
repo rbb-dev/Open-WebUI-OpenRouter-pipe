@@ -357,15 +357,19 @@ Riverflow variants, all 4 FLUX.2 variants, ByteDance Seedream 4.5.
 - **Multimodal dedupe**: if a model has `text` in `output_modalities`,
   `register_image_models` skips it (those stay in the chat catalog).
 - **Master-disable**: setting `ENABLE_OPENROUTER_IMAGE_GENERATION=False`
-  stops the pipe reading the image list at all, and drops the models
-  registered while it was on along with the published contracts of exactly
+  drops the models registered while it was on, so nothing the administrator
+  hid stays selectable, along with the published contracts of exactly
   those models — the narrowing is to the ids the registry can still route
-  to, so a multimodal row keeps its contract. Both happen on the next
-  model-list build —
-  the next time Open WebUI asks the pipe for its models — and the drop runs
-  ahead of the catalogue refresh window, so it does not wait on
+  to, so a multimodal row keeps its contract. The drop happens on the next
+  model-list build — the next time Open WebUI asks the pipe for its models —
+  and runs ahead of the catalogue refresh window, so it does not wait on
   `MODEL_CATALOG_REFRESH_SECONDS`. The models are already gone from that
-  same model list.
+  same model list. This valve governs which models are *offered*, not what
+  is *read*: it does not stop the pipe reading the image list when an image
+  filter valve is on, because the Image Generation tool's own panel is built
+  from the same published-contract sweep, and the two tool valves pay for it
+  independently of this one. With all four image filter valves off, nothing
+  is read at all.
 
 ### Multimodal (text + image)
 
@@ -1527,7 +1531,7 @@ counting.
 
 | Valve | Default | Range | Purpose |
 |-------|---------|-------|---------|
-| `ENABLE_OPENROUTER_IMAGE_GENERATION` | `True` | bool | Master kill switch. False drops pure-image-only models from the model list AND clears them from OWUI's catalog on the next model-list build, ahead of the catalogue refresh window, so it does not wait on `MODEL_CATALOG_REFRESH_SECONDS`. It withdraws the published contracts of the models it drops as well, narrowed to the ids the registry can still route to; a text+image chat model is not one of them, so its own contract and its `image_config` vetting are untouched. Multimodal models stay since they're in the chat catalog. |
+| `ENABLE_OPENROUTER_IMAGE_GENERATION` | `True` | bool | Master kill switch. False drops pure-image-only models from the model list AND clears them from OWUI's catalog on the next model-list build, ahead of the catalogue refresh window, so it does not wait on `MODEL_CATALOG_REFRESH_SECONDS`. It withdraws the published contracts of the models it drops as well, narrowed to the ids the registry can still route to; a text+image chat model is not one of them, so its own contract and its `image_config` vetting are untouched. Multimodal models stay since they're in the chat catalog. It is a master kill switch for what is *offered*, not for what is *read*: with an image filter valve on, the published-contract sweep still runs so the Image Generation tool's own six controls are built, and only the models stay out of the picker. |
 | `AUTO_INSTALL_IMAGE_FILTERS` | `True` | bool | Install and keep current one settings panel per image model, built from what that model publishes. It is one of the four valves that pay for that read — `AUTO_ATTACH_IMAGE_FILTERS`, `AUTO_INSTALL_IMAGE_GEN_FILTER` and `AUTO_ATTACH_IMAGE_GEN_FILTER` read the same contracts for the Image Generation tool's own panel, and with all four off no contract is read at all. Every panel also carries `Output size`, where a tier is checked against the tiers that model publishes -- or against `512`, `1K`, `2K` and `4K` where it publishes none -- while exact pixels such as `1024x1024` travel as typed; and a model that answers with a picture and no text carries `Provider options`, `Reference images` and `Reference image links` on top of that. A model whose settings list has never been read gets no panel; one read before keeps its last successful set -- and keeps it until a refresh does read the model, so a catalogue that is momentarily unreadable for one model costs it nothing. |
 | `AUTO_ATTACH_IMAGE_FILTERS` | `True` | bool | Attach each model's own settings panel to it, so its settings appear in the chat controls when that model is selected. A single model can opt out with the `disable_image_filter_auto_attach` advanced parameter. |
 | `AUTO_DEFAULT_IMAGE_FILTERS` | `True` | bool | Keep attached image filters enabled by default per chat. Re-asserted on every catalog metadata sync. |
@@ -1544,7 +1548,9 @@ Tuning hints:
 - **Disabling image generation completely**:
   `ENABLE_OPENROUTER_IMAGE_GENERATION=False`. Pure-image-only models
   vanish from the dropdown on next sync; multimodal models remain
-  (they're in the chat catalog).
+  (they're in the chat catalog). The Image Generation tool's panel is
+  unaffected — it is built from the contract sweep the tool valves pay
+  for. To stop that read too, turn all four image filter valves off.
 - **Want filters created but not auto-attached**: set
   `AUTO_INSTALL_IMAGE_FILTERS=True`, `AUTO_ATTACH_IMAGE_FILTERS=False`.
   Useful for testing — admins can attach manually via Admin → Models
@@ -1782,9 +1788,13 @@ pipes()
           │  registered while it was on, then call set_image_endpoints({})
           │  with known_ids = the ids the registry can still route to -- so
           │  the contracts of the models just dropped go with them and a
-          │  text+image chat model's own contract stays -- then return,
-          │  ahead of the TTL check, which is why the picker empties on
-          │  this build rather than a TTL later
+          │  text+image chat model's own contract stays -- ahead of the TTL
+          │  check, which is why the picker empties on this build rather
+          │  than a TTL later -- then, if any of the four image filter
+          │  valves is on, fall through to the contract branch below
+          │  without registering the fetched list: the tool's panel is
+          │  built from the sweep, but the models stay out of the picker.
+          │  With all four off, return here.
           ├─ TTL-gated fetch (cache_seconds = MODEL_CATALOG_REFRESH_SECONDS)
           ├─ /api/v1/models?output_modalities=image via OpenRouterImageClient
           ├─ if any of the four image filter valves is on —
@@ -1922,15 +1932,17 @@ from prompt and settings, so its `modalities` is never sent. It is the
 multimodal models, staying on chat completions, that actually carry it.
 
 **Turning the feature off.** With `ENABLE_OPENROUTER_IMAGE_GENERATION` set
-to `False`, the pipe stops reading the image catalog and drops the models
-registered while it was on, together with the published contracts of the
-models it dropped -- a server tool still naming one of them in its metadata
-finds no contract to read. The narrowing is to the ids the registry can
-still route to, so a text+image chat model, which this valve does not
-drop, keeps its own. The drop runs on the next model-list build,
-ahead of the catalogue refresh window, so the models are gone from that
-same model list rather than lingering for up to
-`MODEL_CATALOG_REFRESH_SECONDS`.
+to `False`, the pipe drops the models registered while it was on, together
+with the published contracts of the models it dropped -- a server tool still
+naming one of them in its metadata finds no contract to read. The narrowing
+is to the ids the registry can still route to, so a text+image chat model,
+which this valve does not drop, keeps its own. The drop runs on the next
+model-list build, ahead of the catalogue refresh window, so the models are
+gone from that same model list rather than lingering for up to
+`MODEL_CATALOG_REFRESH_SECONDS`. The published-contract sweep is unaffected
+while an image filter valve is on: the Image Generation tool's six controls
+keep being built from it, and only the models stay out of the picker.
+Nothing is read at all only when all four image filter valves are off.
 
 Key invariant: **both branches render the same markdown**. Multimodal
 models keep the streaming path that has always handled them, and both

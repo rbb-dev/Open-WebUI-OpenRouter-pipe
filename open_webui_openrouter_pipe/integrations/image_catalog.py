@@ -145,6 +145,8 @@ async def ensure_image_catalog_loaded(
     reads for every model it will not call.
     """
     wants_filters = with_contracts and _wants_contracts(valves)
+    picker = bool(getattr(valves, "ENABLE_OPENROUTER_IMAGE_GENERATION", False))
+    tool_only = wants_filters and not picker
 
     while True:
         if wants_filters and _image_contract_sweep_in_progress():
@@ -152,7 +154,7 @@ async def ensure_image_catalog_loaded(
                 pass
             continue
 
-        if getattr(valves, "ENABLE_OPENROUTER_IMAGE_GENERATION", False):
+        if picker:
             if OpenRouterModelRegistry.adopt_image_contract_target(_contract_target(valves)):
                 logger.info(
                     "Image contract cache dropped: the base URL or the API key changed."
@@ -173,7 +175,7 @@ async def ensure_image_catalog_loaded(
         swept = False
         try:
             async with _current_image_catalog_lock():
-                if not getattr(valves, "ENABLE_OPENROUTER_IMAGE_GENERATION", False):
+                if not picker:
                     if OpenRouterModelRegistry.last_image_fetch() > 0:
                         OpenRouterModelRegistry.register_image_models([])
                         OpenRouterModelRegistry.set_image_endpoints(
@@ -189,14 +191,21 @@ async def ensure_image_catalog_loaded(
                         logger.debug(
                             "Image catalog skipped: ENABLE_OPENROUTER_IMAGE_GENERATION is False."
                         )
-                    return []
-
-                stale_models, stale_contracts = _image_catalog_stale(
-                    cache_seconds=cache_seconds, wants_filters=wants_filters, api_key=api_key,
-                    valves=valves,
-                )
-                if not stale_models and not stale_contracts:
-                    return []
+                    if not tool_only:
+                        return []
+                    if not wait_for_in_flight and _image_sweep_in_flight():
+                        logger.debug(
+                            "Image catalog sweep already in flight; the caller queued behind it "
+                            "and is answering from the catalogue already in the registry."
+                        )
+                        return []
+                else:
+                    stale_models, stale_contracts = _image_catalog_stale(
+                        cache_seconds=cache_seconds, wants_filters=wants_filters, api_key=api_key,
+                        valves=valves,
+                    )
+                    if not stale_models and not stale_contracts:
+                        return []
 
                 if not wait_for_in_flight and _image_sweep_in_flight():
                     logger.debug(
@@ -220,6 +229,7 @@ async def ensure_image_catalog_loaded(
                     logger=logger,
                     wants_filters=wants_filters,
                     cache_seconds=cache_seconds,
+                    register=picker,
                 )
 
             async with _current_image_contract_lock():
@@ -255,6 +265,7 @@ async def _refresh_image_models(
     logger: Any,
     wants_filters: bool,
     cache_seconds: int,
+    register: bool = True,
 ) -> list[dict[str, Any]]:
     client = _build_catalog_client(
         OpenRouterImageClient,
@@ -293,13 +304,14 @@ async def _refresh_image_models(
         )
         return []
 
-    OpenRouterModelRegistry.register_image_models(models)
     OpenRouterModelRegistry.record_media_success(api_key)
-    OpenRouterModelRegistry.record_image_attempt(api_key)
-    logger.info(
-        "Registered %d OpenRouter image-output model(s) into the catalog.",
-        len(models),
-    )
+    if register:
+        OpenRouterModelRegistry.register_image_models(models)
+        OpenRouterModelRegistry.record_image_attempt(api_key)
+        logger.info(
+            "Registered %d OpenRouter image-output model(s) into the catalog.",
+            len(models),
+        )
     return models
 
 

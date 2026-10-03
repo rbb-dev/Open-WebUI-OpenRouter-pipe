@@ -2075,7 +2075,12 @@ class FilterManager:
         model_id = selected.strip() or _OPENROUTER_IMAGE_GEN_FILTER_DEFAULT_MODEL
         spec = OpenRouterModelRegistry.spec(model_id)
         if not isinstance(spec, dict) or not spec:
-            return model_id, None, None, False
+            return (
+                model_id,
+                None,
+                OpenRouterModelRegistry.image_endpoint(model_id),
+                False,
+            )
         image_model = spec.get("image_model")
         if not isinstance(image_model, dict):
             image_model = {"id": model_id, "name": spec.get("name") or model_id}

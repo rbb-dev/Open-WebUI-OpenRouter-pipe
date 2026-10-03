@@ -525,13 +525,23 @@ def _fusion_row() -> list[dict[str, Any]]:
 
 @pytest.mark.asyncio
 async def test_image_catalog_skip_when_disabled():
-    """Master valve disabled → no fetch attempt."""
+    """Master valve disabled → no fetch attempt.
+
+    The four filter valves are set explicitly, and that is load-bearing rather than tidy:
+    a `MagicMock` valve is truthy for every attribute it was not told about, so leaving
+    them unset made `_wants_contracts` true by accident and this node's configuration
+    stopped being "nothing wants the contracts". A mock cannot express "off" for a valve
+    the test has not named.
+    """
+    from open_webui_openrouter_pipe.integrations import image_catalog
     from open_webui_openrouter_pipe.integrations.image_catalog import ensure_image_catalog_loaded
 
     OpenRouterModelRegistry._last_image_attempt = 0.0
     OpenRouterModelRegistry._last_image_fetch = 0.0
     valves = MagicMock()
     valves.ENABLE_OPENROUTER_IMAGE_GENERATION = False
+    for name in image_catalog._CONTRACT_VALVES:
+        setattr(valves, name, False)
     valves.BASE_URL = "https://openrouter.ai/api/v1"
 
     session = MagicMock()
@@ -593,6 +603,8 @@ async def test_master_disable_takes_image_models_out_of_the_model_list(
     pipe.valves.ENABLE_VIDEO_GENERATION = False
     pipe.valves.AUTO_INSTALL_IMAGE_FILTERS = False
     pipe.valves.AUTO_ATTACH_IMAGE_FILTERS = False
+    pipe.valves.AUTO_INSTALL_IMAGE_GEN_FILTER = False
+    pipe.valves.AUTO_ATTACH_IMAGE_GEN_FILTER = False
 
     offered = {entry["name"] for entry in await pipe.pipes()}
     wanted = {entry["name"] for entry in catalog}

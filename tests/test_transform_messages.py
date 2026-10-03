@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -12,6 +13,7 @@ from open_webui_openrouter_pipe import (
     _serialize_marker,
     generate_item_id,
 )
+from open_webui_openrouter_pipe.core.context_budget import default_output_reservation
 from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
 from open_webui_openrouter_pipe.storage.owui_files import InlinedFile
 

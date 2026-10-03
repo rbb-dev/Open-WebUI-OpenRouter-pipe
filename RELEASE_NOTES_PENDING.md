@@ -12,6 +12,31 @@
   backoff is still `SESSION_LOG_LOCK_STALE_SECONDS`, a turn whose only failure was the stale-finalize pass is still
   offered by the completed-turn listing straight away, and contention still books nothing.
 
+- **Chat-message writes are gated on ownership** — a reply's error note, its Fusion snapshot and its turn metadata (`sources`, `annotations`, `reasoning_details`) are now written only to a saved chat the asker owns, or, for an admin, any saved chat. The gate matches Open WebUI's own rule for writing to an existing chat and fails closed: if the ownership check cannot be run, nothing is written and the operator log says why once per cooldown. Two consequences are visible: the Fusion panel and the loop-limit note are no longer persisted on a Temporary Chat or on a channel (both are still delivered live, and a temporary chat has no reload to restore from), and no turn writes into another user's saved chat. A `channel:` chat has no chat row of its own, so the write was already a no-op on a real installation.
+- **Citation notices** — the "this response included a citation type the pipe can't render" notice now names the
+  answer the reader is looking at. The notice used to be published the moment a delta carrying an unrenderable
+  annotation went past, which is before the retry loop has decided anything: on a turn that was re-sent it
+  described the answer that was thrown away, so the toast named a citation from a reply nobody was ever shown while
+  the answer that replaced it got no notice at all. The types are now collected per attempt and published once, after
+  the retry loop has closed. A turn whose surviving answer carries no such citation gets no notice, and a turn that
+  ends in a failure card gets none either — it renders the card. The notice still arrives once per turn, and the
+  types it names are the same set; only the attempt they are read off has changed.
+
+- **Stalled accepted bodies** — a request OpenRouter has already accepted and whose body then stops arriving is one
+  POST on every path, and it renders the connection card. The carve-out that names a body lost in transit keyed on two
+  exception classes, `ClientPayloadError` and `ServerDisconnectedError`, so the three commonest ways a body stops
+  arriving — an `Idle read timeout`, a reset socket, and an expired `Total request timeout` — were not in it. On the
+  streaming `/responses` leg and on `/chat/completions` each of those spent the full retry budget on a call OpenRouter
+  had already begun generating for, and OpenRouter bills on generation rather than on delivery: three POSTs on this
+  leg meant three billed answers for one question, and the reader saw whichever attempt won. On the non-streaming legs
+  the same faults were reported as a body that arrived and was not an OpenRouter response, which blamed the operator's
+  proxy for a fault in the network path and, because that class is charged nothing, passed the breaker as a success.
+  The discriminator is now whether the body **finished arriving**, on both streaming legs and both non-streaming ones.
+  A body that arrived whole and delivered nothing still takes the full retry budget, a fault raised before the request
+  reached OpenRouter is still retried, and an in-band or status-level provider error keeps its own class and its own
+  budget. A mid-body timeout now renders the connection card rather than the network-timeout card; the timeout valve
+  it was read from is unchanged, and so is every knob an operator can set.
+
 - **Pipe dashboard, viewer payload** — the live dashboard payload no longer carries the data-dir path, so a viewer
   holding only a read grant no longer learns the server's filesystem layout from the System tab. The key was published
   by the system collector as `system.disk_path`, and every key in a payload reaches every socket in the viewers room.
@@ -384,6 +409,17 @@
 
 - **reasoning summaries** — a provider that fragments one `reasoning.summary` now keeps every fragment. The chat adapter kept a single scalar per summary key, so on a model that sends disjoint fragments under one `index` all but the last were overwritten before anything downstream saw them, and a cumulative snapshot was added on top of what had already been delivered. Every fragment now reaches the thinking box, the closing record and the replayed `reasoning_details`, exactly once and in arrival order.
 
+- **address checking** — a request's `ADDRESS_CHECK_BUDGET_SECONDS` is now spent by address checks and by nothing else.
+  A remote picture's **transfer** used to come off that budget, so a turn carrying a few slow pictures could leave a public
+  video link or a file link behind them with no time to resolve, and the link was refused with the sentence for a check
+  that never finished. The download's own address check still draws on the budget; the bytes it moves afterwards do not,
+  and the valve help text, the dashboard entry, the atlas and the security and multimodal documents now say so in the
+  sentence that already promised it.
+- **pictures** — one request now resolves at most 16 addresses, whatever the picture count. `Maximum images per request` only ever counted
+  what was **forwarded**, so a picture the address gate refused consumed no slot and a message carrying two hundred unfetchable remote
+  pictures paid two hundred lookups on top of the one the pipe downloaded each. The ceiling applies to every forwarding arm — the
+  cold picture, a picture reused from an earlier turn, the download's own check, a picture a tool result carries, a file link and a
+  video link — and a link past it is refused without being looked up and without being downloaded, with the count named in the refusal.
 - **fusion** — a Fusion panel member's tool file is no longer filed against the outer chat. The file is still
   stored and still rendered in the panel, but it no longer appears in the chat's file list: the tool executor
   re-checks `fusion_inner` before it hands `chat_id`/`message_id` to Open WebUI's upload, so a member's file

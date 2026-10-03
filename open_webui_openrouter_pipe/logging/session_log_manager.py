@@ -1603,6 +1603,7 @@ class SessionLogManager:
         session_id: str,
         segments: list[dict[str, Any]],
         ids: list[str] | None = None,
+        group: str = "",
     ) -> bool:
 
         from ..core.logging_system import _archive_file_path, _SessionLogArchiveJob
@@ -1618,6 +1619,8 @@ class SessionLogManager:
             return False
 
         key = f"{chat_id}:{message_id}"
+        if group:
+            key = f"{key}:{group}"
         already = key in self._captured_turns and all(
             i <= self._captured_row_ids.get(key, "") for i in (ids or ())
         )
@@ -2021,66 +2024,40 @@ class SessionLogManager:
                 self._release_assembly_lock(lock_id)
                 return False
 
-            resolved_user_id = ""
             distinct_user_ids = sorted({
                 str(seg.get("user_id") or "").strip()
                 for seg in segments
                 if str(seg.get("user_id") or "").strip()
             })
+            groups: list[tuple[str, list[dict[str, Any]], list[str]]] = []
             if len(distinct_user_ids) > 1:
+                buckets: dict[str, tuple[list[dict[str, Any]], list[str]]] = {}
+                for seg, seg_id in zip(segments, readable_ids):
+                    principal = str(seg.get("user_id") or "").strip()
+                    bucket = buckets.setdefault(principal, ([], []))
+                    bucket[0].append(seg)
+                    bucket[1].append(seg_id)
+                groups = [(name, found[0], found[1]) for name, found in buckets.items()]
                 self.logger.log(
                     warn_level(
                         self._unreadable_archive_warnings,
                         f"session_log_mixed_user:{chat_id}:{message_id}",
                         cooldown_s=3600.0,
                     ),
-                    "Refusing to assemble a session log bundle whose segments name %d "
-                    "different users (chat_id=%s message_id=%s users=%s); no archive is "
-                    "written under any of them and every staged segment is kept for retry.",
+                    "Assembling a session log bundle whose segments name %d different users "
+                    "(chat_id=%s message_id=%s users=%s); it is written once per principal, "
+                    "each archive holding only its own user's events and each principal's "
+                    "request behind it given as %s.",
                     len(distinct_user_ids),
                     chat_id,
                     message_id,
                     ",".join(distinct_user_ids),
+                    ",".join(
+                        f"{name}:{_preferred_request_id(found[0])}" for name, found in buckets.items()
+                    ),
                 )
-                self._restore_touched_stamps(model, session_factory, stamps, list(ids), chat_id, message_id)
-                self._release_assembly_lock(lock_id)
-                return False
-            if distinct_user_ids:
-                resolved_user_id = distinct_user_ids[0]
-            resolved_session_id = ""
-            preferred_request_id = _preferred_request_id(segments)
-            resolved_status = ""
-            resolved_reason = ""
-            merged_events: list[dict[str, Any]] = []
-
-            for seg in segments:
-                if not resolved_session_id:
-                    raw_sid = seg.get("session_id")
-                    if isinstance(raw_sid, str) and raw_sid.strip():
-                        resolved_session_id = raw_sid.strip()
-                if seg.get("type") == "session_log_segment_terminal":
-                    raw_status = seg.get("status")
-                    if isinstance(raw_status, str) and raw_status.strip():
-                        resolved_status = raw_status.strip()
-                        raw_reason = seg.get("reason")
-                        resolved_reason = raw_reason.strip() if isinstance(raw_reason, str) else ""
-                events = seg.get("events")
-                if isinstance(events, list):
-                    for evt in events:
-                        if isinstance(evt, dict):
-                            merged_events.append(evt)
-
-            def _event_ts(evt: dict[str, Any]) -> float:
-                created = evt.get("created")
-                try:
-                    return float(created) if created is not None else 0.0
-                except (TypeError, ValueError):
-                    return 0.0
-
-            merged_events.sort(key=_event_ts)
-
-            if not terminal and any(seg.get("type") == "session_log_segment_terminal" for seg in segments):
-                terminal = True
+            else:
+                groups = [(distinct_user_ids[0] if distinct_user_ids else "", segments, list(ids))]
 
             settings = archive_settings or self.resolve_archive_settings(self.valves)
             if settings is None:
@@ -2101,161 +2078,233 @@ class SessionLogManager:
                 return False
             base_dir, zip_password, zip_compression, zip_compresslevel = settings
 
-            out_path = _archive_file_path(
-                base_dir,
-                user_id=resolved_user_id,
-                chat_id=chat_id,
-                message_id=message_id,
-            )
-            before_stat = None
-            with contextlib.suppress(Exception):
-                before_stat = out_path.stat()
+            partitioned = len(groups) > 1
 
-            # Merge with existing archive events if the zip already exists.
-            existing_raw: list[dict[str, Any]] = []
-            existing_meta: dict[str, Any] = {}
-            read_failed = False
-            merge_path = out_path
-            if not out_path.exists():
-                merge_path = _pre_rename_archive_path(
-                    out_path,
+            def _write_principal_group(
+                group_principal: str,
+                group_segments: list[dict[str, Any]],
+                group_ids: list[str],
+            ) -> str:
+                resolved_user_id = group_principal
+                resolved_session_id = ""
+                preferred_request_id = _preferred_request_id(group_segments)
+                resolved_status = ""
+                resolved_reason = ""
+                merged_events: list[dict[str, Any]] = []
+                group_terminal = terminal
+
+                for seg in group_segments:
+                    if not resolved_session_id:
+                        raw_sid = seg.get("session_id")
+                        if isinstance(raw_sid, str) and raw_sid.strip():
+                            resolved_session_id = raw_sid.strip()
+                    if seg.get("type") == "session_log_segment_terminal":
+                        raw_status = seg.get("status")
+                        if isinstance(raw_status, str) and raw_status.strip():
+                            resolved_status = raw_status.strip()
+                            raw_reason = seg.get("reason")
+                            resolved_reason = raw_reason.strip() if isinstance(raw_reason, str) else ""
+                    events = seg.get("events")
+                    if isinstance(events, list):
+                        for evt in events:
+                            if isinstance(evt, dict):
+                                merged_events.append(evt)
+
+                def _event_ts(evt: dict[str, Any]) -> float:
+                    created = evt.get("created")
+                    try:
+                        return float(created) if created is not None else 0.0
+                    except (TypeError, ValueError):
+                        return 0.0
+
+                merged_events.sort(key=_event_ts)
+
+                if not group_terminal and any(
+                    seg.get("type") == "session_log_segment_terminal" for seg in group_segments
+                ):
+                    group_terminal = True
+
+                out_path = _archive_file_path(
                     base_dir,
                     user_id=resolved_user_id,
                     chat_id=chat_id,
                     message_id=message_id,
-                ) or out_path
-            if merge_path.exists():
-                try:
-                    prior_meta, prior_raw = self.read_archive(merge_path, settings)
-                    if merge_path == out_path or _prior_archive_belongs_to_turn(
-                        prior_meta,
+                )
+                before_stat = None
+                with contextlib.suppress(Exception):
+                    before_stat = out_path.stat()
+
+                # Merge with existing archive events if the zip already exists.
+                existing_raw: list[dict[str, Any]] = []
+                existing_meta: dict[str, Any] = {}
+                read_failed = False
+                merge_path = out_path
+                if not out_path.exists():
+                    merge_path = _pre_rename_archive_path(
+                        out_path,
+                        base_dir,
                         user_id=resolved_user_id,
                         chat_id=chat_id,
                         message_id=message_id,
-                    ):
-                        existing_meta, existing_raw = prior_meta, prior_raw
-                    else:
-                        prior_raw = []
-                        self.logger.debug(
-                            "A pre-digest archive at %s names another turn's ids; it is left "
-                            "alone and this turn is assembled on its own (chat_id=%s message_id=%s).",
-                            str(merge_path),
-                            chat_id,
-                            message_id,
-                        )
-                    existing_events = prior_raw
-                    existing_count = len(existing_events)
-                    db_count = len(merged_events)
-                    if existing_events:
-                        existing_events = [evt for evt in existing_events if not _is_incomplete_marker(evt)]
-                        if existing_events:
-                            merged_events = existing_events + merged_events
-                            merged_events = self.dedupe_events(merged_events)
-                            merged_events.sort(key=_event_ts)
-                        if self.logger.isEnabledFor(logging.DEBUG):
+                    ) or out_path
+                if merge_path.exists():
+                    try:
+                        prior_meta, prior_raw = self.read_archive(merge_path, settings)
+                        if merge_path == out_path or _prior_archive_belongs_to_turn(
+                            prior_meta,
+                            user_id=resolved_user_id,
+                            chat_id=chat_id,
+                            message_id=message_id,
+                        ):
+                            existing_meta, existing_raw = prior_meta, prior_raw
+                        else:
+                            prior_raw = []
                             self.logger.debug(
-                                "Merged %d existing archive events with %d DB events "
-                                "(%d written; chat_id=%s message_id=%s)",
-                                existing_count,
-                                db_count,
-                                len(merged_events),
+                                "A pre-digest archive at %s names another turn's ids; it is left "
+                                "alone and this turn is assembled on its own (chat_id=%s message_id=%s).",
+                                str(merge_path),
                                 chat_id,
                                 message_id,
                             )
-                except Exception:
-                    read_failed = True
-                    _truncate_latch(self._unreadable_archive_warnings, _MAX_DRAIN_LATCH_KEYS)
+                        existing_events = prior_raw
+                        existing_count = len(existing_events)
+                        db_count = len(merged_events)
+                        if existing_events:
+                            existing_events = [evt for evt in existing_events if not _is_incomplete_marker(evt)]
+                            if existing_events:
+                                merged_events = existing_events + merged_events
+                                merged_events = self.dedupe_events(merged_events)
+                                merged_events.sort(key=_event_ts)
+                            if self.logger.isEnabledFor(logging.DEBUG):
+                                self.logger.debug(
+                                    "Merged %d existing archive events with %d DB events "
+                                    "(%d written; chat_id=%s message_id=%s)",
+                                    existing_count,
+                                    db_count,
+                                    len(merged_events),
+                                    chat_id,
+                                    message_id,
+                                )
+                    except Exception:
+                        read_failed = True
+                        _truncate_latch(self._unreadable_archive_warnings, _MAX_DRAIN_LATCH_KEYS)
+                        self.logger.log(
+                            warn_level(
+                                self._unreadable_archive_warnings,
+                                f"session_log_archive_unreadable:{merge_path}",
+                                cooldown_s=3600.0,
+                            ),
+                            "Refusing to assemble over an unreadable session log archive; "
+                            "the existing file and the staged segments are left intact (path=%s chat_id=%s message_id=%s).",
+                            str(merge_path),
+                            chat_id,
+                            message_id,
+                            exc_info=True,
+                        )
+
+                if not group_terminal and existing_raw and not any(
+                    _is_incomplete_marker(evt) for evt in existing_raw
+                ):
+                    group_terminal = True
+                    if not resolved_status:
+                        resolved_status = str(existing_meta.get("status") or "")
+                        resolved_reason = str(existing_meta.get("reason") or "")
+                if not group_terminal and not existing_meta.get("terminal"):
+                    merged_events.append(
+                        _incomplete_marker(
+                            preferred_request_id, resolved_session_id, resolved_user_id, stale_finalize_seconds
+                        )
+                    )
+
+                if read_failed:
+                    captured = self._capture_unassemblable_turn(
+                        chat_id,
+                        message_id,
+                        out_path,
+                        base_dir,
+                        zip_password,
+                        zip_compression,
+                        zip_compresslevel,
+                        resolved_user_id,
+                        resolved_session_id,
+                        group_segments,
+                        list(group_ids),
+                        group=group_principal if partitioned else "",
+                    )
+                    if not captured:
+                        self._rescue_pending[(chat_id, message_id)] = time.monotonic()
+                    return "failed"
+
+                if existing_meta.get("terminal"):
+                    group_terminal = True
+
+                meta_message_id, meta_task = _split_archive_key(message_id)
+                job = _SessionLogArchiveJob(
+                    base_dir=base_dir,
+                    zip_password=zip_password,
+                    zip_compression=zip_compression,
+                    zip_compresslevel=zip_compresslevel,
+                    user_id=resolved_user_id,
+                    session_id="" if chat_id == "api" else (resolved_session_id or ""),
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    request_id=preferred_request_id or "",
+                    created_at=time.time(),
+                    log_format=self.valves.SESSION_LOG_FORMAT,
+                    log_events=merged_events,
+                    meta_message_id=meta_message_id,
+                    meta_task=meta_task,
+                    terminal=group_terminal,
+                    status=resolved_status,
+                    reason=resolved_reason,
+                    publish_guard=_publish_guard,
+                )
+                if not self.valves.SESSION_LOG_STORE_ENABLED:
                     self.logger.log(
                         warn_level(
                             self._unreadable_archive_warnings,
-                            f"session_log_archive_unreadable:{merge_path}",
+                            f"session_log_write_skipped_store_disabled:{chat_id}:{message_id}",
                             cooldown_s=3600.0,
                         ),
-                        "Refusing to assemble over an unreadable session log archive; "
-                        "the existing file and the staged segments are left intact (path=%s chat_id=%s message_id=%s).",
-                        str(merge_path),
+                        "Session log archive was not written for chat_id=%s message_id=%s: "
+                        "`Enable session log storage` went off inside this pass, so the staged "
+                        "segments stay in the database for a later pass.",
                         chat_id,
                         message_id,
+                    )
+                    return "failed"
+                try:
+                    self._write_archive(job)
+                except Exception:
+                    self.logger.log(
+                        warn_level(
+                            self._unreadable_archive_warnings,
+                            f"session_log_write_failed:{chat_id}:{message_id}",
+                            cooldown_s=3600.0,
+                        ),
+                        "Session log archive write failed for chat_id=%s message_id=%s path=%s; keeping staged segments for retry.",
+                        chat_id, message_id, str(out_path),
                         exc_info=True,
                     )
+                    return "failed"
 
-            if not terminal and existing_raw and not any(_is_incomplete_marker(evt) for evt in existing_raw):
-                terminal = True
-                if not resolved_status:
-                    resolved_status = str(existing_meta.get("status") or "")
-                    resolved_reason = str(existing_meta.get("reason") or "")
-            if not terminal and not existing_meta.get("terminal"):
-                merged_events.append(
-                    _incomplete_marker(
-                        preferred_request_id, resolved_session_id, resolved_user_id, stale_finalize_seconds
+                if publish_refused:
+                    return "contended"
+
+                wrote = _archive_publish_changed_file(out_path, before_stat)
+                if self.logger.isEnabledFor(logging.DEBUG):
+                    self.logger.debug(
+                        "Session log archive write attempted (chat_id=%s message_id=%s terminal=%s wrote=%s)",
+                        chat_id,
+                        message_id,
+                        group_terminal,
+                        wrote,
                     )
-                )
 
-            if read_failed:
-                self._restore_touched_stamps(model, session_factory, stamps, list(ids), chat_id, message_id)
-                self._release_assembly_lock(lock_id)
-                captured = self._capture_unassemblable_turn(
-                    chat_id,
-                    message_id,
-                    out_path,
-                    base_dir,
-                    zip_password,
-                    zip_compression,
-                    zip_compresslevel,
-                    resolved_user_id,
-                    resolved_session_id,
-                    segments,
-                    list(ids),
-                )
-                if not captured:
-                    self._rescue_pending[(chat_id, message_id)] = time.monotonic()
-                return False
+                if wrote:
+                    return "published"
 
-            if existing_meta.get("terminal"):
-                terminal = True
-
-            meta_message_id, meta_task = _split_archive_key(message_id)
-            job = _SessionLogArchiveJob(
-                base_dir=base_dir,
-                zip_password=zip_password,
-                zip_compression=zip_compression,
-                zip_compresslevel=zip_compresslevel,
-                user_id=resolved_user_id,
-                session_id="" if chat_id == "api" else (resolved_session_id or ""),
-                chat_id=chat_id,
-                message_id=message_id,
-                request_id=preferred_request_id or "",
-                created_at=time.time(),
-                log_format=self.valves.SESSION_LOG_FORMAT,
-                log_events=merged_events,
-                meta_message_id=meta_message_id,
-                meta_task=meta_task,
-                terminal=terminal,
-                status=resolved_status,
-                reason=resolved_reason,
-                publish_guard=_publish_guard,
-            )
-            if not self.valves.SESSION_LOG_STORE_ENABLED:
-                self.logger.log(
-                    warn_level(
-                        self._unreadable_archive_warnings,
-                        f"session_log_write_skipped_store_disabled:{chat_id}:{message_id}",
-                        cooldown_s=3600.0,
-                    ),
-                    "Session log archive was not written for chat_id=%s message_id=%s: "
-                    "`Enable session log storage` went off inside this pass, so the staged "
-                    "segments stay in the database for a later pass.",
-                    chat_id,
-                    message_id,
-                )
-                self._restore_touched_stamps(model, session_factory, stamps, list(ids), chat_id, message_id)
-                self._release_assembly_lock(lock_id)
-                return False
-            try:
-                self._write_archive(job)
-            except Exception:
-                self._restore_touched_stamps(model, session_factory, stamps, list(ids), chat_id, message_id)
-                self._release_assembly_lock(lock_id)
+                _truncate_latch(self._unreadable_archive_warnings, _MAX_DRAIN_LATCH_KEYS)
                 self.logger.log(
                     warn_level(
                         self._unreadable_archive_warnings,
@@ -2264,37 +2313,19 @@ class SessionLogManager:
                     ),
                     "Session log archive write failed for chat_id=%s message_id=%s path=%s; keeping staged segments for retry.",
                     chat_id, message_id, str(out_path),
-                    exc_info=True,
                 )
-                return False
+                return "failed"
 
-            if publish_refused:
-                self._restore_touched_stamps(model, session_factory, stamps, list(ids), chat_id, message_id)
-                self.logger.log(
-                    warn_level(
-                        self._unreadable_archive_warnings,
-                        f"session_log_lock_contended_at_publish:{chat_id}:{message_id}",
-                        cooldown_s=3600.0,
-                    ),
-                    "Session log archive for chat_id=%s message_id=%s was abandoned at the moment of "
-                    "publish: this pass no longer holds the turn's assembly lock, so another worker owns "
-                    "the bundle and its archive is the one on disk. Nothing was published and the staged "
-                    "segments are kept for that pass.",
-                    chat_id, message_id,
-                )
-                return _LOCK_CONTENDED
+            published = 0
+            contended = False
+            for group_principal, group_segments, group_ids in groups:
+                outcome = _write_principal_group(group_principal, group_segments, group_ids)
+                if outcome == "published":
+                    published += 1
+                elif outcome == "contended":
+                    contended = True
 
-            wrote = _archive_publish_changed_file(out_path, before_stat)
-            if self.logger.isEnabledFor(logging.DEBUG):
-                self.logger.debug(
-                    "Session log archive write attempted (chat_id=%s message_id=%s terminal=%s wrote=%s)",
-                    chat_id,
-                    message_id,
-                    terminal,
-                    wrote,
-                )
-
-            if wrote:
+            if published == len(groups):
                 try:
                     self._artifact_store._delete_artifacts_sync(ids + [lock_id])  # type: ignore[union-attr]
                 except Exception:
@@ -2315,19 +2346,22 @@ class SessionLogManager:
                     )
                 return True
 
-            # If writing failed, keep segments for retry and allow lock reaping.
             self._restore_touched_stamps(model, session_factory, stamps, list(ids), chat_id, message_id)
+            if contended:
+                self.logger.log(
+                    warn_level(
+                        self._unreadable_archive_warnings,
+                        f"session_log_lock_contended_at_publish:{chat_id}:{message_id}",
+                        cooldown_s=3600.0,
+                    ),
+                    "Session log archive for chat_id=%s message_id=%s was abandoned at the moment of "
+                    "publish: this pass no longer holds the turn's assembly lock, so another worker owns "
+                    "the bundle and its archive is the one on disk. Nothing was published and the staged "
+                    "segments are kept for that pass.",
+                    chat_id, message_id,
+                )
+                return _LOCK_CONTENDED
             self._release_assembly_lock(lock_id)
-            _truncate_latch(self._unreadable_archive_warnings, _MAX_DRAIN_LATCH_KEYS)
-            self.logger.log(
-                warn_level(
-                    self._unreadable_archive_warnings,
-                    f"session_log_write_failed:{chat_id}:{message_id}",
-                    cooldown_s=3600.0,
-                ),
-                "Session log archive write failed for chat_id=%s message_id=%s path=%s; keeping staged segments for retry.",
-                chat_id, message_id, str(out_path),
-            )
             return False
         except BaseException:
             self._restore_touched_stamps(model, session_factory, stamps, list(ids), chat_id, message_id)

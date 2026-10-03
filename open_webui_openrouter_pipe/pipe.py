@@ -3537,31 +3537,31 @@ class Pipe:
                 if stream_queue is not None
                 else None
             )
-            if (
-                self.valves.ENABLE_PLUGIN_SYSTEM
-                and stream_emitter is not None
-                and not job.task
-            ):
-                try:
-                    wrapped = await self._ensure_plugin_registry().dispatch_on_emitter_wrap(
-                        stream_emitter,
-                        raw_emitter=job.event_emitter,
-                        job_metadata={
-                            "user_id": job.user_id,
-                            "chat_id": job.metadata.get("chat_id", ""),
-                            "message_id": job.metadata.get("message_id", ""),
-                            "request_id": job.request_id,
-                        },
-                        valves=job.valves,
-                    )
-                    if wrapped is not None and wrapped is not stream_emitter:
-                        stream_emitter = wrapped
-                except Exception:
-                    self.logger.debug("Plugin on_emitter_wrap dispatch failed", exc_info=True)
-
             permit_handed_to_manager = True
             async with self._acquire_semaphore(semaphore, job.request_id, held=semaphore_held):
                 tokens = self._apply_logging_context(job)
+                if (
+                    self.valves.ENABLE_PLUGIN_SYSTEM
+                    and stream_emitter is not None
+                    and not job.task
+                ):
+                    try:
+                        wrapped = await self._ensure_plugin_registry().dispatch_on_emitter_wrap(
+                            stream_emitter,
+                            raw_emitter=job.event_emitter,
+                            job_metadata={
+                                "user_id": job.user_id,
+                                "chat_id": job.metadata.get("chat_id", ""),
+                                "message_id": job.metadata.get("message_id", ""),
+                                "request_id": job.request_id,
+                            },
+                            valves=job.valves,
+                        )
+                        if wrapped is not None and wrapped is not stream_emitter:
+                            stream_emitter = wrapped
+                    except Exception:
+                        self.logger.debug("Plugin on_emitter_wrap dispatch failed", exc_info=True)
+
                 live_turn = (
                     str(job.metadata.get("chat_id") or ""),
                     resolve_message_id(job.metadata),
@@ -3706,7 +3706,7 @@ class Pipe:
                 if tool_context:
                     await self._shutdown_tool_context(tool_context)
 
-                rid = SessionLogger.request_id.get() or ""
+                rid = job.request_id or SessionLogger.request_id.get() or ""
                 if rid:
                     with SessionLogger._state_lock:
                         fallback_events = list(SessionLogger.logs.get(rid, []))
@@ -5773,5 +5773,23 @@ try:
     _ExtendedUserValves = _PluginRegistryForValves.build_extended_user_valves(UserValves)
     if _ExtendedUserValves is not UserValves:
         Pipe.UserValves = _ExtendedUserValves  # type: ignore[misc]
+
+    _plugin_shared = (
+        set(_PluginRegistryForValves._pending_valve_fields)
+        & set(_PluginRegistryForValves._pending_user_valve_fields)
+    ) - set(Valves.model_fields)
+    _MERGEABLE_USER_VALVE_FIELDS = frozenset(
+        name
+        for name in (*UserValves.model_fields, *_plugin_shared)
+        if name in Valves.model_fields or name in _plugin_shared
+    )
+    _VALVE_FIELD_ADAPTERS = {
+        **_VALVE_FIELD_ADAPTERS,
+        **{
+            name: TypeAdapter(field.annotation)
+            for name, field in Pipe.Valves.model_fields.items()
+            if name in _MERGEABLE_USER_VALVE_FIELDS and name not in _VALVE_FIELD_ADAPTERS
+        },
+    }
 except Exception:
     logging.getLogger(__name__).warning("Plugin valve field merge failed; using base Valves/UserValves", exc_info=True)

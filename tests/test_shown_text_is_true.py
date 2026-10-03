@@ -1044,7 +1044,10 @@ def test_every_surface_agrees_when_the_master_switch_empties_the_picker():
     next model-list build. Measured by calling the loader with a freshness window that has
     not expired: a clear gated on that window could not fire, and this would fail.
     """
-    from open_webui_openrouter_pipe.integrations.image_catalog import ensure_image_catalog_loaded
+    from open_webui_openrouter_pipe.integrations.image_catalog import (
+        _CONTRACT_VALVES,
+        ensure_image_catalog_loaded,
+    )
     from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
     from unittest.mock import MagicMock
 
@@ -1071,6 +1074,13 @@ def test_every_surface_agrees_when_the_master_switch_empties_the_picker():
 
         valves = MagicMock()
         valves.ENABLE_OPENROUTER_IMAGE_GENERATION = False
+        # The four image filter valves are named explicitly. A MagicMock is truthy for
+        # every attribute it was not told about, so leaving them unset made this node's
+        # configuration "a tool wants the contracts" by accident -- and the assertion below
+        # is about the clear running ahead of the freshness window, which needs the
+        # contract-less path.
+        for _name in _CONTRACT_VALVES:
+            setattr(valves, _name, False)
         asyncio.run(
             ensure_image_catalog_loaded(
                 MagicMock(), valves=valves, api_key="k", logger=MagicMock(), cache_seconds=86400

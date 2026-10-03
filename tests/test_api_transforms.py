@@ -1310,15 +1310,21 @@ class TestResponsesInputToChatMessages:
         """Test function call output (tool result) conversion."""
         input_value = [
             {
+                "type": "function_call",
+                "call_id": "call_123",
+                "name": "get_weather",
+                "arguments": '{"city": "NYC"}',
+            },
+            {
                 "type": "function_call_output",
                 "call_id": "call_123",
                 "output": '{"result": "sunny"}',
-            }
+            },
         ]
         result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
 
-        assert result[0]["role"] == "tool"
-        assert result[0]["tool_call_id"] == "call_123"
+        assert result[1]["role"] == "tool"
+        assert result[1]["tool_call_id"] == "call_123"
 
     @pytest.mark.asyncio
     async def test_handles_function_call(self):
@@ -1329,7 +1335,12 @@ class TestResponsesInputToChatMessages:
                 "id": "call_123",
                 "name": "get_weather",
                 "arguments": '{"city": "NYC"}',
-            }
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_123",
+                "output": '{"result": "sunny"}',
+            },
         ]
         result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
 
@@ -1654,26 +1665,38 @@ class TestResponsesInputToChatMessages:
         """Test function_call_output with non-string output is JSON-serialized."""
         input_value = [
             {
+                "type": "function_call",
+                "call_id": "call_123",
+                "name": "get_weather",
+                "arguments": '{"city": "NYC"}',
+            },
+            {
                 "type": "function_call_output",
                 "call_id": "call_123",
                 "output": {"result": "data"},
-            }
+            },
         ]
         result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
-        assert result[0]["content"] == '{"result": "data"}'
+        assert result[1]["content"] == '{"result": "data"}'
 
     @pytest.mark.asyncio
     async def test_function_call_output_none_output(self):
         """Test function_call_output with None output."""
         input_value = [
             {
+                "type": "function_call",
+                "call_id": "call_123",
+                "name": "get_weather",
+                "arguments": '{"city": "NYC"}',
+            },
+            {
                 "type": "function_call_output",
                 "call_id": "call_123",
                 "output": None,
-            }
+            },
         ]
         result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
-        assert result[0]["content"] == ""
+        assert result[1]["content"] == ""
 
     @pytest.mark.asyncio
     async def test_function_call_with_call_id(self):
@@ -1684,7 +1707,12 @@ class TestResponsesInputToChatMessages:
                 "call_id": "call_456",
                 "name": "my_func",
                 "arguments": '{"a": 1}',
-            }
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_456",
+                "output": '{"ok": true}',
+            },
         ]
         result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
         assert result[0]["tool_calls"][0]["id"] == "call_456"
@@ -1698,7 +1726,12 @@ class TestResponsesInputToChatMessages:
                 "id": "call_789",
                 "name": "my_func",
                 "arguments": {"key": "value"},
-            }
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_789",
+                "output": '{"ok": true}',
+            },
         ]
         result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
         assert result[0]["tool_calls"][0]["function"]["arguments"] == '{"key": "value"}'
@@ -1712,7 +1745,12 @@ class TestResponsesInputToChatMessages:
                 "id": "call_abc",
                 "name": "my_func",
                 "arguments": None,
-            }
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_abc",
+                "output": '{"ok": true}',
+            },
         ]
         result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
         assert result[0]["tool_calls"][0]["function"]["arguments"] == "{}"

@@ -13,11 +13,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import contextlib
 import json
 import logging
 import time
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Iterator
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 from ..core.config import (
@@ -515,13 +516,13 @@ async def _gated_tool_pictures_with_address(
     max_inline_bytes: int,
     allow_insecure: Callable[[str], bool],
     seen: dict[str, bool | None] | None = None,
-    deadline: float | None = None,
+    budget: _AddressBudget | None = None,
 ) -> tuple[list[str], list[tuple[str, str, str]]]:
     typed, refused = await _gate_inline_tool_pictures(
         pictures, max_inline_bytes, allow_insecure=allow_insecure,
     )
     admitted, unfetchable = await _tool_picture_address_gate(
-        pipe, typed, seen=seen, deadline=deadline,
+        pipe, typed, seen=seen, budget=budget,
     )
     return admitted, [*refused, *unfetchable]
 
@@ -533,20 +534,24 @@ async def _gate_round_output_pictures(
     *,
     allow_insecure: Callable[[str], bool],
     seen: dict[str, bool | None] | None = None,
-    deadline: float | None = None,
+    budget: _AddressBudget | None = None,
 ) -> tuple[Any, list[tuple[str, str, str]]]:
     if not is_picture_output(output):
         return output, []
     text, pictures = tool_output_text_and_pictures(output)
     kept, refused = await _gated_tool_pictures_with_address(
         pipe, pictures, max_inline_bytes=max_inline_bytes, allow_insecure=allow_insecure,
-        seen=seen, deadline=deadline,
+        seen=seen, budget=budget,
     )
     return picture_output(text, kept), refused
 
 
 def _inline_payload_bytes(value: str) -> int:
     return inline_payload_bytes(value)
+
+
+def _text_block_carries_words(text: str) -> bool:
+    return bool(text.strip()) and not bool(strip_hidden_marker_lines(text).strip())
 
 
 def _payload_is_present(value: Any) -> bool:
@@ -562,7 +567,8 @@ def _payload_is_present(value: Any) -> bool:
 def _block_is_usable(block: dict[str, Any]) -> bool:
     btype = block.get("type")
     if btype == "input_text":
-        return isinstance(block.get("text"), str) and bool(block["text"].strip())
+        text = block.get("text")
+        return isinstance(text, str) and bool(strip_hidden_marker_lines(text).strip())
     if btype == "input_file":
         return any(block.get(key) for key in ("file_id", "file_data", "file_url"))
     if btype in {"input_image", "image_url"}:
@@ -1002,8 +1008,10 @@ async def _tool_picture_address_gate(
     pictures: list[str],
     *,
     seen: dict[str, bool | None] | None = None,
-    deadline: float | None = None,
+    budget: _AddressBudget | None = None,
 ) -> tuple[list[str], list[tuple[str, str, str]]]:
+    if budget is None:
+        budget = _AddressBudget(ADDRESS_CHECK_BUDGET_SECONDS)
     admitted: list[str] = []
     refused: list[tuple[str, str, str]] = []
     for url in pictures:
@@ -1012,19 +1020,23 @@ async def _tool_picture_address_gate(
             continue
         if seen is not None and url in seen:
             permitted = seen[url]
+        elif not budget.has_room():
+            refused.append(
+                (url, _ADDRESS_CHECK_CEILING_REASON, "address_ceiling_tool_picture")
+            )
+            continue
         else:
-            if deadline is None:
-                deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
-            try:
-                permitted = await pipe._multimodal_handler._is_safe_url(
-                    url, seconds=_remaining_address_seconds(deadline),
-                )
-            except Exception:
-                pipe.logger.warning(
-                    "The address check for a tool's picture could not run, so it was not sent: %s",
-                    loggable_link(url), exc_info=True,
-                )
-                permitted = _NO_VERDICT
+            with budget.address_check() as _seconds:
+                try:
+                    permitted = await pipe._multimodal_handler._is_safe_url(
+                        url, seconds=_seconds,
+                    )
+                except Exception:
+                    pipe.logger.warning(
+                        "The address check for a tool's picture could not run, so it was not sent: %s",
+                        loggable_link(url), exc_info=True,
+                    )
+                    permitted = _NO_VERDICT
             if seen is not None:
                 seen[url] = permitted
         if permitted is not True:
@@ -1062,7 +1074,7 @@ async def _tool_picture_verdicts_for_input(
     input_items: Any,
     *,
     seen: dict[str, bool | None] | None = None,
-    deadline: float | None = None,
+    budget: _AddressBudget | None = None,
 ) -> dict[str, bool | None]:
     verdicts = {} if seen is None else seen
     if not isinstance(input_items, list):
@@ -1077,7 +1089,7 @@ async def _tool_picture_verdicts_for_input(
         _text, urls = tool_output_text_and_pictures(output)
         pictures.extend(urls)
     if pictures:
-        await _tool_picture_address_gate(pipe, pictures, seen=verdicts, deadline=deadline)
+        await _tool_picture_address_gate(pipe, pictures, seen=verdicts, budget=budget)
     return verdicts
 
 
@@ -1087,7 +1099,7 @@ async def _tool_picture_gate_with_address(
     *,
     max_inline_bytes: int,
     seen: dict[str, bool | None] | None = None,
-    deadline: float | None = None,
+    budget: _AddressBudget | None = None,
 ) -> tuple[list[str], list[tuple[str, str, str]]]:
     if pipe is None:
         kept, refused = _tool_picture_gate(
@@ -1109,7 +1121,7 @@ async def _tool_picture_gate_with_address(
         allow_insecure=pipe._multimodal_handler._is_insecure_http_allowed,
     )
     admitted, unfetchable = await _tool_picture_address_gate(
-        pipe, kept, seen=seen, deadline=deadline,
+        pipe, kept, seen=seen, budget=budget,
     )
     refused.extend(unfetchable)
     return admitted, refused
@@ -1162,8 +1174,40 @@ def _note_memo_use(
         _reuse_download_memo.move_to_end(memo_key)
 
 
-def _remaining_address_seconds(deadline: float) -> float:
-    return min(ADDRESS_CHECK_SECONDS, deadline - time.monotonic())
+_MAX_ADDRESS_CHECKS = 16
+_ADDRESS_CHECK_CEILING_REASON = (
+    f"past this request's limit of {_MAX_ADDRESS_CHECKS} address checks, so it was not sent"
+)
+
+
+class _AddressBudget:
+    def __init__(self, total: float = ADDRESS_CHECK_BUDGET_SECONDS) -> None:
+        self._total = total
+        self._spent = 0.0
+        self._checks = 0
+
+    def has_room(self) -> bool:
+        return self._checks < _MAX_ADDRESS_CHECKS
+
+    def take(self) -> float:
+        self._checks += 1
+        return self.grant()
+
+    def grant(self) -> float:
+        return max(0.0, min(ADDRESS_CHECK_SECONDS, self._total - self._spent))
+
+    def charge(self, seconds: float) -> None:
+        self._spent += max(0.0, seconds)
+
+    @contextlib.contextmanager
+    def address_check(self, already_counted: bool = False) -> Iterator[float]:
+        if not already_counted:
+            self._checks += 1
+        started = time.monotonic()
+        try:
+            yield self.grant()
+        finally:
+            self.charge(time.monotonic() - started)
 
 
 async def _effective_remote_bytes(pipe: Pipe, seen: list[int | None] | None) -> int:
@@ -1180,7 +1224,7 @@ async def _memo_hit_is_still_permitted(
     memo_key: Any,
     url: str,
     seen: dict[str, bool | None] | None = None,
-    deadline: float | None = None,
+    budget: _AddressBudget | None = None,
     *,
     payload_bytes: int | None = None,
     size_seen: list[int | None] | None = None,
@@ -1188,14 +1232,17 @@ async def _memo_hit_is_still_permitted(
     if payload_bytes is not None and payload_bytes > await _effective_remote_bytes(pipe, size_seen):
         _reuse_download_memo.pop(memo_key, None)
         return False
+    if budget is None:
+        budget = _AddressBudget(ADDRESS_CHECK_BUDGET_SECONDS)
     if seen is not None and url in seen:
         permitted = seen[url]
+    elif not budget.has_room():
+        return False
     else:
-        if deadline is None:
-            deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
-        permitted = await pipe._multimodal_handler._is_safe_url(
-            url, seconds=_remaining_address_seconds(deadline),
-        )
+        with budget.address_check() as _seconds:
+            permitted = await pipe._multimodal_handler._is_safe_url(
+                url, seconds=_seconds,
+            )
         if seen is not None:
             seen[url] = permitted
     if permitted is False:
@@ -1537,10 +1584,10 @@ async def transform_messages_to_input(
                     artifact_producers[group_id] = producers
 
         _tool_context = pipe._TOOL_CONTEXT.get()
-        _context_deadline = _tool_context.address_deadline if _tool_context is not None else None
-        address_deadline = (
-            _context_deadline if _context_deadline is not None
-            else time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
+        _context_budget = _tool_context.address_budget if _tool_context is not None else None
+        address_budget = (
+            _context_budget if _context_budget is not None
+            else _AddressBudget(ADDRESS_CHECK_BUDGET_SECONDS)
         )
         normalized_rows: dict[int, Any] = {}
 
@@ -1697,7 +1744,7 @@ async def transform_messages_to_input(
                 if tool_pictures and not _handoff_ahead(messages, idx):
                     admitted, tool_refusals = await _tool_picture_gate_with_address(
                         pipe, tool_pictures, max_inline_bytes=max_inline_bytes,
-                        seen=address_verdicts, deadline=address_deadline,
+                        seen=address_verdicts, budget=address_budget,
                     )
                     _deferred_tool_refusals.extend(tool_refusals)
                     _deferred_tool_pictures.extend(admitted)
@@ -1855,41 +1902,53 @@ async def transform_messages_to_input(
                             )
                             if remembered is not None and not await (
                                 _memo_hit_is_still_permitted(
-                                    pipe, memo_key, url, address_verdicts, address_deadline,
+                                    pipe, memo_key, url, address_verdicts, address_budget,
                                     payload_bytes=len(remembered[1]), size_seen=reuse_limit_seen,
                                 )
                             ):
                                 remembered = None
-                            try:
-                                downloaded = (
-                                    {"data": remembered[1], "mime_type": remembered[2]}
-                                    if remembered is not None
-                                    else await pipe._multimodal_handler._download_remote_url(
+                            if remembered is not None:
+                                downloaded = {
+                                    "data": remembered[1], "mime_type": remembered[2],
+                                }
+                            elif address_budget.has_room():
+                                try:
+                                    downloaded = await pipe._multimodal_handler._download_remote_url(
                                         url,
-                                        seconds=_remaining_address_seconds(address_deadline),
+                                        seconds=address_budget.take(),
+                                        charge=address_budget.charge,
                                     )
-                                )
-                            except Exception:
-                                pipe.logger.exception("Failed to download remote image %s", loggable_link(url))
-                                downloaded = None
-                            if downloaded and not downloaded.get("data"):
-                                downloaded = None
-                            if not downloaded and not (
-                                _cold_verdict := address_verdicts[url]
-                                if url in address_verdicts
-                                else address_verdicts.setdefault(
-                                    url,
-                                    await pipe._multimodal_handler._is_safe_url(
-                                        url,
-                                        seconds=_remaining_address_seconds(address_deadline),
-                                    ),
-                                )
-                            ):
+                                except Exception:
+                                    pipe.logger.exception(
+                                        "Failed to download remote image %s", loggable_link(url)
+                                    )
+                                    downloaded = None
+                            else:
                                 return _refuse(
-                                    "could not be fetched, so it was not sent",
-                                    "remote_unfetched",
+                                    _ADDRESS_CHECK_CEILING_REASON,
+                                    "address_ceiling_picture",
                                     subject=loggable_link(url),
                                 )
+                            if downloaded and not downloaded.get("data"):
+                                downloaded = None
+                            if not downloaded:
+                                if url in address_verdicts:
+                                    _cold_verdict = address_verdicts[url]
+                                else:
+                                    with address_budget.address_check(True) as _cold_seconds:
+                                        _cold_verdict = address_verdicts.setdefault(
+                                            url,
+                                            await pipe._multimodal_handler._is_safe_url(
+                                                url,
+                                                seconds=_cold_seconds,
+                                            ),
+                                        )
+                                if not _cold_verdict:
+                                    return _refuse(
+                                        "could not be fetched, so it was not sent",
+                                        "remote_unfetched",
+                                        subject=loggable_link(url),
+                                    )
                             if downloaded:
                                 oversized = len(downloaded["data"]) > max_inline_bytes
                                 if oversized:
@@ -2162,18 +2221,31 @@ async def transform_messages_to_input(
                                 if is_http_or_https_url(_value)
                                 else _scheme_verdicts
                             )
-                            if not (
-                                _file_verdict := _gate_memo[_value]
-                                if _value in _gate_memo
-                                else _gate_memo.setdefault(
-                                    _value,
-                                    await pipe._multimodal_handler._is_safe_url(
+                            _file_ceiling = (
+                                _value not in _gate_memo and not address_budget.has_room()
+                            )
+                            if _file_ceiling:
+                                _file_verdict = False
+                            elif _value in _gate_memo:
+                                _file_verdict = _gate_memo[_value]
+                            else:
+                                with address_budget.address_check() as _file_seconds:
+                                    _file_verdict = _gate_memo.setdefault(
                                         _value,
-                                        seconds=_remaining_address_seconds(address_deadline),
-                                    ),
-                                )
-                            ):
-                                if _file_verdict is None and is_http_or_https_url(_value):
+                                        await pipe._multimodal_handler._is_safe_url(
+                                            _value,
+                                            seconds=_file_seconds,
+                                        ),
+                                    )
+                            if not _file_verdict:
+                                if _file_ceiling:
+                                    _reason = _ADDRESS_CHECK_CEILING_REASON
+                                    _cause = "address_ceiling_file_link"
+                                    pipe.logger.warning(
+                                        "Refusing %s file link %s: %s",
+                                        _name, loggable_link(_value), _reason,
+                                    )
+                                elif _file_verdict is None and is_http_or_https_url(_value):
                                     _reason = (
                                         "not checked against the address policy in time, so it "
                                         "was not sent"
@@ -2625,59 +2697,88 @@ async def transform_messages_to_input(
                                 StatusMessages.VIDEO_BASE64,
                                 done=False
                             )
-                        elif not (
-                            _verdict := await pipe._multimodal_handler._is_safe_url(
-                                url, seconds=_remaining_address_seconds(address_deadline)
+                        else:
+                            _video_ceiling = (
+                                url not in address_verdicts and not address_budget.has_room()
                             )
-                        ):
-                            if _verdict is None and is_http_or_https_url(url):
-                                pipe.logger.log(
-                                    logging.WARNING,
-                                    "Address check for video URL %s reached no verdict within "
-                                    "the request's address budget, so the link was not sent",
-                                    loggable_link(url),
+                            if _video_ceiling:
+                                _verdict = False
+                            elif url in address_verdicts:
+                                _verdict = address_verdicts[url]
+                            else:
+                                with address_budget.address_check() as _video_seconds:
+                                    _verdict = address_verdicts.setdefault(
+                                        url,
+                                        await pipe._multimodal_handler._is_safe_url(
+                                            url, seconds=_video_seconds
+                                        ),
+                                    )
+                            if not _verdict:
+                                if _video_ceiling:
+                                    pipe.logger.warning(
+                                        "Refusing video URL %s: %s", loggable_link(url),
+                                        _ADDRESS_CHECK_CEILING_REASON,
+                                    )
+                                    await pipe._ensure_error_formatter()._emit_error(
+                                        event_emitter,
+                                        f"Video URL was not checked: "
+                                        f"{_ADDRESS_CHECK_CEILING_REASON}.",
+                                        show_error_message=True,
+                                    )
+                                    return ImageRefusal(
+                                        _ADDRESS_CHECK_CEILING_REASON,
+                                        "address_ceiling_video",
+                                        severity="error",
+                                        subject=loggable_link(url),
+                                    )
+                                if _verdict is None and is_http_or_https_url(url):
+                                    pipe.logger.log(
+                                        logging.WARNING,
+                                        "Address check for video URL %s reached no verdict within "
+                                        "the request's address budget, so the link was not sent",
+                                        loggable_link(url),
+                                    )
+                                    await pipe._ensure_error_formatter()._emit_error(
+                                        event_emitter,
+                                        "Video URL could not be checked against the address policy "
+                                        "in time, so it was not sent",
+                                        show_error_message=True
+                                    )
+                                    return ImageRefusal(
+                                        "not checked against the address policy in time, so it "
+                                        "was not sent",
+                                        "uncheckable_video_url",
+                                        severity="error",
+                                        subject=loggable_link(url),
+                                    )
+                                pipe.logger.error(
+                                    "SSRF protection blocked video URL: %s", loggable_link(url)
                                 )
                                 await pipe._ensure_error_formatter()._emit_error(
                                     event_emitter,
-                                    "Video URL could not be checked against the address policy "
-                                    "in time, so it was not sent",
+                                    "Video URL blocked by security policy (only http and https links are allowed)"
+                                    if not is_http_or_https_url(url)
+                                    else "Video URL blocked by security policy (private network)",
                                     show_error_message=True
                                 )
                                 return ImageRefusal(
-                                    "not checked against the address policy in time, so it "
-                                    "was not sent",
-                                    "uncheckable_video_url",
+                                    "not an http or https link, which is blocked by security "
+                                    "policy"
+                                    if not is_http_or_https_url(url)
+                                    else "a link to a private network address, which is "
+                                    "blocked by security policy",
+                                    "unsafe_video_url",
                                     severity="error",
                                     subject=loggable_link(url),
                                 )
-                            pipe.logger.error(
-                                "SSRF protection blocked video URL: %s", loggable_link(url)
-                            )
-                            await pipe._ensure_error_formatter()._emit_error(
-                                event_emitter,
-                                "Video URL blocked by security policy (only http and https links are allowed)"
-                                if not is_http_or_https_url(url)
-                                else "Video URL blocked by security policy (private network)",
-                                show_error_message=True
-                            )
-                            return ImageRefusal(
-                                "not an http or https link, which is blocked by security "
-                                "policy"
-                                if not is_http_or_https_url(url)
-                                else "a link to a private network address, which is "
-                                "blocked by security policy",
-                                "unsafe_video_url",
-                                severity="error",
-                                subject=loggable_link(url),
-                            )
-                        else:
-                            await pipe._event_emitter_handler._emit_status(
-                                event_emitter,
-                                StatusMessages.VIDEO_YOUTUBE
-                                if pipe._multimodal_handler._is_youtube_url(url)
-                                else StatusMessages.VIDEO_REMOTE,
-                                done=False
-                            )
+                            else:
+                                await pipe._event_emitter_handler._emit_status(
+                                    event_emitter,
+                                    StatusMessages.VIDEO_YOUTUBE
+                                    if pipe._multimodal_handler._is_youtube_url(url)
+                                    else StatusMessages.VIDEO_REMOTE,
+                                    done=False
+                                )
 
                         return {
                             "type": "video_url",
@@ -2899,6 +3000,8 @@ async def transform_messages_to_input(
                                 if not cleaned:
                                     continue
                                 result["text"] = cleaned
+                                if _text_block_carries_words(result["text"]):
+                                    continue
                         if is_image_block and result:
                             user_images_used += 1
                             turn_images_used += 1
@@ -3384,7 +3487,7 @@ async def transform_messages_to_input(
             admitted, refused_shown = await _gated_tool_pictures_with_address(
                 pipe, shown, max_inline_bytes=max_inline_bytes,
                 allow_insecure=pipe._multimodal_handler._is_insecure_http_allowed,
-                seen=address_verdicts, deadline=address_deadline,
+                seen=address_verdicts, budget=address_budget,
             )
             for url, reason, cause in refused_shown:
                 logger.warning(
