@@ -49,6 +49,15 @@
   own session pool will authorise a request with, and it was the last process-lifetime structure in the pipe still
   holding one.
 
+- **Video generation, a temporary chat** — a video turn that runs the intent classifier no longer puts the browser's
+  socket id into that classifier's task-model request. The classifier builds its own `metadata` rather than going out
+  over the chat path, so the identifier valves never reached it, and it stamped the id unconditionally: on a stock
+  install, with `SEND_CHAT_ID` at its default off, a Temporary Chat's id went out on every video turn that ran the
+  classifier. The stamp now answers to the same two rules as the other two writers — a temporary chat's id is never
+  sent, and `SEND_CHAT_ID` off means no chat id at all — so an admin's toggle now changes what the classifier sends as
+  well. Nothing else about the request moved; the `task` key is unconditional, since it is what makes the call a task
+  call. A saved chat keeps its id on the valve, and so does a `channel:` chat, which is not a temporary chat.
+
 - **Video generation, machine callers** — a video turn that fails *before* OpenRouter answers the submission now
   reaches a caller with no chat as an HTTP error instead of a `200` with a Markdown card in it. A rejected job
   leaves with the status the pipe resolved on the status line and the same number in `error.code` (`502` when a

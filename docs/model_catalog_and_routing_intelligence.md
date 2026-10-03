@@ -127,7 +127,9 @@ Details are in: [Multimodal Intake Pipeline](multimodal_ingestion_pipeline.md).
 
 Tool definitions are built from Open WebUI tool registries and other configured sources, but the pipe only attaches `responses_body.tools` when the selected model supports function calling per catalog-derived feature flags.
 
-A request-parameter gate has the same shape and the same caveat. `include_reasoning` is sent only when the primary model **and every fallback in `models`** list it, because OpenRouter forwards the key to whichever model ends up serving and a provider that does not know the parameter rejects the whole request rather than its own leg of it. An id the catalogue does not know counts as not listing it. The gate cannot live in `reasoning_config.py`, which reads the primary only: `model_fallback` is merged into `models` later, on the request payload, after every reasoning decision has been made.
+A request-parameter gate has the same shape and the same caveat. `include_reasoning` is sent only when the primary model **and every fallback in `models`** list it, because OpenRouter forwards the key to whichever model ends up serving and a provider that does not know the parameter rejects the whole request rather than its own leg of it. An id the catalogue does not know counts as not listing it. The gate cannot live in `reasoning_config.py`, which reads the primary only: `model_fallback` is written into `models` later, on the request payload, after every reasoning decision has been made.
+
+The same chain is what the model restriction valves cover. `MODEL_ID` and the model filters judge the primary, and they judge every id in the fallback array the same way, with the same valves: an entry one of them refuses ends the turn with the `MODEL_RESTRICTED_TEMPLATE` card naming that entry, before any request is sent. The array itself is the pipe's to write — a caller-supplied `models` key is discarded on every leg, and a task request follows the deployment's chain on the task leg too.
 
 See: [Tooling & Integrations](tooling_and_integrations.md).
 
@@ -179,6 +181,8 @@ On Gemini 2.5 the same cap bounds the thinking budget: `budget = min(budget, cap
 ### 4.6 Auto context trimming (context-compression plugin)
 
 When `AUTO_CONTEXT_TRIMMING=True`, the pipe enables OpenRouter’s `context-compression` plugin by appending `{"id": "context-compression"}` to the request’s `plugins` array only when no context-compression plugin is already present.
+
+The same valve owns `truncation` on `/responses` in both states, whatever the request body carried: off pins `truncation: "disabled"`, on sends no `truncation` at all. A caller-supplied `truncation` is overridden either way. The field is on the responses allowlist only, so `/chat/completions` carries no counterpart.
 
 See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md).
 

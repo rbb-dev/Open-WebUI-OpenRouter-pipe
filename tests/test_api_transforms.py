@@ -1939,18 +1939,6 @@ class TestApplyModelFallbackToPayload:
         assert payload["models"] == ["model1", "model2", "model3"]
         assert "model_fallback" not in payload
 
-    def test_existing_models_preserved(self):
-        """Test existing models are preserved and come first."""
-        payload = {
-            "model": "gpt-4",
-            "models": ["existing1", "existing2"],
-            "model_fallback": "new1, new2",
-        }
-        _apply_model_fallback_to_payload(payload)
-        assert payload["models"][0] == "existing1"
-        assert payload["models"][1] == "existing2"
-        assert "new1" in payload["models"]
-
     def test_duplicates_removed(self):
         """Test duplicate models are removed."""
         payload = {

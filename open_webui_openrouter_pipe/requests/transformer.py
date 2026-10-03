@@ -2391,6 +2391,19 @@ async def transform_messages_to_input(
                                     "an audio clip was not valid base64",
                                     "audio_not_base64",
                                 )
+                            declared = link_media_type(_data.strip()) if is_inline_data_url(_data.strip()) else ""
+                            if declared:
+                                audio_format = _map_audio_format(declared)
+                                if audio_format is None:
+                                    pipe.logger.warning(
+                                        "Audio payload rejected: mime type %r.",
+                                        declared,
+                                    )
+                                    return _refuse_audio(
+                                        "an audio clip was in a format the pipe will not rename",
+                                        "audio_unsupported_format",
+                                    )
+                                return _build_audio_block(cleaned, audio_format)
                             hint = _resolved_mime_hint(audio_payload)
                             audio_format = _normalize_audio_format(audio_payload.get("format"), hint)
                             if audio_format is None:

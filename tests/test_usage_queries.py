@@ -372,7 +372,7 @@ async def test_run_usage_query_warms_cold_store(seeded, monkeypatch):
     real_sf = host._session_factory
     host._session_factory = None
     host._db_executor = None
-    usage._model = None
+    usage._retract_model()
     warm_calls = {"n": 0}
 
     def _warm(v: Any, pid: str) -> None:
@@ -400,7 +400,7 @@ async def test_run_usage_query_warms_cold_store(seeded, monkeypatch):
 async def test_run_usage_query_reports_warm_failure_reason(seeded, monkeypatch):
     host, usage = seeded
     host._session_factory = None
-    usage._model = None
+    usage._retract_model()
 
     def _warm(v: Any, pid: str) -> None:
         raise RuntimeError("db locked")

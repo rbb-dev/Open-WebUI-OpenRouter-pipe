@@ -127,6 +127,26 @@ _CATALOG = [
     _FUSION, _LEGACY_ONLY, _GEMINI_25_REASONING_ONLY,
 ]
 
+# label -> (valves, request settings, endpoints the request must reach, in order)
+_PATHS: dict[str, tuple[dict[str, Any], dict[str, Any], list[str]]] = {
+    "responses-stream": ({}, {"stream": True}, ["responses"]),
+    "responses-nonstream": ({}, {"stream": False}, ["responses"]),
+    "chat-completions-stream": ({"DEFAULT_LLM_ENDPOINT": "chat_completions"}, {"stream": True}, ["chat/completions"]),
+    "chat-completions-nonstream": (
+        {"DEFAULT_LLM_ENDPOINT": "chat_completions"}, {"stream": False}, ["chat/completions"],
+    ),
+    "chat-fallback-stream": ({}, {"stream": True, "responses_unsupported": True}, ["responses", "chat/completions"]),
+    "chat-fallback-nonstream": (
+        {}, {"stream": False, "responses_unsupported": True}, ["responses", "chat/completions"],
+    ),
+    "task": ({}, {"stream": False, "task": "title_generation"}, ["responses"]),
+    # A task for a model outside MODEL_ID bypasses the allowlist and skips the task-effort
+    # override, so only the chat-turn preferences shape its body. The allowlist names a
+    # catalog model that no test on this path requests.
+    "task-outside-allowlist": (
+        {"MODEL_ID": _CLAUDE_SONNET_46["id"]}, {"stream": False, "task": "title_generation"}, ["responses"],
+    ),
+}
 _RESPONSES_UNSUPPORTED = {"message": "This model does not support the Responses API", "code": "unsupported_endpoint"}
 def _rejection(error: dict[str, Any]) -> CallbackResult:
     return CallbackResult(
@@ -249,3 +269,156 @@ async def _sent_shown(
             owui_functions.Functions.get_user_valves_by_id_and_user_id = original_row  # type: ignore[method-assign]
     assert sent, f"no request for {model} reached OpenRouter, so this asserts nothing"
     return sent, "".join(shown)
+
+
+# ---------------------------------------------------------------------------
+# T378: a fallback in `models` that cannot take the flag decides for the whole chain
+# ---------------------------------------------------------------------------
+#
+# Live, 2026-09-26, Open WebUI 0.11.4, two rounds of probes against OpenRouter with a
+# fallback served by Azure:
+#
+#   R1  /responses  google/gemini-2.5-flash + models=[openai/gpt-4.1-mini] + include_reasoning:false
+#       -> 400, metadata.provider_name "Azure", metadata.raw verbatim:
+#          {"error": {"message": "Unknown parameter: 'include_reasoning'.",
+#                      "type": "invalid_request_error", "param": "include_reasoning",
+#                      "code": "unknown_parameter"}}
+#   R2  the same request with reasoning:{"effort":"none"} instead -> 200, reasoning_tokens 0
+#   C2  /responses, gpt-4.1-mini directly, include_reasoning:false -> the same 400
+#   F1  /chat/completions, the same flag on the same fallback -> 200
+#   G1  /responses, gemini-2.5-flash with reasoning:{"effort":"none"} -> reasoning_tokens 0
+#
+# So OpenRouter forwards `include_reasoning` to whichever model ends up serving, and a
+# provider that does not know the parameter rejects the whole request -- not just its own
+# leg of it. The pipe gated the flag on the primary only (`reasoning_config.py:47-51`
+# reads `responses_body.model`), which is correct as far as it goes and blind to `models`,
+# which `_apply_model_fallback_to_payload` merges into the payload only at
+# `streaming_core.py:1614`, after every reasoning decision has been made.
+#
+# The fix drops the key once any id in `models` does not list it, and -- when the dropped
+# value was `False` and the primary lists `reasoning` -- carries thinking off as
+# `reasoning: {"effort": "none"}` instead, which R2 and G1 measured as tolerated with
+# zero reasoning tokens.
+
+_GEMINI_25_FLASH_LITE = {
+    "id": "google/gemini-2.5-flash-lite",
+    "name": "Google: Gemini 2.5 Flash Lite",
+    "supported_parameters": [
+        "include_reasoning", "max_tokens", "reasoning", "response_format", "seed", "stop",
+        "structured_outputs", "temperature", "tool_choice", "tools", "top_p",
+    ],
+    "architecture": {"input_modalities": ["text", "image", "audio", "video", "file"], "output_modalities": ["text"]},
+}
+# Synthetic, because no catalogue row has this shape: Gemini-named (so the thinking
+# translation runs and sets the legacy flag) and listing `include_reasoning` but not
+# `reasoning`, which is the only way to ask for the flag to be dropped with nothing put in
+# its place.
+_GEMINI_25_FLAG_ONLY = {
+    "id": "google/gemini-2.5-synthetic-flag-only",
+    "name": "Synthetic: Gemini 2.5, include_reasoning only",
+    "supported_parameters": ["include_reasoning", "max_tokens", "temperature"],
+    "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
+}
+_T378_CATALOG = [
+    _GEMINI_25_FLASH, _GEMINI_25_FLASH_LITE, _GPT_41_MINI, _GEMINI_25_FLASH_IMAGE, _GPT_5_MINI,
+    _GEMINI_25_REASONING_ONLY, _LEGACY_ONLY, _GEMINI_25_FLAG_ONLY,
+]
+
+# The rule now runs on the task transport too, so every path a request can take is here.
+_T378_PATHS = dict(_PATHS)
+
+# (label, primary, fallbacks, extra valves, the flag the POSTed body must carry, the reasoning it must carry)
+_T378_FALLBACK_ARMS = [
+    (
+        "a-fallback-that-cannot-take-the-flag-drops-it",
+        _GEMINI_25_FLASH["id"],
+        [_GPT_41_MINI["id"]],
+        {"REASONING_EFFORT": "none"},
+        None,
+        {"effort": "none"},
+    ),
+    (
+        "a-fallback-that-cannot-take-the-flag-from-an-image-row",
+        _GEMINI_25_FLASH["id"],
+        [_GEMINI_25_FLASH_IMAGE["id"]],
+        {"REASONING_EFFORT": "none"},
+        None,
+        {"effort": "none"},
+    ),
+    (
+        "a-catalogued-fallback-that-lists-neither-parameter-counts-as-cannot-take-it",
+        _GEMINI_25_FLASH["id"],
+        [_LEGACY_ONLY["id"]],
+        {"REASONING_EFFORT": "none"},
+        None,
+        {"effort": "none"},
+    ),
+    (
+        "a-fallback-that-lists-the-flag-keeps-it",
+        _GEMINI_25_FLASH["id"],
+        [_GEMINI_25_FLASH_LITE["id"]],
+        {"REASONING_EFFORT": "none"},
+        False,
+        None,
+    ),
+    (
+        "a-fallback-that-lists-the-flag-kept-alongside-one-that-cannot",
+        _GEMINI_25_FLASH["id"],
+        [_GEMINI_25_FLASH_LITE["id"], _GPT_41_MINI["id"]],
+        {"REASONING_EFFORT": "none"},
+        None,
+        {"effort": "none"},
+    ),
+    (
+        "no-fallback-keeps-it",
+        _GEMINI_25_FLASH["id"],
+        [],
+        {"REASONING_EFFORT": "none"},
+        False,
+        None,
+    ),
+    (
+        "thinking-off-by-a-zero-budget-with-a-fallback-that-cannot-take-the-flag",
+        _GEMINI_25_FLASH["id"],
+        [_GPT_41_MINI["id"]],
+        {"GEMINI_THINKING_BUDGET": 0},
+        None,
+        {"effort": "none"},
+    ),
+    (
+        "a-primary-that-cannot-take-reasoning-drops-it-without-a-substitute",
+        _GEMINI_25_FLAG_ONLY["id"],
+        [_GPT_41_MINI["id"]],
+        {"GEMINI_THINKING_BUDGET": 0},
+        None,
+        None,
+    ),
+    (
+        "a-fallback-listing-reasoning-only-still-takes-the-substitute",
+        _GEMINI_25_FLASH["id"],
+        [_GEMINI_25_REASONING_ONLY["id"]],
+        {"REASONING_EFFORT": "none"},
+        None,
+        {"effort": "none"},
+    ),
+]
+
+# Every catalogued id an arm above sends as a fallback. The gate judges each of them with the
+# same valves as the primary (`requests/orchestrator.py`, before the `if task_mode:` split), so
+# the `task-outside-allowlist` copy has to name them or every arm on it is refused before the
+# rule under test can run. `_PATHS` keeps its own single-model allowlist, because the rows that
+# read it are about the primary bypassing the list, not about the chain; only this copy widens.
+# Derived from the arms so an arm cannot be added without its ids being named here.
+_T378_FALLBACK_IDS = list(
+    dict.fromkeys(fallback for _l, _primary, fallbacks, *_ in _T378_FALLBACK_ARMS for fallback in fallbacks)
+)
+assert all(fallback in {row["id"] for row in _T378_CATALOG} for fallback in _T378_FALLBACK_IDS), (
+    f"a T378 arm names an id the catalogue does not know: "
+    f"{[f for f in _T378_FALLBACK_IDS if f not in {row['id'] for row in _T378_CATALOG}]}"
+)
+_T378_TASK_ALLOWLIST = ", ".join([_CLAUDE_SONNET_46["id"], *_T378_FALLBACK_IDS])
+_T378_PATHS["task-outside-allowlist"] = (
+    {"MODEL_ID": _T378_TASK_ALLOWLIST}, *_PATHS["task-outside-allowlist"][1:],
+)
+# The primary stays outside the list, or the path stops being the path it is named for.
+assert _GEMINI_25_FLASH["id"] not in _T378_TASK_ALLOWLIST.split(", ")

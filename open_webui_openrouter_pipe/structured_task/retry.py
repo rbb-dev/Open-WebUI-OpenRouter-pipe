@@ -8,8 +8,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
+from itertools import islice
 from typing import Any
 
 from ..core.errors import OpenRouterAPIError
@@ -31,6 +33,7 @@ _warned_task_candidate: dict[str, float] = {}
 _TASK_CANDIDATE_WARN_COOLDOWN_S = 3600.0
 
 _TASK_MODEL_FAULT_PREFIX = "task_model_"
+_TAIL_NON_WHITESPACE = re.compile(r"\S")
 _REPAIR_OUTPUT_CHARS = 200
 _REPAIR_TEMPERATURE = 0.2
 _NO_CHOICES_MARKER = "[the model returned no choices]"
@@ -116,6 +119,33 @@ def _no_choices_reason(response: Any) -> str:
     return _NO_CHOICES_MARKER
 
 
+def _excerpt_past_the_bound(text: str, buf: list[str]) -> str:
+    kept = 0
+    for position, ch in enumerate(text):
+        if ch != "\n" and not ch.isprintable():
+            continue
+        if kept == 0 and ch.isspace():
+            continue
+        kept += 1
+        if kept <= _REPAIR_OUTPUT_CHARS:
+            continue
+        if not ch.isspace():
+            return "".join(buf)[:_REPAIR_OUTPUT_CHARS]
+        found = _TAIL_NON_WHITESPACE.search(text, position + 1)
+        if found is None:
+            return "".join(buf).rstrip()[:_REPAIR_OUTPUT_CHARS]
+        if found.group().isprintable():
+            return "".join(buf)[:_REPAIR_OUTPUT_CHARS]
+        for later in islice(text, found.start(), None):
+            if later != "\n" and not later.isprintable():
+                continue
+            if later.isspace():
+                continue
+            return "".join(buf)[:_REPAIR_OUTPUT_CHARS]
+        return "".join(buf).rstrip()[:_REPAIR_OUTPUT_CHARS]
+    return "".join(buf).rstrip()[:_REPAIR_OUTPUT_CHARS]
+
+
 def _sanitised_excerpt(text: str) -> str:
     buf: list[str] = []
     for ch in text:
@@ -124,8 +154,10 @@ def _sanitised_excerpt(text: str) -> str:
         if not buf and ch.isspace():
             continue
         buf.append(ch)
-        if len(buf) > _REPAIR_OUTPUT_CHARS and not ch.isspace():
-            break
+        if len(buf) > _REPAIR_OUTPUT_CHARS:
+            if not ch.isspace():
+                return "".join(buf)[:_REPAIR_OUTPUT_CHARS]
+            return _excerpt_past_the_bound(text, buf)
     return "".join(buf).strip()[:_REPAIR_OUTPUT_CHARS]
 
 

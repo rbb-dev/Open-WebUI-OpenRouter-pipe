@@ -21,6 +21,17 @@ from open_webui_openrouter_pipe import EncryptedStr
 from open_webui_openrouter_pipe.core.costs import maybe_dump_costs_snapshot
 
 MODEL = "openai/gpt-5.4"
+TEMPORARY = [
+    pytest.param("temporary:Xk3pQ9", "Xk3pQ9", id="temporary"),
+    pytest.param("local:Lm7tR2", "Lm7tR2", id="legacy-temporary"),
+]
+KEPT = [
+    pytest.param("c1", "Ab12Cd", id="saved"),
+    pytest.param("channel:ch-1", "Ef34Gh", id="channel"),
+]
+CHATS = [pytest.param(*row.values, True, id=row.id) for row in TEMPORARY] + [
+    pytest.param(*row.values, False, id=row.id) for row in KEPT
+]
 USAGE = {"input_tokens": 7, "output_tokens": 3, "cost": 0.25}
 
 

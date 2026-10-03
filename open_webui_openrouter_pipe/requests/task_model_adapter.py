@@ -16,6 +16,7 @@ import aiohttp
 from ..api.transforms import (
     _apply_disable_native_websearch_to_payload,
     _apply_identifier_valves_to_payload,
+    _apply_model_fallback_to_payload,
     _drop_include_reasoning_for_unsupported_fallbacks,
     _filter_openrouter_request,
     _strip_disable_model_settings_params,
@@ -190,6 +191,7 @@ class TaskModelAdapter:
             owui_user=user_obj,
             logger=self.logger,
         )
+        _apply_model_fallback_to_payload(task_body, logger=self.logger)
         _apply_disable_native_websearch_to_payload(task_body, logger=self.logger)
         task_body = _filter_openrouter_request(task_body)
         _drop_include_reasoning_for_unsupported_fallbacks(task_body, self.logger)

@@ -1467,9 +1467,10 @@ class OwuiFileGateway:
             if user_obj:
                 self.logger.debug("Storage upload skipped: request context missing.")
             return None, None
-        if user_obj is not None:
+        if user_obj is not None and not isinstance(user_obj, dict):
             return request, user_obj
-
+        if isinstance(user_obj, dict):
+            self.logger.debug("Storage upload: the turn's user is a mapping, not a user object; the storage account answers instead.")
         fallback_user = await self.ensure_storage_user()
         if fallback_user is None:
             return None, None

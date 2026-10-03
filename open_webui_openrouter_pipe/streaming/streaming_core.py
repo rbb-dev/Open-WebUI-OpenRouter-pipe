@@ -249,6 +249,25 @@ except Exception:
     )
     Chats = None  # type: ignore
 
+
+async def _chats_message(chat_id: Any, message_id: Any) -> dict[str, Any] | None:
+    if Chats is None or not is_linkable_chat(chat_id):
+        return None
+    return await Chats.get_message_by_id_and_message_id(str(chat_id), str(message_id))
+
+
+async def _chats_upsert(chat_id: Any, message_id: Any, payload: dict[str, Any]) -> None:
+    if Chats is None or not is_linkable_chat(chat_id):
+        return
+    await Chats.upsert_message_to_chat_by_id_and_message_id(str(chat_id), str(message_id), payload)
+
+
+async def _chats_chat(chat_id: Any) -> Any:
+    if Chats is None or not is_linkable_chat(chat_id):
+        return None
+    return await Chats.get_chat_by_id(str(chat_id))
+
+
 try:
     from open_webui.utils.middleware import (
         get_citation_source_from_tool_result,  # type: ignore[import-not-found]
@@ -846,11 +865,9 @@ class StreamingHandler:
                 _card = build_fusion_embed_html(fusion_state, _fusion_model_names())
                 fusion_embed_emitted = True
                 _set = [_card]
-                if _prior > 0 and chat_id and message_id and Chats is not None:
+                if _prior > 0 and chat_id and message_id:
                     try:
-                        _existing = await Chats.get_message_by_id_and_message_id(
-                            str(chat_id), str(message_id)
-                        )
+                        _existing = await _chats_message(chat_id, message_id)
                         _raw = (_existing or {}).get("embeds")
                         if isinstance(_raw, list):
                             _set = [
@@ -1135,11 +1152,9 @@ class StreamingHandler:
                 seeded_output_items = []
                 if open_webui_keeps_stored_output:
                     return seeded_output_items
-                if chat_id and message_id and Chats is not None:
+                if chat_id and message_id:
                     try:
-                        stored = await Chats.get_message_by_id_and_message_id(
-                            str(chat_id), str(message_id)
-                        )
+                        stored = await _chats_message(chat_id, message_id)
                     except Exception:
                         self.logger.debug(
                             "Could not read seeded output items (chat_id=%s message_id=%s)",
@@ -4338,9 +4353,9 @@ class StreamingHandler:
                     await self._pipe._event_emitter_handler._emit_notification(
                         event_emitter, limit_note, level="warning"
                     )
-                    if (not was_cancelled) and chat_id and message_id and Chats is not None:
+                    if (not was_cancelled) and chat_id and message_id:
                         with contextlib.suppress(Exception):
-                            await Chats.upsert_message_to_chat_by_id_and_message_id(
+                            await _chats_upsert(
                                 chat_id, message_id, {"error": {"content": limit_note}}
                             )
 
@@ -4693,7 +4708,7 @@ class StreamingHandler:
 
             if (
                 fusion_armed and fusion_state is not None and fusion_state.fusion_index is not None
-                and fusion_state.events and Chats is not None
+                and fusion_state.events
                 and not was_cancelled and not error_occurred
             ):
                 try:
@@ -4705,7 +4720,7 @@ class StreamingHandler:
 
                         async def _persist_fusion_snapshot() -> None:
                             _kept: list[object] = []
-                            _existing = await Chats.get_message_by_id_and_message_id(
+                            _existing = await _chats_message(
                                 resolved_chat_id, resolved_message_id
                             )
                             _raw = (_existing or {}).get("embeds")
@@ -4718,7 +4733,7 @@ class StreamingHandler:
                             _payload: dict[str, object] = {"embeds": _kept}
                             if _content:
                                 _payload["content"] = _content
-                            await Chats.upsert_message_to_chat_by_id_and_message_id(
+                            await _chats_upsert(
                                 resolved_chat_id, resolved_message_id, _payload
                             )
 
@@ -4887,10 +4902,10 @@ class StreamingHandler:
                 if turn_values[field]
             }
             if (not was_cancelled) and (not handed_back_for_retry) and chat_id and message_id \
-                    and payload and Chats is not None and is_linkable_chat(chat_id):
+                    and payload and is_linkable_chat(chat_id):
                 stored_message: dict[str, Any] = {}
                 try:
-                    chat_row = await Chats.get_chat_by_id(chat_id)
+                    chat_row = await _chats_chat(chat_id)
                     stored_message = (
                         (chat_row.chat or {}).get("history", {}).get("messages", {}).get(message_id, {})
                         if chat_row is not None and isinstance(chat_row.chat, dict)
@@ -4917,9 +4932,7 @@ class StreamingHandler:
                             stored_message.get(field), payload[field], key_fn=key_fn
                         )
                 try:
-                    await Chats.upsert_message_to_chat_by_id_and_message_id(
-                        chat_id, message_id, payload
-                    )
+                    await _chats_upsert(chat_id, message_id, payload)
                 except Exception as exc:
                     self.logger.warning(
                         "Failed to persist %s for chat_id=%s message_id=%s: %s",

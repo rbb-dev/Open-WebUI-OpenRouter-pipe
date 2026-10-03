@@ -263,7 +263,6 @@ class PipeDashboardPlugin(PluginBase):
         self._auto_update_task: asyncio.Task[None] | None = None
         self._sweep_task: asyncio.Task[None] | None = None
         self.update_service: Any = None
-        self._stored_usage_row: dict[str, Any] | None = None
         self._usage_store = UsageStore()
         self._tracker = SessionTracker(pricing_fn=_registry_pricing, name_fn=_registry_model_name)
         self._tracker.on_finalize = self._persist_usage_row
@@ -352,11 +351,6 @@ class PipeDashboardPlugin(PluginBase):
         while True:
             try:
                 await asyncio.sleep(_ST_SWEEP_INTERVAL + random.uniform(0.0, _ST_SWEEP_JITTER_S))
-                try:
-                    self._stored_usage_row = await self._read_stored_usage_row()
-                except Exception:
-                    logger.debug("usage valve read failed; this sweep records without it", exc_info=True)
-                    self._stored_usage_row = None
                 self._tracker.sweep()
             except asyncio.CancelledError:
                 return
@@ -670,39 +664,10 @@ class PipeDashboardPlugin(PluginBase):
             pass
 
     async def on_generation_complete(self, usage: Any, status: str, **kwargs: Any) -> None:
-        if self._tracker.has(str(kwargs.get("request_id") or "")):
-            try:
-                self._stored_usage_row = await self._read_stored_usage_row()
-            except Exception:
-                logger.debug("usage valve read failed; this turn finalizes without it", exc_info=True)
-                self._stored_usage_row = None
         try:
             self._tracker.finalize(str(kwargs.get("request_id") or ""), usage, str(status))
         except Exception:
             logging.getLogger(__name__).debug("session finalize failed", exc_info=True)
-
-    async def _read_stored_usage_row(self) -> dict[str, Any] | None:
-        svc = getattr(self, "update_service", None)
-        if svc is None:
-            return {
-                "PIPE_DASHBOARD_USAGE_COLLECT": bool(
-                    getattr(self.ctx.valves, "PIPE_DASHBOARD_USAGE_COLLECT", False)
-                ),
-                "PIPE_DASHBOARD_USAGE_RETENTION_DAYS": _as_int(
-                    getattr(self.ctx.valves, "PIPE_DASHBOARD_USAGE_RETENTION_DAYS", None), 30
-                ),
-            }
-        try:
-            row, read_ok = await svc._row_valves_checked()
-        except Exception:
-            logger.warning(
-                "pipe_dashboard: cannot read the persisted usage valves; the usage writer "
-                "is treating collection as off and the purge as its default window rather "
-                "than falling back to the in-memory copy",
-                exc_info=True,
-            )
-            return None
-        return row if read_ok else None
 
     def _persist_usage_row(self, entry: dict[str, Any]) -> None:
         try:
@@ -717,12 +682,6 @@ class PipeDashboardPlugin(PluginBase):
             self._usage_store.record(self._tracker.db_row(entry))
         except Exception:
             logger.debug("usage persist failed", exc_info=True)
-
-    def _usage_collect_on(self) -> bool:
-        row = getattr(self, "_stored_usage_row", None)
-        if row is None:
-            return False
-        return bool(row.get("PIPE_DASHBOARD_USAGE_COLLECT", False))
 
     async def _retention_days(self) -> int:
         from .actions import _update_service_of

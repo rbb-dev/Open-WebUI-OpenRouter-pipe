@@ -137,6 +137,7 @@ from .core.config import (
     EncryptedStr,
     UserValves,
     Valves,
+    _is_a_legal_referer_value,
     _select_openrouter_http_referer,
     parse_user_valves,
 )
@@ -157,7 +158,6 @@ from .core.errors import (
     channel_safe_values,
 )
 from .core.logging_system import SessionLogger, resolve_level
-from .core.url_scheme import is_http_or_https_url
 from .core.utils import (
     CONTINUED_REPLY,
     _await_if_needed,
@@ -2337,7 +2337,7 @@ class Pipe:
             http_referer_override = (valves.HTTP_REFERER_OVERRIDE or "").strip()
             referer_override_invalid = bool(
                 http_referer_override
-                and not is_http_or_https_url(http_referer_override)
+                and not _is_a_legal_referer_value(http_referer_override)
             )
             if referer_override_invalid and not wants_stream:
                 await self._event_emitter_handler._emit_notification(

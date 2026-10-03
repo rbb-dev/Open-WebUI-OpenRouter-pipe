@@ -1185,7 +1185,11 @@ class Valves(BaseModel):
             "is used as typed. "
             "When empty, the pipe uses its default project URL. "
             "A value that is still not a full http(s) URL after trimming is ignored, a "
-            "warning is shown, and the default is used."
+            "warning is shown, and the default is used. "
+            "A carriage return, newline or NUL inside the value counts as part of that: "
+            "such a value is ignored, warned about in the same words, and the default is "
+            "used, exactly as one that is not a full URL is. Only whitespace around the "
+            "value is trimmed; nothing inside it is rewritten."
         ),
     )
     HTTP_CONNECT_TIMEOUT_SECONDS: int = Field(
@@ -1280,15 +1284,15 @@ class Valves(BaseModel):
     )
     FALLBACK_STORAGE_EMAIL: str = Field(
         default=(os.getenv("OPENROUTER_STORAGE_USER_EMAIL") or "openrouter-pipe@system.local"),
-        description="Owner email for the pictures a model generates in a request with no signed-in user (e.g., API automations). An account the pipe auto-creates for this is created with no linked identity, so it is not enumerated in Open WebUI's SCIM listing; with `OAUTH_MERGE_ACCOUNTS_BY_EMAIL` enabled, a login whose IdP asserts this address adopts the account.",
+        description="Owner email for the files the pipe stores in a request whose user is not a user object: the pictures a model generates with no signed-in user behind them (e.g., API automations), and a file a tool returned when the turn's user is not one either. An account the pipe auto-creates for this is created with no linked identity, so it is not enumerated in Open WebUI's SCIM listing; with `OAUTH_MERGE_ACCOUNTS_BY_EMAIL` enabled, a login whose IdP asserts this address adopts the account.",
     )
     FALLBACK_STORAGE_NAME: str = Field(
         default=(os.getenv("OPENROUTER_STORAGE_USER_NAME") or "OpenRouter Pipe Storage"),
-        description="Display name for the fallback storage owner.",
+        description="Display name for the fallback storage owner, which now also owns a tool's returned file on a turn whose user is not a user object.",
     )
     FALLBACK_STORAGE_ROLE: str = Field(
         default=(os.getenv("OPENROUTER_STORAGE_USER_ROLE") or "pending"),
-        description="Role assigned to the fallback storage account when auto-created. Defaults to the low-privilege 'pending' role; override if your deployment needs a custom service role.",
+        description="Role assigned to the fallback storage account when auto-created, on the picture path and on the tool-file path alike. Defaults to the low-privilege 'pending' role; override if your deployment needs a custom service role.",
     )
     ENABLE_SSRF_PROTECTION: bool = Field(
         default=True,
@@ -1363,7 +1367,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "This list governs every model the pipe calls, including each Fusion panel member, "
             "the Fusion judge and the final answer, and including preset members: one this list "
             "excludes is a failed panel member carrying the reason, never silently substituted "
-            "or dropped. A `~` pin is part of a model's identity for this list, so "
+            "or dropped. It governs every model a request can be served by as well, including every "
+            "id in the deployment's model_fallback chain: an entry this list excludes refuses the whole "
+            "turn, on the card that names that entry. A `~` pin is part of a model's identity for this list, so "
             "`~anthropic/claude-opus-latest` must be allowlisted with the tilde; written without "
             "it, the entry matches nothing in the catalog. "
             "An '@preset/slug' entry resolves to the model before the '@'."
@@ -1417,7 +1423,8 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "Filter models based on OpenRouter pricing totals. "
             "'all' disables filtering. "
             "'only' restricts to models whose summed pricing fields equal 0. "
-            "'exclude' hides those free models."
+            "'exclude' hides those free models. "
+            "A model named as a fallback in the deployment's model_fallback chain is filtered and refused like the primary."
         ),
     )
     TOOL_CALLING_FILTER: Literal["all", "only", "exclude"] = Field(
@@ -1427,7 +1434,8 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "Filter models based on tool-calling capability (supported_parameters includes 'tools' or 'tool_choice'). "
             "'all' disables filtering. "
             "'only' restricts to tool-capable models. "
-            "'exclude' hides tool-capable models."
+            "'exclude' hides tool-capable models. "
+            "A model named as a fallback in the deployment's model_fallback chain is filtered and refused like the primary."
         ),
     )
     ZDR_MODELS_ONLY: bool = Field(
@@ -1435,7 +1443,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         title="Show only ZDR models",
         description=(
             "When enabled, hide models that are not ZDR-capable (based on OpenRouter's /endpoints/zdr list). "
-            "A hidden model is also refused if requested directly. It never sends provider.zdr=true -- "
+            "A hidden model is also refused if requested directly, and a model named as a fallback in the deployment's "
+            "model_fallback chain is refused on the same grounds, so a caller cannot route around this by naming one. "
+            "It never sends provider.zdr=true -- "
             "use Enforce ZDR routing for that. Filtering is skipped only if the ZDR list has never been read; "
             "if a later read fails, the last list read successfully stays in force and filtering carries on from it. "
             "Video models are filtered like any other model. The list is per credential: the pipe re-reads whenever the credential that produced the list in force is not the credential in hand, so a different account sees no list rather than another's, and is refused while Enforce ZDR routing is on until its own read succeeds."
@@ -1563,7 +1573,10 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         description=(
             "When enabled, automatically enables OpenRouter's `context-compression` plugin so long prompts "
             "are trimmed from the middle instead of failing with context errors. Disable if your deployment "
-            "manages context compression manually."
+            "manages context compression manually. This setting also decides the request's `truncation` field "
+            "on `/responses`: with it disabled the pipe pins `truncation: \"disabled\"`, and with it enabled the "
+            "body carries the plugin and no `truncation` at all. A `truncation` the request itself carried is "
+            "overridden in both states, so the field is never the caller's to set."
         ),
     )
     REASONING_EFFORT: Literal["none", "minimal", "low", "medium", "high", "xhigh"] = Field(
@@ -2189,7 +2202,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     MODEL_RESTRICTED_TEMPLATE: str = Field(
         default=DEFAULT_MODEL_RESTRICTED_TEMPLATE,
         description=(
-            "Markdown template emitted when the requested model is blocked by MODEL_ID and/or model filter valves. "
+            "Markdown template emitted when a model is blocked by MODEL_ID and/or model filter valves. "
+            "{normalized_model_id} may name a fallback entry rather than the primary, so the card can refuse an id the "
+            "caller never typed as the model to serve the turn. "
             "Available variables: {requested_model}, {normalized_model_id}, {restriction_reasons}, "
             "{model_id_filter}, {free_model_filter}, {tool_calling_filter}, plus standard context variables "
             "like {error_id}, {timestamp}, {session_id}, {user_id}, {support_email}, and {support_url}."
@@ -2839,11 +2854,17 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "receives anything, and a chat that refuses that one is refused the same way. "
             "That includes a warning with no "
             "words to give, and one that could not be rendered, so an empty notice below "
-            "stops the upload too. Switch it off if "
+            "stops the upload too. It also includes the two chats that cannot be warned at "
+            "all: a channel conversation, and a request Open WebUI runs on its own behalf "
+            "such as a sub-agent's. Neither shows notices, so the request fails on both "
+            "rather than publishing unannounced, and the error says which one it was and "
+            "where to send the attachment instead. Switch it off if "
             "you have told your users another way. Either way the finished message keeps a "
             "written record of what was uploaded and where, and where a host's answer left "
             "it possible that it stored the file anyway, that record says the file may have "
-            "been uploaded rather than that it was; only this advance warning is optional."
+            "been uploaded rather than that it was; only this advance warning is optional. "
+            "The warning is shown live to a person watching the chat, and that record is "
+            "kept in the reply for one who is not."
         ),
     )
     FILE_HOST_NOTICE: str = Field(
@@ -3307,11 +3328,17 @@ def parse_user_valves(
     return model(), sorted(set(rejected) | renamed)
 
 
+def _is_a_legal_referer_value(value: str) -> bool:
+    return is_http_or_https_url(value) and not (
+        "\r" in value or "\n" in value or "\x00" in value
+    )
+
+
 def _select_openrouter_http_referer(valves: Any | None) -> str:
     """Select HTTP referer for OpenRouter requests, with optional valve override."""
     override = valves.HTTP_REFERER_OVERRIDE if valves else ""
     candidate = override.strip() if isinstance(override, str) else ""
-    if candidate and is_http_or_https_url(candidate):
+    if candidate and _is_a_legal_referer_value(candidate):
         return candidate
     return _OPENROUTER_REFERER
 

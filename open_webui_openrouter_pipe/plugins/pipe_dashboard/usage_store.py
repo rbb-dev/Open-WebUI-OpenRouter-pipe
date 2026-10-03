@@ -20,7 +20,7 @@ import random
 import threading
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, NamedTuple
 
 from ...core.utils import _stable_crockford_id
 from ...core.warn_latch import warn_level
@@ -136,15 +136,23 @@ def _declared_lengths() -> dict[str, int | None]:
     return out
 
 
+class _Published(NamedTuple):
+    store: Any = None
+    model: Any = None
+    table_name: str | None = None
+    signature: tuple[Any, ...] | None = None
+    model_signature: tuple[Any, ...] | None = None
+
+
+_EMPTY_PUBLISHED = _Published()
+
+
 class UsageStore:
     """Per-worker usage writer mirroring the session-log manager thread pattern."""
 
     def __init__(self, queue_max: int = _US_QUEUE_MAX) -> None:
-        self._store: Any = None
-        self._model: Any = None
-        self._table_name: str | None = None
-        self._signature: tuple[Any, ...] | None = None
-        self._model_signature: tuple[Any, ...] | None = None
+        self._published = _EMPTY_PUBLISHED
+        self._ensure_lock = threading.Lock()
         self._reconcile_failed: tuple[Any, ...] | None = None
         self._reconcile_failed_at = 0.0
         self._held: list[dict[str, Any]] = []
@@ -161,6 +169,32 @@ class UsageStore:
         self._purge_task: asyncio.Task | None = None
         self._retention_days_fn: Callable[[], int | Awaitable[int]] | None = None
         self._table_absent: tuple[Any, ...] | None = None
+
+    @property
+    def _store(self) -> Any:
+        return self._published.store
+
+    @property
+    def _model(self) -> Any:
+        return self._published.model
+
+    @property
+    def _table_name(self) -> str | None:
+        return self._published.table_name
+
+    @property
+    def _signature(self) -> tuple[Any, ...] | None:
+        return self._published.signature
+
+    @property
+    def _model_signature(self) -> tuple[Any, ...] | None:
+        return self._published.model_signature
+
+    def _publish(self, published: _Published) -> None:
+        self._published = published
+
+    def _retract_model(self) -> None:
+        self._publish(self._published._replace(model=None, model_signature=None))
 
     @property
     def enabled(self) -> bool:
@@ -288,13 +322,21 @@ class UsageStore:
 
     def ensure(self, store: Any) -> bool:
         """Build the usage model and create its table; idempotent, fail-safe."""
+        with self._ensure_lock:
+            return self._ensure_locked(store)
+
+    def _ensure_locked(self, store: Any) -> bool:
         try:
             engine = getattr(store, "_engine", None)
             session_factory = getattr(store, "_session_factory", None)
             if engine is None or session_factory is None:
                 return False
             suffix = store.table_suffix()
-            signature = (id(engine), suffix)
+        except Exception:
+            logger.debug("usage store ensure failed", exc_info=True)
+            return False
+        signature = (id(engine), suffix)
+        try:
             if self._signature == signature:
                 if self._model is not None and self._model_signature == signature:
                     return True
@@ -327,9 +369,15 @@ class UsageStore:
             self._declared_lengths = _declared_lengths()
             self._effective_widths = dict(self._declared_lengths)
             if not store._create_table_with_race_guard(model.__table__, engine, table_name):
-                self._model = None
-                self._table_name = None
-                self._signature = signature
+                self._publish(
+                    _Published(
+                        store=self._published.store,
+                        model=None,
+                        table_name=None,
+                        signature=signature,
+                        model_signature=self._published.model_signature,
+                    )
+                )
                 self._arm_reconcile_backoff(signature)
                 _level = warn_level(
                     _warned_usage_table_create, table_name, cooldown_s=_US_RECONCILE_RETRY_S
@@ -342,24 +390,40 @@ class UsageStore:
                 )
                 return False
             if not self._reconcile_schema(model.__table__, engine, table_name, schema_name, store):
-                self._store = None
-                self._model = None
-                self._table_name = None
-                self._signature = signature
+                self._publish(
+                    _Published(
+                        store=None,
+                        model=None,
+                        table_name=None,
+                        signature=signature,
+                        model_signature=self._published.model_signature,
+                    )
+                )
                 self._arm_reconcile_backoff(signature)
                 return False
-            self._store = store
-            self._model = model
-            self._table_name = table_name
-            self._signature = signature
-            self._model_signature = signature
+            self._publish(
+                _Published(
+                    store=store,
+                    model=model,
+                    table_name=table_name,
+                    signature=signature,
+                    model_signature=signature,
+                )
+            )
             self._reconcile_failed = None
             self._reconcile_failed_at = 0.0
             return True
         except Exception:
-            self._store = None
-            self._model = None
-            self._table_name = None
+            self._publish(
+                _Published(
+                    store=None,
+                    model=None,
+                    table_name=None,
+                    signature=signature,
+                    model_signature=self._published.model_signature,
+                )
+            )
+            self._arm_reconcile_backoff(signature)
             logger.debug("usage store ensure failed", exc_info=True)
             return False
 
@@ -848,14 +912,16 @@ class UsageStore:
             session.commit()
 
     def _purge_sync(self, cutoff: datetime.datetime) -> None:
-        store = self._store
-        model = self._model
-        if store is None or model is None or self._table_name is None:
+        published = self._published
+        store = published.store
+        model = published.model
+        table_name = published.table_name
+        if store is None or model is None or table_name is None:
             return
         session_factory = getattr(store, "_session_factory", None)
         if session_factory is None:
             return
-        targets: list[tuple[str, Any]] = [(self._table_name, model)]
+        targets: list[tuple[str, Any]] = [(table_name, model)]
         targets.extend((name, None) for name in self._retired_usage_table_names(store))
         item_model = getattr(store, "_item_model", None)
         for name, target_model in targets:

@@ -111,7 +111,7 @@ class Filter:
         )
         DIRECT_AUDIO_MIME_ALLOWLIST: str = Field(
             default="audio/*",
-            description="Comma-separated MIME allowlist for diverted direct audio files.",
+            description="Comma-separated MIME allowlist for diverted direct audio files. Non-allowlisted types are fail-open: the item stays on the normal OWUI RAG/Knowledge path instead.",
         )
         DIRECT_VIDEO_MIME_ALLOWLIST: str = Field(
             default="video/mp4,video/mpeg,video/quicktime,video/webm",

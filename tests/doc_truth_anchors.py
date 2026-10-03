@@ -30,6 +30,12 @@ from functools import cache
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
+_CONFIG_SOURCE = _ROOT / "open_webui_openrouter_pipe" / "core" / "config.py"
+_CONFIG_META_SOURCE = (
+    _ROOT / "open_webui_openrouter_pipe" / "plugins" / "pipe_dashboard" / "config_meta.py"
+)
+
+
 def doc(name: str) -> str:
     """A docs/ file's text, or an AssertionError naming the file that went missing."""
     path = _ROOT / "docs" / name
@@ -76,3 +82,95 @@ def between(text: str, anchor: str, *, what: str) -> str:
     )
     head = text.index(anchor)
     return text[head : head + len(text[head:].split("\n\n", 1)[0])].strip()
+
+
+def _fold(node: ast.expr, constants: dict[str, str]) -> str | None:
+    """The string a node evaluates to, or None when it is not a constant expression."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _fold(node.left, constants), _fold(node.right, constants)
+        if left is None or right is None:
+            return None
+        return left + right
+    if isinstance(node, ast.Name):
+        return constants.get(node.id)
+    return None
+
+
+@cache
+def _parsed(path: Path) -> tuple[ast.Module, dict[str, str]]:
+    """A module's tree, and its own top-level string constants, folded in source order."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    constants: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            target, value = node.target, node.value
+        else:
+            continue
+        if not isinstance(target, ast.Name):
+            continue
+        folded = _fold(value, constants)
+        if folded is not None:
+            constants[target.id] = folded
+    return tree, constants
+
+
+def valve_field_description(name: str) -> str:
+    """The `description=` a Config-tab valve carries, as the string the tab shows.
+
+    Located by the `Valves` annotation and read off the `Field(...)` call, so the
+    answer does not move when the arguments are reordered, the value is re-wrapped
+    across source lines, or a sentence is hoisted into a module constant.
+    """
+    path = _CONFIG_SOURCE
+    assert path.is_file(), f"core/config.py is gone; the test reading {name} is stale"
+    tree, constants = _parsed(path)
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)):
+            continue
+        if node.target.id != name or not isinstance(node.value, ast.Call):
+            continue
+        if getattr(node.value.func, "id", "") != "Field":
+            continue
+        for keyword in node.value.keywords:
+            if keyword.arg != "description":
+                continue
+            folded = _fold(keyword.value, constants)
+            assert folded is not None, (
+                f"{name}'s Field description is not a constant string expression, so this "
+                "reader cannot say what the Config tab shows for it"
+            )
+            return folded
+    raise AssertionError(f"{name} has no Field(...) description in core/config.py")
+
+
+def config_meta_detail(name: str) -> str:
+    """The `detail=` a dashboard `CONFIG_META` row carries, as the string the row shows.
+
+    The key is matched as a dict key rather than as source text, so the row's own
+    layout is irrelevant and a capture can never run on into the entry after it.
+    """
+    path = _CONFIG_META_SOURCE
+    assert path.is_file(), f"config_meta.py is gone; the test reading {name} is stale"
+    tree, constants = _parsed(path)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        for key, value in zip(node.keys, node.values):
+            if not (isinstance(key, ast.Constant) and key.value == name):
+                continue
+            if not isinstance(value, ast.Dict):
+                continue
+            for inner_key, inner in zip(value.keys, value.values):
+                if not (isinstance(inner_key, ast.Constant) and inner_key.value == "detail"):
+                    continue
+                folded = _fold(inner, constants)
+                assert folded is not None, (
+                    f"{name}'s CONFIG_META detail is not a constant string expression, so "
+                    "this reader cannot say what the dashboard row shows for it"
+                )
+                return folded
+    raise AssertionError(f"{name} has no CONFIG_META detail in config_meta.py")

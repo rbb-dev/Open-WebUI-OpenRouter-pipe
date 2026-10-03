@@ -2153,9 +2153,14 @@ What does NOT survive:
   spelling of `temporary:`; `channel:` is an ordinary channel invocation, not an edge case.
   They complete in-process but aren't recoverable across process
   restarts. What is lost is the chat's own message history, and nothing
-  else: a generated image or video in a `channel:` conversation **is**
+  else: a generated video in a `channel:` conversation **is**
   attached to that channel, as a `channel_file` row, so the channel's
-  members can open it. The second consequence is that on those three
+  members can open it, and so is a generated image on the direct image
+  route. A generated image on the **chat route** is the exception and stays
+  inline in the message, which is Open WebUI's own default for an inline
+  image (`ENABLE_CHAT_RESPONSE_BASE64_IMAGE_URL_CONVERSION` off), so the
+  channel's members still see it in the conversation rather than as a
+  separate file. The second consequence is that on those three
   shapes the in-process handles — the active-task entry and the message
   lock — are the *only* duplicate-bill protection there is, which is why
   they are held until the owner's answer has been emitted.
@@ -2538,6 +2543,13 @@ upload does not happen — when it is empty, when the chat will not carry
 it, and when the operator's own `FILE_HOST_NOTICE` template holds a
 placeholder the pipe cannot fill. That last one is named in the server log
 by the placeholder itself, so a typo is a repair rather than a mystery.
+Two chats cannot be warned at all, and both refuse the request rather than
+publishing quietly: a `channel:` conversation, which Open WebUI hands an
+emitter with no `notification` branch, and a request it runs on its own
+behalf such as a sub-agent's, whose emitter returns before the socket. The
+error names which of the two it was and where to send the attachment
+instead. The line itself is shown live to a person watching the chat; the
+written record the finished message keeps is what one who is not gets.
 Read access inside Open WebUI is granted by sharing a chat, a channel, a
 knowledge base or a workspace model; publication is not, so a reference
 the requester can open but does not own is withheld with a note.

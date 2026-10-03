@@ -531,6 +531,10 @@ _IN_BAND_STATUS_BY_NATIVE_CODE = {
 
 _CONTENT_DECISION_MARKERS = ("patterns", "reasons", "flagged_input")
 
+_CREDENTIAL_NAMING_KINDS = frozenset(
+    name for name, status in _IN_BAND_STATUS_BY_ERROR_TYPE.items() if status == 401
+)
+
 _CREDENTIAL_LINES = frozenset({401, 403})
 
 
@@ -570,6 +574,8 @@ def _resolved_error_status(
     if from_wire and _is_content_decision(metadata):
         return http_status
     kind = error_type.strip().lower() if isinstance(error_type, str) else ""
+    if not from_wire and _is_content_decision(metadata) and kind in _CREDENTIAL_NAMING_KINDS:
+        return _in_band_status(code, "", default=http_status)
     if from_wire and kind not in _IN_BAND_STATUS_BY_ERROR_TYPE:
         named = code.strip().lower() if isinstance(code, str) else ""
         if named not in _IN_BAND_STATUS_BY_NATIVE_CODE or (

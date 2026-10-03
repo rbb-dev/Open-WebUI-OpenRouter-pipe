@@ -11,7 +11,7 @@ This document covers behaviors that are specific to the OpenRouter Responses API
 - The pipe targets the OpenRouter base URL configured by `BASE_URL` (default `https://openrouter.ai/api/v1`), using the `/responses` endpoint.
 - Requests include OpenRouter-identifying headers:
   - `X-OpenRouter-Title` (pipe title)
-  - `HTTP-Referer` (default project URL; can be overridden via `HTTP_REFERER_OVERRIDE` — must be a full URL including scheme). Sent on every request to an openrouter.ai host, the catalogue, per-model endpoint and maker-page refresh reads included; not on user- or model-supplied asset downloads or the GitHub self-update check.
+  - `HTTP-Referer` (default project URL; can be overridden via `HTTP_REFERER_OVERRIDE` — must be a full URL including scheme, and must not carry a CR, LF or NUL inside it; one that does is ignored, warned about, and replaced by the default). Sent on every request to an openrouter.ai host, the catalogue, per-model endpoint and maker-page refresh reads included; not on user- or model-supplied asset downloads or the GitHub self-update check.
   - `X-OpenRouter-Categories` (pipe category identifier for analytics attribution)
 - Optional provider beta headers:
   - For Anthropic models (`anthropic/...` slugs and `~anthropic/...` router aliases), when `ENABLE_ANTHROPIC_INTERLEAVED_THINKING=True`, the pipe sends `x-anthropic-beta: interleaved-thinking-2025-05-14` to opt into Claude “interleaved thinking” streaming (reasoning may appear in multiple blocks during a single answer).
@@ -26,7 +26,7 @@ Before sending requests to OpenRouter, the pipe filters request bodies to the al
 | Field | Purpose / notes |
 | --- | --- |
 | `model` | Primary model for the request (selected in Open WebUI). |
-| `models` | Fallback model list (OpenRouter will try these if the primary `model` fails). This pipe supports `model_fallback` as an OWUI convenience mapping to this field. |
+| `models` | Fallback model list (OpenRouter will try these if the primary `model` fails). **The array is the pipe's to own**: a caller-supplied `models` key in the request body is discarded before the request is sent, on every leg, and the only writer is the deployment's own `model_fallback`. Every entry the deployment does supply is checked against the same model restriction valves as the primary — `MODEL_ID`, `FREE_MODEL_FILTER`, `TOOL_CALLING_FILTER` and `ZDR_MODELS_ONLY` — and an entry one of them refuses ends the turn with the `MODEL_RESTRICTED_TEMPLATE` card naming that id, before any request is sent. |
 | `input` | Responses input payload (constructed from Open WebUI messages and content blocks). |
 | `instructions` | Additional instructions passed through to OpenRouter when present. |
 | `metadata` | OpenRouter metadata map; sanitized to string→string with length/pair constraints (invalid entries dropped). |
@@ -40,7 +40,7 @@ Before sending requests to OpenRouter, the pipe filters request bodies to the al
 | `tools` | Tool definitions (merged from Open WebUI registry tools plus Open WebUI Direct Tool Servers when present). |
 | `tool_choice` | Tool selection directive. |
 | `plugins` | Legacy plugin configuration (retained for backward compatibility). |
-| `truncation` | Context-truncation strategy — what OpenRouter does when a request exceeds the model's context window. The pipe sets it itself when automatic context trimming is on (`apply_context_transforms`); see §4. |
+| `truncation` | Context-truncation strategy — what OpenRouter does when a request exceeds the model's context window. **The pipe owns this field on both arms of `AUTO_CONTEXT_TRIMMING`**, whatever the request body carried (`apply_context_transforms`): off pins `truncation: "disabled"`, on sends no `truncation` at all and carries the `context-compression` plugin instead. It is on the `/responses` allowlist only, so `/chat/completions` never carries it. See §4. |
 | `preset` | OpenRouter preset slug for pre-configured LLM settings (system prompts, provider routing, parameters). See [Model Variants & Presets](model_variants_and_presets.md#presets). |
 | `text` | Response text configuration (`text.format` for structured outputs / JSON mode; `text.verbosity` when supported). `text.verbosity` is the `/responses` spelling of the verbosity setting and top-level `verbosity` is the `/chat/completions` one; **either spelling may be set by the caller** (a Custom Parameter, or Open WebUI's own field), and a caller who sets one is never overwritten by the pipe's own value. For one request the provider receives the same verbosity on both endpoints, under each endpoint's own spelling — including on the `AUTO_FALLBACK_CHAT_COMPLETIONS` leg, where a refused `/responses` re-sends the turn on `/chat/completions` without changing the depth. The pipe writes the value itself only from `REASONING_EFFORT=xhigh` on Claude Opus/Sonnet models whose catalog entry lists `verbosity`. Housekeeping requests are governed by the task valve, not this one. |
 | `parallel_tool_calls` | Tool parallelism hint (when supported). |
@@ -86,7 +86,7 @@ The pipe accepts the following Advanced Model Parameters:
 
 | Advanced param | Type | Applies to | What it does |
 | --- | --- | --- | --- |
-| `model_fallback` | `str` (CSV) or a JSON array | Requests | Convenience mapping for OpenRouter fallbacks: converts a CSV list or a JSON array into the OpenRouter `models` array (order-preserving, de-duplicated). Open WebUI JSON-parses a custom param before the pipe sees it, so the two admin spellings produce one behaviour. |
+| `model_fallback` | `str` (CSV) or a JSON array | Requests | Convenience mapping for OpenRouter fallbacks: converts a CSV list or a JSON array into the OpenRouter `models` array (order-preserving, de-duplicated), **replacing** any `models` key the request already carried rather than merging with it. Open WebUI JSON-parses a custom param before the pipe sees it, so the two admin spellings produce one behaviour. Every parsed entry goes through the same model restriction check as the primary (`MODEL_ID` and the model filters), and a refused entry ends the turn with the `MODEL_RESTRICTED_TEMPLATE` card naming it, so a caller who POSTs this key cannot put a restricted model on the wire. Open WebUI cannot tell an admin's value from a caller's body key, which is why the entries are gated rather than trusted. |
 | `openrouter_trace` | `str` (JSON) | Requests | Convenience mapping for OpenRouter Broadcast observability: parses a JSON object and writes it as the OpenRouter `trace` field. See §2.4. |
 | `disable_native_websearch` | `bool-ish` | Requests | Prevents OpenRouter native web search from being used for this model by stripping OpenRouter web search server tools and related request fields. |
 | `openrouter_provider_ignore` | `str` (CSV) | Requests | Comma-separated provider slugs to exclude from routing. Maps to `provider.ignore`. See §2.5. |
@@ -110,9 +110,13 @@ OpenRouter supports a primary `model` plus a fallback list `models` (array). Ope
 - Custom param: `model_fallback` (a CSV string or a JSON array)
 - Pipe behavior:
   - Reads the value as a list of model ids, whether it arrived as a CSV string or as an array. Each element is trimmed, skipped if it is not a string, and de-duplicated (order-preserving), exactly as a CSV part is.
-  - Merges with any existing `models` list in the request (existing entries first).
+  - Checks every entry against the same model restriction valves as the primary model — `MODEL_ID`, `FREE_MODEL_FILTER`, `TOOL_CALLING_FILTER` and `ZDR_MODELS_ONLY` — and refuses the whole turn with the `MODEL_RESTRICTED_TEMPLATE` card naming the offending id, before any request is sent.
+  - **Replaces** the request's `models` list rather than merging with it. A caller-supplied `models` array is not the deployment's to send: it is discarded, so the ids that reach the wire are the ones the deployment supplied.
   - Writes the final list to `models` (fallback list only).
   - Removes `model_fallback` from the outgoing OpenRouter payload.
+
+A task request (`__task__`, such as Open WebUI's title generation) follows the same chain, on the
+task leg as on the chat legs.
 
 Open WebUI JSON-parses a custom param before the pipe sees it, so both of these admin spellings
 reach the pipe as a list and produce the same `models` array:
@@ -421,6 +425,15 @@ Operational note:
 ## 4. Auto context trimming (context-compression plugin)
 
 When `AUTO_CONTEXT_TRIMMING=True`, the pipe enables OpenRouter’s `context-compression` plugin by appending `{"id": "context-compression"}` to the request’s `plugins` array **only when no context-compression plugin is already present**. (This replaces the deprecated top-level `transforms=["middle-out"]` shape; `middle-out` is now the plugin’s internal compression engine.)
+
+The same valve owns the request's `truncation` field on `/responses`, in **both** states and whatever the request body carried:
+
+| `AUTO_CONTEXT_TRIMMING` | `truncation` on the wire | `context-compression` plugin |
+| --- | --- | --- |
+| `False` | `"disabled"` | absent |
+| `True` | absent | present |
+
+A `truncation` the caller supplied is overridden in both states — off because the pin is the valve's answer, on because sending `disabled` beside the compression plugin would ship two instructions that contradict each other. `truncation` is on the `/responses` allowlist only, so this table does not describe `/chat/completions`.
 
 Operational guidance:
 - Leave this enabled if you want long prompts to degrade gracefully instead of failing due to context limits.

@@ -29,7 +29,7 @@ from ..core.utils import (
     _serialize_kind_marker,
 )
 from ..requests.fusion_engine import latest_user_text
-from ..storage.owui_files import chat_latch_key
+from ..storage.owui_files import chat_latch_key, is_temporary_chat
 from ..structured_task import (
     build_response_format_for_model,
     call_with_candidates,
@@ -72,6 +72,13 @@ _warned_no_task_model: OrderedDict[str, None] = OrderedDict()
 
 def _no_task_model_latch_key(chat_id: Any) -> str:
     return chat_latch_key(chat_id)
+
+
+def _intent_chat_metadata(valves: Any, chat_id: str) -> dict[str, str]:
+    if is_temporary_chat(chat_id) or not getattr(valves, "SEND_CHAT_ID", False):
+        return {}
+    candidate = chat_id.strip() if isinstance(chat_id, str) else ""
+    return {"chat_id": candidate} if candidate else {}
 
 
 def _no_task_model_warn_level(chat_id: Any) -> int:
@@ -989,7 +996,7 @@ async def resolve_intent(
                         schema=INTENT_JSON_SCHEMA,
                         model_id=model_id,
                     ),
-                    "metadata": {"task": INTENT_SCHEMA_NAME, "chat_id": chat_id},
+                    "metadata": {"task": INTENT_SCHEMA_NAME, **_intent_chat_metadata(valves, chat_id)},
                 },
                 task_model_params,
                 owned_by=task_model_owned_by(request, model_id),

@@ -21,6 +21,7 @@ import base64
 import io
 import json
 import logging
+import re
 from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,6 +44,7 @@ from open_webui_openrouter_pipe.streaming.event_emitter import (
     EventEmitterHandler,
     unguarded_emitter,
 )
+from tests.doc_truth_anchors import config_meta_detail, valve_field_description
 
 MP4 = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 32
 

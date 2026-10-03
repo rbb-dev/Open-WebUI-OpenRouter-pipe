@@ -60,6 +60,7 @@ from ..core.logging_system import SessionLogger
 from ..core.timing_logger import timed
 from ..core.utils import (
     CONTINUED_REPLY,
+    _parse_model_fallback_csv,
     _resolve_retry_after_seconds,
     _select_best_effort_fallback,
     continued_turn_counts,
@@ -1648,6 +1649,73 @@ class RequestOrchestrator:
         capability_model_id = vvb.get(normalized_model_id, responses_body.model)
 
         task_mode = use_task_model_adapter
+
+        async def _model_restricted_card(entry: str) -> str | None:
+            if not catalog_norm_ids or entry in enforced_norm_ids:
+                return None
+            reasons = self._pipe._model_restriction_reasons(
+                entry,
+                valves=valves,
+                allowlist_norm_ids=allowlist_norm_ids,
+                catalog_norm_ids=catalog_norm_ids,
+                virtual_variant_bases=vvb,
+            )
+            model_id_filter = valves.MODEL_ID
+            free_mode = valves.FREE_MODEL_FILTER
+            tool_mode = valves.TOOL_CALLING_FILTER
+            labels = ", ".join(
+                self._pipe._model_restriction_labels(reasons, valves=valves)
+            ) or "restricted"
+            if reasons == ["VIDEO_CATALOG_LOADING"]:
+                if outcome_sink is not None:
+                    outcome_sink["member_refusal_reason"] = (
+                        f"{responses_body.model} is not in the catalogue yet because "
+                        "the video catalogue is still loading; the next turn will "
+                        "carry it"
+                    )
+                return await self._pipe._ensure_error_formatter()._emit_templated_error(
+                    __event_emitter__,
+                    template=valves.VIDEO_CATALOG_LOADING_TEMPLATE,
+                    variables={
+                        "requested_model": responses_body.model,
+                        "normalized_model_id": entry,
+                    },
+                    log_message=(
+                        f"Model absent while the video catalogue is still loading "
+                        f"(requested={responses_body.model}, normalized={entry})"
+                    ),
+                )
+            if outcome_sink is not None:
+                outcome_sink["member_refusal_reason"] = (
+                    f"{responses_body.model} is not permitted by the pipe's model "
+                    f"restrictions ({labels}); ask your admin to allow it"
+                )
+            return await self._pipe._ensure_error_formatter()._emit_templated_error(
+                __event_emitter__,
+                template=valves.MODEL_RESTRICTED_TEMPLATE,
+                variables={
+                    "requested_model": responses_body.model,
+                    "normalized_model_id": entry,
+                    "restriction_reasons": labels,
+                    "model_id_filter": model_id_filter if model_id_filter.lower() != "auto" else "",
+                    "free_model_filter": free_mode if free_mode != "all" else "",
+                    "tool_calling_filter": tool_mode if tool_mode != "all" else "",
+                },
+                log_message=(
+                    f"Model restricted (requested={responses_body.model}, normalized={entry}, reasons={reasons})"
+                ),
+            )
+
+        fallback_ids = [
+            entry for entry in (responses_body.models if isinstance(responses_body.models, list) else [])
+            if isinstance(entry, str) and entry.strip()
+        ]
+        fallback_ids += _parse_model_fallback_csv(getattr(responses_body, "model_fallback", None))
+        for entry in fallback_ids:
+            refusal = await _model_restricted_card(ModelFamily.base_model(entry))
+            if refusal is not None:
+                return refusal
+
         if task_mode:
             if allowlist_norm_ids and normalized_model_id not in allowlist_norm_ids:
                 self.logger.debug(
@@ -1656,60 +1724,9 @@ class RequestOrchestrator:
                     TaskModelAdapter._task_name(__task__) or "task",
                 )
         else:
-
-            if catalog_norm_ids and normalized_model_id not in enforced_norm_ids:
-                reasons = self._pipe._model_restriction_reasons(
-                    normalized_model_id,
-                    valves=valves,
-                    allowlist_norm_ids=allowlist_norm_ids,
-                    catalog_norm_ids=catalog_norm_ids,
-                    virtual_variant_bases=vvb,
-                )
-                model_id_filter = valves.MODEL_ID
-                free_mode = valves.FREE_MODEL_FILTER
-                tool_mode = valves.TOOL_CALLING_FILTER
-                labels = ", ".join(
-                    self._pipe._model_restriction_labels(reasons, valves=valves)
-                ) or "restricted"
-                if reasons == ["VIDEO_CATALOG_LOADING"]:
-                    if outcome_sink is not None:
-                        outcome_sink["member_refusal_reason"] = (
-                            f"{responses_body.model} is not in the catalogue yet because "
-                            "the video catalogue is still loading; the next turn will "
-                            "carry it"
-                        )
-                    return await self._pipe._ensure_error_formatter()._emit_templated_error(
-                        __event_emitter__,
-                        template=valves.VIDEO_CATALOG_LOADING_TEMPLATE,
-                        variables={
-                            "requested_model": responses_body.model,
-                            "normalized_model_id": normalized_model_id,
-                        },
-                        log_message=(
-                            f"Model absent while the video catalogue is still loading "
-                            f"(requested={responses_body.model}, normalized={normalized_model_id})"
-                        ),
-                    )
-                if outcome_sink is not None:
-                    outcome_sink["member_refusal_reason"] = (
-                        f"{responses_body.model} is not permitted by the pipe's model "
-                        f"restrictions ({labels}); ask your admin to allow it"
-                    )
-                return await self._pipe._ensure_error_formatter()._emit_templated_error(
-                    __event_emitter__,
-                    template=valves.MODEL_RESTRICTED_TEMPLATE,
-                    variables={
-                        "requested_model": responses_body.model,
-                        "normalized_model_id": normalized_model_id,
-                        "restriction_reasons": labels,
-                        "model_id_filter": model_id_filter if model_id_filter.lower() != "auto" else "",
-                        "free_model_filter": free_mode if free_mode != "all" else "",
-                        "tool_calling_filter": tool_mode if tool_mode != "all" else "",
-                    },
-                    log_message=(
-                        f"Model restricted (requested={responses_body.model}, normalized={normalized_model_id}, reasons={reasons})"
-                    ),
-                )
+            refusal = await _model_restricted_card(normalized_model_id)
+            if refusal is not None:
+                return refusal
         task_effort = None
         if use_task_model_adapter:
             self.logger.debug("Detected task model: %s", __task__)

@@ -227,9 +227,12 @@ end of the turn, in **one** call. Open WebUI's upsert is a whole-document rewrit
 (`SELECT ... FOR UPDATE` on Postgres, `chats.py:1152-1179`), mutates `chat['history']` and commits, so three calls
 to write one message meant three row locks and three rewrites. Open WebUI's own middleware batches its equivalent
 save into a single call (`middleware.py:6555-6563` streaming, `:4366-4375` non-streaming), and so does this. The
-whole read-modify-write is skipped when the chat id has no row to write — a `temporary:`, `local:` or `channel:`
-chat — so the union is a saved-chat property: with no row there is nothing to merge into, and the read is only ever
-an input to the write.
+gate covers **every** chat-store call the streaming loop makes, not only this read-modify-write: the seeded-output
+capture read, the tool-loop-limit note's write, the terminal Fusion snapshot's read and write, the Fusion embed retry
+merge's read and this end-of-turn merge are all skipped when the chat id has no row to write — a `temporary:`,
+`local:` or `channel:` chat. Open WebUI's own middleware pre-checks chat ids the same way, at two dozen sites, rather
+than relying on its store to drop what cannot be written. So the union is a saved-chat property: with no row there is
+nothing to merge into, and the read is only ever an input to the write.
 
 The batch is strictly cheaper on a successful turn and strictly worse on a failed one: one refused write now loses
 all three fields where it previously lost one. That is the trade. What it buys back is the read, which the union

@@ -28,6 +28,7 @@ from ..api.gateway.responses_adapter import _record_failed_call
 from ..core.config import (
     _PIPE_METADATA_KEY,
     OWUI_CHAT_ID,
+    OWUI_REQUEST,
     Valves,
     _select_openrouter_http_referer,
 )
@@ -565,6 +566,12 @@ _COULD_NOT_SAY_IT_FIRST = (
     "Nothing was uploaded. Reload the chat and send it again."
 )
 
+_COULD_NOT_SAY_IT_HERE_FIRST = (
+    "Your attachment has to be uploaded to {host} before a video model can read it, and "
+    "this chat could not be told that before it happened, because {cause}. "
+    "Nothing was uploaded."
+)
+
 _BLANK_NOTICE_CAUSE = (
     "the FILE_HOST_NOTICE setting has no wording to send"
 )
@@ -576,6 +583,21 @@ _NO_EMITTER_CAUSE = (
 _NOTICE_REFUSED_CAUSE = (
     "this chat would not accept the notice"
 )
+
+_NO_NOTICES_PASTE = "Open WebUI does not show notices"
+
+_CHANNEL_NOTICES = (
+    _NO_NOTICES_PASTE
+    + " in a channel conversation, so send the attachment from an ordinary chat"
+)
+
+_INTERNAL_NOTICES = (
+    _NO_NOTICES_PASTE
+    + " on a request it runs on its own behalf, such as a sub-agent's, so attach the "
+    "file in your own chat"
+)
+
+_CHATS_WITHOUT_NOTICES = (_CHANNEL_NOTICES, _INTERNAL_NOTICES)
 
 _UNRENDERABLE_NOTICE_CAUSE = (
     "the FILE_HOST_NOTICE setting has a placeholder nothing fills: {name}"
@@ -616,6 +638,10 @@ def _intent_counters_enabled(valves: Any) -> tuple[int, int]:
         int(getattr(valves, "VIDEO_INTENT_MAX_TURNS_PER_CHAT", 0) or 0),
         int(getattr(valves, "VIDEO_INTENT_MAX_TURNS_PER_USER_DAY", 0) or 0),
     )
+
+
+def _the_request_is_internal() -> bool:
+    return getattr(getattr(OWUI_REQUEST.get(), "state", None), "internal", False) is True
 
 
 def _video_stall_window(valves: Any) -> float:
@@ -2929,6 +2955,16 @@ class VideoGenerationAdapter:
             return [chosen]
         return [chosen] + [name for name in RELAY_HOSTS if name != chosen]
 
+    @staticmethod
+    def _this_chat_hears(valves: Any) -> str:
+        if not bool(getattr(valves, "TELL_USERS_ABOUT_THE_FILE_HOST", True)):
+            return ""
+        if is_channel_chat(OWUI_CHAT_ID.get()):
+            return _CHANNEL_NOTICES
+        if _the_request_is_internal():
+            return _INTERNAL_NOTICES
+        return ""
+
     async def _disclose_the_file_host(
         self, valves: Any, families: set[str], event_emitter: Any, host: str
     ) -> set[tuple[str, str]]:
@@ -2943,9 +2979,12 @@ class VideoGenerationAdapter:
                 "or give FILE_HOST_NOTICE a sentence to send.",
                 cause,
             )
-            raise VideoGenerationError(
-                _COULD_NOT_SAY_IT_FIRST.format(cause=cause, host=host)
+            card = (
+                _COULD_NOT_SAY_IT_HERE_FIRST
+                if cause in _CHATS_WITHOUT_NOTICES
+                else _COULD_NOT_SAY_IT_FIRST
             )
+            raise VideoGenerationError(card.format(cause=cause, host=host))
         return planned
 
     async def _emit_file_host_notice(
@@ -2953,6 +2992,9 @@ class VideoGenerationAdapter:
     ) -> tuple[bool, str]:
         if not bool(getattr(valves, "TELL_USERS_ABOUT_THE_FILE_HOST", True)):
             return True, ""
+        unheard = self._this_chat_hears(valves)
+        if unheard:
+            return False, unheard
         if event_emitter is None:
             return False, _NO_EMITTER_CAUSE
         notice = self._file_host_notice(valves, pairs)

@@ -1875,13 +1875,6 @@ def test_auto_context_trimming_serializes_plugin_not_transforms(minimal_pipe):
     assert "transforms" not in dumped
 
 
-def test_auto_context_trimming_disabled_preserves_explicit_truncation(minimal_pipe):
-    from open_webui_openrouter_pipe.api.transforms import apply_context_transforms
-    responses = ResponsesBody(model="test", input=_STUBBED_INPUT, truncation="auto")
-    apply_context_transforms(responses, auto_context_trimming=False)
-    assert responses.truncation == "auto"
-
-
 import pytest
 
 

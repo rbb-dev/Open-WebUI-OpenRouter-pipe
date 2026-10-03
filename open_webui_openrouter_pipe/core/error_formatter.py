@@ -352,7 +352,7 @@ class ErrorFormatter:
         reasons = error_metadata.get("reasons")
         raw_body = _pretty_json(event)
         return OpenRouterAPIError(
-            status=_resolved_error_status(code, error_type, 400, from_wire=False),
+            status=_resolved_error_status(code, error_type, 400, from_wire=False, metadata=metadata),
             openrouter_error_type=error_type or None,
             reason=message,
             provider=chunk_provider or _as_text(error_metadata.get("provider_name")),

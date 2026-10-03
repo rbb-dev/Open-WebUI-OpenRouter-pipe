@@ -1829,19 +1829,13 @@ def _apply_model_fallback_to_payload(payload: dict[str, Any], *, logger: logging
     raw_fallback = payload.pop("model_fallback", None)
     fallback_models = _parse_model_fallback_csv(raw_fallback)
 
-    existing_models_raw = payload.get("models")
-    existing_models: list[str] = []
-    if isinstance(existing_models_raw, list):
-        for entry in existing_models_raw:
-            if isinstance(entry, str) and entry.strip():
-                existing_models.append(entry.strip())
-
-    if not fallback_models and not existing_models:
+    if not fallback_models:
+        payload.pop("models", None)
         return
 
     merged: list[str] = []
     seen: set[str] = set()
-    for candidate in existing_models + fallback_models:
+    for candidate in fallback_models:
         if candidate in seen:
             continue
         seen.add(candidate)
@@ -2137,6 +2131,7 @@ def _apply_identifier_valves_to_payload(
     metadata_out: dict[str, str] = {}
 
     payload.pop("safety_identifier", None)
+    payload.pop("models", None)
 
     if valves.SEND_END_USER_ID:
         user_value = (owui_user_id or "").strip()
@@ -2329,11 +2324,10 @@ def _filter_replayable_input_items(
 
 
 def apply_context_transforms(responses_body: ResponsesBody, *, auto_context_trimming: bool) -> None:
-    """Set context trimming fields when not already explicitly configured."""
     if not auto_context_trimming:
-        if responses_body.truncation is None:
-            responses_body.truncation = "disabled"
+        responses_body.truncation = "disabled"
         return
+    responses_body.truncation = None
     plugins = list(responses_body.plugins or [])
     if not any(isinstance(entry, dict) and entry.get("id") == "context-compression" for entry in plugins):
         plugins.append({"id": "context-compression"})

@@ -3014,20 +3014,6 @@ def test_model_fallback_csv_to_models_array() -> None:
     assert "model_fallback" not in payload
 
 
-def test_model_fallback_merges_with_existing_models_list() -> None:
-    payload = {
-        "model": "openai/gpt-5",
-        "models": ["anthropic/claude-sonnet-4.5", "openai/gpt-5.1"],
-        "model_fallback": "openai/gpt-5.1,google/gemini-2.5-pro",
-    }
-    _apply_model_fallback_to_payload(payload)
-    assert payload["models"] == [
-        "anthropic/claude-sonnet-4.5",
-        "openai/gpt-5.1",
-        "google/gemini-2.5-pro",
-    ]
-
-
 # ===== From openrouter/test_registry.py =====
 
 from open_webui_openrouter_pipe import (
