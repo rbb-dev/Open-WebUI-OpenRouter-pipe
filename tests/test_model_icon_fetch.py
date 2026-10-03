@@ -540,30 +540,6 @@ async def test_upstream_http_error_is_logged_without_a_traceback(icon_handler):
     assert any("404" in r.getMessage() or "Not Found" in r.getMessage() for r in matching)
 
 
-@pytest.mark.asyncio
-async def test_unexpected_download_failure_keeps_its_traceback(icon_handler):
-    """Dropping the stack is scoped to the expected case, not to every failure."""
-    recorder = _record_logs(icon_handler)
-    session = _Session(
-        _Response(_Body(0), {"Content-Type": "image/png"}, raise_exc=RuntimeError("boom"))
-    )
-    icon_handler._vetted_http_session = session
-
-    try:
-        result = await icon_handler._fetch_image_as_data_url(
-            "https://cdn.example.com/odd.png"
-        )
-    finally:
-        icon_handler.logger.removeHandler(recorder)
-
-    assert result is None
-    matching = [
-        r for r in recorder.records if "cdn.example.com" in r.getMessage()
-    ]
-    assert matching, [r.getMessage() for r in recorder.records]
-    assert any(r.exc_info is not None for r in matching)
-
-
 # ── the pixel budget ─────────────────────────────────────────────────────────
 
 # PIL's own ceiling, `int(1024 * 1024 * 1024 // 4 // 3)`, is what a worker starts in
@@ -1258,3 +1234,16 @@ async def test_the_decode_pool_is_not_the_executor_address_resolution_uses(icon_
     assert names and default_names
     assert not (set(names) & set(default_names)), (names, default_names)
     assert all(n.startswith("or-icon-decode") for n in names), names
+
+
+def _rendered(record: logging.LogRecord) -> str:
+    """`getMessage()` plus the traceback the record carries, as an operator reads it.
+
+    Both channels because the leak is a property of the record, not of the format
+    string: an exception interpolated into the message and an exception re-printed by
+    `exc_info` each reach the log on their own.
+    """
+    text = record.getMessage()
+    if record.exc_info is not None:
+        text += logging.Formatter().formatException(record.exc_info)
+    return text

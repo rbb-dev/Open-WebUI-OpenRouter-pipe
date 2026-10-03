@@ -625,8 +625,15 @@ class ReplyMemory:
 
     def _holds(self, chat_id: Any) -> bool:
         self._expire()
+        user_id = self._user_id()
         want = "" if is_temporary_chat(chat_id) else chat_id
-        return any(key[1] == want for key in self._replies)
+        return any(key[0] == user_id and key[1] == want for key in self._replies)
+
+
+def _names_a_conversation(chat_id: Any) -> bool:
+    if not chat_id:
+        return False
+    return not isinstance(chat_id, str) or bool(chat_id.strip())
 
 
 class ArtifactStore:
@@ -1756,7 +1763,7 @@ class ArtifactStore:
     ) -> dict[str, Any] | None:
         """Construct a persistence-ready row dict or return ``None`` when invalid."""
         if not self._reply_memory_for(chat_id).is_open(chat_id, message_id):
-            if not chat_id:
+            if not _names_a_conversation(chat_id):
                 return None
             if is_temporary_chat(chat_id):
                 return None

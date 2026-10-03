@@ -197,6 +197,8 @@ def _member_notice_text(event: Any) -> str:
 # Imports from storage.persistence
 from ..storage.multimodal import (
     _SNIFF_PREFIX_BYTES,
+    ADDRESS_CHECK_BUDGET_SECONDS,
+    ADDRESS_CHECK_SECONDS,
     _decode_base64_in_quanta,
     _sniff_evidence,
     canonical_image_mime,
@@ -815,6 +817,7 @@ class StreamingHandler:
             surrogate_carry: dict[str, str] = {"assistant": "", "reasoning": ""}
             storage_context_cache: tuple[Request | None, Any | None] | None = None
             processed_image_item_ids: set[str] = set()
+            address_deadline: float | None = None
             opened_image_windows: set[str] = set()
             generated_image_count = 0
             skipped_image_reasons: list[str] = []
@@ -985,6 +988,9 @@ class StreamingHandler:
 
             @timed
             async def _materialize_image_from_str(data_str: str) -> str | None:
+                nonlocal address_deadline
+                if address_deadline is None:
+                    address_deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
                 text = (data_str or "").strip()
                 if not text:
                     return None
@@ -1002,11 +1008,28 @@ class StreamingHandler:
                     return None
                 if is_http_or_https_url(text):
                     if not is_linkable_chat(chat_id):
-                        if await self._pipe._multimodal_handler._is_safe_url(text) is not True:
-                            skipped_image_reasons.append("unlinkable_chat_unvetted")
+                        unlinkable_verdict = await self._pipe._multimodal_handler._is_safe_url(
+                            text,
+                            seconds=min(
+                                ADDRESS_CHECK_SECONDS,
+                                address_deadline - time.monotonic(),
+                            ),
+                        )
+                        if unlinkable_verdict is not True:
+                            skipped_image_reasons.append(
+                                "unlinkable_chat_unchecked"
+                                if unlinkable_verdict is None
+                                else "unlinkable_chat_unvetted"
+                            )
                             return None
                         return text
-                    downloaded = await self._pipe._multimodal_handler._download_remote_url(text)
+                    downloaded = await self._pipe._multimodal_handler._download_remote_url(
+                        text,
+                        seconds=min(
+                            ADDRESS_CHECK_SECONDS,
+                            address_deadline - time.monotonic(),
+                        ),
+                    )
                     if downloaded:
                         mime_type = _resolved_stored_mime(downloaded["mime_type"], downloaded["data"])
                         if mime_type is None:
@@ -1015,8 +1038,17 @@ class StreamingHandler:
                         if stored:
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_REMOTE_SAVED, done=False)
                             return f"/api/v1/files/{stored}/content"
-                    if await self._pipe._multimodal_handler._is_safe_url(text) is not True:
-                        skipped_image_reasons.append("unfetchable")
+                    rechecks = await self._pipe._multimodal_handler._is_safe_url(
+                        text,
+                        seconds=min(
+                            ADDRESS_CHECK_SECONDS,
+                            address_deadline - time.monotonic(),
+                        ),
+                    )
+                    if rechecks is not True:
+                        skipped_image_reasons.append(
+                            "unchecked" if rechecks is None else "unfetchable"
+                        )
                         return None
                     return text
                 if text.startswith("/"):
@@ -1125,13 +1157,20 @@ class StreamingHandler:
                     alt_text = re.sub(r"[\r\n]+", " ", str(label)).strip() or f"Generated image {generated_image_count}"
                     markdowns.append(f"![{alt_text}]({url})")
                 if skipped_image_reasons:
-                    await self._pipe._event_emitter_handler._emit_status(
-                        event_emitter,
-                        StatusMessages.IMAGES_SKIPPED_UNFETCHABLE.format(
-                            count=len(skipped_image_reasons)
-                        ),
-                        done=False,
-                    )
+                    unchecked = skipped_image_reasons.count("unchecked") + skipped_image_reasons.count("unlinkable_chat_unchecked")
+                    unfetched = len(skipped_image_reasons) - unchecked
+                    if unfetched:
+                        await self._pipe._event_emitter_handler._emit_status(
+                            event_emitter,
+                            StatusMessages.IMAGES_SKIPPED_UNFETCHABLE.format(count=unfetched),
+                            done=False,
+                        )
+                    if unchecked:
+                        await self._pipe._event_emitter_handler._emit_status(
+                            event_emitter,
+                            StatusMessages.IMAGES_SKIPPED_UNCHECKED.format(count=unchecked),
+                            done=False,
+                        )
                     skipped_image_reasons.clear()
                 return markdowns
 

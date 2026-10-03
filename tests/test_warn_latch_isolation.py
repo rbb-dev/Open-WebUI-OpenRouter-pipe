@@ -146,6 +146,12 @@ EXPECTED_LATCHES = {
     # and the repeats have to stay visible at DEBUG to an operator who raises the level.
     "_warned_purge_lock",
     "_warned_timing_file",
+    # The socket gate's valve row is read once per emit tick (every
+    # `_PD_PUBLISH_INTERVAL`, so about fifteen times in thirty seconds) and again on
+    # every `function.valves_updated` event. A row the store will not hand back is
+    # retried on the next of both, so an unlatched WARNING is a flood for the whole
+    # length of a database outage, and a rotated `WEBUI_SECRET_KEY` makes it permanent.
+    "_warned_undetermined",
     "_warned_unrenderable_params",
     "_warned_user_valves",
     "_warned_video_catalog",

@@ -369,7 +369,6 @@ class TestAuthorization:
         content = result["choices"][0]["message"]["content"]
         assert "Access Denied" in content
 
-
 # ── Command Dispatch Tests ──
 
 

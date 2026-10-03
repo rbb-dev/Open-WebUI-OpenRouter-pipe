@@ -37,6 +37,8 @@ _ENDPOINTS: dict[str, _Endpoint] = {
 
 _KEEPS_FOREVER: frozenset[str] = frozenset({"catbox"})
 
+_MAY_HAVE_INGESTED: frozenset[int] = frozenset(range(500, 600))
+
 _MAX_UPLOAD_SECONDS = 300
 
 MAX_RELAY_SECONDS_PER_REQUEST = 300
@@ -61,6 +63,8 @@ _RAN_OUT_OF_TIME = (
     "transfer finished"
 )
 
+_NEVER_ANSWERED = "it did not answer in time"
+
 
 def host_keeps_forever(host: str) -> bool:
     return host in _KEEPS_FOREVER
@@ -76,6 +80,11 @@ def megabytes(count: int) -> str:
 
 def _as_the_host_put_it(text: str) -> str:
     return f"`{_UNQUOTABLE.sub(' ', ' '.join(text.split()))[:_HOST_REPLY_LIMIT]}`"
+
+
+def _as_the_host_explained(failure: BaseException, nothing: str) -> str:
+    said = str(failure).strip()
+    return _as_the_host_put_it(said) if said else nothing
 
 
 def _served_by(link: str, origins: tuple[str, ...]) -> bool:
@@ -190,16 +199,16 @@ async def relay_to_public_url(
                         f"{_as_the_host_put_it(text)}"
                     )
                     break
-                stored = response.status >= 500
+                stored = response.status in _MAY_HAVE_INGESTED
                 last = f"{host} answered {response.status}"
                 break
         except asyncio.CancelledError:
             raise
         except (aiohttp.ClientConnectorError, aiohttp.ConnectionTimeoutError) as exc:
-            last = f"{host} could not be reached: {_as_the_host_put_it(str(exc))}"
+            last = f"{host} could not be reached: {_as_the_host_explained(exc, _NEVER_ANSWERED)}"
         except (aiohttp.ClientError, TimeoutError, OSError, UnicodeDecodeError) as exc:
             stored = True
-            last = f"{host} did not answer: {_as_the_host_put_it(str(exc))}"
+            last = f"{host} did not answer: {_as_the_host_explained(exc, _NEVER_ANSWERED)}"
             break
     raise MediaRelayError(
         last or f"{host} did not accept the file", may_have_stored_it=stored

@@ -386,9 +386,9 @@ class ResponsesAdapter:
         workers = max(1, min(int(workers or 1), 8))
         chunk_queue_size = max(0, int(chunk_queue_maxsize))
         event_queue_size = max(0, int(event_queue_maxsize))
-        chunk_queue: asyncio.Queue[tuple[int | None, bytes]] = asyncio.Queue(maxsize=chunk_queue_size)
-        event_queue: asyncio.Queue[tuple[int | None, dict[str, Any] | None]] = asyncio.Queue(maxsize=event_queue_size)
-        chunk_sentinel = (None, b"")
+        chunk_queue: asyncio.Queue[tuple[int | None, Any]] = asyncio.Queue(maxsize=chunk_queue_size)
+        event_queue: asyncio.Queue[tuple[int | None, Any]] = asyncio.Queue(maxsize=event_queue_size)
+        chunk_sentinel = (None, None)
         idle_flush_seconds = float(idle_flush_ms) / 1000 if idle_flush_ms > 0 else None
         passthrough_deltas = delta_char_limit <= 0 and idle_flush_ms <= 0
         requested_model = request_body.get("model")
@@ -410,9 +410,9 @@ class ResponsesAdapter:
             seq = 0
             first_chunk_received = False
 
-            async def _put_seq(data_blob: bytes) -> None:
+            async def _put_seq(event_obj: Any) -> None:
                 nonlocal seq
-                await chunk_queue.put((seq, data_blob))
+                await chunk_queue.put((seq, event_obj))
                 seq += 1
 
             def _retry_streaming(retry_state) -> bool:
@@ -440,10 +440,10 @@ class ResponsesAdapter:
                             excerpt = bytearray()
                             event_data_parts: list[bytes] = []
                             stream_complete = False
-                            held: list[bytes] = []
+                            held: list[Any] = []
                             first_event_queued = False
 
-                            async def _dispatch(data_blob: bytes, _held: list[bytes] = held) -> bool:
+                            async def _dispatch(data_blob: bytes, _held: list[Any] = held) -> bool:
                                 nonlocal queued_any, delivered_any, first_event_queued
                                 event_obj = _decode_frame(data_blob, self.logger)
                                 if event_obj is _UNREADABLE:
@@ -455,19 +455,19 @@ class ResponsesAdapter:
                                 if not delivered_any:  # noqa: B023 - shares the attempt's state by design
                                     _probe_inband(event_obj)
                                 if _responses_event_is_user_visible(event_obj):
-                                    await _emit(data_blob, True, _held)
+                                    await _emit(event_obj, True, _held)
                                 else:
-                                    _held.append(data_blob)
+                                    _held.append(event_obj)
                                 return True
 
-                            async def _emit(data_blob: bytes, visible: bool, _held: list[bytes] = held) -> None:
+                            async def _emit(event_obj: Any, visible: bool, _held: list[Any] = held) -> None:
                                 nonlocal delivered_any
                                 for pending in _held:
                                     await _put_seq(pending)
                                 _held.clear()
                                 if visible:
                                     delivered_any = True
-                                await _put_seq(data_blob)
+                                await _put_seq(event_obj)
 
                             try:
                                 timing_mark("responses_http_request_start")
@@ -634,27 +634,10 @@ class ResponsesAdapter:
                     try:
                         if seq is None:
                             break
-                        if data == _RESPONSES_SSE_DONE_SENTINEL:
-                            await event_queue.put((seq, None))
-                            continue
-                        try:
-                            event = json.loads(data.decode("utf-8"))
-                        except Exception as exc:
-                            self.logger.log(
-                                warn_level(
-                                    _warned_responses_chunk_parse,
-                                    "chunk_parse",
-                                    cooldown_s=_RESPONSES_CHUNK_PARSE_WARN_COOLDOWN_S,
-                                ),
-                                "Chunk parse failed (seq=%s): %s", seq, exc,
-                                exc_info=True,
-                            )
-                            await event_queue.put((seq, None))
-                            continue
                         if not worker_first_event_queued:
                             worker_first_event_queued = True
                             timing_mark("worker_first_event_to_queue")
-                        await event_queue.put((seq, event))
+                        await event_queue.put((seq, data))
                     finally:
                         chunk_queue.task_done()
             finally:

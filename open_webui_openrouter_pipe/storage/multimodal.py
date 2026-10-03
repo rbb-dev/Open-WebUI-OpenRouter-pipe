@@ -1945,12 +1945,11 @@ class MultimodalHandler:
                 exc.message,
             )
             return None
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - the last arm of a fetch, and the class is all it may say
             self.logger.debug(
                 "Failed to download model icon (url=%s): %s",
                 icon_subject,
-                exc,
-                exc_info=True,
+                type(exc).__name__,
             )
             return None
         finally:
@@ -2026,12 +2025,11 @@ class MultimodalHandler:
                         output_height=250,
                     )
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - any imaging failure, and its text is the diagnosis
                 self.logger.debug(
                     "Failed to rasterize SVG model icon (url=%s): %s",
                     icon_subject,
                     exc,
-                    exc_info=True,
                 )
                 return None
 
@@ -2077,12 +2075,11 @@ class MultimodalHandler:
                 icon_subject,
             )
             return None
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - any imaging failure, and its text is the diagnosis
             self.logger.debug(
                 "Failed to convert model icon to PNG (url=%s): %s",
                 icon_subject,
                 exc,
-                exc_info=True,
             )
             return None
 

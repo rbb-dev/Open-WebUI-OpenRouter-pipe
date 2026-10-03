@@ -366,6 +366,9 @@ _RESTRICTION_REASON_PHRASES: dict[str, str] = {
     "ZDR_LIST_UNAVAILABLE": (
         "OpenRouter's Zero Data Retention endpoint list could not be read"
     ),
+    "ZDR_UNENFORCEABLE": (
+        "the request format for this model cannot carry a Zero Data Retention control"
+    ),
 }
 
 _RESTRICTION_REASON_USER_VALVES: dict[str, tuple[str, str]] = {

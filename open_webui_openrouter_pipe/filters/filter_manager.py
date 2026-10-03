@@ -3914,9 +3914,8 @@ def _warn_stale_choice(field: str, value: Any, kept: str) -> None:
         return
     _warned_stale_choices.add(marker)
     logging.getLogger(MODEL_SLUG).warning(
-        "Provider routing valve %s: %r is no longer offered; using %r",
+        "Provider routing valve %s: no longer offered; using %r",
         field,
-        value,
         kept,
     )
 
@@ -3927,10 +3926,9 @@ def _warn_unusable_setting(field: str, value: Any, kept: Any) -> None:
         return
     _warned_unusable_settings.add(marker)
     logging.getLogger(MODEL_SLUG).warning(
-        "Provider routing valve %s: stored value %r is not usable by this filter "
+        "Provider routing valve %s: stored value is not usable by this filter "
         "build; using the field default %r",
         field,
-        value,
         kept,
     )
 

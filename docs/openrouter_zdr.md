@@ -12,14 +12,17 @@ OpenRouter exposes ZDR-capable endpoints via the `/api/v1/endpoints/zdr` list. T
 
 - **Hide non‑ZDR models** when `ZDR_MODELS_ONLY` is enabled
 - **Validate enforcement** before sending a request when ZDR is enforced
-- **Attach `provider.zdr=true`** when ZDR is requested or enforced
+- **Attach `provider.zdr=true`** when ZDR is requested or enforced, on the transports whose schema defines that key
 
 > Note: The ZDR endpoint list is endpoint‑level; a model is treated as ZDR‑capable if at least one endpoint for that model appears in the ZDR list.
 
 The video help card a person gets from `help` reports that same verdict in the same
 three states — ZDR-capable, not ZDR-capable, or not established because the list has
 never been read. It is a *report*, not a gate: it changes no routing and refuses
-nothing. Only the valves above do that.
+nothing -- and it reports the roster's verdict only. Roster-capable is not the same
+thing as enforceable: a model whose answer goes on the video or image transport is
+refused under enforcement even when the roster names it. Only the valves above gate
+anything.
 
 ---
 
@@ -37,8 +40,9 @@ Configure these in **Open WebUI → Admin → Functions → [OpenRouter pipe] �
   - On a Fusion run the refusal is reported per member, naming the privacy decision, so the judge and the synthesis model are told the pipe refused rather than that the model declined.
   - **What a failed read means.** A read that did not succeed carries the last read that did, so a `500`/`429` on `/models`, or an outage of `/endpoints/zdr`, no longer makes the pipe forget what it knew: a model that has been answering for an hour keeps its ZDR answer, and every enforced request still carries `provider.zdr=true`, which is what makes OpenRouter hold it to a no-retention endpoint. A request is refused outright only when **no ZDR list has ever been read** — that is what `zdr_list_available() is False` now means, and it is the cold-start path this behaviour deliberately does not weaken. The limit of the carry-forward is worth stating plainly: it can still prove a model is *not* ZDR-capable (and that stays refused), but a model that genuinely lost its ZDR endpoints is noticed only once a read succeeds.
   - Routing suffixes the pipe synthesises (`:nitro`, `:floor`, `:online`) are checked against their base model: if the base has ZDR endpoints, the variant is admitted and `provider.zdr=true` guarantees only ZDR endpoints are used. A suffix OpenRouter lists as a model in its own right — `:free`, `:thinking` — is answered for **itself**, not for its base, so a listed `:free` with no ZDR endpoint is refused here rather than routed. A `~`-prefixed `-latest` id is answered for the model its catalog `alias_target` names and for its own key, and only here: every other capability read still answers from the alias row.
-  - Video models are answered from the same list as every other model, with or without a variant suffix: a video model whose ZDR endpoints are on the list is enforced like any other, and one that is off it is refused the same way.
-  - `ZDR_MODELS_ONLY` matches against the suffix-stripped base id, the same rule `ZDR_ENFORCE` uses, so routing variants (`:nitro`, `:floor`, `:online`) of a ZDR-capable base are shown and allowed. A `~`-prefixed `-latest` id is answered for the model its catalog `alias_target` names and for its own key, and only here: every other capability read still answers from the alias row. It stays a catalog and request-admission filter: it never sends `provider.zdr: true`. It filters from the last ZDR list read successfully, so a later read that fails does not let non-ZDR models back into the picker; only a list that has *never* been read leaves filtering skipped. Video models are filtered like any other model.
+  - Video models are answered from the same list as every other model, with or without a variant suffix, and a video model whose ZDR endpoints are on the list is admitted by the gate exactly like any other. It is then refused on the next line, because the transport cannot carry the control: OpenRouter's video schema defines one provider property, `options`, and no `zdr`, so a `zdr` sent there would be accepted and ignored -- the job would read as protected in OpenRouter's own logs while nothing enforced it. An **image-only** model (one that emits images and no text) is refused the same way, on the image API's six-key schema. A model that answers in text *and* pictures is a chat model that can draw and is not refused: it goes over `/chat/completions`, where `zdr` is a defined key.
+  - The refusal is made **before anything is sent** -- before any acquire, any upload and any billed work -- and it uses the same machinery as every other pre-send refusal: the `MODEL_RESTRICTED_TEMPLATE` card, a `Restricted by` row naming the control that refused (`Enforce ZDR routing`, or `Request ZDR` when the user asked for it themselves), and the same per-member report on a Fusion run, so a refused panel member is a visible failed member with a card rather than a member that dies silently. The task leg gets the task adapter's own refusal shape. The reason is its own key rather than the never-read-list one, because the list was read fine.
+  - `ZDR_MODELS_ONLY` matches against the suffix-stripped base id, the same rule `ZDR_ENFORCE` uses, so routing variants (`:nitro`, `:floor`, `:online`) of a ZDR-capable base are shown and allowed. A `~`-prefixed `-latest` id is answered for the model its catalog `alias_target` names and for its own key, and only here: every other capability read still answers from the alias row. It stays a catalog and request-admission filter: it never sends `provider.zdr: true`. It filters from the last ZDR list read successfully, so a later read that fails does not let non-ZDR models back into the picker; only a list that has *never* been read leaves filtering skipped. Video models are filtered like any other model -- and filtering is a statement about the **roster**, not about the transport, so a video or image-only model the roster names stays visible in the picker and is still refused at request time under `ZDR_ENFORCE`. The two answer different questions, and the picker is deliberately not narrowed to match.
 
 - **`ALLOW_USER_ZDR_OVERRIDE`**
   - Allows users to request ZDR per chat.

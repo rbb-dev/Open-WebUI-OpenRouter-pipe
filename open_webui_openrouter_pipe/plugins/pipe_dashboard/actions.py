@@ -224,7 +224,7 @@ def _mask(
     vouched = _is_valve_key(key, fields) or (isinstance(key, str) and key in protocol)
     if isinstance(value, (Mapping, list, tuple, set, frozenset)):
         if depth >= 32:
-            return value
+            return _marker(value)
         if not vouched:
             return _marker(value)
         if isinstance(value, Mapping):

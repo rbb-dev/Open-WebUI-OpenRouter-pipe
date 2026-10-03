@@ -925,7 +925,7 @@ class SessionLogManager:
         """
         from ..core.logging_system import _SessionLogArchiveJob
         from ..storage.owui_files import is_linkable_chat, is_temporary_chat
-        from ..storage.persistence import generate_item_id
+        from ..storage.persistence import _names_a_conversation, generate_item_id
 
         temporary = is_temporary_chat(chat_id)
         if not valves.SESSION_LOG_STORE_ENABLED:
@@ -957,7 +957,7 @@ class SessionLogManager:
             )
             return
         surrogate_in_play = False
-        if not (chat_id and message_id):
+        if not (_names_a_conversation(chat_id) and message_id):
             if task and not message_id:
                 self._skip_task(task, chat_id, request_id)
                 return

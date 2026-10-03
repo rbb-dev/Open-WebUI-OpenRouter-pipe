@@ -55,6 +55,7 @@ from ..core.url_scheme import is_absolute_url, loggable_link, url_scheme
 from ..core.utils import (
     OPEN_WEBUI_TOOL_IMAGES_TEXT,
     _coerce_bool,
+    _coerced_token_cap,
     _parse_model_fallback_csv,
     _sticky_session_key,
     is_picture_output,
@@ -689,19 +690,6 @@ def _responses_tool_choice_to_chat_tool_choice(value: Any) -> Any:
 
 
 # Response Format Transforms
-
-def _coerced_token_cap(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if not isinstance(value, (float, str)):
-        return None
-    try:
-        return round(float(value))
-    except (OverflowError, ValueError):
-        return None
-
 
 def _coerced_sampling_float(value: Any) -> float | None:
     if isinstance(value, bool):
@@ -2270,6 +2258,12 @@ def _filter_openrouter_request(payload: dict[str, Any]) -> dict[str, Any]:
             for field_name in ("effort", "max_tokens", "exclude", "enabled", "summary", "context", "mode"):
                 if field_name in value:
                     allowed_reasoning[field_name] = value[field_name]
+            if "max_tokens" in allowed_reasoning:
+                budget = _coerced_token_cap(allowed_reasoning["max_tokens"])
+                if budget is None:
+                    allowed_reasoning.pop("max_tokens", None)
+                else:
+                    allowed_reasoning["max_tokens"] = budget
             if not allowed_reasoning:
                 continue
             value = allowed_reasoning

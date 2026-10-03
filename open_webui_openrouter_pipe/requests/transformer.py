@@ -2154,9 +2154,7 @@ async def transform_messages_to_input(
                                 return False
                             if _is_inline_payload(name, value):
                                 return False
-                            return bool(url_scheme(value)) or (
-                                name == "file_url" and is_absolute_url(value)
-                            )
+                            return bool(url_scheme(value)) or name == "file_url"
 
                         _gate_fields = (("file_data", file_data), ("file_url", file_url))
                         _scheme_verdicts: dict[str, bool | None] = {}

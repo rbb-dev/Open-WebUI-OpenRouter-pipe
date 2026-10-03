@@ -92,6 +92,8 @@ A probe subprocess that imports the real `open_webui` must be given its own `DAT
 
 Give it from a fixture rather than at module import — a process-wide timeout does not cover a module-import probe, so a probe that costs tens of seconds there runs entirely outside the budget CI enforces on tests. `pytest.ini` sets no `--timeout` of its own; the only per-test ceiling in this repository is `--timeout=60` in `.github/workflows/verify.yml`, so "the budget the suite enforces" describes a CI run and not a local or agent run. `tests/test_a_test_module_starts_no_probe_at_import.py` is the census that keeps a module-scope probe from being added, and `tests/test_a_probe_script_path_is_not_shared_across_workers.py` is the one that keeps a probe's *script* off a path another worker can name.
 
+A test module may not construct a `Pipe` at import time; `Pipe.id` is a class attribute and needs no instance. `Pipe.__init__` wires the package logger, claims the id in `_LifecycleRegistry` and starts the session-log machinery, so an import-time `Pipe()` decides the logger baseline of every later test in the same worker in an order the collector chooses.
+
 ### Running tests
 
 Run a single file first, then the full suite:

@@ -67,10 +67,12 @@ from ..core.utils import (
     ends_on_hidden_marker_line,
 )
 from ..core.warn_latch import bounded_warn_level
+from ..filters.filter_manager import FilterManager
 from ..filters.fusion_filter_renderer import is_fusion_model
 from ..integrations.image_help import render_image_help
 from ..integrations.provider_options import (
     CHAT_PROVIDER_KEYS,
+    TRANSPORT_PROVIDER_KEYS,
     requested_provider_block,
     restrict_provider_block,
 )
@@ -248,6 +250,8 @@ _SERVER_TOOL_SWITCHES = {
     "openrouter:experimental__search_models": "ENABLE_SEARCH_MODELS",
     _IMAGE_GENERATION_TOOL_TYPE: "ENABLE_IMAGE_GENERATION",
 }
+
+_PLUGIN_ID_FOR_SERVER_TOOL_TYPE = {"openrouter:web_search": "web"}
 
 
 def _server_tool_type(tool_key: str) -> str:
@@ -513,6 +517,10 @@ def _ruled_out_tool_entries_stripped(
     return kept
 
 
+def _transport_carries_zdr(transport: str) -> bool:
+    return "zdr" in TRANSPORT_PROVIDER_KEYS.get(transport, frozenset())
+
+
 def _required_with_no_callable_tool(responses_body: ResponsesBody) -> bool:
     if responses_body.tools or responses_body.tool_choice != _REQUIRED_TOOL_CHOICE:
         return False
@@ -543,6 +551,21 @@ def _strip_switched_off_server_tools(responses_body: ResponsesBody, valves: Any)
     kept = [e for e in existing if not (isinstance(e, dict) and e.get("type") in switched_off)]
     if len(kept) != len(existing):
         responses_body.tools = kept or None
+    switched_off_plugin_ids = {
+        plugin_id
+        for tool_type, plugin_id in _PLUGIN_ID_FOR_SERVER_TOOL_TYPE.items()
+        if tool_type in switched_off
+    }
+    existing_plugins = list(responses_body.plugins or [])
+    kept_plugins = [
+        p
+        for p in existing_plugins
+        if not (isinstance(p, dict) and p.get("id") in switched_off_plugin_ids)
+    ]
+    if len(kept_plugins) != len(existing_plugins):
+        responses_body.plugins = kept_plugins or None
+    if "openrouter:web_search" in switched_off:
+        responses_body.web_search_options = None
 
 
 def _apply_server_tools_metadata(
@@ -1535,6 +1558,40 @@ class RequestOrchestrator:
                         f"(requested={responses_body.model}, normalized={normalized_model_id})"
                     ),
                     log_level=logging.ERROR,
+                )
+                if use_task_model_adapter:
+                    return self._pipe._task_refusal_result(__task__, shown)
+                return shown
+
+            if not _transport_carries_zdr(FilterManager.model_transport(normalized_model_id)):
+                zdr_unenforceable_labels = ", ".join(
+                    self._pipe._model_restriction_labels(
+                        [zdr_reason, "ZDR_UNENFORCEABLE"], valves=valves
+                    )
+                )
+                if outcome_sink is not None:
+                    outcome_sink["member_refusal_reason"] = (
+                        f"{responses_body.model} is not permitted under the pipe's Zero "
+                        f"Data Retention routing ({zdr_unenforceable_labels}); ask your admin "
+                        f"to allow it"
+                    )
+                shown = await self._pipe._ensure_error_formatter()._emit_templated_error(
+                    __event_emitter__,
+                    template=valves.MODEL_RESTRICTED_TEMPLATE,
+                    variables={
+                        "requested_model": responses_body.model,
+                        "normalized_model_id": normalized_model_id,
+                        "restriction_reasons": zdr_unenforceable_labels,
+                        "model_id_filter": "",
+                        "free_model_filter": "",
+                        "tool_calling_filter": "",
+                    },
+                    log_message=(
+                        f"Model rejected — ZDR enforcement requested but this model's "
+                        f"transport cannot carry provider.zdr "
+                        f"(requested={responses_body.model}, normalized={normalized_model_id})"
+                    ),
+                    log_level=logging.WARNING,
                 )
                 if use_task_model_adapter:
                     return self._pipe._task_refusal_result(__task__, shown)

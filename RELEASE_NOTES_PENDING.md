@@ -64,6 +64,18 @@
   `package_mode` outcome Update already gave, instead of writing an older bundle snapshot over the install and
   turning a pinned install into a self-updating bundle one. The tab no longer shows the Restore button on a
   package or stub install either; its snapshot list and Delete action stay as they were.
+- **`file_url` with no scheme** — an attached `file_url` written without a `scheme://` is now refused like any
+  other link the provider could not dial, and the person sees the existing `Files: skipped N (served from a link
+  that is neither http nor https, which is blocked by security policy).` status. A bare path (`/etc/passwd`), a
+  relative reference (`../../etc/passwd`) and a `host/path` written without one (`169.254.169.254/latest/meta-data/`)
+  all reached the provider ungated; they are now put to the address gate and refused on their scheme. The gate is
+  the same one an `ftp://` link already met, and the refusal reuses that sentence unchanged — nothing is dropped
+  silently. `ENABLE_SSRF_PROTECTION=False` does **not** restore these, because the scheme rule is sequenced ahead
+  of that valve exactly as it is for `ftp://`. Raw base64 in `file_data`, a `data:` URL in either field and an
+  Open WebUI file path are unchanged: they are inline payloads or become a `file_id` before this point, and are
+  never checked. Open WebUI 0.11.4 emits no `file_url` of its own, so this only reaches a custom filter, agent or
+  API caller that writes one by hand.
+
 - **Video generation, machine callers** — a video turn that fails *before* OpenRouter answers the submission now
   reaches a caller with no chat as an HTTP error instead of a `200` with a Markdown card in it. A rejected job
   leaves with the status the pipe resolved on the status line and the same number in `error.code` (`502` when a
@@ -137,8 +149,9 @@
   would splice two attempts into the reader's message — and with streaming off `body.stream` still governs
   the leg, since the non-streaming wrapper drops those frames before they leave the pipe.
 - **Session log** — a turn the pipe refused before sending is now archived as `error` instead of `complete`.
-  The seven pre-send refusals (Zero Data Retention routing in force with the model off the roster, the ZDR
-  endpoint list unreadable, an endpoint-override conflict from a preset or from Direct Uploads, a Fusion model
+  The eight pre-send refusals (Zero Data Retention routing in force with the model off the roster, the ZDR
+  endpoint list unreadable, Zero Data Retention requested for a model whose request format cannot carry the
+  flag, an endpoint-override conflict from a preset or from Direct Uploads, a Fusion model
   forced to `/chat/completions`, an attachment that would not load, and the operator's model restrictions)
   return a card instead of raising, so the job's future resolved cleanly and the archive recorded a turn whose
   chat holds nothing but a refusal card as a clean completion with no cause. The archived `reason` is the
@@ -239,6 +252,22 @@
   Nothing is announced as a spelling problem: a slug whose read *finished and failed* still is, exactly as before.
   The cost is freshness on a slow host, never correctness, and `HTTP_TOTAL_TIMEOUT_SECONDS` remains the lever for how
   long a single read may take.
+- **provider routing** — the two WARNINGs a generated routing filter raises when it heals a
+  stored row no longer name the stored value. They name the field and what the filter kept
+  instead, because a valve row holds whatever was typed into it — a `data:` URL, a signed
+  link, a paragraph of prose — and none of that belongs in a log. What the warning was for
+  is unchanged: it still says which field went stale and what it was replaced with, and a
+  value that is still on the option list still produces no record at all. Open WebUI's own
+  filter warnings name the filter and never the payload, and these now match that.
+
+  **Every installed routing filter is rewritten on the first model-list refresh after this
+  update.** The two strings live in the generated Python source, and the pipe compares each
+  row's stored source against freshly rendered source byte for byte, so the first refresh
+  rewrites all of them — once, for this change, and silently. Nothing about the rows'
+  scope, ownership or behaviour changes with it; the rendered code differs only in the two
+  format strings. If you have hand-edited a routing row, that edit is reverted by this
+  rewrite for the same reason any other regeneration reverts one.
+
 - **Config tab** — a save the database refuses to write now raises a durable banner instead of a toast alone.
   The banner names the fault, carries no Reload control, and leaves your staged edits in place, so nothing the
   refusal preserved can be discarded from the tab that preserved it. It clears on the next successful save or
@@ -308,9 +337,21 @@
   value that cannot be decrypted went out as an empty `Bearer ` and an encrypted non-`sk-` value the gate refuses went
   out working; a stored value with padding was sent with its padding. Both legs now go through the gate, so one
   misconfiguration has one answer on every leg.
+- **Video turns on the dashboard** — a video turn now books its real usage on the dashboard, and a failed one counts as Failed rather than Completed. The video adapter reports its own terminal state, so a Usage row carries the job's real tokens and cost where it used to carry zeros, and a video that failed, stored no clip, or stalled no longer reads as a free success. A second request that attached to an already-running video job reports under its own id without that job's usage, so one billed clip is one row's spend.
 - **model icons** — a model icon is now stored the way it displays. The icon sweep applies the orientation the
   source published before it writes the PNG, so a logo stored sideways is no longer stored sideways; an icon
   already stored keeps its pixels until its source URL changes, which is when it is downloaded again.
+- **reasoning budget** — a `reasoning.max_tokens` written as a number in a string (`"2048"`, `" 2048 "`,
+  `"2048.7"`) is now read as that number, on both endpoints: it is reserved against the request's own output
+  cap like an integer budget, and on the Gemini 2.5 leg it overrides `GEMINI_THINKING_BUDGET` instead of being
+  replaced by it. A value that expresses no number (`"abc"`, `""`, a list, a boolean, `"inf"`, `"1e400"`,
+  `NaN`) used to reach OpenRouter verbatim as the budget and produce a failed turn; it now produces a turn with
+  **no thinking budget**, which on a wide model is a slower, more expensive turn rather than an error. Nothing
+  is logged for a dropped value, as the carried-field convention has always been.
+- **responses streaming** — every SSE frame on `/responses` is parsed exactly once per turn now, by the
+  reader that decodes it, and the workers forward that parsed frame instead of parsing it a second time. The
+  pre-first-output buffer therefore holds parsed frames rather than byte strings, so a stream whose opening
+  frames a fallback has to discard no longer keeps the raw bytes of those frames in memory.
 - **integer request fields** — a non-finite value in `seed`, `max_tokens`, `max_output_tokens`,
   `max_completion_tokens` or `top_logprobs` no longer ends the turn. `"inf"`, `"-inf"`, `"nan"`,
   `"1e400"`, `inf`, `-inf` and `nan` all raised `OverflowError` out of the field validator, which pydantic

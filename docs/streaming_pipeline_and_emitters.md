@@ -66,11 +66,13 @@ is still not re-POSTed. See
 
 A `data:` line is normally dispatched on the blank line that follows it, but a provider may end its stream without one. Both readers therefore flush whatever is left over when the response ends — bytes that never got their newline, and blobs already split out but not yet dispatched. Each complete leftover frame is dispatched as its own event rather than joined with its neighbours, so every complete frame the provider sent survives the missing blank line; a frame that is itself truncated mid-JSON is still rejected and not delivered. On `/chat/completions` a flushed end-of-stream marker also ends the turn, so the call is not counted as failed; see [Streaming errors and how they surface](#5-streaming-errors-and-how-they-surface) for how that differs from `/responses`.
 
-### Workers (JSON parsers)
-The pipe spawns `SSE_WORKERS_PER_REQUEST` worker tasks. Each worker:
-- dequeues `(seq, data_blob)` from the chunk queue
-- parses JSON
-- enqueues `(seq, event_dict)` into the **event queue**
+### Workers (frame forwarders)
+The pipe spawns `SSE_WORKERS_PER_REQUEST` worker tasks. The JSON parse happens once, in the producer: the reader decodes every SSE frame and hands the object on, and a frame it could not read never leaves the producer. Each worker:
+- dequeues `(seq, event_obj)` from the chunk queue
+- forwards the decoded object
+- enqueues `(seq, event_obj)` into the **event queue**
+
+There is no `await` between the dequeue and the enqueue, so on one event loop a worker cannot overlap another's parse: extra workers buy drain overlap while the producer awaits, and cost one extra queue crossing per frame and one task per concurrent stream. The `seq` reorder buffer makes the order the same either way.
 
 ### Drain (ordered emission)
 The drain loop:
@@ -373,7 +375,7 @@ before the re-raise and on the Chat Completions path by the final flush in
 
 ## 7. Tuning checklist
 
-- Increase throughput (at cost of per-request CPU): raise `SSE_WORKERS_PER_REQUEST` (up to the code-enforced cap).
+- Raise `SSE_WORKERS_PER_REQUEST` only after measuring something it can change. It no longer parallelises the JSON parse: that happens once in the producer, and a worker runs from its dequeue to its enqueue without an `await`, so extra workers neither speed decoding nor add throughput here. What more of them cost is one extra queue crossing per frame and one task per concurrent stream; what they can buy is a little drain overlap while the producer is awaiting the network.
 - Bound memory or latency: keep `STREAMING_CHUNK_QUEUE_MAXSIZE=0` and `STREAMING_EVENT_QUEUE_MAXSIZE=0` unless you have a measured reason to bound them. As long as the consumer keeps draining, a bound trades a larger buffer for a slower drain, not for a stream that stops early. This is about the two queues and nothing else: the producer's pre-first-output buffer is a third buffer that these two settings do not reach, and it is uncapped; on `/chat/completions` the pump queue is a fourth, reached by no size valve at all (§3).
 - Improve observability: set `STREAMING_EVENT_QUEUE_WARN_SIZE` low enough to signal stress early, but high enough to avoid constant warnings. It covers `/responses` and `/chat/completions` replies alike; non-streaming replies buffer through neither queue.
 - Reduce UI freeze during heavy reasoning: increase `STREAMING_NAGLE_MIN_FLUSH_CHARS` (2-5 for moderate reduction, 5-10 for aggressive).

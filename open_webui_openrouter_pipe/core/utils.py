@@ -788,6 +788,19 @@ def _coerce_positive_int(value: Any) -> int | None:
     return coerced if coerced > 0 else None
 
 
+def _coerced_token_cap(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if not isinstance(value, (float, str)):
+        return None
+    try:
+        return round(float(value))
+    except (OverflowError, ValueError):
+        return None
+
+
 def _coerce_bool(value: Any) -> bool | None:
     """Best-effort coercion of truthy string/int flags into booleans."""
     if isinstance(value, bool):

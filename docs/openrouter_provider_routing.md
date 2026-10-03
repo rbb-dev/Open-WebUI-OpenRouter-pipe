@@ -96,6 +96,13 @@ model's own format can carry:
 
 You are never shown a setting the model's request format cannot carry.
 
+A request the **pipe itself** routes for Zero Data Retention is refused rather than
+sent on the two formats that cannot carry `zdr`: under `ZDR_ENFORCE` (or a user's own
+`Request ZDR`), a video model, or a model that answers only on the image API, is
+refused before anything is sent, because a `zdr` written into either schema would be
+accepted and ignored. A model that answers in text *and* pictures is a chat model that
+can draw and is sent as one, with `zdr` intact.
+
 On chat completions every filter carries the full set below at each visibility level:
 
 ### ORDER dropdown
@@ -280,16 +287,20 @@ Ownership is by the marker: the pipe keeps the code and the scope of a row it ow
 When regeneration changes the dropdown options, previously saved selections that no longer
 exist in the new option list are healed instead of breaking the filter. A stored `ORDER`
 whose leading provider is still served keeps that provider as an `"<X> first"` preference,
-and the filter logs a WARNING naming the discarded order and what it kept. A stale `ONLY`,
+and the filter logs a WARNING naming the field and what it kept. A stale `ONLY`,
 `IGNORE` or `QUANTIZATION` — and an `ORDER` whose leading provider is gone — resets to
-"(no preference)" and is also logged, so no value ever changes without a record. Selections
+"(no preference)" and is also logged, so no value ever changes without a record. The
+warning never repeats the stored value itself: a valve row holds whatever was typed into
+it, which may be a `data:` URL or a signed link, and the field name plus what the filter
+kept is what identifies the row that needs re-picking. Selections
 that still exist keep working unchanged; only stale ones are touched, so re-pick to pin the
 rest of a provider lineup change.
 
 The numeric and boolean controls are healed the same way but differently: a stored value
 the current build refuses — a `MIN_THROUGHPUT` below zero, a `MAX_PRICE_*` that is not a
 number, a `ZDR` that is not a boolean — falls back to that field's own default, and the
-filter logs a WARNING naming the stored value and the default it used. Every other value
+filter logs a WARNING naming the field and the default it used, for the same reason. Every
+other value
 on the row keeps its stored value, and the repaired key still counts as explicitly set,
 so a user's own preference is not silently replaced by the admin's. `DATA_COLLECTION` is
 the exception: its three options are a fixed set that cannot change between builds, so a

@@ -113,6 +113,9 @@ class StatusMessages:
     IMAGES_SKIPPED_UNFETCHABLE = (
         "Images: skipped {count} (could not be fetched, so it was not sent)."
     )
+    IMAGES_SKIPPED_UNCHECKED = (
+        "Images: skipped {count} (could not be checked in time, so it was not sent)."
+    )
 
     # Video processing
     VIDEO_BASE64 = "🎥 Processing base64 video input"

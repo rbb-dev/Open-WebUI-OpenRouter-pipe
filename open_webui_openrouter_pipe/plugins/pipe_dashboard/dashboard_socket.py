@@ -48,18 +48,31 @@ _get_pipe: Any = None
 
 _warned_import_sites: set[str] = set()
 
+_warned_undetermined: set[str] = set()
 
-async def _socket_dashboard_enabled(pipe: Any) -> bool:
+
+async def _socket_dashboard_state(pipe: Any) -> tuple[bool, bool]:
     from .config_service import stored_gate_valves
 
     merged, read_ok = await stored_gate_valves(
         getattr(pipe, "id", ""), getattr(pipe, "valves", None)
     )
     if not read_ok:
-        return False
+        _level = warn_level(_warned_undetermined, "socket_gate")
+        logger.log(
+            _level,
+            "pipe_dashboard: the stored valve row could not be read, so the dashboard's "
+            "own state is undetermined this tick; nobody is evicted and the tick is "
+            "decided again on the next one",
+        )
+        return False, False
     if not bool(merged.get("ENABLE_PLUGIN_SYSTEM", False)):
-        return False
-    return bool(merged.get("PIPE_DASHBOARD_ENABLE", True))
+        return False, True
+    return bool(merged.get("PIPE_DASHBOARD_ENABLE", True)), True
+
+
+async def _socket_dashboard_enabled(pipe: Any) -> bool:
+    return (await _socket_dashboard_state(pipe))[0]
 
 
 def _current_pipe() -> Any:
@@ -98,8 +111,14 @@ async def _evict_every_viewer() -> None:
 async def _pipe_dashboard_sub(sid: str, _data: Any = None) -> None:
     global _resync
     pipe = _current_pipe()
-    if not await _socket_dashboard_enabled(pipe):
-        logger.warning("pipe_dashboard: viewer sid=%s refused (dashboard disabled)", sid)
+    enabled, read_ok = await _socket_dashboard_state(pipe)
+    if not enabled:
+        logger.warning(
+            "pipe_dashboard: viewer sid=%s refused (dashboard %s)",
+            sid,
+            "switched off" if read_ok else "state undetermined: the stored valve row "
+            "could not be read",
+        )
         try:
             from open_webui.socket.main import sio
 
@@ -202,7 +221,8 @@ class _ValveEventSink:
             return
         if name != "function.valves_updated":
             return
-        if not await _socket_dashboard_enabled(pipe):
+        enabled, read_ok = await _socket_dashboard_state(pipe)
+        if not enabled and read_ok:
             await _evict_every_viewer()
         change = (getattr(event, "data", None) or {}).get("pipe_config_change")
         try:
@@ -370,10 +390,11 @@ async def reauthorize_local_viewers() -> None:
             exc_info=True,
         )
         return
-    enabled = await _socket_dashboard_enabled(pipe)
+    enabled, read_ok = await _socket_dashboard_state(pipe)
     if not enabled:
-        for sid in list(get_session_ids_from_room(VIEWERS_ROOM) or []):
-            await _evict(sio, sid, "dashboard disabled")
+        if read_ok:
+            for sid in list(get_session_ids_from_room(VIEWERS_ROOM) or []):
+                await _evict(sio, sid, "dashboard disabled")
         return
     sids = list(get_session_ids_from_room(VIEWERS_ROOM) or [])
     if not sids:

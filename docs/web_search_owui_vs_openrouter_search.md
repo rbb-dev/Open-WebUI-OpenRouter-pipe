@@ -33,6 +33,8 @@ When OpenRouter Web Search is enabled for a request, the Web Tools filter sets `
 
 If OpenRouter Web Search is **disabled** (the user turns off the `WEB_SEARCH` toggle in the filter, or an admin switches `ENABLE_WEB_SEARCH` off on the pipe), the filter no longer sets that flag, so OWUI Web Search is left untouched and works normally. The pipe rewrites every Web Tools filter it installed, and every Web Tools row that carries no install record, so the suppression stops everywhere it is this pipe's to stop and not only in the row you happened to look at.
 
+The admin's `ENABLE_WEB_SEARCH` switch is stronger than that. It is re-checked on the request itself as well as on the filter, and while it is off the pipe removes web search from the body whichever route names it: an `openrouter:web_search` entry in `tools`, the deprecated `{"id": "web"}` plugin entry OpenRouter still honours (`guides/features/server-tools/web-search.md:483`, deprecated rather than removed), and a body's `web_search_options` configuring native provider search. So a hand-written filter or an API caller cannot re-enable what the admin switched off, and other plugin entries — `context-compression`, `fusion`, a third party's own — are left alone.
+
 ---
 
 ## How OpenRouter Web Search is surfaced in the UI
@@ -78,7 +80,7 @@ These parameters are respected even when the global `AUTO_ATTACH_WEB_TOOLS_FILTE
 
 ### Use both (advanced):
 
-Not recommended. When both are enabled on the same request, the Web Tools filter suppresses OWUI Web Search to avoid double-searching. If you need OWUI Web Search for specific models, use `disable_web_tools_auto_attach` on those models to prevent the Web Tools filter from being attached.
+Not recommended. When both are enabled on the same request, the Web Tools filter suppresses OWUI Web Search to avoid double-searching. If you need OWUI Web Search for specific models, use `disable_web_tools_auto_attach` on those models to prevent the Web Tools filter from being attached. Note that the per-request suppression only runs while the pipe's own web search is on: with `ENABLE_WEB_SEARCH` off the pipe strips the OpenRouter routes out of the body, so the request that reaches Open WebUI is one it will search with its own engine, and the double-search the suppression exists to prevent cannot arise from the body.
 
 ---
 

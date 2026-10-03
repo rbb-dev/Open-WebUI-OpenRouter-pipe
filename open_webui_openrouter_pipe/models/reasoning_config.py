@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from ..pipe import Pipe
 
 from ..core.errors import OpenRouterAPIError
-from ..core.utils import _select_best_effort_fallback
+from ..core.utils import _coerced_token_cap, _select_best_effort_fallback
 from ..integrations.anthropic import _is_anthropic_model_id
 from .registry import ModelFamily
 
@@ -120,6 +120,13 @@ class ReasoningConfigManager:
         return repaired, True
 
     def _apply_reasoning_preferences(self, responses_body: ResponsesBody, valves: Pipe.Valves) -> str | None:
+        carried = responses_body.reasoning
+        if isinstance(carried, dict) and "max_tokens" in carried:
+            budget = _coerced_token_cap(carried.get("max_tokens"))
+            if budget is None:
+                carried.pop("max_tokens", None)
+            else:
+                carried["max_tokens"] = budget
         supported = ModelFamily.catalog_supported_parameters(responses_body.model)
         supports_reasoning = "reasoning" in supported
         supports_legacy_only = "include_reasoning" in supported and not supports_reasoning

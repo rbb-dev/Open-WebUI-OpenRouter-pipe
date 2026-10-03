@@ -893,7 +893,7 @@ class VideoGenerationAdapter:
         user_id = _clean_str(user.get("id")) or _clean_str(metadata.get("user_id")) or "anonymous"
         existing = await self._get_active_task(key)
         if existing is not None:
-            return await self._await_existing_task(existing, event_emitter, outcome_sink)
+            return await self._await_existing_task(existing, event_emitter, outcome_sink, metadata)
 
         message_lock = await self._acquire_message_lock(key)
         global_semaphore: asyncio.Semaphore | None = None
@@ -916,7 +916,7 @@ class VideoGenerationAdapter:
             if existing is not None:
                 await self._release_message_lock(key, message_lock)
                 message_lock = None  # type: ignore[assignment]
-                return await self._await_existing_task(existing, event_emitter, outcome_sink)
+                return await self._await_existing_task(existing, event_emitter, outcome_sink, metadata)
 
             persisted = await self._persistence.load_message_content(chat_id=chat_id, message_id=message_id, user=user_obj)
             if self._looks_like_final_video_content(persisted):
@@ -974,7 +974,7 @@ class VideoGenerationAdapter:
                     self._pipe._video_active_tasks[key] = bg_task
                     handoff_registered = True
                 result = await asyncio.shield(bg_task)
-                self._settle_request(result, outcome_sink)
+                await self._settle_request(result, outcome_sink, metadata)
                 await self._emit_completion(event_emitter, result.content, usage=result.usage)
                 return result.content
 
@@ -1225,6 +1225,7 @@ class VideoGenerationAdapter:
                     content = disclosure_block + "\n" + content
                 await self._emit_status(event_emitter, "Video generation could not start.", done=True)
                 await self._emit_completion(event_emitter, content)
+                await self._report_generation(None, "failed", metadata)
                 return content
             payload = await self._build_payload(
                 api_model_id=api_model_id,
@@ -1304,7 +1305,7 @@ class VideoGenerationAdapter:
                 handoff_registered = True
 
             result = await asyncio.shield(bg_task)
-            self._settle_request(result, outcome_sink)
+            await self._settle_request(result, outcome_sink, metadata)
             await self._emit_completion(event_emitter, result.content, usage=result.usage)
             return result.content
         except asyncio.CancelledError:
@@ -1320,6 +1321,7 @@ class VideoGenerationAdapter:
                     if is_sign_in_failure(exc):
                         self._pipe._note_auth_failure()
                     return escape
+            await self._report_generation(None, "failed", metadata)
             return await self._pipe._ensure_error_formatter()._report_openrouter_error(
                 exc,
                 event_emitter=event_emitter,
@@ -1353,6 +1355,7 @@ class VideoGenerationAdapter:
                 content = disclosure_block + "\n" + content
             await self._emit_status(event_emitter, _VIDEO_GENERATION_FAILED_STATUS, done=True)
             await self._emit_completion(event_emitter, content)
+            await self._report_generation(None, "failed", metadata)
             return content
         except Exception as exc:
             self._count_a_failed_start(submitted and not lifecycle_transferred, outcome_sink, breaker_key)
@@ -1369,6 +1372,7 @@ class VideoGenerationAdapter:
                 content = disclosure_block + "\n" + content
             await self._emit_status(event_emitter, _VIDEO_GENERATION_FAILED_STATUS, done=True)
             await self._emit_completion(event_emitter, content)
+            await self._report_generation(None, "failed", metadata)
             return content
         finally:
             if handoff_registered:
@@ -1397,10 +1401,38 @@ class VideoGenerationAdapter:
                     )
                 )
 
-    @staticmethod
-    def _settle_request(result: VideoLifecycleResult, outcome_sink: dict[str, Any] | None) -> None:
+    async def _report_generation(
+        self, usage: Any, status: str, metadata: dict[str, Any] | None
+    ) -> None:
+        from ..core.logging_system import SessionLogger
+
+        meta = metadata if isinstance(metadata, dict) else {}
+        fusion_inner = bool((meta.get(_PIPE_METADATA_KEY) or {}).get("fusion_inner"))
+        if fusion_inner:
+            return
+        await self._pipe._dispatch_generation_complete(
+            usage if isinstance(usage, dict) and usage else None,
+            status,
+            request_id=SessionLogger.request_id.get() or "",
+            metadata=metadata,
+            task=None,
+        )
+
+    async def _settle_request(
+        self,
+        result: VideoLifecycleResult,
+        outcome_sink: dict[str, Any] | None,
+        metadata: dict[str, Any] | None,
+        *,
+        owns_usage: bool = True,
+    ) -> None:
         if outcome_sink is not None:
             outcome_sink["error_occurred"] = result.failed or not result.file_id
+        await self._report_generation(
+            result.usage if owns_usage else None,
+            "ok" if not (result.failed or not result.file_id) else "failed",
+            metadata,
+        )
 
     def _count_a_failed_start(
         self,
@@ -1992,10 +2024,11 @@ class VideoGenerationAdapter:
         task: asyncio.Task[VideoLifecycleResult],
         event_emitter: EventEmitter | None,
         outcome_sink: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         await self._emit_status(event_emitter, "Waiting for active video generation job...", done=False)
         result = await asyncio.shield(task)
-        self._settle_request(result, outcome_sink)
+        await self._settle_request(result, outcome_sink, metadata, owns_usage=False)
         await self._emit_status(event_emitter, result.status_description, done=True)
         await self._emit_completion(event_emitter, result.content, usage=result.usage)
         return result.content

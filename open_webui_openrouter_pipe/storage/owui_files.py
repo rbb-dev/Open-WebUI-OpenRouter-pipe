@@ -305,10 +305,6 @@ def is_linkable_chat(chat_id: Any) -> bool:
     reaches an INSERT whose foreign key cannot resolve -- logging a spurious "was not
     linked" on every upload where the FK is enforced, and accruing an orphan
     ``chat_file`` row per upload where it is not.
-
-    This is the single gate: every other chat-id check in the package delegates here so
-    a fourth prefix is one edit. They used to test ``local:`` individually, which is how
-    ``channel:`` reached exactly one of them.
     """
     if not isinstance(chat_id, str):
         return False

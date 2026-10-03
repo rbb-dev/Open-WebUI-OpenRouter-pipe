@@ -86,6 +86,11 @@ reports the pipe's own answer in whichever of its three states applies: the mode
 ZDR-capable, it is not, or OpenRouter's ZDR list has not been read yet, so the pipe has
 not established this either way. The curated cards make no ZDR claim at all.
 
+That card reports the roster's verdict, not admissibility: a model the roster names is
+still refused when the turn asks for Zero Data Retention, because no video request can
+carry the control. A "ZDR-capable" video card is therefore not a promise that such a
+turn will be sent -- see [Zero Data Retention](openrouter_zdr.md).
+
 It quotes no rates: what a model charges is on OpenRouter's pricing page.
 
 This is the fastest way to learn a model without leaving the chat. Try
@@ -1660,6 +1665,14 @@ the schema does not reject unknown keys, so sending them would be accepted
 and ignored. The pipe withholds them and logs which ones it withheld, so a
 preference that cannot be honoured on this transport is visible rather than
 silently absent.
+
+That withholding covers what the **request itself** asked for — an operator's own
+routing preferences, written by hand or by a filter. It is not how Zero Data
+Retention is handled: a turn the pipe has decided must be ZDR-protected is not
+sent on this transport at all. `provider.zdr` would be dropped like any other
+undefined key, so instead the pipe refuses the turn before anything is sent, naming
+the control that asked for it. A request nobody asked to be ZDR-protected goes out
+as usual, with its `only`, `order`, `sort` and `max_price` withheld exactly as above.
 
 The same reasoning decides which provider carries an attachment. Because the
 video request carries no `only`, routing never sees an operator's pin, so the

@@ -14,8 +14,8 @@ from .._utils import extract_task_name, extract_user_message
 from ..base import PluginBase, PluginContext
 from ..registry import PluginRegistry
 from .actions import _dashboard_enabled
-from .auth import ACCESS_DENIED_MD
-from .authz import can_view, model_id, resolve_user
+from .auth import ACCESS_DENIED_MD, UNDETERMINED_MD
+from .authz import UNDETERMINED, can_view, model_id, resolve_user
 from .command_registry import CommandRegistry
 
 # Trigger command auto-imports so @register_command decorators fire
@@ -525,6 +525,11 @@ class PipeDashboardPlugin(PluginBase):
             return None
 
         acting_user = await resolve_user(user.get("id"))
+        if acting_user is UNDETERMINED:
+            return self.ctx.build_response(
+                model=_PIPE_DASHBOARD_MODEL_ID,
+                content=UNDETERMINED_MD,
+            )
         if not await can_view(acting_user, self.ctx.pipe):
             return self.ctx.build_response(
                 model=_PIPE_DASHBOARD_MODEL_ID,
