@@ -16,7 +16,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
 from ..core.config import OWUI_CHAT_ID
-from ..core.errors import _inline_span, channel_safe_values
+from ..core.errors import _channel_safe_card_text, _inline_span, channel_safe_values
 from ..core.logging_system import SessionLogger
 from ..core.utils import (
     CONTINUED_REPLY,
@@ -241,6 +241,9 @@ class EventEmitterHandler:
         """
         error_message = str(error_obj)
         self.logger.error("Error: %s", error_message)
+        on_channel = is_channel_chat(OWUI_CHAT_ID.get())
+        if on_channel:
+            error_message = _channel_safe_card_text(error_message)
         shown = join_answer_and_card(partial_answer, error_message) if show_error_message else ""
 
         if show_error_message and event_emitter:
@@ -253,7 +256,6 @@ class EventEmitterHandler:
                             "done": True,
                         },
                     })
-                on_channel = is_channel_chat(OWUI_CHAT_ID.get())
                 continuing = CONTINUED_REPLY.get() is not None
                 if not done:
                     if on_channel or continuing:

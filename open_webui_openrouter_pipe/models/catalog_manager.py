@@ -1035,7 +1035,7 @@ class ModelCatalogManager:
                 getattr(model_obj, "access_grants", None)
             )
 
-        return self._normalize_access_grants(getattr(model_obj, "access_grants", None))
+        return None
 
     @staticmethod
     def _default_new_model_access_payload(
@@ -1087,7 +1087,9 @@ class ModelCatalogManager:
             )
         else:
             payload["access_grants"] = (
-                access_payload if isinstance(access_payload, list) else []
+                access_payload
+                if access_payload is None or isinstance(access_payload, list)
+                else []
             )
 
         return model_form_cls(**payload)

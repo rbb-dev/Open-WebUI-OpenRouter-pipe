@@ -531,12 +531,15 @@ async def _gate_round_output_pictures(
     max_inline_bytes: int,
     *,
     allow_insecure: Callable[[str], bool],
+    seen: dict[str, bool | None] | None = None,
+    deadline: float | None = None,
 ) -> tuple[Any, list[tuple[str, str, str]]]:
     if not is_picture_output(output):
         return output, []
     text, pictures = tool_output_text_and_pictures(output)
     kept, refused = await _gated_tool_pictures_with_address(
         pipe, pictures, max_inline_bytes=max_inline_bytes, allow_insecure=allow_insecure,
+        seen=seen, deadline=deadline,
     )
     return picture_output(text, kept), refused
 
@@ -1531,7 +1534,12 @@ async def transform_messages_to_input(
                     artifact_groups[group_id] = loaded
                     artifact_producers[group_id] = producers
 
-        address_deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
+        _tool_context = pipe._TOOL_CONTEXT.get()
+        _context_deadline = _tool_context.address_deadline if _tool_context is not None else None
+        address_deadline = (
+            _context_deadline if _context_deadline is not None
+            else time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
+        )
         normalized_rows: dict[int, Any] = {}
 
         def _normalized_row(row: Any) -> Any:

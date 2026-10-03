@@ -560,6 +560,8 @@ class UsageStore:
             return False, False
         if not isinstance(stored, dict):
             return False, False
+        if not bool(stored.get("ENABLE_PLUGIN_SYSTEM", False)):
+            return False, False
         return bool(stored.get("PIPE_DASHBOARD_USAGE_COLLECT", False)), True
 
     def _persist_sync(self, rows: list[dict[str, Any]]) -> bool:

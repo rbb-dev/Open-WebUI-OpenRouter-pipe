@@ -132,9 +132,13 @@ def merge_task_model_params(
 def task_model_owned_by(request: Any, model_id: str) -> str:
     state = getattr(getattr(request, "app", None), "state", None)
     models = getattr(state, "MODELS", None)
-    if not isinstance(models, dict):
+    getter = getattr(models, "get", None)
+    if not callable(getter):
         return ""
-    row = models.get(model_id)
+    try:
+        row = getter(model_id)
+    except Exception:  # noqa: BLE001 - RedisDict.get catches only KeyError, so an outage raises through
+        return ""
     if not isinstance(row, dict):
         return ""
     owned_by = row.get("owned_by")

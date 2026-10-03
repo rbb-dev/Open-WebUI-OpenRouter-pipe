@@ -360,20 +360,46 @@ async def test_execute_function_calls_with_context_idle_timeout():
 
 @pytest.mark.asyncio
 async def test_idle_timeout_returns_failed_output_and_continues():
-    """Idle timeout returns failed outputs for all timed-out tools (no exception)."""
+    """Idle timeout returns failed outputs for all timed-out tools (no exception).
+
+    Both workers must DEQUEUE and START both calls before the idle limit can be what cut
+    them: a call that never started is answered "was not started ... (idle wait)" -- a
+    different message and a different subject. So two things hold this together.
+
+    The limit is a second, not milliseconds. Measured on an idle box both tools hold their
+    slot ~1.3 ms after the enqueue, and pinned to one core under contention the same figure
+    reached 11 ms -- past a 10 ms allowance, which is what the farm gate saw. One second
+    sits far above any scheduling jitter this box can produce, and the tools' own 30 s sleep
+    is still far above it, so the idle limit is unambiguously what ends the wait.
+
+    The clock stays real rather than the house jumping clock. The simulated loop would
+    serve this arm -- both workers run to a start before the loop ever has nothing left to
+    do, so nothing is skipped -- but reaching it means importing the fixture into
+    `test_tools.py`, and the fixture is file-scoped: every other test in that file would
+    move onto the simulated clock too. This arm does not need that, so it does not pay it.
+
+    The tools publish an `asyncio.Event` when they start and the arm asserts both fired, so
+    "the idle limit cut these two" is a claim about production rather than about how fast
+    the box was.
+    """
     pipe = Pipe()
     try:
         pipe.valves.API_KEY = EncryptedStr("test-key")
         loop = asyncio.get_running_loop()
-        context = create_tool_context(loop, idle_timeout=0.01)
+        context = create_tool_context(loop, idle_timeout=1.0)
         token = pipe._TOOL_CONTEXT.set(context)
 
         try:
+            started_a = asyncio.Event()
+            started_b = asyncio.Event()
+
             async def tool_a(**_kwargs):
+                started_a.set()
                 await asyncio.sleep(30)
                 return "a"
 
             async def tool_b(**_kwargs):
+                started_b.set()
                 await asyncio.sleep(30)
                 return "b"
 
@@ -405,6 +431,13 @@ async def test_idle_timeout_returns_failed_output_and_continues():
             outputs = await executor._execute_function_calls(calls, tools)
 
             assert len(outputs) == 2
+            # The non-vacuity this row rests on: both calls reached their tool body, so
+            # "timed out" below is the idle limit cutting two running tools and not the
+            # never-started path answering for two calls that never left the queue.
+            assert started_a.is_set() and started_b.is_set(), (
+                "a tool never started, so this row measured the queue wait rather than "
+                f"the idle limit: tool_a={started_a.is_set()} tool_b={started_b.is_set()}"
+            )
             for out in outputs:
                 assert out["type"] == "function_call_output"
                 assert "timed out" in out["output"].lower()

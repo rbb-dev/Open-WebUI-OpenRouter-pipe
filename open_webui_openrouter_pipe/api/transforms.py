@@ -1063,6 +1063,7 @@ async def _responses_input_to_chat_messages(
 
     async def _hand_over_tool_pictures() -> None:
         from ..requests.transformer import _tool_picture_gate_with_address
+        from ..tools.tool_executor import _request_address_budget
 
         if not tool_pictures:
             return
@@ -1071,8 +1072,12 @@ async def _responses_input_to_chat_messages(
                 "A tool's picture reached the chat-completions handover with no pipe, so the "
                 "address the provider would reach could not be checked; every http(s) one is refused"
             )
+        _handover_seen, _handover_deadline = _request_address_budget(
+            pipe._TOOL_CONTEXT.get() if pipe is not None else None
+        )
         kept, refused = await _tool_picture_gate_with_address(
             pipe, tool_pictures, max_inline_bytes=max_inline_bytes,
+            seen=_handover_seen, deadline=_handover_deadline,
         )
         if refused and refused_out is not None:
             refused_out.extend(refused)

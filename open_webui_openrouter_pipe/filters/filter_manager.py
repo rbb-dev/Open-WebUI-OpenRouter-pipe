@@ -1553,7 +1553,8 @@ class FilterManager:
         template += '            except Exception:  # noqa: BLE001 - values that fail to validate fall back to defaults\n'
         template += '                user_valves = self.UserValves()\n'
         template += '\n'
-        template += '        prev_st = (__metadata__.get("__PIPE_META_KEY__") or {}).get("server_tools") if isinstance(__metadata__, dict) else None\n'
+        template += '        prev_pipe_meta = __metadata__.get("__PIPE_META_KEY__") if isinstance(__metadata__, dict) else None\n'
+        template += '        prev_st = prev_pipe_meta.get("server_tools") if isinstance(prev_pipe_meta, dict) else None\n'
         template += '        server_tools: dict[str, Any] = dict(prev_st) if isinstance(prev_st, dict) else {}\n'
         if enable_web_search:
             template += '        suppress_owui_web_search = False\n'
@@ -3633,7 +3634,9 @@ __KEEP_WHAT_STILL_FITS__
         if provider:
             if __metadata__ is None:
                 __metadata__ = {}
-            pipe_meta = __metadata__.setdefault("__PIPE_META_KEY__", {})
+            prev_pipe_meta = __metadata__.get("__PIPE_META_KEY__")
+            pipe_meta = dict(prev_pipe_meta) if isinstance(prev_pipe_meta, dict) else {}
+            __metadata__["__PIPE_META_KEY__"] = pipe_meta
             existing = pipe_meta.get("provider")
             merged = dict(existing) if isinstance(existing, dict) else {}
             merged.update(provider)

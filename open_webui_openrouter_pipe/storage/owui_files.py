@@ -865,7 +865,6 @@ class OwuiFileGateway:
         self._storage_user_lock = None
         self._storage_user_lock_loop: asyncio.AbstractEventLoop | None = None
         self._storage_role_warning_emitted = False
-        self._user_insert_param_names = None
 
     @property
     def valves(self):
@@ -1533,29 +1532,12 @@ class OwuiFileGateway:
             if fallback_user is None:
                 user_id = f"openrouter-pipe-{uuid.uuid4().hex}"
                 try:
-                    oauth_marker = f"openrouter-pipe-storage:{uuid.uuid4().hex}"
-                    insert_fn = Users.insert_new_user
-                    insert_kwargs: dict[str, Any] = {}
-                    try:
-                        if self._user_insert_param_names is None:
-                            sig = inspect.signature(insert_fn)
-                            self._user_insert_param_names = tuple(sig.parameters.keys())
-                    except (TypeError, ValueError):
-                        self._user_insert_param_names = ()
-
-                    param_names = self._user_insert_param_names or ()
-                    if "oauth" in param_names:
-                        insert_kwargs["oauth"] = {"sub": oauth_marker}
-                    elif "oauth_sub" in param_names:
-                        insert_kwargs["oauth_sub"] = oauth_marker
-
-                    fallback_user = await insert_fn(
+                    fallback_user = await Users.insert_new_user(
                         user_id,
                         fallback_name,
                         fallback_email,
                         "/user.png",
                         fallback_role or "pending",
-                        **insert_kwargs,
                     )
                     self.logger.info(
                         "Created fallback storage user '%s' (%s) for multimodal uploads.",

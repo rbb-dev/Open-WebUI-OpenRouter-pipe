@@ -892,6 +892,7 @@ class ArtifactStore:
     def _initialize_cleanup_state(self):
         """Initialize cleanup worker state."""
         self._cleanup_task: asyncio.Task | None = None
+        self._pipe_owned_row_reapers: list = []
 
 
     @timed
@@ -2377,9 +2378,10 @@ class ArtifactStore:
         producers: dict[str, str] = {}
         wanted: dict[str, str] | None = producers if with_producers else None
         cached: dict[str, dict] = {}
+        unreadable: dict[str, str] = {}
         if self._redis_enabled:
             cached = await self._redis_fetch_rows(
-                chat_id, item_ids, message_id=message_id,
+                chat_id, item_ids, message_id=message_id, unreadable=unreadable,
                 **({} if wanted is None else {"producers": wanted}),
             )
             cache_hit_ids = list(cached)
@@ -2388,7 +2390,6 @@ class ArtifactStore:
             cache_hit_ids = []
             missing_ids = item_ids
 
-        unreadable: dict[str, str] = {}
         if not missing_ids:
             await self._touch_cached(chat_id, message_id, list(cached))
             return _load_result(cached, producers, with_producers)
@@ -2450,6 +2451,8 @@ class ArtifactStore:
             if user_id:
                 self._reset_db_failure(user_id)
             cached.update(fetched)
+            for item_id in [item_id for item_id in fetched if item_id in unreadable]:
+                unreadable.pop(item_id)
             if fetched and self._redis_active():
                 cache_rows = []
                 for item_id, payload in fetched.items():
@@ -3169,6 +3172,7 @@ class ArtifactStore:
         *,
         message_id: str | None = None,
         producers: dict[str, str] | None = None,
+        unreadable: dict[str, str] | None = None,
     ) -> dict[str, dict[str, Any]]:
         if not (self._redis_enabled and self._redis_client and chat_id and item_ids):
             return {}
@@ -3198,7 +3202,7 @@ class ArtifactStore:
         )
         decrypted: dict[str, dict[str, Any]] = {}
         if encrypted_rows:
-            decrypted = await asyncio.to_thread(self._decrypt_many, encrypted_rows)
+            decrypted = await asyncio.to_thread(self._decrypt_many, encrypted_rows, unreadable)
         for item_id, payload in decrypted.items():
             if isinstance(payload, dict):
                 cached[item_id] = payload
@@ -3212,9 +3216,9 @@ class ArtifactStore:
         values: Any,
         message_id: str | None,
         producers: dict[str, str] | None = None,
-    ) -> tuple[dict[str, dict[str, Any]], list[tuple[str, Any]]]:
+    ) -> tuple[dict[str, dict[str, Any]], list[tuple[str, Any, str]]]:
         cached: dict[str, dict[str, Any]] = {}
-        encrypted_rows: list[tuple[str, Any]] = []
+        encrypted_rows: list[tuple[str, Any, str]] = []
         for item_id, raw in zip(id_lookup, values):
             if not raw:
                 continue
@@ -3240,7 +3244,10 @@ class ArtifactStore:
                     ciphertext = payload.get("ciphertext", "") or ""
                 elif isinstance(row_data, dict) and isinstance(row_data.get("payload"), dict):
                     ciphertext = row_data["payload"].get("ciphertext", "") or ""
-                encrypted_rows.append((item_id, ciphertext))
+                item_type = row_data.get("item_type") if isinstance(row_data, dict) else None
+                if not (isinstance(item_type, str) and item_type):
+                    item_type = payload.get("type") if isinstance(payload, dict) else None
+                encrypted_rows.append((item_id, ciphertext, item_type or "unknown"))
                 payload = None
             if isinstance(payload, dict):
                 cached[item_id] = payload
@@ -3251,14 +3258,17 @@ class ArtifactStore:
 
     def _decrypt_many(
         self,
-        pairs: list[tuple[str, Any]],
+        pairs: list[tuple[str, Any, str]],
+        unreadable: dict[str, str] | None = None,
     ) -> dict[str, dict[str, Any]]:
         decrypted: dict[str, dict[str, Any]] = {}
-        for item_id, ciphertext in pairs:
+        for item_id, ciphertext, kind in pairs:
             try:
                 decrypted[item_id] = self._decrypt_payload(ciphertext)
             except Exception as exc:
                 self.logger.warning("Failed to decrypt cached artifact %s: %s", item_id, exc, exc_info=True)
+                if unreadable is not None:
+                    unreadable[item_id] = kind
         return decrypted
 
 
@@ -3280,6 +3290,14 @@ class ArtifactStore:
     async def _run_cleanup_once(self) -> None:
         if not (self._db_executor and self._item_model and self._session_factory):
             return
+        for reap in list(self._pipe_owned_row_reapers):
+            try:
+                reap()
+            except Exception as exc:
+                self.logger.warning(
+                    "Pipe-owned row reap failed on the artifact cleanup pass: %s",
+                    exc, exc_info=True,
+                )
         cutoff_days = self.valves.ARTIFACT_CLEANUP_DAYS
         cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=cutoff_days)
         _expired_purged, expired_complete = await self._purge_expired_cache_entries(cutoff)

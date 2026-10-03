@@ -253,8 +253,9 @@ async def run_fusion_member(
             captured_files.extend(f for f in files if isinstance(f, dict))
 
     if outer_ctx is not None:
-        from ..tools.tool_executor import _ToolExecutionContext
+        from ..tools.tool_executor import _request_address_budget, _ToolExecutionContext
 
+        _request_address_budget(outer_ctx)
         ctx = _ToolExecutionContext(
             queue=asyncio.Queue(maxsize=50),
             per_request_semaphore=outer_ctx.per_request_semaphore,
@@ -276,6 +277,8 @@ async def run_fusion_member(
             tool_call_budget=max_tool_calls,
             messages=outer_ctx.messages,
             parallel_tools=invocation.valves.MAX_PARALLEL_TOOLS_PER_REQUEST,
+            address_verdicts=outer_ctx.address_verdicts,
+            address_deadline=outer_ctx.address_deadline,
         )
         token = pipe._TOOL_CONTEXT.set(ctx)
     collector = FusionCollector(model, live_queue)

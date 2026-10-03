@@ -119,7 +119,7 @@ def _store_persisted_collect_row(host: Any, collect: bool, monkeypatch) -> None:
     Function = _persisted_function_model(monkeypatch)
     _install_valve_codec(monkeypatch)
     Function.metadata.create_all(host._engine)
-    value: Any = {"PIPE_DASHBOARD_USAGE_COLLECT": collect}
+    value: Any = {"ENABLE_PLUGIN_SYSTEM": True, "PIPE_DASHBOARD_USAGE_COLLECT": collect}
     column = Function.__table__.c.valves
     if isinstance(column.type, sqlalchemy.String):
         value = json.dumps(value)
@@ -138,7 +138,11 @@ def _make_store_host(collect: bool = True, *, monkeypatch) -> Any:
     where the `function` table lives. A stub engine without that table is a shape no
     deployment has: the reader finds nothing and refuses, so every test below would
     measure a closed gate rather than the writer. The row therefore goes in here, with
-    collection on by default; `collect=False` is how a test asks for the refusal.
+    collection on by default; `collect=False` is how a test asks for the refusal. The row
+    carries the master switch as well as the collect valve, because a row serving the
+    dashboard carries both keys and `ENABLE_PLUGIN_SYSTEM` declares a default of `False`:
+    a row naming only the collect valve reads as master-switch-off, and every test below
+    would measure that gate instead of the writer.
 
     The engine is a FILE, not `sqlite://` with `StaticPool`, and that is load-bearing.
     `_persist_sync` writes each row inside its own `session.begin_nested()`, so every row

@@ -1591,7 +1591,7 @@ class VideoGenerationAdapter:
                 tmp_dir = Path(tempfile.mkdtemp(prefix="openrouter-video-"))
                 refused: dict[str, str] = {}
                 for index in range(outputs):
-                    tmp_path = tmp_dir / f"job-{job_id}-{index}.bin"
+                    tmp_path = tmp_dir / f"clip-{index}.bin"
                     refused_by_gate = False
                     download_result: dict[str, Any] | None = None
                     try:

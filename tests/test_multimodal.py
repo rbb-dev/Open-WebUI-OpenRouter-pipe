@@ -1501,60 +1501,6 @@ class TestEnsureStorageUser:
             owui_files_module.Users = original_users
 
     @pytest.mark.asyncio
-    async def test_handles_oauth_param_name(self, pipe_instance_async):
-        """Should handle 'oauth' parameter in insert signature."""
-
-        created_user = SimpleNamespace(
-            id="new-user-id",
-            email="openrouter-pipe@system.local"
-        )
-
-        async def mock_insert(user_id, name, email, avatar, role, oauth=None):
-            return created_user
-
-        mock_users = Mock()
-        mock_users.get_user_by_email = AsyncMock(return_value=None)
-        mock_users.insert_new_user = mock_insert
-
-        original_users = owui_files_module.Users
-        try:
-            owui_files_module.Users = mock_users
-            pipe_instance_async._file_gateway._storage_user_cache = None
-            pipe_instance_async._file_gateway._user_insert_param_names = None
-
-            result = await pipe_instance_async._file_gateway.ensure_storage_user()
-            assert result is created_user
-        finally:
-            owui_files_module.Users = original_users
-
-    @pytest.mark.asyncio
-    async def test_handles_oauth_sub_param_name(self, pipe_instance_async):
-        """Should handle 'oauth_sub' parameter in insert signature."""
-
-        created_user = SimpleNamespace(
-            id="new-user-id",
-            email="openrouter-pipe@system.local"
-        )
-
-        async def mock_insert(user_id, name, email, avatar, role, oauth_sub=None):
-            return created_user
-
-        mock_users = Mock()
-        mock_users.get_user_by_email = AsyncMock(return_value=None)
-        mock_users.insert_new_user = mock_insert
-
-        original_users = owui_files_module.Users
-        try:
-            owui_files_module.Users = mock_users
-            pipe_instance_async._file_gateway._storage_user_cache = None
-            pipe_instance_async._file_gateway._user_insert_param_names = None
-
-            result = await pipe_instance_async._file_gateway.ensure_storage_user()
-            assert result is created_user
-        finally:
-            owui_files_module.Users = original_users
-
-    @pytest.mark.asyncio
     async def test_returns_none_when_get_user_raises(self, pipe_instance_async):
         """Should return None when get_user_by_email raises exception."""
 

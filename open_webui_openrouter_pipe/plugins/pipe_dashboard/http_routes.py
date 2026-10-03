@@ -224,10 +224,6 @@ async def bearer_user(request: Request) -> Any:
 
 
 def _client_ip(request: Any) -> Any:
-    fwd = request.headers.get("x-forwarded-for", "")
-    first = fwd.split(",")[0].strip()
-    if first:
-        return first
     return request.client.host if request.client else None
 
 

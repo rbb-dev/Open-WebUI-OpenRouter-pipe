@@ -370,3 +370,16 @@
   video turn driven by API automation, with no signed-in user, loses its prior-video frame. That is the
   intended outcome — Open WebUI gates file content on the requester and never on a service account — and the
   only alternative would be a pipe-owned service identity for prior-video reads.
+- **Fallback storage account** — the service account the pipe auto-creates for the pictures a model generates on a
+  user-less turn (API automations) is now created with **no linked identity**, the way Open WebUI itself creates a
+  non-federated user. It used to be written with `oauth={"sub": "openrouter-pipe-storage:…"}` — the marker at the top
+  level, where no OAuth provider key exists — so the row named no identity to Open WebUI's own readers while still
+  satisfying SCIM's listing predicate, which accepts any non-null JSON in that column. The consequence an operator can
+  see: the auto-created account **stops appearing in Open WebUI's SCIM listing**, and therefore in an IdP console
+  that reads that listing. What does not change: the account is still found by `FALLBACK_STORAGE_EMAIL`, still owns the
+  same pictures, and still serves `GET /api/v1/files/…` for them. **There is no migration.** An existing deployment
+  keeps its malformed row until the account is recreated (change `FALLBACK_STORAGE_EMAIL`, or let it be recreated on a
+  fresh install); the pipe cannot rewrite rows already in your database, and the old marker was a per-creation random
+  value recorded nowhere, so it cannot tell which rows were its own. Note separately that with
+  `OAUTH_MERGE_ACCOUNTS_BY_EMAIL` enabled a login whose IdP asserts this address still adopts the account — that arm is
+  keyed on the email, and no change to the account's `oauth` column closes it.

@@ -253,6 +253,23 @@ def _ffmpeg_pixel_cap_refusal(width: int, height: int) -> FrameExtractionError:
     )
 
 
+def _playlist_head_matches(head: bytes) -> bool:
+    probe = head
+    while probe:
+        if any(probe.startswith(magic) for magic in _PLAYLIST_MAGIC):
+            return True
+        if probe.startswith(b"\xef\xbb\xbf"):
+            probe = probe[3:]
+        elif probe[:1] in b" \t\r\n\v\f":
+            probe = probe[1:]
+        elif probe.startswith(b"#"):
+            newline = probe.find(b"\n")
+            probe = probe[newline + 1:] if newline >= 0 else b""
+        else:
+            return False
+    return False
+
+
 def _refuse_unsafe_input(path: Path) -> str:
     if str(path).startswith("-"):
         logger.info(
@@ -266,16 +283,15 @@ def _refuse_unsafe_input(path: Path) -> str:
             head = handle.read(_PLAYLIST_HEAD_BYTES)
     except OSError:
         head = b""
-    for magic in _PLAYLIST_MAGIC:
-        if head.startswith(magic):
-            logger.info(
-                "frame extraction refused a video attachment (reason=%s); "
-                "no decoder was handed its path",
-                "playlist",
-            )
-            raise FrameExtractionError(
-                "refusing input that is a playlist naming a second file"
-            )
+    if _playlist_head_matches(head):
+        logger.info(
+            "frame extraction refused a video attachment (reason=%s); "
+            "no decoder was handed its path",
+            "playlist",
+        )
+        raise FrameExtractionError(
+            "refusing input that is a playlist naming a second file"
+        )
     demuxer = _INPUT_DEMUXER.get(path.suffix.lower())
     if not demuxer:
         logger.info(

@@ -573,6 +573,8 @@ class StreamingHandler:
         """
         Stream assistant responses incrementally, handling function calls, status updates, and tool usage.
         """
+        from ..tools.tool_executor import _request_address_budget
+
         metadata = {} if metadata is None else metadata
         if session is None:
             raise RuntimeError("HTTP session is required for streaming")
@@ -2171,10 +2173,14 @@ class StreamingHandler:
                     event_iter = event_source
                 else:
                     if not input_is_sanitized:
+                        _replay_seen, _replay_deadline = _request_address_budget(
+                            self._pipe._TOOL_CONTEXT.get()
+                        )
                         _replay_budget = _sanitize_request_input(
                             self._pipe, body,
                             verdicts=await _tool_picture_verdicts_for_input(
                                 self._pipe, body.input,
+                                seen=_replay_seen, deadline=_replay_deadline,
                             ),
                         )
                         await _warn_if_futile(_replay_budget)
@@ -3783,10 +3789,14 @@ class StreamingHandler:
                             len(call_items),
                         )
                     if not input_is_sanitized:
+                        _replay_seen, _replay_deadline = _request_address_budget(
+                            self._pipe._TOOL_CONTEXT.get()
+                        )
                         _replay_budget = _sanitize_request_input(
                             self._pipe, body,
                             verdicts=await _tool_picture_verdicts_for_input(
                                 self._pipe, body.input,
+                                seen=_replay_seen, deadline=_replay_deadline,
                             ),
                         )
                         await _warn_if_futile(_replay_budget)
@@ -4264,6 +4274,9 @@ class StreamingHandler:
                         if loop_index > max_loops:
                             break
                         round_refusals: list[tuple[str, str, str]] = []
+                        _round_seen, _round_deadline = _request_address_budget(
+                            self._pipe._TOOL_CONTEXT.get()
+                        )
                         for position, round_output in enumerate(budgeted_outputs):
                             if not isinstance(round_output, dict):
                                 continue
@@ -4274,6 +4287,8 @@ class StreamingHandler:
                                 allow_insecure=(
                                     self._pipe._multimodal_handler._is_insecure_http_allowed
                                 ),
+                                seen=_round_seen,
+                                deadline=_round_deadline,
                             )
                             if round_refused:
                                 budgeted_outputs[position] = {**round_output, "output": gated_output}
@@ -4293,6 +4308,7 @@ class StreamingHandler:
                             self._pipe, body,
                             verdicts=await _tool_picture_verdicts_for_input(
                                 self._pipe, body.input,
+                                seen=_round_seen, deadline=_round_deadline,
                             ),
                         )
                         await _warn_if_futile(shipped_budget)

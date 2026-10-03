@@ -15,6 +15,7 @@ import contextlib
 import json
 import logging
 import mimetypes
+import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
@@ -37,6 +38,7 @@ from ..core.warn_latch import warn_level
 
 _OWUI_RESULT_WARN_COOLDOWN_S = 300.0
 _OWUI_RESULT_WARN_CAP = 256
+from ..storage.multimodal import ADDRESS_CHECK_BUDGET_SECONDS
 from ..storage.owui_files import is_temporary_chat, owui_file_content_url
 from ..storage.persistence import generate_item_id
 from .tool_registry import OWUI_OWNS_KEY
@@ -247,6 +249,18 @@ class _ToolExecutionContext:
     terminal_files_inline: bool = False
     messages: list[dict[str, Any]] = field(default_factory=list)
     parallel_tools: int = 0
+    address_verdicts: dict[str, bool | None] = field(default_factory=dict)
+    address_deadline: float | None = None
+
+
+def _request_address_budget(
+    context: _ToolExecutionContext | None,
+) -> tuple[dict[str, bool | None] | None, float | None]:
+    if context is None:
+        return None, None
+    if context.address_deadline is None:
+        context.address_deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
+    return context.address_verdicts, context.address_deadline
 
 
 async def _read_user_row(context: _ToolExecutionContext) -> Any:
@@ -1094,8 +1108,10 @@ class ToolExecutor:
             shown.append(entry)
             if isinstance(entry, dict) and entry.get("type") == "image" and isinstance(url, str) and url:
                 candidates.append(url)
+        seen, deadline = _request_address_budget(context)
         pictures, refused = await _tool_picture_gate_with_address(
             pipe, candidates, max_inline_bytes=max_inline_bytes,
+            seen=seen, deadline=deadline,
         )
         for refused_url, reason, cause in refused:
             self.logger.warning(

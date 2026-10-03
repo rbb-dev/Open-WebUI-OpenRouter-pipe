@@ -258,7 +258,8 @@ class Filter:
             except Exception:  # noqa: BLE001 - values that fail to validate fall back to defaults
                 user_valves = self.UserValves()
 
-        prev_st = (__metadata__.get("openrouter_pipe") or {}).get("server_tools") if isinstance(__metadata__, dict) else None
+        prev_pipe_meta = __metadata__.get("openrouter_pipe") if isinstance(__metadata__, dict) else None
+        prev_st = prev_pipe_meta.get("server_tools") if isinstance(prev_pipe_meta, dict) else None
         server_tools: dict[str, Any] = dict(prev_st) if isinstance(prev_st, dict) else {}
         suppress_owui_web_search = False
 

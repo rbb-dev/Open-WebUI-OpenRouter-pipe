@@ -34,6 +34,17 @@ from open_webui_openrouter_pipe.plugins.pipe_dashboard.formatters import (
 # ── Fixtures ──
 
 
+_ACTIVE_MONKEYPATCH: list = []
+"""The running test's `monkeypatch`, so `_make_plugin` can commit the row it needs."""
+
+
+@pytest.fixture(autouse=True)
+def _active_monkeypatch(monkeypatch):
+    _ACTIVE_MONKEYPATCH.append(monkeypatch)
+    yield
+    _ACTIVE_MONKEYPATCH.pop()
+
+
 @pytest.fixture(autouse=True)
 def _clean_registries():
     """Reset both plugin and command registries between tests."""
@@ -88,7 +99,10 @@ def _commit_dashboard_row(monkeypatch, pipe) -> None:
             return SimpleNamespace(content=self.content)
 
         async def get_function_valves_by_id(self, id, db=None):
-            return {"PIPE_DASHBOARD_ENABLE": bool(pipe.valves.PIPE_DASHBOARD_ENABLE)}
+            return {
+                "ENABLE_PLUGIN_SYSTEM": bool(pipe.valves.ENABLE_PLUGIN_SYSTEM),
+                "PIPE_DASHBOARD_ENABLE": bool(pipe.valves.PIPE_DASHBOARD_ENABLE),
+            }
 
     monkeypatch.setattr(owf, "Functions", _Row())
 
@@ -127,11 +141,17 @@ def _make_mock_pipe():
 
 
 def _make_plugin(pipe: object = None) -> PipeDashboardPlugin:
-    """Create an initialized PipeDashboardPlugin."""
+    """Create an initialized PipeDashboardPlugin.
+
+    `on_models` and `on_request` answer from the PERSISTED valve row, so the row is
+    committed here for the pipe this builds. Without it every arm below would be decided
+    by a row that was never written rather than by the valve under test.
+    """
     import logging
 
     if pipe is None:
         pipe = _make_mock_pipe()
+        _commit_dashboard_row(_ACTIVE_MONKEYPATCH[0], pipe)
     ctx = PluginContext(pipe=pipe, logger=logging.getLogger("test"))
     plugin = PipeDashboardPlugin()
     plugin.on_init(ctx)
@@ -578,7 +598,9 @@ class TestRegistryIntegration:
     def test_pipe_dashboard_through_registry_dispatch(self):
         """PipeDashboardPlugin injects model when dispatched through PluginRegistry."""
         registry = PluginRegistry()
-        registry.init_plugins(_make_mock_pipe())
+        pipe = _make_mock_pipe()
+        _commit_dashboard_row(_ACTIVE_MONKEYPATCH[0], pipe)
+        registry.init_plugins(pipe)
         models = [{"id": "gpt-4o", "name": "GPT-4o"}]
         asyncio.run(registry.dispatch_on_models(models))
         ids = [m["id"] for m in models]
@@ -588,7 +610,9 @@ class TestRegistryIntegration:
     async def test_pipe_dashboard_request_through_registry(self):
         """PipeDashboardPlugin handles requests when dispatched through PluginRegistry."""
         registry = PluginRegistry()
-        registry.init_plugins(_make_mock_pipe())
+        pipe = _make_mock_pipe()
+        _commit_dashboard_row(_ACTIVE_MONKEYPATCH[0], pipe)
+        registry.init_plugins(pipe)
         result = await registry.dispatch_on_request(
             _make_body("help"), {"role": "admin"}, {}, None, None,
         )

@@ -29,6 +29,7 @@ from .dashboard_publisher import (
 )
 from .dashboard_socket import clear_socket_pipe_getter, register_socket_handler
 from .http_routes import (
+    _plugins_enabled,
     clear_fresh_dispatch,
     clear_routes_pipe_getter,
     register_action_route,
@@ -160,6 +161,9 @@ class PipeDashboardPlugin(PluginBase):
         "on_request_alive": 50,
         "on_generation_complete": 50,
     }
+    _master_switch_request_id: str | None = None
+    _master_switch_on: bool = False
+
     plugin_valves: ClassVar[dict[str, tuple]] = {
         "PIPE_DASHBOARD_ENABLE": (bool, Field(
             default=False,
@@ -267,6 +271,8 @@ class PipeDashboardPlugin(PluginBase):
     def on_init(self, ctx: PluginContext, **kwargs: Any) -> None:
         self.ctx = ctx
         self._get_pipe = lambda: getattr(ctx, "pipe", None)
+        self._master_switch_request_id: str | None = None
+        self._master_switch_on: bool = False
 
         from .update_service import UpdateService
 
@@ -319,6 +325,16 @@ class PipeDashboardPlugin(PluginBase):
             self._auto_update_task = loop.create_task(
                 self.update_service.run_auto_loop(), name="openrouter-update-auto"
             )
+
+    async def _plugin_system_on_for(self, request_id: str = "") -> bool:
+        key = str(request_id or "")
+        if key and self._master_switch_request_id == key:
+            return self._master_switch_on
+        on = await _plugins_enabled(getattr(getattr(self, "ctx", None), "pipe", None))
+        if key:
+            self._master_switch_request_id = key
+            self._master_switch_on = on
+        return on
 
     def _maybe_start_sweep(self) -> None:
         valves = getattr(getattr(self, "ctx", None), "valves", None)
@@ -373,6 +389,8 @@ class PipeDashboardPlugin(PluginBase):
 
     async def on_models(self, models: list[dict[str, Any]], **kwargs: Any) -> None:
         if not hasattr(self, "ctx"):
+            return
+        if not await _plugins_enabled(self.ctx.pipe):
             return
         _display_name = "Pipe Dashboard"
         _description = (
@@ -487,7 +505,11 @@ class PipeDashboardPlugin(PluginBase):
         self._maybe_start_usage_purge()
         requested_model = str(body.get("model", ""))
         if not self._is_our_model(requested_model):
-            if _dashboard_observability_needed(getattr(self.ctx, "valves", None)):
+            if _dashboard_observability_needed(getattr(self.ctx, "valves", None)) and (
+                await self._plugin_system_on_for(
+                    str(kwargs.get("request_id") or "")
+                )
+            ):
                 try:
                     self._tracker.start(
                         str(kwargs.get("request_id") or ""),
@@ -499,6 +521,9 @@ class PipeDashboardPlugin(PluginBase):
                 except Exception:
                     logging.getLogger(__name__).debug("session track start failed", exc_info=True)
             return None  # Not for us — let the request continue
+
+        if not await _plugins_enabled(self.ctx.pipe):
+            return None
 
         # Plugin disabled — don't handle requests for our model
         if not await _dashboard_enabled(self.ctx.pipe):
@@ -590,6 +615,8 @@ class PipeDashboardPlugin(PluginBase):
             return None
         if not _dashboard_observability_needed(getattr(getattr(self, "ctx", None), "valves", None)):
             return None
+        if not await self._plugin_system_on_for(request_id):
+            return None
         tracker = self._tracker
 
         async def _wrapped(event: Any) -> Any:
@@ -635,6 +662,8 @@ class PipeDashboardPlugin(PluginBase):
     async def on_request_alive(self, request_id: str = "", **kwargs: Any) -> None:
         try:
             if not _dashboard_observability_needed(getattr(getattr(self, "ctx", None), "valves", None)):
+                return
+            if not await self._plugin_system_on_for(str(request_id or "")):
                 return
             self._tracker.mark_stream_alive(str(request_id or ""))
         except (AttributeError, KeyError, TypeError, ValueError):

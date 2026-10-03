@@ -140,12 +140,6 @@ def test_ensure_route_before_spa_moves_spa_last():
     assert app.routes[-1] is spa
 
 
-def test_client_ip_prefers_forwarded():
-    r = _req(headers={"x-forwarded-for": "5.6.7.8, 9.9.9.9"})
-    assert http_routes._client_ip(r) == "5.6.7.8"
-    assert http_routes._client_ip(_req(headers={})) == "1.2.3.4"
-
-
 def test_route_binds_body_200_not_422(monkeypatch):
     """Regression guard: request: Request (not Any) → FastAPI injects Request
     and validates ActionBody from JSON, returning 200 not 422."""

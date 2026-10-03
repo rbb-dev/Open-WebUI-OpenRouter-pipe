@@ -907,6 +907,9 @@ class Pipe:
             pipe=self,
             artifact_store=self._artifact_store,
         )
+        self._artifact_store._pipe_owned_row_reapers.append(
+            self._session_log_manager.reap_staged_rows
+        )
         self._maybe_start_log_worker()
 
         # Configure timing file if enabled

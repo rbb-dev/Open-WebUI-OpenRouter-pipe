@@ -100,7 +100,7 @@ The artifact table name includes a short hash derived from `(ARTIFACT_ENCRYPTION
 - Old artifacts remain in the database, but the pipe will read/write using the table corresponding to the currently configured key.
 
 Operational impact:
-- Key rotation can intentionally reduce historical artifact replay (older marker references will not resolve unless you restore the prior key). The rows in the table the rotated-away key named are not thereby kept: the artifact retention sweep reaps them on `ARTIFACT_CLEANUP_DAYS` as retired tables, bookkeeping rows included — and skips that pass entirely while the key itself cannot be read, so an unreadable key costs retention rather than reaching another configuration's rows.
+- Key rotation can intentionally reduce historical artifact replay (older marker references will not resolve unless you restore the prior key). That reduction is reported rather than silent: a stored item a turn's read cannot open is dropped from that turn and the person in the chat is told once, on that turn, on both read paths. The rows in the table the rotated-away key named are not thereby kept: the artifact retention sweep reaps them on `ARTIFACT_CLEANUP_DAYS` as retired tables, bookkeeping rows included — and skips that pass entirely while the key itself cannot be read, so an unreadable key costs retention rather than reaching another configuration's rows.
 - A rotation takes effect for writes already in flight. The cipher is rebuilt against the current key on every call, so the store is never left holding a retired one, but a write that was already inside that cipher build when the change landed is still written under the previous key and cannot be read afterwards; that one row is dropped and a warning in the pipe’s log names its artifact kind (never its content).
 - A rotation also reaches rows still waiting in the Redis pending queue. A row that was buffered under the previous key and has not been written yet is discarded at the next flush rather than written into the new key's table, where nothing could ever read it; a warning names its artifact kind and count. The row is never written at all, so it will not be in the new table to look for.
 - Plan rotations as an operational change and communicate the impact to users if you rely on long-lived artifact replay.
@@ -264,9 +264,12 @@ then let the HTTP client resolve the name again:
   one inside the same request-wide address-check budget, so a picture cited twice in one
   reply is checked once and a turn carrying many pictures is bounded by that
   `ADDRESS_CHECK_BUDGET_SECONDS` (20.0) rather than by a lookup per picture.
-  A turn's **video** links draw on that same request-wide budget, and the picture and
-  video checks share it, so a message carrying many of either is bounded by the budget
-  rather than by a lookup per link.
+  A turn's **video** links draw on that same request-wide budget, and the picture, video and
+  tool-result checks share it, so a message carrying many of any of them is bounded by the
+  budget rather than by a lookup per link. A picture a tool result carries as a link is
+  resolved once per request by its own link rather than once per host, and it draws on the
+  outer request's budget inside a Fusion panel member too, so a panel of members cannot
+  multiply the ceiling by the number of members.
 
 ### What a blocked address is recorded as
 
@@ -344,6 +347,8 @@ Recommended operator action:
 - HTTP is disabled by default; only enable plaintext `http://` with a narrow allowlist (`ALLOW_INSECURE_HTTP_HOSTS`) and compensating egress controls.
 - To constrain which hosts a per-user video reference link may name, set `VIDEO_REFERENCE_ALLOWED_DOMAINS` (parent-domain match, and it governs the `provider.options` route as well as the filter fields). Write a bare host to cover the host on every port, or `host:port` to name one service: a `host:port` entry no longer covers that host's other ports, so a list written that way for a service on 8443 will refuse a link to the same host on 443. Remember it cannot govern a link the media relay published for the request, by design.
 
+An identifier a provider returns is never used to name a file or folder on the host; the pipe names its own temporary files. It is why a generated clip lands in the per-job directory the lifecycle made for it and nowhere else, whatever the id looked like.
+
 ### Log safety
 
 `_redact_payload_blobs()` runs over every request payload the pipe records, and over the body of every error response it records, at any log level. It reduces two kinds of value:
@@ -375,7 +380,7 @@ Security considerations:
 - Archives are encrypted using `SESSION_LOG_ZIP_PASSWORD` (treat as a secret).
 - Archives are written under `SESSION_LOG_DIR` with a predictable hierarchy (use filesystem permissions accordingly).
 - A request that carries no usable `chat_id`/`message_id` — the plain API route — is archived under `api/api-<request_id>.zip` while `SESSION_LOG_ARCHIVE_API_CALLS` is on, so machine traffic is captured on the same terms as chat traffic. The key is the request id, so one file per request and never shared between two calls.
-- Retention and cleanup are controlled by `SESSION_LOG_RETENTION_DAYS` and the cleanup interval valve, and run while storage is on. Turning `SESSION_LOG_STORE_ENABLED` off stops the sweep, so archives already on disk survive until it is re-enabled and their window passes.
+- Retention and cleanup are controlled by `SESSION_LOG_RETENTION_DAYS` and the cleanup interval valve. Turning `SESSION_LOG_STORE_ENABLED` off stops the archive sweep, so archives already on disk survive until it is re-enabled and their window passes — but it does not stop the staged-row reap: a staged segment past `SESSION_LOG_RETENTION_DAYS`, and an assembly lock past its stale-lock window, are still deleted on the hourly cleanup pass, because the valve governs capture and publishing, not retention.
 
 See: [Session Log Storage](session_log_storage.md).
 
@@ -416,4 +421,4 @@ For a typical production deployment:
 2. Configure `OPENROUTER_API_KEY` (env) or `API_KEY` (valve).
 3. If you persist artifacts, set `ARTIFACT_ENCRYPTION_KEY` and keep `ENCRYPT_ALL=True` unless you have a clear reason to encrypt reasoning only.
 4. Keep `ENABLE_SSRF_PROTECTION=True`, keep HTTPS-only defaults, and enforce outbound egress policy (only allow HTTP if explicitly allowlisted).
-5. Review retention (`ARTIFACT_CLEANUP_DAYS`, session log retention) and validate it matches your operational requirements. The two are independent: the artifact sweep is scoped to artifacts and never removes the pipe's bookkeeping rows, and its Redis cache-purge batch carries that same scope so a spared row keeps its cached copy as well, so a staged session-log segment is bounded by `SESSION_LOG_RETENTION_DAYS` and a coordination lock by its own stale-lock rule — except in a table a key rotation left behind, where no owner can reach them and `ARTIFACT_CLEANUP_DAYS` is the window that bounds them instead. That retired-table pass is also the one that stops while `ARTIFACT_ENCRYPTION_KEY` is unreadable.
+5. Review retention (`ARTIFACT_CLEANUP_DAYS`, session log retention) and validate it matches your operational requirements. The two are independent: the artifact sweep is scoped to artifacts and never removes the pipe's bookkeeping rows, and its Redis cache-purge batch carries that same scope so a spared row keeps its cached copy as well, so a staged session-log segment is bounded by `SESSION_LOG_RETENTION_DAYS` and a coordination lock by its own stale-lock rule, on the hourly cleanup pass whether or not `SESSION_LOG_STORE_ENABLED` is on — except in a table a key rotation left behind, where no owner can reach them and `ARTIFACT_CLEANUP_DAYS` is the window that bounds them instead. That retired-table pass is also the one that stops while `ARTIFACT_ENCRYPTION_KEY` is unreadable.

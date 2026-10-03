@@ -452,6 +452,13 @@ function refuseSave(btn, names, detail, err){
   else if(detail) toast("Save failed: nothing was saved — "+(typeof detail==="string"?detail:"the server rejected the request"));
   else showConflict();
 }
+function adoptSecretFlags(r,n,v,sec){
+  const fl=sec[n];
+  if(fl){v.secret_set=!!fl.set;v.secret_stored=!!fl.stored;return true;}
+  const sp=Array.isArray(r.valves)?r.valves.find(x=>x&&x.name===n):null;
+  if(sp&&(typeof sp.secret_set!=="undefined"||typeof sp.secret_stored!=="undefined")){v.secret_set=!!sp.secret_set;v.secret_stored=!!sp.secret_stored;return true;}
+  return false;
+}
 function commitSave(){
   if(configUnreadable)return;
   const names=Object.keys(edits); if(!names.length)return;
@@ -472,8 +479,8 @@ function commitSave(){
     const notSaved=Array.isArray(r.not_saved)?r.not_saved:[];
     const sec=(r.secrets&&typeof r.secrets==="object")?r.secrets:{};
     names.forEach(n=>{ const v=byName[n];
-      if(clashed&&clashed.indexOf(n)>=0){ if(v&&v.secret){v.secret_set=(edits[n]!==null);} revalidate(n); return; }
-      if(v&&v.secret){const fl=sec[n]; if(fl){v.secret_set=!!fl.set;v.secret_stored=!!fl.stored;} else {v.secret_set=(edits[n]===null&&v.secret_stored)?v.secret_set:(edits[n]!==null&&notSaved.indexOf(n)<0);}} else if(v){baseline[n]=Object.prototype.hasOwnProperty.call(vals,n)?vals[n]:edits[n];} delete edits[n]; });
+      if(clashed&&clashed.indexOf(n)>=0){ if(v&&v.secret){ if(!adoptSecretFlags(r,n,v,sec)) v.secret_set=(edits[n]!==null); } revalidate(n); return; }
+      if(v&&v.secret){ if(!adoptSecretFlags(r,n,v,sec)) v.secret_set=(edits[n]===null&&v.secret_stored)?v.secret_set:(edits[n]!==null&&notSaved.indexOf(n)<0);} else if(v){baseline[n]=Object.prototype.hasOwnProperty.call(vals,n)?vals[n]:edits[n];} delete edits[n]; });
     if(r.rev!=null){REV=r.rev;lastSeenRev=r.rev;}
     if(r.change!=null){lastChange=r.change;lastState=null;}
     inflightSave=false;

@@ -759,6 +759,13 @@ def channel_safe_values(values: dict[str, Any]) -> dict[str, Any]:
     return {k: ("" if k in _CHANNEL_WITHHELD_TEMPLATE_KEYS else v) for k, v in values.items()}
 
 
+_INTERNAL_FILE_REF_RE = re.compile(r"[^\s()\[\]]*/api/v1/files/[^\s()\[\]]*", re.IGNORECASE)
+
+
+def _channel_safe_card_text(text: str) -> str:
+    return _INTERNAL_FILE_REF_RE.sub("[a file reference withheld on a channel]", text)
+
+
 _BLOCKED_RATHER_THAN_REJECTED = frozenset(
     name
     for table in (_IN_BAND_STATUS_BY_ERROR_TYPE, _IN_BAND_STATUS_BY_NATIVE_CODE)

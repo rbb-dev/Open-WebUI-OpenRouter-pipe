@@ -1107,10 +1107,20 @@ class SessionLogManager:
     # =========================================================================
 
     @timed
+    def reap_staged_rows(self) -> None:
+        model, session_factory = self._db_handles()
+        if not model or not session_factory:
+            return
+        self._cleanup_stale_locks(
+            model, session_factory, float(self.valves.SESSION_LOG_LOCK_STALE_SECONDS)
+        )
+        self._cleanup_stale_segments(
+            model, session_factory, int(self.valves.SESSION_LOG_RETENTION_DAYS)
+        )
+
+    @timed
     def run_assembler_once(self) -> None:
         """One assembler tick: cleanup stale locks, assemble terminal + stale bundles."""
-        if not self.valves.SESSION_LOG_STORE_ENABLED:
-            return
         model, session_factory = self._db_handles()
         if not model or not session_factory:
             return
@@ -1121,6 +1131,11 @@ class SessionLogManager:
             return
         with contextlib.suppress(Exception):
             probe.close()
+
+        self.reap_staged_rows()
+
+        if not self.valves.SESSION_LOG_STORE_ENABLED:
+            return
 
         batch_size = self.valves.SESSION_LOG_ASSEMBLER_BATCH_SIZE
         lock_stale_seconds = self.valves.SESSION_LOG_LOCK_STALE_SECONDS
@@ -1137,11 +1152,6 @@ class SessionLogManager:
                 self._rescue_pending.pop(_turn, None)
             for _latch_name in self._FAULT_LATCHES:
                 _truncate_latch(getattr(self, _latch_name), _MAX_DRAIN_LATCH_KEYS)
-
-        self._cleanup_stale_locks(model, session_factory, lock_stale_seconds)
-        self._cleanup_stale_segments(
-            model, session_factory, int(self.valves.SESSION_LOG_RETENTION_DAYS)
-        )
 
         backed_off = self._backoff_exclusion(lock_stale_seconds)
 

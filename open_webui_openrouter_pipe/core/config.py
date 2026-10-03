@@ -126,7 +126,10 @@ _CHANNEL_CARD_RULE = (
     "the provider, openrouter_code and status_code still render on a channel, and error_id is the handle to "
     "quote when following up there. On a temporary chat, a temporary: or local: chat id, session_id alone is "
     "withheld and left out of the card the same way, because that value is a live session handle rather than a "
-    "shared audience; user_id is not withheld there, and error_id is the handle to quote from a temporary chat."
+    "shared audience; user_id is not withheld there, and error_id is the handle to quote from a temporary chat. "
+    "A template is not the only text that reaches a channel: the plain (non-templated) error card reduces a "
+    "stored-file reference in its own sentence to a file reference withheld on a channel, so a path, filename, "
+    "id or signature reaches a saved chat and not a room."
 )
 
 _WRITABLE_FRAME_MIMES = frozenset({"image/jpeg", "image/png", "image/webp"})
@@ -1277,7 +1280,7 @@ class Valves(BaseModel):
     )
     FALLBACK_STORAGE_EMAIL: str = Field(
         default=(os.getenv("OPENROUTER_STORAGE_USER_EMAIL") or "openrouter-pipe@system.local"),
-        description="Owner email for the pictures a model generates in a request with no signed-in user (e.g., API automations).",
+        description="Owner email for the pictures a model generates in a request with no signed-in user (e.g., API automations). An account the pipe auto-creates for this is created with no linked identity, so it is not enumerated in Open WebUI's SCIM listing; with `OAUTH_MERGE_ACCOUNTS_BY_EMAIL` enabled, a login whose IdP asserts this address adopts the account.",
     )
     FALLBACK_STORAGE_NAME: str = Field(
         default=(os.getenv("OPENROUTER_STORAGE_USER_NAME") or "OpenRouter Pipe Storage"),
@@ -1402,7 +1405,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "'public' grants read access to all users (wildcard access grant). "
             "'admins' creates no access grants (private) and relies on Open WebUI's "
             "BYPASS_ADMIN_ACCESS_CONTROL for admin access; otherwise admins must be granted access explicitly. "
-            "Applies only when a model is first added; existing access grants are kept when it is refreshed."
+            "Applies only when a model is first added, to the models the pipe creates; a metadata refresh "
+            "never changes an existing model's visibility, so existing access grants are kept "
+            "when it is refreshed."
         ),
     )
     FREE_MODEL_FILTER: Literal["all", "only", "exclude"] = Field(
@@ -1547,8 +1552,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         title="Enable plugin system",
         description=(
             "Master switch for the plugin system. When False, plugins are never called at all. "
-            "Takes hold on each worker's next request or model-list build; the dashboard's own "
-            "route reads the persisted row and closes at once."
+            "Takes hold on each worker's next request or model-list build; the action route, "
+            "the live socket, the model list, the dashboard chat, the session tracker and "
+            "the usage writer each read the persisted row and close at once."
         ),
     )
     AUTO_CONTEXT_TRIMMING: bool = Field(
@@ -1674,7 +1680,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     )
     ARTIFACT_ENCRYPTION_KEY: EncryptedStr = Field(
         default_factory=_default_artifact_encryption_key,
-        description="Use at least 16 chars. Encrypt reasoning tokens (and optionally all persisted artifacts). Changing the key creates a new table; prior artifacts become inaccessible. Clearing it stops artifact encryption and returns the setting to its default, which is empty. Both the artifact table and the usage-history table are named from a hash of this key, so new writes after a clear go to a fresh, unencrypted pair of tables. For the artifact table, everything already saved under the previous key is stranded there, unread; usage rows are plain columns rather than sealed ones, so they are not unreadable, and the usage retention purge empties the table a rotation left behind at its own window. Stranded is not kept for ever: the artifact retention sweep reaps those rows on ARTIFACT_CLEANUP_DAYS, once the key that named them is readable again. While this key cannot be read, that sweep leaves every table this worker does not currently write to alone -- its own retired table included -- because the unreadable-key table name gives it no way to tell that table from one belonging to another configuration; only the table the worker is writing to is swept until the key is re-entered here. A value that cannot be read under the current application secret (`WEBUI_SECRET_KEY`, or the deprecated `WEBUI_JWT_SECRET_KEY` it falls back to (a default, so an empty primary is not a fallback)) cannot be used either, whether it was stored under a key that no longer decrypts or is a damaged row that still looks like a Fernet token: the pipe refuses to write artifacts while the key is unreadable rather than storing them in the clear, and the person in the chat is told once, on the turn it happens, that the items will be missing from later turns; the key must be re-entered here before writes resume. A row damaged out of that shape is not read as a ciphertext, so it does not arm this refusal — which is also why an install that leaves Open WebUI's ENABLE_VALVE_ENCRYPTION at its default, and so stores this valve as plain JSON, is not stopped by it. A passphrase typed here that begins with encrypted: and continues with an all-base64 character body beginning with `g` is read as a damaged stored value and refused the same way, so enter it without the prefix; a body that is all-base64 but does not begin with `g` is the operator's own passphrase and reads back verbatim. The cipher is rebuilt against the current key on every call, so a rotation never leaves the store using a retired one; a write already inside that cipher build when the change lands is still written under the previous key, cannot be read afterwards, and is dropped with a warning naming its artifact kind.",
+        description="Use at least 16 chars. Encrypt reasoning tokens (and optionally all persisted artifacts). Changing the key creates a new table; prior artifacts become inaccessible. Clearing it stops artifact encryption and returns the setting to its default, which is empty. Both the artifact table and the usage-history table are named from a hash of this key, so new writes after a clear go to a fresh, unencrypted pair of tables. For the artifact table, everything already saved under the previous key is stranded there, unread; usage rows are plain columns rather than sealed ones, so they are not unreadable, and the usage retention purge empties the table a rotation left behind at its own window. Stranded is not kept for ever: the artifact retention sweep reaps those rows on ARTIFACT_CLEANUP_DAYS, once the key that named them is readable again. While this key cannot be read, that sweep leaves every table this worker does not currently write to alone -- its own retired table included -- because the unreadable-key table name gives it no way to tell that table from one belonging to another configuration; only the table the worker is writing to is swept until the key is re-entered here. A value that cannot be read under the current application secret (`WEBUI_SECRET_KEY`, or the deprecated `WEBUI_JWT_SECRET_KEY` it falls back to (a default, so an empty primary is not a fallback)) cannot be used either, whether it was stored under a key that no longer decrypts or is a damaged row that still looks like a Fernet token: the pipe refuses to write artifacts while the key is unreadable rather than storing them in the clear, and the person in the chat is told once, on the turn it happens, that the items will be missing from later turns; the key must be re-entered here before writes resume. A row damaged out of that shape is not read as a ciphertext, so it does not arm this refusal — which is also why an install that leaves Open WebUI's ENABLE_VALVE_ENCRYPTION at its default, and so stores this valve as plain JSON, is not stopped by it. A passphrase typed here that begins with encrypted: and continues with an all-base64 character body beginning with `g` is read as a damaged stored value and refused the same way, so enter it without the prefix; a body that is all-base64 but does not begin with `g` is the operator's own passphrase and reads back verbatim. The cipher is rebuilt against the current key on every call, so a rotation never leaves the store using a retired one; a write already inside that cipher build when the change lands is still written under the previous key, cannot be read afterwards, and is dropped with a warning naming its artifact kind. The same rotation reaches an item still in the replay cache from before it: that entry can no longer be opened, so the item is dropped from the turn it would have belonged to, and the person in the chat is told once, on that turn, in the same wording the database path uses.",
     )
     ENCRYPT_ALL: bool = Field(
         default=True,
@@ -1774,7 +1780,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "A Fusion panel member is the other shape that carries no message id: it has none of its own, but `run_fusion_member` restores the outer turn's chat_id onto it, so its traffic takes the request surrogate and is written as `api/api-<request_id>.zip` while Archive API calls is on, and skipped when it is off - one file per inner call, so an N-model panel turn writes N+2 of them (the members, the judge and the synthesis), or N+3 with the judge's second pass, on top of the turn's own archives. "
             "A turn whose chat id names a saved chat the caller does not own is not staged either, and is refused by the same rule Open WebUI applies to a chat message (admins excepted), once per hour per chat and caller rather than on every turn, so the refusal is a bounded window of the most recent 32 refusals per latch and an older chat that is refused again is named again; the assembler and the stranded-turn rescue each refuse any bundle whose staged segments do not all name the same user, keeping every segment for the retention sweep to reap and writing no archive under either name. "
             "With it off no DEBUG request or response payload is built at all, whatever Log verbosity level is set, because the redaction and serialisation are skipped rather than done and dropped. That is the whole of what it stops: the in-memory session log is filled with every other record the request makes, at any Log verbosity level, so the dashboard's Log buffers (RAM) counters count those records, not 0 - a live count of the records the pipe is holding, which is not a session-logging indicator. Log verbosity level set to DEBUG still shows those payloads on the console, and puts them back in that buffer. "
-            "Turning this off also stops the retention sweep, leaving every archive already on disk untouched until it is re-enabled and the retention window passes. "
+            "Turning this off also stops the archive sweep, leaving every archive already on disk untouched until it is re-enabled and the retention window passes. It does not stop the staged-row sweep: staged segments past Session log retention period, and coordination locks past the stale-lock window, keep being reaped on the hourly cleanup pass. "
             "A write already inside an assembly pass is read again at the write itself, so one that is already under way when this is switched off publishes nothing and its staged segments stay in the database for a later pass. "
             "The valve governs starting an archive rather than work already accepted: an archive the write queue already holds - the fallback taken when staging that turn's segments in the database failed, so no staged row is left to write it again from - is written on the way to a stop whatever this is set to, because that queued job is the only copy of the turn."
         ),

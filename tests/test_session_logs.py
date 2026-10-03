@@ -460,7 +460,7 @@ class TestSessionLogArchiveEdgeCases:
 
         manager._assemble_and_write_bundle = _assemble  # type: ignore[method-assign]
         sa_event.listen(manager._artifact_store._engine, "before_cursor_execute",
-                        lambda *_a, **kw: statements.append(str(kw.get("statement", ""))))
+                        lambda _conn, _cursor, statement, *_rest: statements.append(str(statement)))
         return manager, model, factory, (chat_id, message_id), offers, statements
 
     @staticmethod

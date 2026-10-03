@@ -271,6 +271,31 @@ def test_live_snapshot_returns_atomic_sessions_and_task_costs():
 # ── Plugin wiring ──
 
 
+@pytest.fixture(autouse=True)
+def _persisted_master_switch(monkeypatch):
+    """Serve a persisted `Function.valves` row carrying the master switch.
+
+    The plugin's own hooks read the PERSISTED row for `ENABLE_PLUGIN_SYSTEM`, which
+    declares a default of `False`: a row that does not carry the key reads as switched
+    off, and every tracker arm below would be decided by that rather than by the valve
+    under test. A row serving a live dashboard carries both keys, so this is that row.
+    An arm that needs a different row replaces it through `monkeypatch`.
+    """
+    import open_webui.models.functions as fn_mod
+
+    async def _read(_id, db=None):
+        return {"ENABLE_PLUGIN_SYSTEM": True, "PIPE_DASHBOARD_ENABLE": True}
+
+    # A real object, not a `Mock`: the pipe calls other methods on `Functions` too
+    # (`get_user_valves_by_id_and_user_id`), and a `Mock` answers those with a
+    # non-awaitable attribute, which fails the whole turn for a reason that has
+    # nothing to do with the master switch.
+    class _Functions:
+        get_function_valves_by_id = staticmethod(_read)
+
+    monkeypatch.setattr(fn_mod, "Functions", _Functions(), raising=False)
+
+
 def _make_plugin():
     from open_webui_openrouter_pipe.plugins.pipe_dashboard.plugin import PipeDashboardPlugin
 
