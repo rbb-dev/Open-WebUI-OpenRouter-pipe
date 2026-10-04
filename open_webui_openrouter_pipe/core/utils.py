@@ -38,6 +38,8 @@ from .config import (
     _application_secret,
 )
 from .url_scheme import (
+    _BASE64_FOLD_SLICE,
+    _BASE64_FOLDED_TABLE,
     _STRIPPED_SCHEME_BYTES,
     base64_data_url_payload_len,
     loggable_link,
@@ -1191,7 +1193,9 @@ _MEDIA_KEY_STEMS = frozenset(_payload_key(k) for k in _MEDIA_URL_KEYS)
 
 _BARE_BASE64_SHAPE = re.compile(r"[A-Za-z0-9+/_-]{1024,}={0,2}\Z")
 
-_BARE_BASE64_RUN = re.compile(r"[A-Za-z0-9+/_-]{1024,}")
+_BARE_BASE64_RUN = re.compile(r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{1024,}")
+
+_BARE_BASE64_RUN_PROBE = re.compile(r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{1024}")
 
 _BASE64_FOLD_STEP = re.compile(r"\r?\n[ \t]*[A-Za-z0-9+/_-]+={0,2}[ \t]*(?=\r?\n|\Z)")
 
@@ -1217,7 +1221,10 @@ def _folded_base64_end(text: str, stop: int) -> int:
 
 
 def _base64_span_size(text: str, start: int, end: int) -> int:
-    return sum(text.count(char, start, end) for char in _BASE64_ALPHABET)
+    return sum(
+        len(text[at : min(at + _BASE64_FOLD_SLICE, end)].translate(_BASE64_FOLDED_TABLE))
+        for at in range(start, end, _BASE64_FOLD_SLICE)
+    )
 
 
 def _bare_base64_spans(text: str) -> Iterator[tuple[int, int, int]]:
@@ -1250,6 +1257,8 @@ def _bare_base64_spans(text: str) -> Iterator[tuple[int, int, int]]:
 
 
 def _truncate_base64_runs(text: str, max_chars: int) -> str:
+    if _BARE_BASE64_RUN_PROBE.search(text) is None and "\n" not in text:
+        return text
     keep = max(8, min(64, max_chars // 4))
     pieces: list[str] = []
     last = 0

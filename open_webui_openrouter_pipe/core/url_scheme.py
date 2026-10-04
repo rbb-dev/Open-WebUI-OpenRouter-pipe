@@ -162,7 +162,7 @@ def loggable_link(url: Any) -> str:
         parsed = _data_url_header(candidate)
         if parsed is None or not parsed[0]:
             return ""
-        return f"data:{parsed[1].partition(';')[0].strip()[:64]}"
+        return f"data:{media_type_or_empty(parsed[1])}"
     try:
         parts = _split(candidate)
     except ValueError:
@@ -177,7 +177,7 @@ def link_media_type(value: Any) -> str:
     _r = _data_url_header(value)
     if _r is None or not _r[0]:
         return ""
-    return _r[1].partition(";")[0].strip()[:64]
+    return media_type_or_empty(_r[1])
 
 
 def _base64_marker_end(header: str) -> int | None:

@@ -398,9 +398,9 @@ def _fusion_plugin_injection(
     plugins: Any,
     *,
     fusion_enabled: bool,
-    is_task_request: bool,
+    is_fusion_task_request: bool,
 ) -> list[Any] | None:
-    if not fusion_enabled or is_task_request:
+    if not fusion_enabled or is_fusion_task_request:
         return None
     if not is_fusion_model(model_id):
         return None
@@ -468,14 +468,14 @@ def _fusion_internal_divert(
     plugins: Any,
     *,
     valves: Any,
-    is_task_request: bool,
+    is_fusion_task_request: bool,
     metadata: Any,
 ) -> bool:
     if not bool(getattr(valves, "ENABLE_OPENROUTER_FUSION", False)):
         return False
     if _fusion_backend_openrouter(valves):
         return False
-    if is_task_request or not is_fusion_model(model_id):
+    if is_fusion_task_request or not is_fusion_model(model_id):
         return False
     meta = metadata if isinstance(metadata, dict) else {}
     pipe_meta = meta.get(_PIPE_METADATA_KEY)
@@ -485,8 +485,8 @@ def _fusion_internal_divert(
     return not (isinstance(entry, dict) and entry.get("enabled") is False)
 
 
-def _fusion_active_entry(model_id: str, plugins: Any, *, fusion_enabled: bool, is_task_request: bool) -> bool:
-    if not fusion_enabled or is_task_request:
+def _fusion_active_entry(model_id: str, plugins: Any, *, fusion_enabled: bool, is_fusion_task_request: bool) -> bool:
+    if not fusion_enabled or is_fusion_task_request:
         return False
     if not is_fusion_model(model_id):
         return False
@@ -503,9 +503,9 @@ def _fusion_server_tools_stripped(
     tools: Any,
     *,
     fusion_enabled: bool,
-    is_task_request: bool,
+    is_fusion_task_request: bool,
 ) -> list[Any] | None:
-    if not _fusion_active_entry(model_id, plugins, fusion_enabled=fusion_enabled, is_task_request=is_task_request):
+    if not _fusion_active_entry(model_id, plugins, fusion_enabled=fusion_enabled, is_fusion_task_request=is_fusion_task_request):
         return None
     items = tools if isinstance(tools, list) else []
     kept = [
@@ -523,11 +523,11 @@ def _fusion_force_tool_choice(
     tool_choice: Any,
     *,
     fusion_enabled: bool,
-    is_task_request: bool,
+    is_fusion_task_request: bool,
 ) -> bool:
     if tool_choice is not None:
         return False
-    return _fusion_active_entry(model_id, plugins, fusion_enabled=fusion_enabled, is_task_request=is_task_request)
+    return _fusion_active_entry(model_id, plugins, fusion_enabled=fusion_enabled, is_fusion_task_request=is_fusion_task_request)
 
 
 def _resolved_tool_names(
@@ -1240,6 +1240,7 @@ class RequestOrchestrator:
         loggable_chat_id = "<not retained>" if is_temporary_chat(chat_id) else chat_id
         task_name = TaskModelAdapter._task_name(__task__) if __task__ else ""
         use_task_model_adapter = TaskModelAdapter._uses_task_model_adapter(__task__)
+        fusion_task_request = use_task_model_adapter or TaskModelAdapter._is_fusion_excluded_task(__task__)
         def _extract_direct_uploads_warnings(metadata: dict[str, Any]) -> list[str]:
             pipe_meta = metadata.get(_PIPE_METADATA_KEY)
             if not isinstance(pipe_meta, dict):
@@ -1279,6 +1280,7 @@ class RequestOrchestrator:
                 )
             direct_uploads = {}
         endpoint_override: Literal["responses", "chat_completions"] | None = None
+        responses_ineligible_audio = False
         if direct_uploads:
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(
@@ -1311,12 +1313,12 @@ class RequestOrchestrator:
                     log_level=logging.WARNING,
                 )
 
-            requires_chat = bool(direct_uploads.get("video"))
-            if not requires_chat:
+            if not direct_uploads.get("video"):
                 for audio in direct_uploads.get("audio", []):
                     if isinstance(audio, dict) and not bool(audio.get("responses_eligible", False)):
-                        requires_chat = True
+                        responses_ineligible_audio = True
                         break
+            requires_chat = bool(direct_uploads.get("video")) or responses_ineligible_audio
 
 
             if requires_chat:
@@ -1803,7 +1805,7 @@ class RequestOrchestrator:
             responses_body.model,
             responses_body.plugins,
             valves=valves,
-            is_task_request=use_task_model_adapter,
+            is_fusion_task_request=fusion_task_request,
             metadata=__metadata__,
         ):
             if self._endpoint_is_valve_forced(responses_body.model, valves, "chat_completions"):
@@ -1831,6 +1833,28 @@ class RequestOrchestrator:
                     return self._pipe._task_refusal_result(__task__, shown)
                 return shown
             if endpoint_override == "chat_completions":
+                if responses_ineligible_audio:
+                    if outcome_sink is not None:
+                        outcome_sink["member_refusal_reason"] = _ENDPOINT_OVERRIDE_CONFLICT_REFUSAL
+                    shown = await self._pipe._ensure_error_formatter()._emit_templated_error(
+                        __event_emitter__,
+                        template=valves.ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE,
+                        variables={
+                            "requested_model": responses_body.model or "",
+                            "required_endpoint": "chat_completions",
+                            "enforced_endpoint": "responses",
+                            "reason": (
+                                "A direct audio clip whose format is outside "
+                                "DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST cannot be sent on /responses, "
+                                "and this Fusion model cannot answer on /chat/completions."
+                            ),
+                        },
+                        log_message="Endpoint override conflict for direct audio on the Fusion model",
+                        log_level=logging.WARNING,
+                    )
+                    if use_task_model_adapter:
+                        return self._pipe._task_refusal_result(__task__, shown)
+                    return shown
                 self.logger.warning(
                     "OpenRouter Fusion requires the /responses endpoint; overriding "
                     "endpoint_override=chat_completions to responses for model=%s",
@@ -1857,7 +1881,7 @@ class RequestOrchestrator:
         if selected_endpoint == "responses":
             _rewrite_video_blocks_for_responses(responses_body.input)
         stripped_plugins = _fusion_plugin_stripped(
-            responses_body.plugins, fusion_enabled=fusion_live and not use_task_model_adapter
+            responses_body.plugins, fusion_enabled=fusion_live and not fusion_task_request
         )
         if stripped_plugins is not None:
             responses_body.plugins = stripped_plugins or None
@@ -1868,7 +1892,7 @@ class RequestOrchestrator:
             responses_body.model,
             responses_body.plugins,
             fusion_enabled=fusion_enabled,
-            is_task_request=use_task_model_adapter,
+            is_fusion_task_request=fusion_task_request,
         )
         if injected_plugins is not None:
             responses_body.plugins = injected_plugins
@@ -1881,7 +1905,7 @@ class RequestOrchestrator:
             responses_body.plugins,
             responses_body.tool_choice,
             fusion_enabled=fusion_enabled,
-            is_task_request=use_task_model_adapter,
+            is_fusion_task_request=fusion_task_request,
         ):
             responses_body.tool_choice = "required"
             self.logger.debug(
@@ -2268,7 +2292,7 @@ class RequestOrchestrator:
             responses_body.plugins,
             responses_body.tools,
             fusion_enabled=bool(valves.ENABLE_OPENROUTER_FUSION) and _fusion_backend_openrouter(valves),
-            is_task_request=use_task_model_adapter,
+            is_fusion_task_request=fusion_task_request,
         ) is not None
         if superseded and not tool_use_ruled_out and not _will_strip_server_tools:
             grouped: dict[str, list[Any]] = {}
@@ -2288,7 +2312,7 @@ class RequestOrchestrator:
             responses_body.plugins,
             responses_body.tools,
             fusion_enabled=bool(valves.ENABLE_OPENROUTER_FUSION) and _fusion_backend_openrouter(valves),
-            is_task_request=use_task_model_adapter,
+            is_fusion_task_request=fusion_task_request,
         )
         if stripped_tools is not None:
             responses_body.tools = stripped_tools or None
@@ -2371,7 +2395,7 @@ class RequestOrchestrator:
                 responses_body.model,
                 responses_body.plugins,
                 valves=valves,
-                is_task_request=use_task_model_adapter,
+                is_fusion_task_request=fusion_task_request,
                 metadata=__metadata__,
               ):
                 if CONTINUED_REPLY.get() is not None:

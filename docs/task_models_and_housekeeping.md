@@ -175,6 +175,7 @@ If the provider returns a `usage` object for the task request, the pipe can emit
 - It honours the incoming `stream` flag.
 - It follows the normal chat/request path, including tools, provider routing, direct uploads, model restrictions, and normal chat-visible error handling.
 - It does not use the housekeeping task adapter or task-specific fallback stub behaviour.
+- Fusion is not part of that path: a MoA merge is one model call even on a Fusion aggregator, and no panel, judge or synthesis runs for it.
 
 ---
 
@@ -201,7 +202,7 @@ If you need tasks to be as fast as possible, reduce `TASK_MODEL_REASONING_EFFORT
 | A task fails and the model is one that thinks | The task's cap is below what the model needs for thinking | Two halves: the pipe's is `budget = min(budget, cap - 64)` on Gemini 2.5, and under `cap < 65` it asks for no bounded budget at all; the other half is the cap itself, which the pipe must not raise. Raise `task.model.params.max_tokens` (4 for the emoji task, 1000 for a title) or point the task at a different model. |
 | Housekeeping is running up unexpected spend | Housekeeping runs on every chat, so the task model it targets and the length of what that model produces both drive the total | Confirm the configured task model and review `usage`/cost snapshots (if enabled). What a model charges is on OpenRouter's pricing page. |
 | Housekeeping tasks bypass the model allowlist unexpectedly | The request is using the housekeeping task adapter path | Treat this as expected behavior; if you need strict enforcement, control task model selection at the Open WebUI admin/config level. |
-| MOA ignores housekeeping task settings | `moa_response_generation` now uses normal chat semantics | This is expected; MOA keeps the selected chat model and normal chat features. |
+| MOA ignores housekeeping task settings | `moa_response_generation` uses normal chat semantics, except that it also never runs Fusion | This is expected; MOA keeps the selected chat model and normal chat features. The Fusion exception is deliberate: a merge is one model call on the aggregator, so no panel, judge or synthesis is injected, required or billed for it, whatever `ENABLE_OPENROUTER_FUSION` says. |
 
 ---
 

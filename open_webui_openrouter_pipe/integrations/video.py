@@ -103,6 +103,7 @@ from .media_relay import (
 from .provider_options import (
     VIDEO_PROVIDER_KEYS,
     UnvettableRequest,
+    bare_pins,
     carrier_slug,
     merge_provider_options,
     options_key,
@@ -703,6 +704,10 @@ def _video_stall_window(valves: Any) -> float:
 
 def _video_still_running_note(window: float) -> str:
     return _VIDEO_IS_STILL_RUNNING.format(waited=_spoken_duration(window))
+
+
+def _plan_names_something_needing_storage(frame_plan: list[Any]) -> bool:
+    return any(entry.source != "uploaded_attachment" for entry in frame_plan)
 
 
 _FILE_HOST_RECORD = (
@@ -2409,7 +2414,9 @@ class VideoGenerationAdapter:
                 withheld.extend(
                     (name, _NO_SLUG) for name in sorted(provider_params) + sorted(bulky)
                 )
-            carrier = carrier_slug(provider_block or {}, candidates, pin_routes=False)
+            carrier = carrier_slug(
+                bare_pins(provider_block or {}), candidates, pin_routes=False
+            )
             if bulky and len(candidates) > 1:
                 self.logger.log(
                     warn_level(_warned_pinned_attachment, api_model_id),
@@ -3721,6 +3728,9 @@ class VideoGenerationAdapter:
                 continue
             if entry.target == "input_reference":
                 if attachment in frame_images:
+                    intent.downgrades.append(
+                        f"retarget_frame_demoted_to_reference_idx_{idx}"
+                    )
                     moved.append(attachment)
                 continue
             if attachment not in frame_images and not _promotable_as_frame(attachment, valves):
@@ -3812,7 +3822,8 @@ class VideoGenerationAdapter:
             return thumb_urls
 
         if not isinstance(chat_id, str) or not chat_id.strip() or is_temporary_chat(chat_id):
-            intent.downgrades.append("frame_plan_dropped_temporary_chat")
+            if _plan_names_something_needing_storage(intent.frame_plan):
+                intent.downgrades.append("frame_plan_dropped_temporary_chat")
             return ["" for _entry in intent.frame_plan]
 
         storage_request, storage_user = await self._pipe._file_gateway.resolve_storage_context(
@@ -3827,7 +3838,8 @@ class VideoGenerationAdapter:
             self.logger.warning(
                 "No resolved storage identity for the frame plan; the frames were not uploaded"
             )
-            intent.downgrades.append("frame_plan_dropped_no_storage_identity")
+            if _plan_names_something_needing_storage(intent.frame_plan):
+                intent.downgrades.append("frame_plan_dropped_no_storage_identity")
             return ["" for _entry in intent.frame_plan]
 
         materialised: dict[str, Path] = {}

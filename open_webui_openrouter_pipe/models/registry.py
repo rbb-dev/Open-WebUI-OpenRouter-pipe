@@ -35,7 +35,7 @@ from ..core.config import (
     openrouter_attribution_headers,
 )
 from ..core.timing_logger import timed
-from .blocklists import is_direct_upload_blocklisted_for
+from .blocklists import _DATE_SUFFIX, is_direct_upload_blocklisted_for
 
 # Model Helper Functions
 
@@ -77,7 +77,7 @@ class ModelFamily:
     One place for base capabilities + alias mapping (with effort defaults).
     """
 
-    _DATE_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
+    _DATE_RE = _DATE_SUFFIX
     _PIPE_ID: ContextVar[str | None] = ContextVar(
         "owui_pipe_id_ctx",
         default=None,
@@ -887,6 +887,12 @@ class OpenRouterModelRegistry:
                 models.extend(preserved_image_models)
                 models.sort(key=lambda m: str(m.get("name") or "").lower())
 
+        for norm_id in cls._video_catalog_norms & specs.keys():
+            prior = cls._specs.get(norm_id)
+            video_item = (prior or {}).get("video_model")
+            if isinstance(video_item, dict):
+                specs[norm_id] = cls._merge_video_spec(specs[norm_id], video_item)
+
         for norm_id, spec in specs.items():
             cls._stamp_zdr_capable(spec, norm_id, zdr_model_ids, specs)
 
@@ -1175,6 +1181,76 @@ class OpenRouterModelRegistry:
         cls._last_video_fetch = 0.0
 
     @classmethod
+    def _merge_video_spec(cls, chat_spec: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
+        prior = chat_spec
+        original_id = str(item.get("id") or "").strip()
+        prior_features = _chat_features_for_video(
+            set(prior.get("features") or set()),
+        )
+        prior_architecture = prior.get("architecture")
+        prior_architecture = prior_architecture if isinstance(prior_architecture, dict) else {}
+
+        supported_frames = item.get("supported_frame_images")
+        accepts_frame_images = isinstance(supported_frames, list) and bool(supported_frames)
+        accepts_uploads = accepts_frame_images and not is_direct_upload_blocklisted_for(original_id, item)
+        allowed_params = item.get("allowed_passthrough_parameters")
+        allowed_set = {
+            param
+            for param in allowed_params
+            if isinstance(param, str) and param
+        } if isinstance(allowed_params, list) else set()
+        pricing = item.get("pricing") if isinstance(item.get("pricing"), dict) else {}
+        features = {"video_generation", "video_output"}
+        if accepts_uploads:
+            features.update({"vision", "file_input"})
+        features |= prior_features
+
+        item_architecture = item.get("architecture")
+        item_architecture = item_architecture if isinstance(item_architecture, dict) else {}
+        if prior_architecture:
+            architecture = dict(prior_architecture)
+            for key, value in item_architecture.items():
+                architecture.setdefault(key, value)
+            chat_out = prior_architecture.get("output_modalities")
+            video_out = item_architecture.get("output_modalities")
+            if isinstance(chat_out, list) and isinstance(video_out, list):
+                architecture["output_modalities"] = list(chat_out) + [
+                    m for m in video_out if m not in chat_out
+                ]
+        else:
+            architecture = dict(item_architecture)
+
+        capabilities = dict(prior.get("capabilities") or {})
+        capabilities["vision"] = "vision" in features
+        capabilities["file_upload"] = "file_input" in features
+        for capability, value in {
+            "web_search": False,
+            "image_generation": is_image_output_architecture(architecture),
+            "video_generation": True,
+            "code_interpreter": False,
+            "citations": False,
+            "status_updates": True,
+            "usage": True,
+        }.items():
+            capabilities.setdefault(capability, value)
+
+        full_model = dict(item)
+        full_model.update(dict(prior.get("full_model") or {}))
+
+        return {
+            "features": features,
+            "capabilities": capabilities,
+            "max_completion_tokens": prior.get("max_completion_tokens"),
+            "supported_parameters": frozenset(allowed_set),
+            "full_model": full_model,
+            "video_model": dict(item),
+            "context_length": prior.get("context_length"),
+            "description": prior.get("description") or item.get("description"),
+            "architecture": architecture,
+            **_base_spec_fields(prior.get("pricing") or pricing, spec={"video_model": item}),
+        }
+
+    @classmethod
     def register_video_models(cls, video_models: list[dict[str, Any]]) -> None:
         """Register OpenRouter async video-generation models as selectable models."""
         if not isinstance(video_models, list):
@@ -1255,58 +1331,8 @@ class OpenRouterModelRegistry:
                 continue
 
             prior = _prior_spec(chat_specs, norm_id)
-            prior_features = _chat_features_for_video(
-                set(prior.get("features") or set()),
-            )
-            prior_architecture = prior.get("architecture")
-            prior_architecture = prior_architecture if isinstance(prior_architecture, dict) else {}
-
-            supported_frames = item.get("supported_frame_images")
-            accepts_frame_images = isinstance(supported_frames, list) and bool(supported_frames)
-            accepts_uploads = accepts_frame_images and not is_direct_upload_blocklisted_for(original_id, item)
-            allowed_params = item.get("allowed_passthrough_parameters")
-            allowed_set = {
-                param
-                for param in allowed_params
-                if isinstance(param, str) and param
-            } if isinstance(allowed_params, list) else set()
-            pricing = item.get("pricing") if isinstance(item.get("pricing"), dict) else {}
-            features = {"video_generation", "video_output"}
-            if accepts_uploads:
-                features.update({"vision", "file_input"})
-            features |= prior_features
-
-            item_architecture = item.get("architecture")
-            item_architecture = item_architecture if isinstance(item_architecture, dict) else {}
-            if prior_architecture:
-                architecture = dict(prior_architecture)
-                for key, value in item_architecture.items():
-                    architecture.setdefault(key, value)
-                chat_out = prior_architecture.get("output_modalities")
-                video_out = item_architecture.get("output_modalities")
-                if isinstance(chat_out, list) and isinstance(video_out, list):
-                    architecture["output_modalities"] = list(chat_out) + [
-                        m for m in video_out if m not in chat_out
-                    ]
-            else:
-                architecture = dict(item_architecture)
-
-            capabilities = dict(prior.get("capabilities") or {})
-            capabilities["vision"] = "vision" in features
-            capabilities["file_upload"] = "file_input" in features
-            for capability, value in {
-                "web_search": False,
-                "image_generation": is_image_output_architecture(architecture),
-                "video_generation": True,
-                "code_interpreter": False,
-                "citations": False,
-                "status_updates": True,
-                "usage": True,
-            }.items():
-                capabilities.setdefault(capability, value)
-
-            full_model = dict(item)
-            full_model.update(dict(prior.get("full_model") or {}))
+            merged = cls._merge_video_spec(prior, item)
+            full_model = merged["full_model"]
 
             new_id_map[cls._exact_norm(sanitized)] = original_id
             row_name = full_model.get("name")
@@ -1319,18 +1345,7 @@ class OpenRouterModelRegistry:
                 "name": row_name or item.get("name") or original_id,
             }
             owned_video_norms.add(norm_id)
-            new_specs[norm_id] = {
-                "features": features,
-                "capabilities": capabilities,
-                "max_completion_tokens": prior.get("max_completion_tokens"),
-                "supported_parameters": frozenset(allowed_set),
-                "full_model": full_model,
-                "video_model": dict(item),
-                "context_length": prior.get("context_length"),
-                "description": prior.get("description") or item.get("description"),
-                "architecture": architecture,
-                **_base_spec_fields(prior.get("pricing") or pricing, spec={"video_model": item}),
-            }
+            new_specs[norm_id] = merged
             cls._stamp_zdr_capable(
                 new_specs[norm_id], norm_id, cls._roster_in_force(), new_specs
             )

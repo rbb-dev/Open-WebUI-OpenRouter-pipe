@@ -1833,7 +1833,7 @@ def _coerce_openrouter_int(value: Any) -> int | None:
 
 
 def chat_payload_loses_fusion_entry(model_id: Any, plugins: Any) -> bool:
-    if not is_fusion_model(str(model_id or "")):
+    if not is_fusion_model(_fusion_base_model_id(str(model_id or ""))):
         return False
     entry = find_fusion_entry(plugins)
     return isinstance(entry, dict) and entry.get("enabled") is not False

@@ -109,6 +109,7 @@ class FusionMemberResult(NamedTuple):
     sources: tuple[dict[str, str], ...] = ()
     notices: tuple[str, ...] = ()
     truncated: str | None = None
+    delivered: str = ""
 
 
 class FusionCollector:
@@ -118,6 +119,7 @@ class FusionCollector:
         self.usage: dict[str, Any] | None = None
         self.sources: list[dict[str, str]] = []
         self.notices: list[str] = []
+        self.delivered: list[str] = []
 
     async def __call__(self, event: Any) -> None:
         if not isinstance(event, dict):
@@ -127,8 +129,10 @@ class FusionCollector:
         data = raw if isinstance(raw, dict) else {}
         if etype == "chat:message:delta":
             text = data.get("content")
-            if isinstance(text, str) and text and self.live_queue is not None:
-                await self.live_queue.put(("delta", self.model, text))
+            if isinstance(text, str) and text:
+                self.delivered.append(text)
+                if self.live_queue is not None:
+                    await self.live_queue.put(("delta", self.model, text))
         elif etype == "fusion_inner:reasoning.delta":
             text = data.get("delta")
             if isinstance(text, str) and text and self.live_queue is not None:
@@ -347,6 +351,7 @@ async def run_fusion_member(
             sources=tuple(collector.sources),
             notices=tuple(collector.notices),
             truncated=truncated,
+            delivered="".join(collector.delivered),
         )
     except asyncio.CancelledError:
         raise
@@ -515,6 +520,17 @@ def degrade_note(result: FusionMemberResult) -> str:
     return f"*(panel member failed: {reason})*"
 
 
+def member_delivered_text(result: FusionMemberResult) -> str:
+    if result.truncated:
+        return f"{result.content}\n\n*(cut off before it finished: {result.truncated})*"
+    if not result.failed:
+        return result.content
+    delivered = result.delivered.strip()
+    if not delivered:
+        return degrade_note(result)
+    return join_answer_and_card(delivered, degrade_note(result))
+
+
 def synthesis_degrade_note(result: FusionMemberResult) -> str:
     reason = (result.fail_reason or "no usable answer").strip()
     return f"*(final answer cut off: {reason})*"
@@ -529,13 +545,7 @@ def _member_draft(res: FusionMemberResult) -> str:
 def build_judge_input(question: str, results: list[FusionMemberResult]) -> list[dict[str, Any]]:
     blocks: list[str] = []
     for res in results:
-        if res.failed and not res.truncated:
-            blocks.append(
-                f"## PANEL ANSWER — model id: {res.model}\n\n"
-                f"model {res.model} failed: {res.fail_reason or 'no usable answer'}"
-            )
-        else:
-            blocks.append(f"## PANEL ANSWER — model id: {res.model}\n\n{_member_draft(res)}")
+        blocks.append(f"## PANEL ANSWER — model id: {res.model}\n\n{member_delivered_text(res)}")
     payload = (
         f"# USER QUESTION\n\n{question}\n\n# PANEL ANSWERS\n\n" + "\n\n".join(blocks)
     )
@@ -545,13 +555,9 @@ def build_judge_input(question: str, results: list[FusionMemberResult]) -> list[
 def build_synthesis_material(results: list[FusionMemberResult], analysis: dict[str, Any] | None) -> str:
     blocks: list[str] = []
     for res in results:
-        if res.failed and not res.truncated:
-            blocks.append(
-                f"### DRAFT — internal model id: {res.model}\n\n"
-                f"model {res.model} failed: {res.fail_reason or 'no usable answer'}"
-            )
-        else:
-            blocks.append(f"### DRAFT — internal model id: {res.model}\n\n{_member_draft(res)}")
+        blocks.append(
+            f"### DRAFT — internal model id: {res.model}\n\n{member_delivered_text(res)}"
+        )
     analysis_text = json.dumps(analysis, ensure_ascii=False) if analysis else "(absent)"
     return (
         "[BACKGROUND MATERIAL — prepared before this turn; not visible to the user]\n\n"
@@ -612,7 +618,7 @@ async def run_internal_fusion(
     member_tasks: list[asyncio.Task] = []
     seen_notices: set[str] = set()
 
-    def _fresh_notices(model: str, res: FusionMemberResult) -> list[dict[str, Any]]:
+    def _fresh_notices(model: str, res: FusionMemberResult, stage: str) -> list[dict[str, Any]]:
         fresh: list[dict[str, Any]] = []
         for notice in res.notices:
             if notice in seen_notices:
@@ -620,7 +626,7 @@ async def run_internal_fusion(
             seen_notices.add(notice)
             fresh.append({
                 "type": "pipe:member.notice",
-                "data": {"content": f"{model} (panel member): {notice}"},
+                "data": {"content": f"{model} ({stage}): {notice}"},
             })
         return fresh
 
@@ -688,9 +694,9 @@ async def run_internal_fusion(
                 results[member_model] = payload
                 if payload.usage:
                     total_usage = merge_usage_stats(total_usage, payload.usage)
-                for notice in _fresh_notices(member_model, payload):
+                for notice in _fresh_notices(member_model, payload, "panel member"):
                     yield notice
-                content = _member_draft(payload)
+                content = member_delivered_text(payload)
                 yield {"type": "response.fusion_call.panel.completed", "output_index": 0,
                        "item_id": item_id, "model": member_model, "content": content}
 
@@ -748,7 +754,7 @@ async def run_internal_fusion(
                            "model": plan.judge_model, "delta": payload}
                 elif kind == "member_done":
                     judge_res = payload
-            for notice in _fresh_notices(plan.judge_model, judge_res):
+            for notice in _fresh_notices(plan.judge_model, judge_res, "judge"):
                 yield notice
             if judge_res.usage:
                 total_usage = merge_usage_stats(total_usage, judge_res.usage)
@@ -773,7 +779,7 @@ async def run_internal_fusion(
                                "model": plan.judge_model, "delta": payload}
                     elif kind == "member_done":
                         repair_res = payload
-                for notice in _fresh_notices(plan.judge_model, repair_res):
+                for notice in _fresh_notices(plan.judge_model, repair_res, "judge"):
                     yield notice
                 if repair_res.usage:
                     total_usage = merge_usage_stats(total_usage, repair_res.usage)
@@ -786,7 +792,7 @@ async def run_internal_fusion(
         done_item: dict[str, Any] = {
             "id": item_id, "type": "openrouter:fusion", "status": "completed",
             "responses": [
-                {"model": r.model, "content": _member_draft(r)}
+                {"model": r.model, "content": member_delivered_text(r)}
                 for r in ordered
             ],
         }
@@ -864,7 +870,7 @@ async def run_internal_fusion(
                            "model": plan.synthesis_model, "delta": payload}
                 elif kind == "member_done":
                     synth_result = payload
-            for notice in _fresh_notices(plan.synthesis_model, synth_result):
+            for notice in _fresh_notices(plan.synthesis_model, synth_result, "final answer"):
                 yield notice
             if synth_result.usage:
                 total_usage = merge_usage_stats(total_usage, synth_result.usage)

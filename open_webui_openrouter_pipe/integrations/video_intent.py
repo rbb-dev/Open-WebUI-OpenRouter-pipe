@@ -633,6 +633,7 @@ def validate_intent_params(
     prompt = _strip_placeholders(prompt_raw if isinstance(prompt_raw, str) else "")
     if len(prompt) > _PROMPT_MAX_LEN:
         prompt = prompt[:_PROMPT_MAX_LEN].rstrip()
+        downgrades.append("intent_prompt_truncated")
 
     reason = str(raw.get("reason") or "").strip()[:500]
 
@@ -774,8 +775,12 @@ def validate_intent_params(
             downgrades.append("intent_downgraded_due_to_explicit_attachments")
             intent = "image_to_video"
 
-    if intent == "image_to_video" and not any(
-        e.source == "uploaded_attachment" for e in frame_plan
+    if (
+        intent == "image_to_video"
+        and not explicit_frame_images_present
+        and not any(
+            e.source == "uploaded_attachment" for e in frame_plan
+        )
     ):
         downgrades.append("image_to_video_without_attachment_downgraded_to_text")
         intent = "text_to_video"
@@ -825,7 +830,7 @@ def _intent_mode_for_telemetry(result: VideoIntentResult) -> str:
     if result.clarification and result.clarification.needs:
         return "clarify"
     if not result.frame_plan:
-        return "text2video"
+        return "image2video_attached" if result.intent == "image_to_video" else "text2video"
     sources = {e.source for e in result.frame_plan}
     if any(s.startswith("prior_video_") for s in sources):
         return "image2video_priorframe"
@@ -1254,6 +1259,10 @@ _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
     "retarget_skipped_slot_taken": (
         "That picture was already set as this frame, so it was left where you put it."
     ),
+    "retarget_frame_demoted_to_reference": (
+        "A picture you set as a frame was sent as a style reference instead, so it "
+        "guides the video rather than anchoring it."
+    ),
     "conversation_truncated": (
         "Only the most recent turns of this chat were read, so the classifier worked "
         "from a window rather than the whole conversation."
@@ -1332,6 +1341,10 @@ _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
         "One of the suggested answers was too long, so it was shortened."
     ),
     "clarification_question_truncated": "The question was too long and was shortened.",
+    "intent_prompt_truncated": (
+        "The prompt this turn was to use was too long and was shortened before it was "
+        "sent."
+    ),
     "clarification_question_empty": (
         "A clarifying question was planned but came back empty, so none was asked."
     ),

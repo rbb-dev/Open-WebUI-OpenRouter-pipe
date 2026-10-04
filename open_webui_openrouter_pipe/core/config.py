@@ -2164,7 +2164,8 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=DEFAULT_ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE,
         description=(
             "Markdown template used when a request and the endpoint its model is forced to disagree: a request that "
-            "requires /chat/completions (e.g. direct video uploads) on a model explicitly forced to /responses by "
+            "requires /chat/completions (e.g. direct video uploads, or an audio format outside "
+            "DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST) on a model explicitly forced to /responses by "
             "endpoint override valves, or a request that requires /responses (e.g. a Fusion model, whose panel "
             "renders only from /responses — on /chat/completions Fusion returns a flattened text transcript "
             "with no structured events) on a model forced to /chat/completions."
@@ -2749,7 +2750,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             + " and a `{\"id\": \"fusion\"}` plugin entry the request already carries is removed"
             + " before anything is sent - on any model and either engine - so an entry a filter"
             + " row, a saved chat or a direct API caller brought along cannot deliberate;"
-            + " a task or title request never carries one, whatever the valve says, so the off"
+            + " a task or title request never carries one, whatever the valve says, and neither"
+            + " does a MoA merge (`moa_response_generation`), which is one ordinary model call even"
+            + " on a Fusion aggregator — so the off"
             + " state does not wait for that refresh;"
             + " AUTO_INSTALL_FUSION_FILTER is the install valve for that family. Turning it back on re-activates a"
             + " filter the pipe itself switched off whose family's install valve is still on; a row that valve has"

@@ -2538,11 +2538,11 @@ class TestFusionInternalDivert:
         valves.ENABLE_OPENROUTER_FUSION = kw.pop("fusion_enabled", True)
         valves.FUSION_BACKEND = kw.pop("backend", "internal")
         args = dict(model_id="openrouter/fusion", plugins=[{"id": "fusion"}],
-                    is_task_request=False, metadata={})
+                    is_fusion_task_request=False, metadata={})
         args.update(kw)
         return _fusion_internal_divert(
             args["model_id"], args["plugins"], valves=valves,
-            is_task_request=args["is_task_request"], metadata=args["metadata"],
+            is_fusion_task_request=args["is_fusion_task_request"], metadata=args["metadata"],
         )
 
     def test_diverts_on_internal_with_entry(self):
@@ -2561,7 +2561,7 @@ class TestFusionInternalDivert:
         assert self._divert(fusion_enabled=False) is False
 
     def test_no_divert_for_tasks(self):
-        assert self._divert(is_task_request=True) is False
+        assert self._divert(is_fusion_task_request=True) is False
 
     def test_no_divert_non_fusion_model(self):
         assert self._divert(model_id="openai/gpt-4o") is False
@@ -2583,12 +2583,12 @@ class TestFusionServerToolsStripped:
                     tools=[{"type": "openrouter:web_search"},
                            {"type": "openrouter:web_fetch"},
                            {"type": "function", "name": "my_tool"}],
-                    fusion_enabled=True, is_task_request=False)
+                    fusion_enabled=True, is_fusion_task_request=False)
         args.update(kw)
         return _fusion_server_tools_stripped(
             args["model_id"], args["plugins"], args["tools"],
             fusion_enabled=args["fusion_enabled"],
-            is_task_request=args["is_task_request"],
+            is_fusion_task_request=args["is_fusion_task_request"],
         )
 
     def test_strips_openrouter_tools_keeps_function_tools(self):
@@ -2601,7 +2601,7 @@ class TestFusionServerToolsStripped:
         assert self._strip(model_id="openai/gpt-4o") is None
 
     def test_none_for_task_requests(self):
-        assert self._strip(is_task_request=True) is None
+        assert self._strip(is_fusion_task_request=True) is None
 
     def test_none_with_master_switch_off(self):
         assert self._strip(fusion_enabled=False) is None
@@ -2623,12 +2623,12 @@ class TestFusionForceToolChoice:
     def _force(self, **kw):
         from open_webui_openrouter_pipe.requests.orchestrator import _fusion_force_tool_choice
         args = dict(model_id="openrouter/fusion", plugins=[{"id": "fusion"}],
-                    tool_choice=None, fusion_enabled=True, is_task_request=False)
+                    tool_choice=None, fusion_enabled=True, is_fusion_task_request=False)
         args.update(kw)
         return _fusion_force_tool_choice(
             args["model_id"], args["plugins"], args["tool_choice"],
             fusion_enabled=args["fusion_enabled"],
-            is_task_request=args["is_task_request"],
+            is_fusion_task_request=args["is_fusion_task_request"],
         )
 
     def test_forces_for_base_fusion_with_active_entry(self):
@@ -2643,7 +2643,7 @@ class TestFusionForceToolChoice:
         assert self._force(tool_choice={"type": "function", "name": "x"}) is False
 
     def test_no_force_for_task_requests(self):
-        assert self._force(is_task_request=True) is False
+        assert self._force(is_fusion_task_request=True) is False
 
     def test_no_force_with_master_switch_off(self):
         assert self._force(fusion_enabled=False) is False
@@ -2673,12 +2673,12 @@ class TestFusionPluginInjection:
     def _inject(self, **kw):
         from open_webui_openrouter_pipe.requests.orchestrator import _fusion_plugin_injection
         args = dict(model_id="openrouter/fusion", plugins=None,
-                    fusion_enabled=True, is_task_request=False)
+                    fusion_enabled=True, is_fusion_task_request=False)
         args.update(kw)
         return _fusion_plugin_injection(
             args["model_id"], args["plugins"],
             fusion_enabled=args["fusion_enabled"],
-            is_task_request=args["is_task_request"],
+            is_fusion_task_request=args["is_fusion_task_request"],
         )
 
     def test_injects_for_base_fusion(self):
@@ -2695,7 +2695,7 @@ class TestFusionPluginInjection:
         ]
 
     def test_no_injection_for_task_requests(self):
-        assert self._inject(is_task_request=True) is None
+        assert self._inject(is_fusion_task_request=True) is None
 
     def test_no_injection_when_master_switch_off(self):
         assert self._inject(fusion_enabled=False) is None

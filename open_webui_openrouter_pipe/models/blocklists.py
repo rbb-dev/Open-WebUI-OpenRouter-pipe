@@ -84,7 +84,9 @@ DIRECT_UPLOAD_BLOCKLIST: frozenset[str] = frozenset({
 _NORMALIZED_DIRECT_UPLOAD_BLOCKLIST: frozenset[str] = frozenset(
     entry.strip().lower() for entry in DIRECT_UPLOAD_BLOCKLIST
 )
-_DATE_SUFFIX = re.compile(r"-\d{4}-\d{2}-\d{2}$")
+_DATE_SUFFIX = re.compile(
+    r"-\d{4}-\d{2}-\d{2}$|-\d{4}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])$"
+)
 
 
 def is_direct_upload_blocklisted(model_id: str) -> bool:

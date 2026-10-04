@@ -255,7 +255,8 @@ async def _read_model_rows(ids: list[str], logger: Any) -> Any:
             rows = await Models.get_models_by_ids(batch)
         except Exception as exc:
             logger.warning(
-                "Stored model row read failed; every model will be read on its own: %s",
+                "Stored model row read failed for %d ids; every model will be read on its own: %s",
+                len(ids),
                 exc,
                 exc_info=True,
             )

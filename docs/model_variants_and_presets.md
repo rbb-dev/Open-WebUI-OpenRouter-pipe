@@ -336,7 +336,8 @@ is to correct the list, not to look for a setting that widens it back.
 ```
 MODEL_ID = "openai/gpt-4o"          # the current id
 ```
-Matching ignores letter case and trailing date stamps, so a rename that only moves the date stamp keeps
+Matching ignores letter case and trailing date stamps in either spelling OpenRouter publishes them
+(`-YYYY-MM-DD` and `-YYYYMMDD`), so a rename that only moves the date stamp keeps
 resolving. An id that no longer exists at all has to be replaced with the one OpenRouter publishes today.
 
 ### Variant Tag Capitalization

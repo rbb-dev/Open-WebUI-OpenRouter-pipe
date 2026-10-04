@@ -4012,10 +4012,22 @@ async def test_chat_completions_stream_adapts_tool_calls_and_usage() -> None:
 
 @pytest.mark.asyncio
 async def test_chat_completions_inlines_internal_file_urls(monkeypatch) -> None:
-    """Test that internal file URLs are inlined when using chat completions adapter.
+    """The outbound chat-completions body carries the inlined data URL and no internal path.
 
-    THIS IS A REAL TEST: Mocks file inlining helper, uses aioresponses for HTTP,
-    exercises real adapter logic."""
+    The claim is about what reaches OpenRouter, so it is asserted on the body the wire
+    actually carries and not on what the stub was asked for: the only `assert` this row
+    used to have sat inside `fake_inline_id`, which proves the stub was called and nothing
+    about the request that followed. The expected data URL is the stub's own payload, which
+    production cannot know without reaching the same stub, so a branch that served some
+    other canned URL would fail here.
+
+    The `/chat/completions` leg carries two nets for this -- the pre-inline sweep in
+    `OwuiFileGateway.inline_input_files` and the adapter's own `file_url` fallback -- so
+    dropping the fallback alone leaves this green: by then the pre-inline sweep has already
+    replaced the block, and `names_an_owui_file_path` is false for any `data:` URL, so the
+    fallback is unreachable rather than undetected. The single-net leg this property is
+    really about is `/responses` streaming, in
+    `test_responses_streaming_inlines_internal_file_urls` below."""
     pipe = Pipe()
     valves = pipe.valves.model_copy(update={"DEFAULT_LLM_ENDPOINT": "chat_completions"})
 
@@ -4025,6 +4037,12 @@ async def test_chat_completions_inlines_internal_file_urls(monkeypatch) -> None:
 
     monkeypatch.setattr(pipe._file_gateway, "inline_owui_file_id", fake_inline_id)
 
+    captured: dict[str, Any] = {}
+
+    def capture_request(url, **kwargs):
+        if "json" in kwargs:
+            captured["body"] = kwargs["json"]
+
     # Mock HTTP at boundary
     with aioresponses() as mock_http:
         mock_http.post(
@@ -4032,6 +4050,7 @@ async def test_chat_completions_inlines_internal_file_urls(monkeypatch) -> None:
             body=(_sse({"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]}) + "data: [DONE]\n\n").encode("utf-8"),
             headers={"Content-Type": "text/event-stream"},
             status=200,
+            callback=capture_request,
         )
 
         async with aiohttp.ClientSession() as session:
@@ -4057,6 +4076,16 @@ async def test_chat_completions_inlines_internal_file_urls(monkeypatch) -> None:
             valves=valves,
             ):
                 pass
+
+    assert "body" in captured, "Expected the outbound chat-completions body to be captured"
+    serialized = json.dumps(captured["body"])
+    assert "data:application/pdf;base64,QUJD" in serialized, (
+        "the referenced file reached the provider as a path instead of as data: "
+        f"{serialized}"
+    )
+    assert "/api/v1/files/" not in serialized, (
+        f"an internal Open WebUI file URL reached the provider: {serialized}"
+    )
 
     await pipe.close()
 
@@ -4401,10 +4430,11 @@ async def test_send_openrouter_nonstreaming_request_as_events_chat_adapter() -> 
 
 @pytest.mark.asyncio
 async def test_chat_completions_nonstreaming_inlines_internal_file_urls(monkeypatch) -> None:
-    """Test that internal file URLs are inlined in non-streaming chat completions.
+    """The outbound non-streaming body carries the inlined data URL and no internal path.
 
-    THIS IS A REAL TEST: Mocks file inlining helper, uses aioresponses for HTTP,
-    exercises real adapter logic."""
+    The same claim as the streaming sibling, read off the body the wire carries. Its only
+    `assert` used to sit inside `fake_inline_id`, which reported that the stub was called
+    and nothing about the request that followed, so the request was never examined at all."""
     pipe = Pipe()
     valves = pipe.valves.model_copy(update={"DEFAULT_LLM_ENDPOINT": "chat_completions"})
 
@@ -4414,12 +4444,19 @@ async def test_chat_completions_nonstreaming_inlines_internal_file_urls(monkeypa
 
     monkeypatch.setattr(pipe._file_gateway, "inline_owui_file_id", fake_inline_id)
 
+    captured: dict[str, Any] = {}
+
+    def capture_request(url, **kwargs):
+        if "json" in kwargs:
+            captured["body"] = kwargs["json"]
+
     # Mock HTTP at boundary
     with aioresponses() as mock_http:
         mock_http.post(
             "https://openrouter.ai/api/v1/chat/completions",
             payload={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
             status=200,
+            callback=capture_request,
         )
 
         async with aiohttp.ClientSession() as session:
@@ -4444,6 +4481,16 @@ async def test_chat_completions_nonstreaming_inlines_internal_file_urls(monkeypa
                 breaker_key=None,
             valves=valves,
             )
+
+    assert "body" in captured, "Expected the outbound chat-completions body to be captured"
+    serialized = json.dumps(captured["body"])
+    assert "data:application/pdf;base64,QUJD" in serialized, (
+        "the referenced file reached the provider as a path instead of as data: "
+        f"{serialized}"
+    )
+    assert "/api/v1/files/" not in serialized, (
+        f"an internal Open WebUI file URL reached the provider: {serialized}"
+    )
 
     await pipe.close()
 

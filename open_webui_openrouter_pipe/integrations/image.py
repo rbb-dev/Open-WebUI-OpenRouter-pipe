@@ -517,7 +517,7 @@ class ImageGenerationAdapter:
             # rename would route it into a different published parameter and silently
             # overwrite whatever the user chose there.
             name = key if key in allowed_passthrough else _LEGACY_PARAM_NAMES.get(key, key)
-            if name != key and declared is not None and name not in declared:
+            if name != key and (declared is None or name not in declared):
                 name = _TIER_TWIN.get(name, name)
             if name != key and raw.get(name) not in (None, ""):
                 # Both spellings of one parameter were supplied -- the compatibility one

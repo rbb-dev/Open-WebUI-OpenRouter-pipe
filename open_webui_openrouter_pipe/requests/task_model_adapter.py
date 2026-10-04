@@ -44,6 +44,8 @@ _TASK_FAILURE_NOTIFIED_WINDOW = 300
 
 _warned_task_failure: OrderedDict[str, None] = OrderedDict()
 
+_FUSION_EXCLUDED_TASKS = frozenset({"moa_response_generation"})
+
 _TASK_FAILURE_CARD_TEMPLATE = (
     "### ⚠️ Task model failed\n\n"
     "- **Task**: {task}\n"
@@ -154,6 +156,11 @@ class TaskModelAdapter:
         """Return whether the task should use the housekeeping task adapter path."""
         name = TaskModelAdapter._task_name(task)
         return bool(name) and name != "moa_response_generation"
+
+    @staticmethod
+    def _is_fusion_excluded_task(task: Any) -> bool:
+        name = TaskModelAdapter._task_name(task)
+        return name in _FUSION_EXCLUDED_TASKS
 
     @timed
     async def _run_task_model_request(

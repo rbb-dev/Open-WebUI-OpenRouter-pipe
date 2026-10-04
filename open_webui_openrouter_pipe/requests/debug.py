@@ -62,7 +62,7 @@ def _debug_print_response(payload: Any, *, logger: logging.Logger) -> None:
     if not SessionLogger.debug_enabled(logger):
         return
     try:
-        redacted = _redact_payload_blobs(payload) if isinstance(payload, dict) else payload
+        redacted = _redact_payload_blobs(payload)
         logger.debug(
             "OpenRouter response payload: %s",
             bounded_log_record_text(json.dumps(redacted, indent=2, ensure_ascii=False)),

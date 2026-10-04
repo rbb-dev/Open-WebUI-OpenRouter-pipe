@@ -2,6 +2,20 @@
 
 ## Behaviour changes
 
+- **A preset Fusion turn is no longer repaired by the chat fallback** — a Fusion turn served
+  under its `@preset/` spelling (`openrouter/fusion@preset/<slug>`) whose `/responses` call
+  fails used to be re-sent to `/chat/completions` by `AUTO_FALLBACK_CHAT_COMPLETIONS`. That
+  retry was a *different* request: the `/chat/completions` converter strips the activating
+  `{"id": "fusion"}` entry, because the entry cannot travel there, so OpenRouter answered it
+  as an ordinary completion, the pipe had no panel to render, and the turn finished as a
+  flattened transcript with the breaker strike already refunded. The fallback guard read the
+  raw wire id and the converter read the normalised one — two questions, one shape, opposite
+  answers — so the guard now asks the converter's question and the retry does not happen. The
+  provider's own refusal is what reaches the person, the breaker strike stands, and the turn
+  archives as `error` rather than `complete`. A non-Fusion model still falls back exactly as
+  before, and a caller-supplied `enabled: false` Fusion entry is still the per-request opt-out
+  it was. The same guard governs the streaming and the non-streaming leg.
+
 - **The `/responses` leg now gates the media it forwards** — the outbound filter that runs immediately before a
   `/responses` body is POSTed read no media at all: it dropped undocumented top-level keys and copied `input` through
   byte for byte, so every media value the conversion leg already refused for `/chat/completions` was forwarded
@@ -996,3 +1010,22 @@
   a rewritten prompt, a reused prior-video frame, or any recorded loss — and always under
   `VIDEO_INTENT_CONFIRM_MODE='always'`. A turn that *did* lose something opens the block exactly as before, and
   `VIDEO_INTENT_CONFIRM_MODE='never'` still renders nothing at all.
+
+- **A `data:` header that is not a media type names nothing, on either reader** — both of the pipe's header readers took
+  everything between `data:` and the URL's first comma, cut it at its first `;`, and printed up to 64 characters of it.
+  A 64-character truncation is not a validation, and the header is the caller's own text: a remote server answering
+  `Content-Type: Q4 Payroll - Margit Okonkwo` is enough to put that text in the header, because Open WebUI interpolates
+  a remote server's raw `Content-Type` into the data URL it builds (`backend/open_webui/utils/files.py:96-97`). Both
+  readers now answer through the pipe's own `media_type_or_empty` — the same predicate the read path already used, which
+  accepts a header only if it really is `type/subtype` — so a header that names no media type contributes nothing
+  rather than a prefix of itself. **This changes one thing on the chat leg, deliberately:** an inline `input_audio` block
+  whose `data:` header is not a media type is no longer refused as "a format the pipe will not rename" (a refusal about
+  the caller's spelling rather than about a format); it now declares nothing, so the block's own `format` decides, and
+  a block with no `format` at all keeps the `mp3` default — which is what the tree already did for an *empty* header.
+  A well-formed type is unchanged, and a media type that was echoed verbatim is now lower-cased (`data:IMAGE/PNG` reads
+  `data:image/png`), which is RFC 2045 case-insensitivity and the same normalised form the read path and the free-text
+  log leg already return. In a log a refusal subject for such a URL now reads `data:` — the scheme is known and named,
+  the payload is not — and a file refusal with no other source reads `no source`, as it already does when nothing else
+  can describe the link. No valve and no configuration change.
+
+- **Image generation, the retired size spelling** — an image request that carries the output size under the pipe's own retired spelling `image_size` no longer fails with a 400 when the model's published settings cannot be read. `image_size` is kept alive for valve rows written by a filter that has since been deactivated; it was aliased onto `resolution`, which the OpenRouter schema documents as a closed enum of `512`, `1K`, `2K` and `4K`, so a pixel value written that way was refused by the whole generation. The retired spelling now meets the same gate as the modern one, `size`, whether the contract is readable, unreadable or a model that publishes a tier list of its own, and both spellings produce the same key, the same value and the same note. One behaviour does change and is worth stating: `image_size: "banana"` used to go out unchecked on an unreadable contract and is now refused as outside the contract, naming `size`, exactly as it already was where the contract could be read.

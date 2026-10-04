@@ -667,6 +667,26 @@ def _jpeg_frame_header(width: int, height: int) -> bytes:
         ),
         ("a-segment-shorter-than-its-own-length-field", b"\xff\xd8\xff\xe0\x00\x01" + b"\x00" * 64, None),
         ("a-segment-declaring-no-length", b"\xff\xd8\xff" + b"\x00" * 64, None),
+        (
+            "an-app1-declaring-no-length-before-a-readable-frame",
+            b"\xff\xd8" + b"\xff\xe1\x00\x00" + _jpeg_frame_header(640, 480),
+            None,
+        ),
+        (
+            "an-app1-declaring-a-one-byte-length-before-a-readable-frame",
+            b"\xff\xd8" + b"\xff\xe1\x00\x01" + _jpeg_frame_header(321, 123),
+            None,
+        ),
+        (
+            "a-comment-carrying-no-segment-before-a-readable-frame",
+            b"\xff\xd8" + b"\xff\xfe\x00\x00" + _jpeg_frame_header(640, 480),
+            None,
+        ),
+        (
+            "a-quantization-table-with-a-bad-length-before-a-readable-frame",
+            b"\xff\xd8" + b"\xff\xdb\x00\x01" + _jpeg_frame_header(321, 123),
+            None,
+        ),
     ],
 )
 def test_a_jpeg_the_scanner_has_to_walk_is_measured_or_declined_never_guessed(
@@ -674,7 +694,7 @@ def test_a_jpeg_the_scanner_has_to_walk_is_measured_or_declined_never_guessed(
 ):
     """The reference-image gate is a size, so a wrong one refuses a picture that is fine.
 
-    These four streams are written by hand because no encoder produces them: the
+    These eight streams are written by hand because no encoder produces them: the
     scanner's resync arm, its standalone-marker arm and its short-segment guard are
     reached only by a stream that is damaged or padded, which is exactly the stream a
     user's re-encoded upload can be. All three arms were unreachable from the suite, so
@@ -682,6 +702,18 @@ def test_a_jpeg_the_scanner_has_to_walk_is_measured_or_declined_never_guessed(
 
     The two readable rows carry different sizes and are not square, so a parser that
     returns a constant or transposes the axes fails.
+
+    The four short-segment rows exist because the two rows above them do not reach the
+    guard. Both are 64 zero bytes with nothing readable after them, so a scanner that
+    walked straight past a length below 2 would still answer `None` -- declined, by the
+    end of the buffer rather than by the guard. Each of the four puts a real frame header
+    immediately after the short segment, so the only thing that can decline them is the
+    guard, and `None` has to be its answer even though a readable SOF is one step behind.
+
+    They are four and not one because a guard written to recognise the single byte-pair
+    this file happens to use would pass a row and still be wrong: 0 and 1 are both below
+    the two-byte minimum a segment length can declare, and a comment marker is a segment
+    that carries none at all, so neither is spelled the way the first row is.
     """
     from open_webui_openrouter_pipe.storage.multimodal import image_pixel_size
 

@@ -1684,10 +1684,17 @@ undefined key, so instead the pipe refuses the turn before anything is sent, nam
 the control that asked for it. A request nobody asked to be ZDR-protected goes out
 as usual, with its `only`, `order`, `sort` and `max_price` withheld exactly as above.
 
-The same reasoning decides which provider carries an attachment. Because the
-video request carries no `only`, routing never sees an operator's pin, so the
-pipe keys attachments to a provider drawn from the catalog rather than to the
-pin. On the image endpoint `only` *is* accepted, so there the pin decides.
+The same reasoning decides which provider carries an attachment. The video
+request carries no routing field, so a pin cannot be honoured on it and no
+provider filter is generated for a video model. Where a caller still names a
+provider in `order` — an API caller posting `provider` on the body, or a
+third-party filter writing metadata — the pipe uses it as the hint for which
+company's `options` key carries an attachment that cannot be duplicated across
+providers, and a base slug matches every region of its provider, so
+`google-vertex/eu` and `google-vertex` name the same one. `ignore` is read the
+same way: an excluded provider never receives the attachment. The pin still
+never reaches the wire. On the image endpoint `only` *is* accepted, so there the
+pin decides which company serves.
 
 ---
 
@@ -2741,7 +2748,13 @@ Key files:
   restate that merged feature set rather than keeping the chat row's own answer:
   a dual row whose video leg takes a frame ticks the box, and one whose chat leg
   takes pictures keeps it, so the composer never refuses an attach the row's own
-  features accept. The other seven flags keep the chat row's answer. A
+  features accept. The other seven flags keep the chat row's answer, and so do
+  the row's chat context length, feature set, pricing, display name and
+  capability flags: they stay alongside the video controls, and they stay there
+  across a chat refresh too — a `/models` answer that republishes a norm the
+  video catalog still publishes is re-merged rather than replaced, because the
+  video catalog's claim is what makes the row video-capable and a republish is
+  not a withdrawal. A
   sweep that
   completes with none keeps every model the video catalog itself registered
   and logs, once, that the previous set was kept, so a `200` with an empty
@@ -2749,7 +2762,14 @@ Key files:
   OpenRouter answers with — cannot empty the picker. A non-empty sweep that
   stops listing a model does retire it; a model the chat `/models` catalog
   also publishes is spared by that chat provenance, not by being unowned, and
-  is retired only when `/models` stops listing it. Spared is not the same as
+  is retired only when `/models` stops listing it. Republished is not the same
+  as withdrawn: while the video catalog still publishes a norm, a chat refresh
+  that republishes it re-applies the same merge, so the row keeps its
+  `video_model`, its `video_generation` feature and its video-only capability
+  flag instead of losing them for the length of a catalog cache window. Only
+  the video catalog's own claim decides that, and a norm it claims but has no
+  row for is left alone rather than handed a contract with nothing to serve.
+  Spared is not the same as
   untouched: a model the
   video catalog stops listing at all -- whether a sweep that publishes fewer
   rows, and whether the rows are gone because the endpoint was retired

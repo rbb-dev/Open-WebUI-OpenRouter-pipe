@@ -3703,66 +3703,6 @@ async def test_chat_refresh_preserves_video_models():
         await pipe.close()
 
 
-@pytest.mark.asyncio
-async def test_chat_refresh_chat_wins_on_norm_id_collision_with_video():
-    """If a chat model's norm_id ever collides with a registered video norm_id, the
-    chat refresh must keep the chat spec (the catalog's authoritative answer)."""
-    import json
-    import logging
-    from pathlib import Path
-    import aiohttp
-    from open_webui_openrouter_pipe import EncryptedStr, Pipe
-    from open_webui_openrouter_pipe.models.registry import (
-        ModelFamily,
-        OpenRouterModelRegistry,
-        sanitize_model_id,
-    )
-
-    fixture = json.loads(
-        (Path(__file__).parent / "fixtures" / "video_models_catalog.json").read_text()
-    )
-    video_model = fixture["data"][0]
-    video_id = video_model["id"]
-    video_norm_id = ModelFamily.base_model(sanitize_model_id(video_id))
-
-    OpenRouterModelRegistry.register_video_models([video_model])
-
-    pipe = Pipe()
-    try:
-        pipe.valves.API_KEY = EncryptedStr("test-api-key")
-        pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
-
-        with aioresponses() as mock_http:
-            mock_http.get(
-                "https://openrouter.ai/api/v1/models",
-                payload={"data": [{"id": video_id, "name": "ChatModelMasqueradingAsVideo"}]},
-                repeat=True,
-            )
-            mock_http.get(
-                "https://openrouter.ai/api/v1/endpoints/zdr",
-                payload={"data": []},
-                repeat=True,
-            )
-
-            async with aiohttp.ClientSession() as session:
-                await OpenRouterModelRegistry.ensure_loaded(
-                    session,
-                    base_url=pipe.valves.BASE_URL,
-                    api_key="test-api-key",
-                    cache_seconds=3600,
-                    logger=logging.getLogger("test"),
-                )
-
-        spec = OpenRouterModelRegistry._specs.get(video_norm_id) or {}
-        features = set(spec.get("features") or set())
-        assert "video_generation" not in features, (
-            "Chat-wins-on-collision violated: chat refresh preserved the video spec "
-            "instead of the new chat-side entry."
-        )
-    finally:
-        await pipe.close()
-
-
 def test_catalog_manager_uses_direct_attr_for_last_fetch(pipe_instance):
     """catalog_manager.maybe_schedule_model_metadata_sync reads the registry's catalogue
     state via direct attr access (not getattr-with-default), so a future rename fails loudly.
@@ -4798,6 +4738,25 @@ def test_the_sync_s_gate_is_a_strict_subset_of_the_scheduler_s():
     )
 
 
+_SYNC_GATE_VALVE_NAMES = (
+    "UPDATE_MODEL_CAPABILITIES",
+    "UPDATE_MODEL_IMAGES",
+    "UPDATE_MODEL_DESCRIPTIONS",
+    "AUTO_ATTACH_WEB_TOOLS_FILTER",
+    "AUTO_INSTALL_WEB_TOOLS_FILTER",
+    "AUTO_DEFAULT_WEB_TOOLS_FILTER",
+    "AUTO_ATTACH_DIRECT_UPLOADS_FILTER",
+    "AUTO_INSTALL_DIRECT_UPLOADS_FILTER",
+    "AUTO_INSTALL_IMAGE_GEN_FILTER",
+    "AUTO_ATTACH_IMAGE_GEN_FILTER",
+    "AUTO_INSTALL_VIDEO_FILTERS",
+    "AUTO_ATTACH_VIDEO_FILTERS",
+    "AUTO_INSTALL_IMAGE_FILTERS",
+    "AUTO_ATTACH_IMAGE_FILTERS",
+    "AUTO_INSTALL_FUSION_FILTER",
+    "AUTO_ATTACH_FUSION_FILTER",
+    "AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS",
+)
 """The valves that make the scheduler start a metadata sync, written down independently.
 
 This literal is the reference the two predicates are compared against, so it is the one
@@ -4813,6 +4772,14 @@ If one of them ever stops being paired, it belongs here.
 """
 
 """The second input to both predicates, which no valve names: provider routing enabled."""
+
+
+"""The three `AUTO_DEFAULT_*` seed terms and the keyword each one arrives under.
+
+They are deliberately absent from `_SYNC_GATE_VALVE_NAMES` above, so what keeps that
+correct is not the absence but a domination this test checks, and the day it stops
+holding is the day they belong in the gate.
+"""
 
 
 @pytest.mark.parametrize("answer", [False, True])

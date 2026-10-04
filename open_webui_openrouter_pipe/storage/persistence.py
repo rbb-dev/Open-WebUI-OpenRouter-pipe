@@ -243,9 +243,6 @@ def _encode_crockford(value: int, length: int) -> str:
 
 def generate_item_id() -> str:
     """Generate a 20-char ULID using a 16-char time component + 4-char random tail.
-
-    Returns:
-        str: Crockford-encoded ULID (stateless + monotonic per timestamp).
     """
     timestamp = time.time_ns() & _ULID_TIME_MASK
     time_component = _encode_crockford(timestamp, ULID_TIME_LENGTH)
@@ -2115,19 +2112,15 @@ class ArtifactStore:
             held_memory.rearm()
             return held
         if is_temporary_chat(rows[0].get("chat_id")):
-            if not held_memory.is_open(rows[0].get("chat_id"), rows[0].get("message_id")):
-                self.logger.debug(
-                    "Temporary chat row dropped: its reply is closed and holds nothing "
-                    "(chat_id=%s message_id=%s id=%s item_type=%s)",
-                    loggable_chat_id(rows[0].get("chat_id")),
-                    rows[0].get("message_id"),
-                    rows[0].get("id"),
-                    rows[0].get("item_type"),
-                )
-                return []
-            held = await asyncio.to_thread(self._reply_memory.hold, rows)
-            self._reply_memory.rearm()
-            return held
+            self.logger.debug(
+                "Temporary chat row dropped: its reply is closed and holds nothing "
+                "(chat_id=%s message_id=%s id=%s item_type=%s)",
+                loggable_chat_id(rows[0].get("chat_id")),
+                rows[0].get("message_id"),
+                rows[0].get("id"),
+                rows[0].get("item_type"),
+            )
+            return []
 
         from open_webui_openrouter_pipe.core.logging_system import SessionLogger
 
@@ -2480,7 +2473,7 @@ class ArtifactStore:
             missing_ids = item_ids
 
         if not missing_ids:
-            await self._touch_cached(chat_id, message_id, list(cached))
+            await self._touch_cached(chat_id, message_id, cache_hit_ids)
             return _load_result(cached, producers, with_producers)
 
         if not self._artifact_store_ready():
