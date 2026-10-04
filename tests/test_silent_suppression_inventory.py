@@ -155,11 +155,26 @@ _EXPECTED: dict[str, int] = {
     # both use. `kill()` on a child asyncio has already reaped raises
     # `ProcessLookupError`, and a `wait()` on a closed transport raises too, so the
     # suppression is what keeps the byte-budget refusal a `FrameExtractionError` with
-    # `byte_budget=True` rather than a `ProcessLookupError` the caller does not catch;
-    # the stderr drain is inside the same shape for the same reason. Suppressing a
-    # `CancelledError` there would swallow the caller's cancellation, which is why it
-    # is listed explicitly rather than caught by the broad arm.
-    "media/frame_extraction.py": 4,
+    # `byte_budget=True` rather than a `ProcessLookupError` the caller does not catch.
+    # Suppressing a `CancelledError` there would swallow the caller's cancellation,
+    # which is why it is listed explicitly rather than caught by the broad arm.
+    # H4434-1 moved the stderr drain out of `_stop_child` and into the new `_reap`, which
+    # took the drain's suppression with it (so 4 -> 3 there) and added two of its own.
+    # 5th: `_reap`'s two post-kill steps, the wait for a child it has just killed and the
+    # collection of the child's stderr. The bound is what the rung owes; once it is spent
+    # the kill is sent and the wait is the other half of the reap, because `kill()`
+    # signals and `wait()` reaps -- a killed child nobody waited on is one unreaped child
+    # per wedged clip for the life of the worker. The drain is diagnostics, and the
+    # diagnostics the pipe keeps are the returncode and the pipe's own wording: a `.result()`
+    # on a finished drain re-raises a read fault the caller has no better answer for, and
+    # the bounded `wait_for` on an unfinished one leaves the bytes unread and the rung's
+    # deadline error unreplaced. Neither changes what the caller is told -- `_reap` answers
+    # the same `_rung_deadline_error` on the reaped path and on this one -- so a failure to
+    # collect them is a missing word, not a wrong one. `CancelledError` is listed because
+    # both of these need it: the caller may be cancelled while the reap waits, and the
+    # drain is the task the line above cancelled whenever it did not answer, so awaiting
+    # it re-raises the cancellation the reap asked for.
+    "media/frame_extraction.py": 5,
     "models/catalog_manager.py": 2,
     # 19th: `MultimodalHandler.aclose()` during shutdown, closing the vetted transport's
     # session and its decode pool. It sits among the teardown steps either side of it,
@@ -277,7 +292,17 @@ _EXPECTED: dict[str, int] = {
     # failing to clear it loudly would abort the rest of the loop and leave the other six
     # edges standing, which is the worse of the two. The clear runs on the teardown path,
     # after every drain has already finished, so a raise here has nothing left to protect.
-    "pipe.py": 40,
+    # 41st and 42nd (B1216-1): the two `suppress(Exception)` around the contextvar resets at
+    # the tail of `_stream()`'s `finally`, one for `OWUI_CHAT_ID` and one for `CONTINUED_REPLY`.
+    # They run after the generator has published whatever it published and cleaned the
+    # session logger up, so a reset that failed -- a token from another context, which is the
+    # only way a reset raises here -- has nothing left to protect: the turn is over and the
+    # caller is about to run the next one on this task. Letting it out would replace a
+    # published refusal with a `ValueError` out of a generator's cleanup, and a generator
+    # that raises from its `finally` hands the caller an error instead of the frames it has
+    # already read. The leak the reset prevents is a channel id reaching the next request,
+    # and that is held by the test that reads both contextvars after an abandoned stream.
+    "pipe.py": 42,
     # 4th (B724): the done-callback's `suppress(asyncio.CancelledError, Exception)` around
     # `task.exception()` in `_schedule_redis_valve_drain_on`'s `_settle`, which releases
     # the Redis valve's ownership latch when a scheduled drain ends however it ends. The

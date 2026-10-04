@@ -724,6 +724,7 @@ def _build_error_template_values(
             "\n".join(f"- {_inline_span(reason)}" for reason in moderation_lines)
         ),
         "flagged_excerpt": _fenced_block(flagged_excerpt),
+        "body_excerpt": _fenced_block(getattr(error, "body_excerpt", "")[:200]),
         "context_limit_tokens": f"{context_limit_value:,}" if context_limit_value else "",
         "max_output_tokens": f"{max_output_tokens_value:,}" if max_output_tokens_value else "",
         "include_model_limits": bool(include_model_limits),
@@ -738,17 +739,17 @@ def _build_error_template_values(
         "streaming_model": streaming_model,
         "is_streaming_error": bool(error.is_streaming_error),
         "error_id": _inline_span(context.get("error_id", "")),
-        "timestamp": context.get("timestamp", ""),
+        "timestamp": _inline_span(context.get("timestamp", "")),
         "session_id": _inline_span(context.get("session_id", "")),
         "user_id": _inline_span(context.get("user_id", "")),
-        "support_email": context.get("support_email", ""),
-        "support_url": context.get("support_url", ""),
+        "support_email": _inline_span(context.get("support_email", "")),
+        "support_url": _inline_span(context.get("support_url", "")),
         "retry_after_seconds": "" if retry_after is None else retry_after,
         "rate_limit_type": _inline_span(error.metadata.get("rate_limit_type") or ""),
         "required_cost": _inline_span(error.metadata.get("required_cost") or ""),
         "account_balance": _inline_span(error.metadata.get("account_balance") or ""),
         "status_code": error.status or "",
-        "diagnostics": "\n".join(diagnostics),
+        "diagnostics": _inline_span("\n".join(diagnostics)),
     }
     return replacements
 
@@ -757,7 +758,7 @@ _CHANNEL_WITHHELD_TEMPLATE_KEYS = frozenset({
     "session_id", "user_id",
     "flagged_excerpt", "raw_body", "metadata_json", "provider_raw_json", "body_excerpt",
     "detail", "sanitized_detail", "reason", "openrouter_message", "upstream_message",
-    "moderation_reasons",
+    "upstream_type", "moderation_reasons",
     "required_cost", "account_balance",
     "model_id_filter", "free_model_filter", "tool_calling_filter",
 })

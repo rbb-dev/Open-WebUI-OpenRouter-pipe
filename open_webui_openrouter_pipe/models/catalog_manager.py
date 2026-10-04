@@ -234,6 +234,16 @@ class _ModelWriteRefused(Exception):
     pass
 
 
+class _AccessUnrepresentable:
+    __slots__ = ("principal_type",)
+
+    def __init__(self, principal_type: str) -> None:
+        self.principal_type = principal_type
+
+
+_ACCESS_UNREPRESENTABLE = _AccessUnrepresentable
+
+
 async def _read_model_rows(ids: list[str], logger: Any) -> Any:
     from open_webui.models.models import Models
 
@@ -1035,13 +1045,14 @@ class ModelCatalogManager:
         return False
 
     @classmethod
-    def _legacy_grants_to_access_control(cls, grants_value: Any) -> dict[str, Any] | None:
+    def _legacy_grants_to_access_control(
+        cls, grants_value: Any
+    ) -> dict[str, Any] | None | _AccessUnrepresentable:
         """Convert legacy grants into OWUI ``access_control`` shape."""
         grants = cls._normalize_access_grants(grants_value)
-        if cls._legacy_grants_imply_public(grants):
-            return None
 
         access_control: dict[str, dict[str, list[str]]] = {}
+        saw_public_read = False
         for grant in grants:
             principal_id = grant.get("principal_id")
             principal_type = grant.get("principal_type")
@@ -1061,15 +1072,17 @@ class ModelCatalogManager:
             )
             if principal_type_lower == "user":
                 target = bucket["user_ids"]
+                if principal_id == "*" and permission_lower == "read":
+                    saw_public_read = True
             elif principal_type_lower == "group":
                 target = bucket["group_ids"]
             else:
-                continue
+                return _ACCESS_UNREPRESENTABLE(principal_type_lower)
 
             if principal_id not in target:
                 target.append(principal_id)
 
-        return access_control or {}
+        return None if (saw_public_read and not access_control) else access_control or {}
 
     def _resolve_model_access_payload(
         self,
@@ -1082,9 +1095,24 @@ class ModelCatalogManager:
             access_control = getattr(model_obj, "access_control", None)
             if isinstance(access_control, dict):
                 return dict(access_control)
-            return self._legacy_grants_to_access_control(
+            payload = self._legacy_grants_to_access_control(
                 getattr(model_obj, "access_grants", None)
             )
+            if isinstance(payload, _AccessUnrepresentable):
+                model_id = str(getattr(model_obj, "id", "") or "")
+                self.logger.warning(
+                    "Metadata refresh refused for model '%s': its stored grants carry a "
+                    "'%s' principal, which this schema's access field cannot spell; the "
+                    "row keeps its grants, its icon and its description",
+                    model_id,
+                    payload.principal_type,
+                )
+                raise _ModelWriteRefused(
+                    f"the stored grants of {model_id} name a '{payload.principal_type}' "
+                    "principal, which this schema's access field cannot spell, so "
+                    f"{model_id} is left exactly as it is"
+                )
+            return payload
 
         return None
 

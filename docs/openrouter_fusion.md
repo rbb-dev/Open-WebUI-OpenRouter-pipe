@@ -290,7 +290,9 @@ streaming panel deltas, the cards simply fill in at completion as before.
   saved chat). A channel's panel is delivered by Open WebUI's own channel emitter, not by this write.
 
 - Forces the `/responses` endpoint (the only one that emits the granular Fusion events). A
-  `FORCE_CHAT_COMPLETIONS_MODELS` match on the fusion model is **not** overridden: on the hosted OpenRouter backend
+  `FORCE_CHAT_COMPLETIONS_MODELS` match on the fusion model is **not** overridden: a pattern naming
+  `openrouter/fusion` reaches that model's tagged spellings as well as the bare id, so
+  `openrouter/fusion:nitro` and `openrouter/fusion:free` are refused exactly as the bare row is. On the hosted OpenRouter backend
   the valve holds and the turn is refused with the endpoint-conflict card, because Fusion on `/chat/completions` returns a
   flattened text transcript with no structured events. The pin is kept and the request does not run. On the internal backend the panel runs
   inside the pipe and the fusion model never reaches OpenRouter, so there is no endpoint conflict to refuse and the

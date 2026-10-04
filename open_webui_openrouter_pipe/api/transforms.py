@@ -17,7 +17,7 @@ import base64
 import binascii
 import json
 import logging
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterable, Iterator
 from math import isfinite
 from typing import TYPE_CHECKING, Any
 
@@ -44,6 +44,7 @@ from ..core.config import (
     _PROVIDER_SLUG_PATTERN,
     OPENAI_EMPTY_USER_TURN_FALLBACK,
 )
+from ..core.context_budget import inline_payload_bytes
 from ..core.fusion_defaults import (
     _REQUIRED_TOOL_CHOICE,
     find_fusion_entry,
@@ -973,25 +974,43 @@ def _without_unforwardable_pictures(
     return survivors
 
 
-def _chat_link_refusal_reason(
+def _media_link_verdict(
     field: str, url: Any, *, allow_insecure: Callable[[str], bool], max_inline_bytes: int,
-) -> str | None:
+) -> tuple[str | None, str]:
     from ..requests.transformer import _tool_picture_gate
 
     if not isinstance(url, str) or not url.strip():
-        return None
+        return None, ""
     candidate = url.strip()
     if names_an_owui_file_path(candidate):
-        return _CHAT_INTERNAL_PATH_REFUSAL
+        return _CHAT_INTERNAL_PATH_REFUSAL, "internal_reference"
     if not url_scheme(candidate):
         if field == "file_data":
-            return None
+            return None, ""
         if field == "file_url" and not is_absolute_url(candidate):
-            return None
+            return None, ""
     _, refused = _tool_picture_gate(
         [candidate], max_inline_bytes=max_inline_bytes, allow_insecure=allow_insecure,
     )
-    return refused[0][1] if refused else None
+    if not refused:
+        return None, ""
+    return refused[0][1], refused[0][2]
+
+
+def _media_link_refusal_reason(
+    field: str, url: Any, *, allow_insecure: Callable[[str], bool], max_inline_bytes: int,
+) -> str | None:
+    return _media_link_verdict(
+        field, url, allow_insecure=allow_insecure, max_inline_bytes=max_inline_bytes,
+    )[0]
+
+
+def _chat_link_refusal_reason(
+    field: str, url: Any, *, allow_insecure: Callable[[str], bool], max_inline_bytes: int,
+) -> str | None:
+    return _media_link_refusal_reason(
+        field, url, allow_insecure=allow_insecure, max_inline_bytes=max_inline_bytes,
+    )
 
 
 def _chat_media_url(block: dict[str, Any], *keys: str) -> Any:
@@ -2380,6 +2399,121 @@ def _apply_identifier_valves_to_payload(
         payload.pop("metadata", None)
 
 
+def _gate_responses_input_media(
+    payload: dict[str, Any],
+    *,
+    allow_insecure: Callable[[str], bool],
+    max_inline_bytes: int,
+    refusals: list[tuple[str, str, str]] | None = None,
+) -> dict[str, Any]:
+    media_arms: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
+        "input_image": (("image_url", ("image_url",)),),
+        "image_url": (("image_url", ("image_url",)),),
+        "video_url": (("video_url", ("video_url",)),),
+        "input_video": (("video_url", ("video_url", "url")),),
+        "input_file": (("file_url", ("file_url",)), ("file_data", ("file_data",))),
+    }
+
+    def _inline_arm_admits(candidate: Any, arm_field: str) -> bool:
+        return (
+            arm_field != "image_url"
+            and isinstance(candidate, str)
+            and inline_payload_bytes(candidate) <= max_inline_bytes
+        )
+
+    recorded: list[tuple[str, str, str]] = []
+    items = payload.get("input")
+    if not isinstance(items, list) or not items:
+        return payload
+
+    def _record(url: Any, reason: str, cause: str) -> None:
+        rendered = url.strip() if isinstance(url, str) and url.strip() else ""
+        recorded.append((rendered, reason, cause))
+        logger.warning(
+            "Not forwarding a media link (%s): %s [cause=%s]",
+            loggable_link(rendered), reason, cause,
+        )
+
+    def _gated(blocks: Any) -> tuple[Any, bool]:
+        if not isinstance(blocks, list):
+            return blocks, False
+        kept: list[Any] = []
+        touched = False
+        for block in blocks:
+            if not isinstance(block, dict):
+                kept.append(block)
+                continue
+            btype = block.get("type")
+            if btype == "input_audio":
+                reason = _chat_audio_url_refusal(block, "input_audio")
+                if reason is None:
+                    kept.append(block)
+                    continue
+                _record(_chat_media_url(block, "input_audio"), reason, "audio_url")
+                touched = True
+                continue
+            arms = media_arms.get(btype) if isinstance(btype, str) else None
+            if arms is None:
+                kept.append(block)
+                continue
+            refused: list[tuple[Any, str, str, str]] = []
+            for arm_field, keys in arms:
+                candidate = _chat_media_url(block, *keys)
+                if candidate is None:
+                    continue
+                verdict, candidate_cause = _media_link_verdict(
+                    arm_field, candidate, allow_insecure=allow_insecure,
+                    max_inline_bytes=max_inline_bytes,
+                )
+                if verdict is None:
+                    continue
+                if candidate_cause == "unencoded_inline" and _inline_arm_admits(
+                    candidate, arm_field
+                ):
+                    continue
+                refused.append((candidate, verdict, candidate_cause, arm_field))
+            if not refused:
+                kept.append(block)
+                continue
+            file_id = block.get("file_id")
+            if btype == "input_file" and isinstance(file_id, str) and file_id.strip():
+                shielded = {
+                    key: value for key, value in block.items()
+                    if key not in {entry[3] for entry in refused}
+                }
+                kept.append(shielded)
+                touched = True
+                continue
+            for url, reason, cause, _arm_field in refused:
+                _record(url, reason, cause)
+            touched = True
+        return (kept, True) if touched else (blocks, False)
+
+    gated_items: list[Any] = []
+    changed = False
+    for item in items:
+        if not isinstance(item, dict):
+            gated_items.append(item)
+            continue
+        gated_item = item
+        is_tool_output = item.get("type") == "function_call_output"
+        for key, tool_output_only in (("content", False), ("output", True)):
+            if tool_output_only and not is_tool_output:
+                continue
+            blocks, blocks_changed = _gated(item.get(key))
+            if not blocks_changed:
+                continue
+            if gated_item is item:
+                gated_item = dict(item)
+            gated_item[key] = blocks
+            changed = True
+        gated_items.append(gated_item)
+
+    if refusals is not None:
+        refusals.extend(recorded)
+    return {**payload, "input": gated_items} if changed else payload
+
+
 def _filter_openrouter_request(payload: dict[str, Any]) -> dict[str, Any]:
     """Drop any keys not documented for the OpenRouter Responses API."""
     candidate = dict(payload or {})
@@ -2535,6 +2669,18 @@ def _parse_url_citation_annotations(raw_annotations: list[Any]) -> Iterator[tupl
             title = url
         content = content.strip() if isinstance(content, str) else ""
         yield url, title, content
+
+
+def _joined_reasoning_summaries(fragments: Iterable[str]) -> str:
+    out = ""
+    for fragment in fragments:
+        text = fragment if isinstance(fragment, str) else ""
+        if not text:
+            continue
+        if out and out[-1].strip() and text[:1].strip():
+            out += " "
+        out += text
+    return out
 
 
 def _unhandled_citation_types(raw_annotations: Any) -> set[str]:

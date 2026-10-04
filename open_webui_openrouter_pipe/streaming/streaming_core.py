@@ -40,6 +40,7 @@ from ..api.transforms import (
     _apply_openrouter_trace_to_payload,
     _apply_provider_routing_params_to_payload,
     _drop_include_reasoning_for_unsupported_fallbacks,
+    _joined_reasoning_summaries,
     _parse_url_citation_annotations,
     _strip_disable_model_settings_params,
     _unhandled_citation_types,
@@ -511,6 +512,15 @@ class _ReasoningTextBox:
         return bool(text) and text.startswith(self._text)
 
 
+def _tagless_id(norm_id: str) -> str:
+    current = norm_id
+    while True:
+        head, separator, tag = current.rpartition(":")
+        if not separator or not head or tag.startswith("preset/"):
+            return current
+        current = head
+
+
 class StreamingHandler:
     """Manages streaming response processing.
 
@@ -763,7 +773,6 @@ class StreamingHandler:
         active_reasoning_item_id: str | None = None
         reasoning_stream_buffers: dict[str, _ReasoningTextBox] = {}
         reasoning_summary_consumed: dict[str, str] = {}
-        reasoning_stream_completed: set[str] = set()
         reasoning_display: dict[str, dict[str, Any]] = {}
         unpublished_reasoning_keys: dict[str, None] = {}
         open_reasoning_windows: dict[str, None] = {}
@@ -1676,24 +1685,23 @@ class StreamingHandler:
                 """Extract reasoning content/summary from a completed output item."""
                 if not isinstance(item, dict):
                     return ""
-                fragments: list[str] = []
                 content = item.get("content")
                 if isinstance(content, list):
-                    for entry in content:
-                        if isinstance(entry, dict):
-                            text_val = entry.get("text")
-                            if isinstance(text_val, str) and text_val:
-                                fragments.append(text_val)
-                if fragments:
-                    return "".join(fragments)
+                    body = "".join(
+                        text
+                        for text in (entry.get("text") for entry in content if isinstance(entry, dict))
+                        if isinstance(text, str) and text
+                    )
+                    if body:
+                        return body
                 summary = item.get("summary")
                 if isinstance(summary, list):
-                    for entry in summary:
-                        if isinstance(entry, dict):
-                            text_val = entry.get("text")
-                            if isinstance(text_val, str) and text_val:
-                                fragments.append(text_val)
-                return "".join(fragments)
+                    return _joined_reasoning_summaries(
+                        text
+                        for text in (entry.get("text") for entry in summary if isinstance(entry, dict))
+                        if isinstance(text, str)
+                    )
+                return ""
 
             def _append_reasoning_text(
                 key: str, incoming: str, *, allow_misaligned: bool, consumed: str = ""
@@ -1817,7 +1825,6 @@ class StreamingHandler:
                 state["published_len"] = len(text)
                 state["published_round"] = loop_index
                 state["emitted"] = True
-                reasoning_stream_completed.add(key)
                 unpublished_reasoning_keys.pop(key, None)
                 emitted_response_output_items = True
                 reasoning_item: dict[str, Any] = {
@@ -2212,7 +2219,6 @@ class StreamingHandler:
                     active_reasoning_item_id = None
                     reasoning_stream_buffers.pop("__reasoning__", None)
                     reasoning_summary_consumed.pop("__reasoning__", None)
-                    reasoning_stream_completed.discard("__reasoning__")
                     reasoning_display.pop("__reasoning__", None)
                     unpublished_reasoning_keys.pop("__reasoning__", None)
                     open_reasoning_windows.pop("__reasoning__", None)
@@ -5130,27 +5136,28 @@ class StreamingHandler:
     ) -> tuple[Literal["responses", "chat_completions"], bool]:
         base_id = ModelFamily.base_model(model_id or "") or (model_id or "")
         undated_id = ModelFamily.undated(base_id) or base_id
+        candidates = (base_id, undated_id, _tagless_id(base_id), _tagless_id(undated_id))
         force_chat = _parse_model_patterns(valves.FORCE_CHAT_COMPLETIONS_MODELS)
         force_responses = _parse_model_patterns(valves.FORCE_RESPONSES_MODELS)
-        if _matches_any_model_pattern(base_id, force_responses) or _matches_any_model_pattern(
-            undated_id, force_responses
-        ):
+        matched_responses = next((c for c in candidates if _matches_any_model_pattern(c, force_responses)), "")
+        if matched_responses:
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(
-                    "LLM endpoint selection: model_id=%s base_id=%s -> responses (FORCE_RESPONSES_MODELS=%s)",
+                    "LLM endpoint selection: model_id=%s base_id=%s matched=%s -> responses (FORCE_RESPONSES_MODELS=%s)",
                     model_id,
                     base_id,
+                    matched_responses,
                     force_responses,
                 )
             return "responses", True
-        if _matches_any_model_pattern(base_id, force_chat) or _matches_any_model_pattern(
-            undated_id, force_chat
-        ):
+        matched_chat = next((c for c in candidates if _matches_any_model_pattern(c, force_chat)), "")
+        if matched_chat:
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(
-                    "LLM endpoint selection: model_id=%s base_id=%s -> chat_completions (FORCE_CHAT_COMPLETIONS_MODELS=%s)",
+                    "LLM endpoint selection: model_id=%s base_id=%s matched=%s -> chat_completions (FORCE_CHAT_COMPLETIONS_MODELS=%s)",
                     model_id,
                     base_id,
+                    matched_chat,
                     force_chat,
                 )
             return "chat_completions", True

@@ -38,6 +38,7 @@ from ..core.timing_logger import timed
 from ..core.url_scheme import (
     is_absolute_url,
     is_inline_data_url,
+    loggable_link,
     media_type_or_empty,
     url_path,
 )
@@ -1179,6 +1180,7 @@ class OwuiFileGateway:
         chunk_size: int,
         max_bytes: int,
         user: Any = None,
+        refusals: list[tuple[str, str, str]] | None = None,
     ) -> dict[str, Any]:
         """Inline any Open WebUI internal file URLs referenced by /responses input_file blocks.
 
@@ -1199,16 +1201,27 @@ class OwuiFileGateway:
         if not isinstance(input_items, list) or not input_items:
             return request_body
 
-        async def _inline_picture(part: dict[str, Any]) -> None:
+        async def _inline_picture(part: dict[str, Any]) -> bool:
             holder = part.get("image_url")
             image_url = _picture_reference(part)
             if image_url is None or not names_an_owui_file_path(image_url):
-                return
+                return True
             picture_id = extract_internal_file_id(image_url)
-            inlined = (
-                await self.inline_owui_file_id(picture_id, chunk_size=chunk_size, max_bytes=max_bytes, user=user)
-                if picture_id
-                else None
+            if picture_id is None:
+                cause = "unreadable_internal_path"
+                reason = (
+                    f"a picture naming {loggable_link(image_url)} cannot be read from "
+                    "Open WebUI storage"
+                )
+                self.logger.warning(
+                    "Not forwarding a tool's picture (%s): %s [cause=%s]",
+                    loggable_link(image_url), reason, cause,
+                )
+                if refusals is not None:
+                    refusals.append((image_url, reason, cause))
+                return False
+            inlined = await self.inline_owui_file_id(
+                picture_id, chunk_size=chunk_size, max_bytes=max_bytes, user=user
             )
             if not inlined:
                 raise FileUnavailableError(
@@ -1219,29 +1232,45 @@ class OwuiFileGateway:
                 holder["url"] = inlined.data_url
             else:
                 part["image_url"] = inlined.data_url
+            return True
 
         if not _names_an_internal_reference(input_items):
             return {**request_body, "input": list(input_items)}
         working = copy.deepcopy(input_items)
+        kept_items: list[Any] = []
         for item in working:
             if not isinstance(item, dict):
+                kept_items.append(item)
                 continue
             if item.get("type") == "function_call_output" and isinstance(item.get("output"), list):
-                for part in item["output"]:
-                    if isinstance(part, dict) and part.get("type") in ("input_image", "image_url"):
-                        await _inline_picture(part)
+                output = item["output"]
+                output_dropped: list[int] = []
+                for position, part in enumerate(output):
+                    if (
+                        isinstance(part, dict)
+                        and part.get("type") in ("input_image", "image_url")
+                        and not await _inline_picture(part)
+                    ):
+                        output_dropped.append(position)
+                for position in reversed(output_dropped):
+                    del output[position]
+                kept_items.append(item)
                 continue
             if item.get("type") in ("input_image", "image_url"):
-                await _inline_picture(item)
+                if await _inline_picture(item):
+                    kept_items.append(item)
                 continue
             content = item.get("content")
             if not isinstance(content, list) or not content:
+                kept_items.append(item)
                 continue
-            for block in content:
+            dropped: list[int] = []
+            for position, block in enumerate(content):
                 if not isinstance(block, dict):
                     continue
                 if block.get("type") in ("input_image", "image_url"):
-                    await _inline_picture(block)
+                    if not await _inline_picture(block):
+                        dropped.append(position)
                     continue
                 if block.get("type") != "input_file":
                     continue
@@ -1290,7 +1319,11 @@ class OwuiFileGateway:
                 ):
                     block.pop("file_url", None)
 
-        return {**request_body, "input": working}
+            for position in reversed(dropped):
+                del content[position]
+            kept_items.append(item)
+
+        return {**request_body, "input": kept_items}
 
     @timed
     async def upload_to_owui_storage(

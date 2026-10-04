@@ -157,6 +157,17 @@ EXPECTED_LATCHES = {
     "_warned_system_resources",
     "_warned_task_candidate",
     "_warned_task_failure",
+    # B1602 T1805. A housekeeping sub-turn on a model whose catalogue row says it emits
+    # no text -- a picture-only or a video-only model -- is skipped rather than sent, and
+    # the skip is the one line that tells an admin why their chat has no generated title.
+    # Open WebUI raises a title task per turn, so an unlatched WARNING would be one per
+    # turn for the life of the worker and would bury the line it exists to give. It is a
+    # set, not a dict: the cause is one constant, because the first skip in a process is
+    # the only one an admin needs and a cooldown would re-warn for a fault that never
+    # goes away. It carries the prefix so the per-test reset reaches it -- otherwise the
+    # first test to drive a skip silently disarms the arm that asserts the WARNING is
+    # still emitted.
+    "_warned_textless_task",
     # A usage table the pipe's database role cannot create is retried on an interval,
     # and a permanently refused CREATE is otherwise silent: the Usage tab says only
     # `storage unavailable`. A dict latch, not a set, because the DDL is throttled by an

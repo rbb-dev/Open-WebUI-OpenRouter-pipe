@@ -16,6 +16,8 @@ import aiohttp
 from ..api.gateway.responses_adapter import _FailureCharge, _withdraw_repaired_failure
 from ..api.transforms import (
     _filter_openrouter_request,
+    _gate_responses_input_media,
+    _joined_reasoning_summaries,
     _parse_url_citation_annotations,
     _unhandled_citation_types,
     chat_payload_loses_fusion_entry,
@@ -126,7 +128,12 @@ class NonStreamingAdapter:
 
         @timed
         async def _run_responses() -> AsyncGenerator[dict[str, Any], None]:
-            request_payload = _filter_openrouter_request(dict(inlined_request_body or {}))
+            gated_body = _gate_responses_input_media(
+                dict(inlined_request_body or {}),
+                allow_insecure=self._pipe._multimodal_handler._is_insecure_http_allowed,
+                max_inline_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
+            )
+            request_payload = _filter_openrouter_request(gated_body)
             response = await self._pipe.send_openai_responses_nonstreaming_request(
                 session,
                 request_payload,
@@ -239,7 +246,7 @@ class NonStreamingAdapter:
                             yield {
                                 "type": "response.reasoning_summary_text.done",
                                 "item_id": reasoning_item_id,
-                                "text": "".join(
+                                "text": _joined_reasoning_summaries(
                                     reasoning_summary_parts[k] for k in reasoning_summary_order
                                 ),
                             }

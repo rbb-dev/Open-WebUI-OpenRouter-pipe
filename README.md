@@ -154,6 +154,11 @@ That's it.
 - Open WebUI 0.11.4+
 - An [OpenRouter](https://openrouter.ai/) account
 - `WEBUI_SECRET_KEY` configured (required for encrypted credential storage)
+- Python packages: Open WebUI installs them for you from the pipe's `requirements:` line. If you run with
+  `ENABLE_PIP_INSTALL_FRONTMATTER_REQUIREMENTS=false`, bake them into your image instead — the stock
+  Open WebUI 0.11.4 image has none of `imageio`, `imageio-ffmpeg`, `lz4`, `pyzipper` or `cairosvg`. Installing the
+  stub loader (`open_webui_openrouter_pipe.py`) by hand means installing the release archive its `requirements:`
+  line names, and nothing else.
 
 ---
 

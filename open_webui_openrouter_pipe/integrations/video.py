@@ -4080,9 +4080,9 @@ class VideoGenerationAdapter:
                         thumb_urls.append("")
                 except asyncio.CancelledError:
                     raise
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - the entry's own arm re-raises
                     self.logger.warning(
-                        "_materialise_frame_plan entry failed (degrade-open): %s", exc, exc_info=True
+                        "_materialise_frame_plan entry failed (degrade-open): %s", exc
                     )
                     if isinstance(exc, FrameExtractionError) and getattr(
                         exc, "pixel_cap", False

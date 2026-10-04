@@ -19,6 +19,7 @@ from ..api.transforms import (
     _apply_model_fallback_to_payload,
     _drop_include_reasoning_for_unsupported_fallbacks,
     _filter_openrouter_request,
+    _gate_responses_input_media,
     _strip_disable_model_settings_params,
 )
 from ..core.costs import maybe_dump_costs_snapshot
@@ -194,7 +195,13 @@ class TaskModelAdapter:
         )
         _apply_model_fallback_to_payload(task_body, logger=self.logger)
         _apply_disable_native_websearch_to_payload(task_body, logger=self.logger)
-        task_body = _filter_openrouter_request(task_body)
+        task_body = _filter_openrouter_request(
+            _gate_responses_input_media(
+                task_body,
+                allow_insecure=self._pipe._multimodal_handler._is_insecure_http_allowed,
+                max_inline_bytes=valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
+            )
+        )
         _drop_include_reasoning_for_unsupported_fallbacks(task_body, self.logger)
         _strip_disable_model_settings_params(task_body)
 

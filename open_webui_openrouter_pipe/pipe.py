@@ -155,6 +155,7 @@ from .core.error_formatter import ErrorFormatter, _admission_error_response
 from .core.errors import (
     OpenRouterAPIError,
     RequiredInternalFileError,
+    _inline_span,
     channel_safe_values,
 )
 from .core.logging_system import SessionLogger, resolve_level
@@ -208,6 +209,7 @@ from .storage.owui_files import (
 )
 from .storage.persistence import ArtifactStore
 from .streaming.event_emitter import (
+    _PIPE_GENERATED_TEMPLATE_KEYS,
     EventEmitter,
     EventEmitterHandler,
     openai_chat_chunk_message_template,
@@ -2534,6 +2536,8 @@ class Pipe:
 
             @timed
             async def _stream() -> AsyncGenerator[dict[str, Any] | str, None]:
+                stream_chat_token = OWUI_CHAT_ID.set(str((job.metadata or {}).get("chat_id") or ""))
+                stream_reply_token = CONTINUED_REPLY.set(job.continued_reply)
                 reported = False
                 carried = False
                 try:
@@ -2578,6 +2582,10 @@ class Pipe:
                     if job.admission_refused and future.cancelled():
                         await self._refuse_at_admission(job, wants_stream=wants_stream)
                     SessionLogger.cleanup()
+                    with contextlib.suppress(Exception):
+                        OWUI_CHAT_ID.reset(stream_chat_token)
+                    with contextlib.suppress(Exception):
+                        CONTINUED_REPLY.reset(stream_reply_token)
 
             return _stream()
 
@@ -4022,7 +4030,14 @@ class Pipe:
                 return ""
 
             error_id, context_defaults = self._ensure_error_formatter()._build_error_context()
-            enriched_variables = {**context_defaults, **variables}
+            enriched_variables = {
+                key: (
+                    value
+                    if key in _PIPE_GENERATED_TEMPLATE_KEYS
+                    else (_inline_span(value) if isinstance(value, str) else value)
+                )
+                for key, value in {**context_defaults, **variables}.items()
+            }
             self.logger.warning(
                 "[%s] Auth configuration error (session=%s, user=%s): %s",
                 error_id,

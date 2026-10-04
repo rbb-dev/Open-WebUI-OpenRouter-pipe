@@ -54,6 +54,8 @@ from ...streaming.nagle_coalescer import nagle_coalesce_stream
 from ..transforms import (
     _filter_openrouter_chat_request,
     _filter_openrouter_request,
+    _gate_responses_input_media,
+    _joined_reasoning_summaries,
     _parse_url_citation_annotations,
     _responses_payload_to_chat_completions_payload,
     _unhandled_citation_types,
@@ -350,14 +352,15 @@ class ChatCompletionsAdapter:
         """Send /chat/completions and adapt streaming output into Responses-style events."""
         effective_valves = valves or self._pipe.valves
         responses_payload = responses_request_body or {}
+        chat_refused: list[tuple[str, str, str]] = []
         if not files_inlined:
             responses_payload = await self._pipe._file_gateway.inline_internal_responses_input_files(
                 responses_request_body or {},
                 chunk_size=effective_valves.IMAGE_UPLOAD_CHUNK_BYTES,
                 max_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
                 user=user,
+                refusals=chat_refused,
             )
-        chat_refused: list[tuple[str, str, str]] = []
         chat_payload = await _responses_payload_to_chat_completions_payload(
             responses_payload,
             max_inline_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
@@ -676,7 +679,7 @@ class ChatCompletionsAdapter:
                             yield {
                                 "type": "response.reasoning_summary_text.done",
                                 "item_id": reasoning_item_id,
-                                "text": "".join(
+                                "text": _joined_reasoning_summaries(
                                     reasoning_summary_parts[k] for k in reasoning_summary_order
                                 ),
                             }
@@ -773,7 +776,7 @@ class ChatCompletionsAdapter:
                                 yield {
                                     "type": "response.reasoning_summary_text.done",
                                     "item_id": reasoning_item_id,
-                                    "text": "".join(
+                                    "text": _joined_reasoning_summaries(
                                         reasoning_summary_parts[k] for k in reasoning_summary_order
                                     ),
                                 }
@@ -1224,14 +1227,15 @@ class ChatCompletionsAdapter:
         """Send /chat/completions with stream=false and return the JSON payload."""
         effective_valves = valves or self._pipe.valves
         responses_payload = responses_request_body or {}
+        chat_refused: list[tuple[str, str, str]] = []
         if not files_inlined:
             responses_payload = await self._pipe._file_gateway.inline_internal_responses_input_files(
                 responses_request_body or {},
                 chunk_size=effective_valves.IMAGE_UPLOAD_CHUNK_BYTES,
                 max_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
                 user=user,
+                refusals=chat_refused,
             )
-        chat_refused: list[tuple[str, str, str]] = []
         chat_payload = await _responses_payload_to_chat_completions_payload(
             responses_payload,
             max_inline_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
@@ -1354,17 +1358,28 @@ class ChatCompletionsAdapter:
         responses_emitted_user_visible = False
         responses_buffer: list[dict[str, Any]] = []
         responses_charge = _FailureCharge()
+        inlined_refusals: list[tuple[str, str, str]] = []
         inlined_request_body = await self._pipe._file_gateway.inline_internal_responses_input_files(
             responses_request_body or {},
             chunk_size=effective_valves.IMAGE_UPLOAD_CHUNK_BYTES,
             max_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
             user=user,
+            refusals=inlined_refusals,
         )
+        await self._report_refused_tool_pictures(inlined_refusals, event_emitter)
 
         @timed
         async def _run_responses() -> AsyncGenerator[dict[str, Any], None]:
             nonlocal responses_emitted_user_visible
-            request_payload = _filter_openrouter_request(dict(inlined_request_body or {}))
+            media_refusals: list[tuple[str, str, str]] = []
+            gated_body = _gate_responses_input_media(
+                dict(inlined_request_body or {}),
+                allow_insecure=self._pipe._multimodal_handler._is_insecure_http_allowed,
+                max_inline_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
+                refusals=media_refusals,
+            )
+            request_payload = _filter_openrouter_request(gated_body)
+            await self._report_refused_tool_pictures(media_refusals, event_emitter)
             async for event in self._pipe.send_openai_responses_streaming_request(
                 session,
                 request_payload,

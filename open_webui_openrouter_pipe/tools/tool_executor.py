@@ -418,6 +418,33 @@ def _idle_deadline(
     return now + (allowance - (pre_enqueue_at - started_at))
 
 
+def _breaker_notice_deadline(
+    context: _ToolExecutionContext,
+    pending: list[tuple[int, _QueuedToolCall, float | None]],
+    started_at: float,
+    now: float,
+) -> float | None:
+    bounds: list[float] = []
+    if context.batch_timeout:
+        bounds.append(now + context.batch_timeout)
+    allowance = _idle_allowance(context, pending)
+    if allowance:
+        bounds.append(started_at + allowance)
+    return min(bounds) if bounds else None
+
+
+def _breaker_notice_bound_name(
+    context: _ToolExecutionContext,
+    pending: list[tuple[int, _QueuedToolCall, float | None]],
+    started_at: float,
+    notice_bound: float | None,
+) -> str:
+    allowance = _idle_allowance(context, pending)
+    if allowance and notice_bound == started_at + allowance:
+        return "TOOL_IDLE_TIMEOUT_SECONDS"
+    return "TOOL_BATCH_TIMEOUT_SECONDS"
+
+
 class ToolExecutor:
     """Orchestrates tool execution and direct tool server integration."""
 
@@ -817,10 +844,20 @@ class ToolExecutor:
                         if _on_complete:
                             with contextlib.suppress(Exception):
                                 await _on_complete(call, result)
-                    if breaker_skips:
-                        await self._notify_tool_breaker_skips(context, breaker_skips)
             except TimeoutError:
                 pass
+        if breaker_skips:
+            notice_bound = _breaker_notice_deadline(context, pending, started_at, loop.time())
+            try:
+                async with asyncio.timeout_at(notice_bound) if notice_bound is not None else contextlib.nullcontext():
+                    await self._notify_tool_breaker_skips(context, breaker_skips)
+            except TimeoutError:
+                self.logger.warning(
+                    "The tool breaker's out-of-service notice did not reach the chat inside its %s "
+                    "bound; the model was still told why each call was skipped (request_id=%s).",
+                    _breaker_notice_bound_name(context, pending, started_at, notice_bound),
+                    context.request_id,
+                )
 
         pre_enqueue_at = loop.time()
         enqueue_allowance = context.batch_timeout

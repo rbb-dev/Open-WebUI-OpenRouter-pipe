@@ -2,6 +2,73 @@
 
 ## Behaviour changes
 
+- **The `/responses` leg now gates the media it forwards** — the outbound filter that runs immediately before a
+  `/responses` body is POSTed read no media at all: it dropped undocumented top-level keys and copied `input` through
+  byte for byte, so every media value the conversion leg already refused for `/chat/completions` was forwarded
+  verbatim on the other endpoint. It now puts each one to the same predicate — no cleartext `http://` link unless
+  `ALLOW_INSECURE_HTTP` and `ALLOW_INSECURE_HTTP_HOSTS` permit it, no Open WebUI file path, no scheme a provider can
+  dial, no non-base64 or over-bound `data:` payload, no `input_audio` URL — drops the block, and names the refusal.
+  `ALLOW_INSECURE_HTTP`'s and `ENABLE_SSRF_PROTECTION`'s help text now say both legs; neither adds an address check,
+  which still happens at ingress alone. The reach is not a caller's own `/responses` body: `CompletionsBody.messages`
+  is required and ingress overwrites `input`, so what puts a media block inside `body.input` is a **filter function
+  rewriting `messages`**, or a **`message` item the model itself authored** in a reply — stated here because it is
+  narrower and stranger than the item's own text promised. The request sanitizer's `function_call_output`-only scope
+  is deliberate and is not the gate for anything else; the outbound walker is. `input_audio` keeps its own rule
+  (OpenRouter takes audio as base64 only) and is not widened into this gate. A value one of the two legs refuses is
+  still reported as `Images: skipped N (<reason>).`, one line, never twice for the same block.
+
+- **A tool's picture the inliner cannot name is skipped and named, not fatal** — when the file gateway resolves an
+  Open WebUI file path to a file id, it inlines it and sends a `data:` URL, because no provider can fetch this
+  deployment's own authenticated endpoint. Four spellings of that path yield no id at all — `/API/V1/FILES/abc/content`
+  (the id pattern does not fold case), `/api/v1/files/internal.png` (the only segment is a filename),
+  `/api/v1/files/%61bc/content` (percent-escaped) and `/api/v1/files/` (no segment). For all four the storage read was
+  never attempted and the branch still fell through to `FileUnavailableError`, which is a terminal card: one tool
+  picture the pipe cannot resolve cost the person the whole turn, and the sentence it stopped with claimed the file
+  was gone — a claim about storage the pipe never made. Those four are now dropped from their block, the body is
+  still dispatched, and the skip is named in the turn's usual `Images: skipped N (a picture naming … cannot be read
+  from Open WebUI storage).` line. A reference whose id **does** read is unchanged: inlined when readable, terminal
+  error card when the record is not there, because in that case the pipe did read the record. A file the *person*
+  attached is a different fact and is unchanged, and so is the `input_file` arm. The two vocabularies are distinct on
+  purpose: the gate's own causes (`insecure_http`, `unusable_link`, `unencoded_inline`, `oversized_inline`,
+  `internal_reference`) describe a link the pipe chose not to forward, while `unreadable_internal_path` describes a
+  reference it could not read at all, and the operator log says which is which by naming the cause on every line.
+
+- **Per-user "How long to keep reasoning" now defaults to the whole conversation** — the
+  per-user `PERSIST_REASONING_TOKENS` control used to default to `next_reply` while the
+  administrator's site-wide valve of the same name defaulted to `conversation`, so a user who
+  had never opened their own settings silently got the shorter window. It now defaults to
+  `conversation` too: a user who chose a value keeps it, and a user who never set the field
+  gets the administrator's site-wide value as before. A user whose stored row the pipe cannot
+  read (a rotated `WEBUI_SECRET_KEY`) falls back to this per-user default, which is now
+  `conversation` rather than `next_reply`. The cost is input tokens, not correctness: a longer
+  chat replays more of the model's earlier reasoning back to it on every later turn. OpenAI's
+  reasoning guide is the reason for the default — the GPT-5.6 model family supports
+  `all_turns` and uses it by default, which needs the complete history replayed, and that is
+  what `conversation` does where `next_reply` keeps only the previous turn's. `disabled` and
+  `next_reply` themselves, their cleanups, and the administrator's default are unchanged.
+
+- **Tools are no longer sent in strict mode by default** — `ENABLE_STRICT_TOOL_CALLING` now starts off, so a
+  tool schema reaches the provider as its author wrote it, with an explicit `strict: false` rather than being
+  converted to strict JSON Schema. OpenAI rejects a strict tool whose parameters contain a free-form object, and
+  Open WebUI's built-in `ask_user` is exactly that shape (`questions` is an array of objects that declare no
+  properties), so with strict mode on by default every request offering `ask_user` was refused by an OpenAI model
+  before any tool ran. **Migration:** an admin who wants strict schemas back ticks the valve; the conversion
+  itself is unchanged, so turning it on gives today's strict behaviour for every tool.
+
+- **A background task on a picture-only or video-only model is skipped, not sent** — with no Task Model
+  set, Open WebUI asks the pipe to title, tag and generate follow-ups using whatever model the chat used.
+  On a model whose catalogue row lists no `"text"` among its output modalities, those requests cannot
+  succeed: the pipe spent two attempts, logged an ERROR and toasted a task-failure card naming a fault that
+  is really a property of the model (GitHub issue #61). The pipe now answers an empty task answer instead,
+  before anything leaves, which is the value every Open WebUI task kind already reads as "no task ran" — the
+  chat takes its first message as its title, exactly as it does with automatic titles off, and no tags and no
+  follow-ups are written. The rule is one predicate on the resolved model's spec, so a variant or a virtual id
+  resolves to its base; a model with no spec, or one that lists no output modalities, is treated as able to
+  answer and keeps today's behaviour, and a multimodal model that emits text alongside pictures keeps its
+  tasks. It is not an error: no breaker record, no card, nothing shown to the person. The first skip in a
+  worker logs one WARNING naming the model, what it makes, and where to set a Task Model
+  (**Admin Settings → Interface**); every later skip logs the same line at DEBUG.
+
 - **Admin's Max Upload Size, no longer gated on the RAG bypass flag** — an install that turned
   `rag.bypass_embedding_and_retrieval` on stopped being held to the cap its admin last saved under
   **Admin → Settings → Documents → Max Upload Size**: the pipe read the bypass flag beside the stored
@@ -56,6 +123,29 @@
   shown it. Every path a chat or a background task takes is covered, Open WebUI's tool-execution mode included.
 
 - **Video intent classifier, retired Task Models** — a Task Model the host no longer publishes is now skipped instead of called. When `request.app.state.MODELS` is a non-empty mapping, an id it does not contain is not a candidate, which is the same membership check Open WebUI applies to a task model itself (`utils/task.py:16-27`, `routers/tasks.py:145-150`, and `generate_chat_completion` raises `Model not found` at `utils/chat.py:191-193`). A retired Task Model therefore no longer costs up to four billed attempts per video turn, every one of them answered `Model not found`, and no longer arms the per-user classifier breaker on a configuration state: the turn lands on the already-built `no_task_model_candidates` path, which logs once per chat and opens no outage. An empty, absent or unreadable model list is not evidence and filters nothing, so a host that has not synced its model list still calls the model its admin configured. No chat-model fallback was added, and no new failure code, log line or latch.
+
+- **Tool breaker's out-of-service notice** — the one line that names a tool as out of service is no longer
+  lost silently, and no longer costs a round more than that round's own limits allow. Its bound was opened on the
+  round's clock, so a round whose per-call announcements had already spent `TOOL_BATCH_TIMEOUT_SECONDS` started the
+  notice on an expired deadline and dropped it; and it knew nothing about `TOOL_IDLE_TIMEOUT_SECONDS`, so a browser
+  slow enough to cost the notice more than the whole idle allowance pushed the round past a limit the operator set.
+  The bound now runs from the moment the notice itself runs and is also capped by whatever the idle allowance leaves,
+  so the notice is inside the round's documented totals rather than beside them. When either bound ends it, a
+  `WARNING` names the request and the valve that cut it — the loss used to leave no record at all — and the model is
+  still told the reason for every call that was skipped either way. Nothing else about a round changes: one line per
+  tool per round, an unset `TOOL_IDLE_TIMEOUT_SECONDS` still leaves the round to its batch ceiling, and a notice that
+  fits inside the allowance is still delivered.
+
+- **A refused Continue no longer loses the answer it was continuing** — a chat turn refused at the pipe's admission
+  gate while it is being streamed now publishes the frames the same refusal publishes when it is not streamed. The
+  refusal is published from the stream generator's own cleanup, and that generator's body does not run until the caller
+  starts iterating it — by which time the chat id and the continuation prefix the frame shape is decided from had both
+  been reset. On a `channel:` chat the reader was left with a bare terminal frame and no error card; on a **Continue**
+  the closing frame carried the refusal as `content`, which the browser assigns absolutely, so `Server busy (503)`
+  replaced the answer the person was continuing. Both now take the shape every other refusal takes: the card is
+  published, the closing frame carries no replacing content on a continuing turn, and the answer stays where the
+  browser had it. A saved chat that is not continuing, an API caller with no chat, a temporary chat and a temporary
+  answer are all unchanged.
 
 - **Session log assembler, one offer per pass** — a turn the assembler already offered, or already failed, inside a
   pass is not offered again by that pass, and a turn whose assembly lock another pass holds is offered once per pass
@@ -348,6 +438,12 @@
   withheld, because the cover's size is no longer read as the video's. The declared geometry is now the picture
   stream's own, read off the field ffmpeg writes it in, so a cover-art stream is skipped and a sub-floor clip is
   left out with a notice a person can act on.
+- **Endpoint valves** — a `FORCE_CHAT_COMPLETIONS_MODELS` or `FORCE_RESPONSES_MODELS` entry that names a base model now also
+  matches that model's suffixed spellings: the `:free`, `:thinking`, `:nitro`, `:exacto`, `:floor` and `:online` tags, dated
+  forms, and any combination of the two. A pattern that names a tag or a date stamp still matches only that spelling, and a
+  `:preset/...` tag is left alone. The valve previously built two candidate keys per request and matched both over the whole
+  string, so a base entry silently missed its own `:free` twin; a widened pin means those rows are no longer served, or
+  retried, on the endpoint the pin excluded.
 - **Open-WebUI tool mode** — a call Open WebUI runs now shows its card from the moment the model names the tool, and the dashboard's live view now shows the running tool on those turns (it stayed empty before).
 - **Pipe dashboard, deleted function row** — deleting the pipe's function row now releases the live dashboard on the worker that served the DELETE and lets
   the pipe finish its in-flight requests and close, instead of holding it, its session-log threads and its storage handle until a restart. The stand-down
@@ -507,6 +603,13 @@
   format strings. If you have hand-edited a routing row, that edit is reverted by this
   rewrite for the same reason any other regeneration reverts one.
 
+- **Reasoning summary blocks** — on a `/chat/completions` turn carrying two or more `reasoning.summary`
+  blocks in one round, the thinking box and the status line now read them as separate blocks separated by one
+  space rather than as one glued word (`Name the tradeoff.Then weigh it.`). The blocks are joined the same way
+  by every producer the loop folds together — both chat-completions arms, the non-streamed chat leg and the
+  `output_item.done` snapshot — so the round still reaches the person once, as two blocks. A block's own text is
+  untouched: a block that already ends in a space does not gain a second one, and internal whitespace is left
+  exactly as the model wrote it. The stored reasoning row and the closing item are unchanged.
 - **Config tab** — a save the database refuses to write now raises a durable banner instead of a toast alone.
   The banner names the fault, carries no Reload control, and leaves your staged edits in place, so nothing the
   refusal preserved can be discarded from the tab that preserved it. It clears on the next successful save or
@@ -580,7 +683,9 @@
   status number or the literal word `error`. Nothing else on the card moves: the resolved status, the typed kind, the
   template choice and the retry decision are unchanged for every shape, and a body that names no provider category
   still falls back to the numeric code and then to the stream marker. Custom templates using `{upstream_type}` are
-  affected.
+  affected, and on a channel chat it is now withheld along with the rest of the provider's prose about the request: a
+  card that reaches a room renders it as though empty, so a **Provider error** row guarded by `{{#if}}` is left out
+  there, and an unguarded one omits its whole line. A saved chat, a temporary chat and an API caller are unchanged.
 - **API key** — a stored `API_KEY` the key gate refuses now produces the authentication card on the streaming and the
   housekeeping-task legs too, instead of a 401 or an opaque "Unexpected error in streaming loop". Both of those legs
   read the stored field with a bare decrypt instead of through `Pipe._resolve_openrouter_api_key`, so an encrypted
@@ -807,3 +912,18 @@
   already use; with neither set — the shipped default — the card renders exactly as before, byte for byte, and the
   shipped 400 card is untouched. A non-streaming API caller reads the same text off `choices[0].message.content`, so
   they gain the same handle in the same string.
+
+- **Model metadata, a stored grant the access field cannot spell** — on an Open WebUI whose `ModelForm` carries
+  `access_control` instead of `access_grants`, a metadata refresh used to drop every stored grant whose principal type
+  is neither `user` nor `group` (`anyone` today — "anyone, including people who are not logged in, may read this
+  model"), and a wildcard read took every other grant in the set down with it on the way out: the converter answered
+  the public wildcard before it read the rest, so `user:* read` plus `user:alice write` came back with neither. Both
+  answers the dict can give move the row, which is why neither is used. `{}` replaces a shared model with a private
+  one; `None` is Open WebUI's own public wildcard (`user:* read`), so a grant that conferred read on nobody would
+  confer it on every signed-in session instead. The pipe now refuses the write and says so. The row keeps exactly the
+  grants its admin set, its icon and its description stop being refreshed, one `WARNING` per row names the model and
+  the principal type it could not carry, and on a sync pass the refusal is counted with the pass's other unwritten
+  models — that count is the `WARNING` line to look at, with the per-model detail at `DEBUG`. Nothing changes on a
+  stock install: Open WebUI 0.11.4's `ModelForm` carries `access_grants`, so the conversion never runs there. Where it
+  does run, a wildcard read keeps the rest of its grant set instead of discarding it, and a set the dict can spell
+  still round-trips unchanged.

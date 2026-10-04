@@ -2014,7 +2014,7 @@ async def transform_messages_to_input(
                                     show_error_message=False
                                 )
                                 return ImageRefusal(
-                                    f"could not be processed: {exc}", "base64_processing_error",
+                                    "could not be processed", "base64_processing_error",
                                     subject=loggable_link(url),
                                 )
 

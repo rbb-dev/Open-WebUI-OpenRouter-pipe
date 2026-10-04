@@ -3776,7 +3776,7 @@ __KEEP_WHAT_STILL_FITS__
 
         safe_providers = [
             p for p in providers
-            if isinstance(p, str) and _PROVIDER_SLUG_PATTERN.match(p) and len(p) <= 64
+            if isinstance(p, str) and _PROVIDER_SLUG_PATTERN.fullmatch(p) and len(p) <= 64
         ][:_PROVIDER_ROUTING_MAX_PROVIDERS]
 
         prov_names = provider_names or {}
@@ -3826,7 +3826,7 @@ __KEEP_WHAT_STILL_FITS__
 
         safe_quantizations = [
             q for q in quantizations
-            if isinstance(q, str) and _QUANTIZATION_PATTERN.match(q) and len(q) <= 32
+            if isinstance(q, str) and _QUANTIZATION_PATTERN.fullmatch(q) and len(q) <= 32
         ][:_PROVIDER_ROUTING_MAX_PROVIDERS]
 
         quant_options = [no_pref] + safe_quantizations

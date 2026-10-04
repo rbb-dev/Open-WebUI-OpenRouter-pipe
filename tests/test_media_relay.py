@@ -31,11 +31,13 @@ from open_webui_openrouter_pipe.integrations.media_relay import (
     RELAY_HOSTS,
     RELAY_RETENTIONS,
     MediaRelayError,
+    _as_the_host_put_it,
     host_keeps_forever,
     relay_to_public_url,
 )
 from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
 from open_webui_openrouter_pipe.integrations.video_types import VideoGenerationError
+from tests.test_media_relay_hardening import _WALL_BODY
 
 
 async def _a_listening_chat(_event):
@@ -954,7 +956,15 @@ async def test_the_second_file_host_is_tried_only_when_the_operator_turned_it_on
         )
 
 
-@pytest.mark.parametrize(("chosen", "outcome"), [("litterbox", 500), ("catbox", 503)])
+@pytest.mark.parametrize(
+    ("chosen", "outcome"),
+    [
+        ("litterbox", 500),
+        ("catbox", 503),
+        ("litterbox", (200, "<html>are you a robot</html>")),
+        ("catbox", (200, "<html>are you a robot</html>")),
+    ],
+)
 @pytest.mark.asyncio
 async def test_a_host_that_may_already_hold_the_file_is_not_followed_by_a_second_host(
     chosen, outcome
@@ -967,11 +977,23 @@ async def test_a_host_that_may_already_hold_the_file_is_not_followed_by_a_second
 
     Two 5xx codes and both host orders, so a production rule keyed on one status or one
     host name cannot pass.
+
+    The 200-with-no-link rows are the same property asked a harder question. A host that
+    answers `200 OK` and hands back an HTML interstitial has taken the bytes and given
+    nothing the pipe can point at, so `may_have_stored_it` is set -- the only thing that
+    stops this loop. The matrix's two 5xx rows pinned the loop break for a 5xx alone, and
+    the flag's own node lives beside `test_only_an_answer_that_rules_out_a_stored_copy_frees_the_second_host`
+    below; without these rows a verdict of `False` on this arm would fall off the end of
+    a one-host list indistinguishable from breaking, and the file would be offered to a
+    host that keeps uploads for good. The endpoint URL is matched exactly rather than by
+    the host's name, because `catbox` is a substring of the litterbox endpoint too and a
+    substring filter would satisfy itself.
     """
     import base64
 
     other = next(name for name in RELAY_HOSTS if name != chosen)
     blob = base64.b64encode(b"\x00\x00\x00\x18ftypmp42").decode()
+    status, text = outcome if isinstance(outcome, tuple) else (outcome, "down")
 
     async with aiohttp.ClientSession() as session:
         adapter = _relay_adapter(session)
@@ -980,7 +1002,7 @@ async def test_a_host_that_may_already_hold_the_file_is_not_followed_by_a_second
         valves.USE_THE_OTHER_FILE_HOST_IF_ONE_IS_DOWN = True
 
         with aioresponses() as http:
-            http.post(_ENDPOINTS[chosen][0], status=outcome, body="down", repeat=True)
+            http.post(_ENDPOINTS[chosen][0], status=status, body=text, repeat=True)
             http.post(
                 _ENDPOINTS[other][0], status=200,
                 body=f"https://files.catbox.moe/{other}.mp4", repeat=True,

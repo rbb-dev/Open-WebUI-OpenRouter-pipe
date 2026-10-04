@@ -400,6 +400,9 @@ def test_create_error_context(event_handler):
     assert context["support_url"] == "https://support.example.com"
 
 
+"""A card with the shipped `{{#if}}` guards, so the gate and the row are both exercised."""
+
+
 # -----------------------------------------------------------------------------
 # Test _emit_citation (lines 335-364)
 # -----------------------------------------------------------------------------

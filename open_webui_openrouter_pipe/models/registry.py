@@ -335,6 +335,37 @@ def uses_dedicated_image_api(spec: Any) -> bool:
     return "image" in modalities and "text" not in modalities
 
 
+_TEXTLESS_OUTPUT_NOUNS = {"image": "pictures", "video": "videos"}
+
+
+def _output_modalities(spec: Any) -> list[Any]:
+    if not isinstance(spec, dict):
+        return []
+    modalities = (spec.get("architecture") or {}).get("output_modalities") or []
+    return modalities if isinstance(modalities, list) else []
+
+
+def cannot_answer_in_text(spec: Any) -> bool:
+    if not isinstance(spec, dict):
+        return False
+    modalities = _output_modalities(spec)
+    if not modalities:
+        return False
+    return "text" not in modalities
+
+
+def textless_output_noun(spec: Any) -> str:
+    if not isinstance(spec, dict):
+        return ""
+    modalities = _output_modalities(spec)
+    nouns = [
+        _TEXTLESS_OUTPUT_NOUNS[str(name)]
+        for name in modalities
+        if str(name) in _TEXTLESS_OUTPUT_NOUNS
+    ]
+    return ", ".join(nouns) or ", ".join(str(name) for name in modalities)
+
+
 def is_image_output_architecture(architecture: Any) -> bool:
     if not isinstance(architecture, dict):
         return False

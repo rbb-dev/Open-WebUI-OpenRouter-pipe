@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -28,6 +29,7 @@ from open_webui_openrouter_pipe.integrations import video as video_module
 from open_webui_openrouter_pipe.integrations.media_relay import (
     _ENDPOINTS,
     _HOST_REPLY_LIMIT,
+    RELAY_RETENTIONS,
     MediaRelayError,
     _as_the_host_put_it,
     _extract_url,
@@ -169,6 +171,9 @@ async def test_the_chat_is_told_which_host_and_for_how_long_before_the_upload(ho
     assert relay.timeline == ["told", "published"], relay.timeline
     assert host in relay.notices[0], relay.notices
     assert must_say in relay.notices[0], relay.notices
+
+
+_SPAN_CLAUSE = re.compile(r"deleted again (.+?) later")
 
 
 @pytest.mark.asyncio
@@ -689,3 +694,22 @@ def test_the_admin_text_states_the_number_of_attempts_the_loop_makes():
     assert "retried three times on the chosen host first" not in detail, (
         f"a host that answered and refused is not retried at all: {detail}"
     )
+
+
+# ------------------------------------------------- how much a host may say ----
+#
+# `_as_the_host_put_it` is the one function that quotes a third party, and every
+# failure site routes through it, so the bound belongs here and nowhere else. The two
+# rows above it use bodies of 61 and 27 characters -- both under the limit -- so
+# neither can tell a clamp from its absence, which is the whole reason this group
+# exists. What is pinned is the bound, not the number: a cap raised fourfold is a
+# behaviour change, and the tests must notice it.
+
+# Generated in-test rather than shipped, so no file approaches the size ceiling, and
+# built from a non-ASCII character on purpose: the substitutions are part of what is
+# being measured, and an ASCII wall would let a wrong order of operations pass.
+_WALL_BODY = (
+    "<!doctype html><html><head><title>Just a moment…</title></head><body>"
+    + "‹checking your browser before accessing this host — hold on› " * 90
+    + "</body></html>"
+)

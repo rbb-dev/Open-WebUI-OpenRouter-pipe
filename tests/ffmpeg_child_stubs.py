@@ -17,6 +17,12 @@ cannot model the cleanup under test, because the cleanup can never finish.
 `hang` is the shape that models a wedged child: the read never returns on its own and the
 only thing that ends it is `kill()`. `fault` is the shape that models a transport error
 mid-stream, the one exit that leaks a child if nothing stops it.
+
+`never_exits` is the other half of that: a child that delivered everything it was going to
+and then stayed. Its `wait()` parks until `kill()` runs, exactly as a real one does, so a
+leg that reaps it has to bound the reap -- and a stub whose `wait()` never returned at all
+would instead park the `except asyncio.CancelledError` arm, a second unbounded wait that is
+not the one under test.
 """
 
 from __future__ import annotations
@@ -87,6 +93,7 @@ class FfmpegChildStub:
         returncode: int = 0,
         stderr: bytes = b"",
         hang: bool = False,
+        never_exits: bool = False,
         fault: BaseException | None = None,
         name: str = "child",
         started: asyncio.Event | None = None,
@@ -95,6 +102,7 @@ class FfmpegChildStub:
         self.payload = payload
         self.stderr_bytes = stderr
         self.hang = hang
+        self.never_exits = never_exits
         self.fault = fault
         self.started = started
         self.returncode: int | None = None
@@ -116,6 +124,8 @@ class FfmpegChildStub:
 
     async def wait(self) -> int | None:
         self.wait_calls += 1
+        if self.never_exits:
+            await self.killed.wait()
         if self.returncode is None:
             self.returncode = self._exit_code
         self.alive = False

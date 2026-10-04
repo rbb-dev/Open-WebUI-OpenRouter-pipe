@@ -454,6 +454,8 @@ Operational guidance:
   - Tool schemas are built from Open WebUI’s `__tools__` registry plus any selected Open WebUI **Direct Tool Servers**.
   - Direct Tool Servers are executed client-side via Open WebUI (the pipe emits `execute:tool` via Socket.IO).
 - Tool schema strictness:
+  - `ENABLE_STRICT_TOOL_CALLING` is off by default: OpenAI rejects a strict tool whose parameters contain a free-form
+    object, and Open WebUI's built-in `ask_user` is one, so strict mode is opt-in.
   - When `ENABLE_STRICT_TOOL_CALLING=True`, the pipe strictifies tool schemas for more predictable function calling.
   - When `ENABLE_STRICT_TOOL_CALLING=True` and the pipe runs the tool (not `Open-WebUI` mode,
     and not under `ask` approval in a saved chat), the tools it advertises on the Responses route
@@ -493,7 +495,7 @@ Summed:
 | `prompt_tokens`, `completion_tokens` | The OpenRouter spellings of the first two, summed on their own account. |
 | `input_tokens_details`, `output_tokens_details`, `prompt_tokens_details`, `completion_tokens_details` | The `*_tokens_details` maps are merged key by key and their numbers added -- this is what makes `cached_tokens` and `reasoning_tokens` cumulative. |
 | `cache_discount` | A per-response money quantity, not a rate, and **signed**: a provider that reports a cache *write* sends a negative value, because the write costs more than a plain prompt. Nothing downstream may take its absolute value — the Usage tab floors this at zero, so the charge appears once, in `cost`, and never as a saving. The pipe reads it from the *merged* accumulator, so dropping it would under-report the Usage tab's `cache_savings` card by construction. |
-| `turn_count`, `function_call_count` | Written once per generation before the merge; summing them gives the turn's generation and tool-call counts. |
+| `turn_count`, `function_call_count` | Written once per generation before the merge, **on the streamed path only** -- a non-streamed turn carries neither key, so "written once per generation" does not hold everywhere; summing them gives the turn's generation and tool-call counts. `function_call_count` counts the `function_call` items in each round's completed response, summed over the turn's rounds. A host-side tool the model ran itself (`openrouter:web_search` and its siblings) is not one of them: the pipe did not execute it and cannot size a loop budget against it. One output item carrying several argument objects counts once, because the figure is what the model asked for -- the pipe splits it and runs it several times, and a budget is sized against the ask. |
 
 Last-wins (the incoming value replaces the accumulated one):
 

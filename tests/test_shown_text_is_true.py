@@ -5581,6 +5581,7 @@ def _atlas_row(valve: str) -> str:
 _ROOT = Path(__file__).resolve().parents[1]
 
 
+_SPAN_CLAUSE = "so a custom template does not have to"
 """A value carrying a backtick, a newline and a heading, so any missing sanitiser shows."""
 
 

@@ -504,7 +504,7 @@ class ErrorFormatter:
                 }
             )
             continuing = CONTINUED_REPLY.get() is not None
-            if not continuing:
+            if on_channel or not continuing:
                 await event_emitter({"type": "chat:message", "data": {"content": shown}})
             if on_channel or continuing:
                 error_data: dict[str, Any] = {"error": {"content": shown}}

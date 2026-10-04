@@ -1170,6 +1170,10 @@ _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
     "frame_damaged_used_first_frame": (
         "The previous video is damaged; used its first frame instead."
     ),
+    "frame_decode_timeout_used_first_frame": (
+        "Reading a frame from the previous video took longer than the pipe allows; "
+        "its first frame was used instead."
+    ),
     "frame_seek_missed_used_nearest_decodable_frame": (
         "The previous video's final frame could not be read where it was expected; "
         "the nearest frame the pipe could read was used instead."

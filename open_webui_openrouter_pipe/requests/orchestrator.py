@@ -67,7 +67,7 @@ from ..core.utils import (
     continued_turn_counts,
     ends_on_hidden_marker_line,
 )
-from ..core.warn_latch import bounded_warn_level
+from ..core.warn_latch import bounded_warn_level, warn_level
 from ..filters.filter_manager import FilterManager
 from ..filters.fusion_filter_renderer import is_fusion_model
 from ..integrations.image_help import image_panel_is_attached, render_image_help
@@ -78,7 +78,13 @@ from ..integrations.provider_options import (
     restrict_provider_block,
 )
 from ..media.image_conversion import normalise_mime
-from ..models.registry import ModelFamily, OpenRouterModelRegistry, _contract_target
+from ..models.registry import (
+    ModelFamily,
+    OpenRouterModelRegistry,
+    _contract_target,
+    cannot_answer_in_text,
+    textless_output_noun,
+)
 from ..storage.multimodal import Confidence, _sniff_evidence
 from ..storage.owui_files import (
     declared_file_size,
@@ -404,6 +410,7 @@ _PER_MODEL_WARN_WINDOW = 300
 _warned_chat_provider_keys: OrderedDict[str, None] = OrderedDict()
 _warned_ruled_out_tool_use: OrderedDict[str, None] = OrderedDict()
 _warned_direct_upload_caps: OrderedDict[str, None] = OrderedDict()
+_warned_textless_task: set[str] = set()
 
 _DEFAULT_DIRECT_TOTAL_PAYLOAD_MAX_MB = 50
 _DIRECT_UPLOAD_TOTAL_CAP = "DIRECT_TOTAL_PAYLOAD_MAX_MB"
@@ -1953,6 +1960,19 @@ class RequestOrchestrator:
         task_effort = None
         if use_task_model_adapter:
             self.logger.debug("Detected task model: %s", __task__)
+
+            task_spec = OpenRouterModelRegistry.spec(capability_model_id)
+            if cannot_answer_in_text(task_spec):
+                self.logger.log(
+                    warn_level(_warned_textless_task, "textless_task"),
+                    "Skipping the %s background task: %s only makes %s, never text. Set a Task "
+                    "Model under Admin Settings > Interface to get generated titles, tags and "
+                    "follow-ups.",
+                    task_name or "task",
+                    capability_model_id,
+                    textless_output_noun(task_spec),
+                )
+                return ""
 
             requested_model = responses_body.model
             owns_task_model = ModelFamily.base_model(requested_model) in allowlist_norm_ids if allowlist_norm_ids else True

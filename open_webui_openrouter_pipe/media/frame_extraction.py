@@ -234,12 +234,13 @@ class FrameExtractionError(Exception):
 
     def __init__(self, message: str, *, no_frame: bool = False,
                  returncode: int | None = None, pixel_cap: bool = False,
-                 byte_budget: bool = False) -> None:
+                 byte_budget: bool = False, timed_out: bool = False) -> None:
         super().__init__(message)
         self.no_frame = no_frame
         self.returncode = returncode
         self.pixel_cap = pixel_cap
         self.byte_budget = byte_budget
+        self.timed_out = timed_out
 
 
 def _over_pixel_cap(width: int, height: int) -> bool:
@@ -484,8 +485,12 @@ def _pinned_probe(path: Path) -> dict[str, Any]:
             capture_output=True, text=True, errors="replace",
             timeout=_PROBE_TIMEOUT_S, check=False,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise FrameExtractionError(
+            f"header read failed (probe timed out after {_PROBE_TIMEOUT_S}s)"
+        ) from exc
     except (OSError, subprocess.SubprocessError) as exc:
-        raise FrameExtractionError(_without_paths(f"header read failed: {exc}")) from exc
+        raise FrameExtractionError("header read failed") from exc
     stderr = proc.stderr or ""
     picture: tuple[tuple[int, int] | None, float] | None = None
     measured: tuple[int, int, float] | None = None
@@ -619,7 +624,7 @@ def _probe_video_sync(path: Path, cancel: threading.Event | None = None) -> Vide
             duration_is_stream=duration_is_stream,
         )
     except Exception as exc:
-        raise FrameExtractionError(_without_paths(f"probe_video failed: {exc}")) from exc
+        raise FrameExtractionError("probe_video failed") from exc
 
 
 async def probe_video(path: Path) -> VideoMetadata:
@@ -723,15 +728,46 @@ async def _read_bounded(stream: Any, cap: int, budget: int) -> bytes:
         chunks.append(chunk)
 
 
+async def _reap(
+    proc: asyncio.subprocess.Process,
+    stderr_task: asyncio.Task[bytes] | None,
+    bound: float,
+) -> tuple[bool, bytes]:
+    if stderr_task is not None and not stderr_task.done():
+        await asyncio.sleep(0)
+        if not stderr_task.done():
+            stderr_task.cancel()
+    reap = asyncio.ensure_future(proc.wait())
+    reaped = True
+    try:
+        done, _pending = await asyncio.wait({reap}, timeout=bound)
+    except asyncio.CancelledError:
+        reap.cancel()
+        raise
+    reaped = bool(done)
+    if not reaped:
+        proc.kill()
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            await reap
+    stderr = b""
+    if stderr_task is not None and not stderr_task.cancelled() and (
+        stderr_task.done() or (reaped and reap.done())
+    ):
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            if stderr_task.done():
+                stderr = stderr_task.result()
+            else:
+                stderr = await asyncio.wait_for(asyncio.shield(stderr_task), bound)
+    return reaped, stderr
+
+
 async def _stop_child(
-    proc: asyncio.subprocess.Process, stderr_task: asyncio.Task[bytes] | None
+    proc: asyncio.subprocess.Process, stderr_task: asyncio.Task[bytes] | None,
+    bound: float,
 ) -> None:
     with contextlib.suppress(Exception):
         proc.kill()
-        await proc.wait()
-    if stderr_task is not None:
-        with contextlib.suppress(Exception, asyncio.CancelledError):
-            await stderr_task
+    await _reap(proc, stderr_task, bound)
 
 
 def _normalise_frame_sync(
@@ -790,7 +826,7 @@ def _extract_frame_imageio_sync(
     except FrameExtractionError:
         raise
     except Exception as exc:
-        raise FrameExtractionError(_without_paths(f"imageio extract failed: {exc}")) from exc
+        raise FrameExtractionError("imageio extract failed") from exc
 
 
 async def _extract_frame_ffmpeg(
@@ -834,6 +870,7 @@ async def _extract_frame_ffmpeg(
             _FFMPEG_TIMEOUT_S if remaining is None
             else min(_FFMPEG_TIMEOUT_S, remaining)
         )
+        rung_deadline = time.monotonic() + rung_timeout
         cmd = [
             ffmpeg_bin,
             "-nostdin",
@@ -868,23 +905,25 @@ async def _extract_frame_ffmpeg(
                     timeout=rung_timeout,
                 )
             except TimeoutError:
-                await _stop_child(proc, stderr_task)
+                await _stop_child(proc, stderr_task, max(0.0, rung_deadline - time.monotonic()))
                 last_no_frame = _rung_deadline_error(
                     rung_timeout, remaining is not None and rung_timeout < _FFMPEG_TIMEOUT_S
                 )
                 break
             except FrameExtractionError:
-                await _stop_child(proc, stderr_task)
+                await _stop_child(proc, stderr_task, max(0.0, rung_deadline - time.monotonic()))
                 raise
-            await proc.wait()
-            stderr = await stderr_task
+            reaped, _stderr = await _reap(
+                proc, stderr_task, max(0.0, rung_deadline - time.monotonic()),
+            )
+            if not reaped:
+                last_no_frame = _rung_deadline_error(
+                    rung_timeout, remaining is not None and rung_timeout < _FFMPEG_TIMEOUT_S
+                )
+                break
             if proc.returncode != 0:
                 raise FrameExtractionError(
-                    _without_paths(
-                        f"ffmpeg returned {proc.returncode}: "
-                        f"{stderr.decode('utf-8', errors='replace')}"
-                    ),
-                    returncode=proc.returncode,
+                    f"ffmpeg returned {proc.returncode}", returncode=proc.returncode,
                 )
             if not stdout:
                 raise FrameExtractionError("ffmpeg produced empty output", no_frame=True)
@@ -919,7 +958,7 @@ async def _extract_frame_ffmpeg(
                     await proc.wait()
             if stderr_task is not None and not stderr_task.done():
                 stderr_task.cancel()
-            raise FrameExtractionError(_without_paths(f"ffmpeg extract failed: {exc}")) from exc
+            raise FrameExtractionError("ffmpeg extract failed") from exc
     if saw_damage is not None:
         saw_damage.append(walked_past_damage)
     if hop_index is not None:
@@ -936,10 +975,12 @@ def _rung_deadline_error(
         return FrameExtractionError(
             f"end-seek ladder spent its {_END_SEEK_BUDGET_SECONDS}s budget",
             no_frame=True,
+            timed_out=True,
         )
     return FrameExtractionError(
         f"ffmpeg timed out after {rung_timeout}s",
         no_frame=True,
+        timed_out=True,
     )
 
 
@@ -950,18 +991,19 @@ def _ladder_note(damage_seen: bool) -> str:
     )
 
 
-def _give_up_note(damage_seen: bool) -> str:
-    return (
-        "frame_damaged_used_first_frame" if damage_seen
-        else "frame_end_unreadable_used_first_frame"
-    )
+def _give_up_note(damage_seen: bool, timed_out: bool = False) -> str:
+    if damage_seen:
+        return "frame_damaged_used_first_frame"
+    if timed_out:
+        return "frame_decode_timeout_used_first_frame"
+    return "frame_end_unreadable_used_first_frame"
 
 
 async def _imageio_last_resort(
     path: Path, *, requested_ts: float | None,
     downgrade_note: str, logger: logging.Logger, max_frame_bytes: int = 0,
     declared_size: tuple[int, int] | None = None,
-    damage_seen: bool = False,
+    damage_seen: bool = False, timed_out: bool = False,
 ) -> ExtractedFrame:
     png_bytes, w, h = await _abandonable(
         _extract_frame_imageio_sync, path, frame_index=0,
@@ -969,7 +1011,7 @@ async def _imageio_last_resort(
         declared_size=declared_size,
     )
     if not downgrade_note:
-        downgrade_note = _give_up_note(damage_seen)
+        downgrade_note = _give_up_note(damage_seen, timed_out)
     logger.debug("ffmpeg produced no frame; the file's first frame is the last resort")
     _check_frame_bytes(png_bytes, max_frame_bytes)
     return ExtractedFrame(
@@ -1035,7 +1077,7 @@ async def _extract_frame_with_budget(
     """
     logger = logger or logging.getLogger(__name__)
     if not path.exists():
-        raise FrameExtractionError(_without_paths(f"video file not found: {path}"))
+        raise FrameExtractionError("video file not found")
     _refuse_unsafe_input(path)
     if target == "at_timestamp" and not _is_finite_non_negative(timestamp_seconds):
         raise FrameExtractionError(
@@ -1172,6 +1214,7 @@ async def _extract_frame_with_budget(
                         if probed_meta is not None else None
                     ),
                     damage_seen=bool(direct_saw_damage and direct_saw_damage[0]),
+                    timed_out=getattr(exc, "timed_out", False),
                 )
             if use_end_seek or target == "first_frame" or (
                 not exc.no_frame and exc.returncode not in _RETRYABLE_FFMPEG_EXITS
@@ -1191,7 +1234,7 @@ async def _extract_frame_with_budget(
                     from_end=not rescue_first, saw_damage=ladder_saw_damage,
                     max_frame_bytes=max_frame_bytes,
                 )
-            except FrameExtractionError:
+            except FrameExtractionError as ladder_exc:
                 if (
                     target == "at_timestamp"
                     and not rescue_first
@@ -1247,7 +1290,8 @@ async def _extract_frame_with_budget(
                         bool(
                             (direct_saw_damage and direct_saw_damage[0])
                             or (ladder_saw_damage and ladder_saw_damage[0])
-                        )
+                        ),
+                        getattr(ladder_exc, "timed_out", False),
                     )
                 return ExtractedFrame(
                     image_bytes=png_bytes, width=w, height=h,

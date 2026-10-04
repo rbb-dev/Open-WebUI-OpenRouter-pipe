@@ -69,6 +69,10 @@ If the provider returns no usable text, the pipe does not raise. An answer that 
 
 A task tries twice. While `AUTO_FALLBACK_CHAT_COMPLETIONS` is on, one attempt is itself two requests where the fallback fires, so a failing task makes at most **three**: either `responses, chat/completions` in the first attempt with one left, or `responses, chat/completions, chat/completions` when the retry goes straight back to the endpoint the first attempt settled on. A retry does not re-run a fallback it has already taken. With the fallback off, the bound is two.
 
+### A model that cannot answer in text is never sent the task
+
+A task request is only ever answered in text, so a model whose catalogue row lists no `"text"` in `architecture.output_modalities` — a pure picture model, a pure video model — cannot serve one. Sending it anyway is a request that can only 404: the pipe spent two attempts, logged an ERROR, and toasted a task-failure card naming a fault that is really a property of the model. So the pipe skips it instead, before anything leaves, and returns the empty answer. That is the value every Open WebUI task kind already reads as "no task ran": the title becomes the first message of the chat, exactly as it does with automatic titles turned off, and no tags and no follow-ups are written. The rule is the model the request resolves to — the same id resolution the capability lookups use, so a variant or a virtual id resolves to its base — and a row that is missing, or that lists no output modalities at all, is treated as able to answer, because a catalogue that has not described a model cannot claim it cannot speak. The first skip in a worker logs one WARNING naming the model, what it makes, and the setting that changes this — a Task Model under **Admin Settings → Interface**. Every later skip logs the same line at DEBUG.
+
 ### Model whitelist bypass (task-mode only)
 
 If a `MODEL_ID` allowlist is configured, normal chat requests enforce it. Housekeeping tasks can **bypass** the allowlist so housekeeping continues even when the selected task model is not in the allowlist.

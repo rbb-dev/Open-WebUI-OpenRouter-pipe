@@ -222,6 +222,16 @@ Variant models work seamlessly with existing model selection:
 - If base model is selected, its configured variants are added automatically
 - Example: Selecting `gpt-4o` enables both "GPT-4o" and "GPT-4o Exacto"
 
+### Endpoint valves
+
+A variant inherits its base's endpoint pin. An entry in `FORCE_CHAT_COMPLETIONS_MODELS` or
+`FORCE_RESPONSES_MODELS` that names a base model matches that model's tagged rows too, so a single
+`openai/gpt-4o` covers `openai.gpt-4o:free`, `openai.gpt-4o:nitro`, `openai.gpt-4o:nitro:exacto`
+and the dated forms of each. This is the endpoint valve's own normalisation and nothing else:
+`MODEL_ID` is still matched as written, the catalogue keys stay exact, and `:free` remains a
+separately priced and separately catalogued row. A `:preset/...` suffix is not a routing variant
+here and is not covered -- a preset is served on `/chat/completions` only.
+
 **By construction:** `MODEL_ID` matches catalogue rows by normalized id exactly, or by glob when the entry holds a `*`, `?` or `[`; a pattern is not run through the `:tag` / `@preset` resolution, and an exclusion runs after the includes and is not re-admitted by `VARIANT_MODELS`. A `!` entry is applied after the includes over the whole selection, so `!~openai/*` removes a `~`-pinned alias that `openai/*` never reached, and no base this list excludes is added as a variant. A `base_id:tag` entry is therefore
 matched on its exact normalized id: when the catalogue holds that tagged model as a row of its own it publishes
 that row - `openai/gpt-4o:free` publishes the `:free` model, not the paid base - and when it does not, it

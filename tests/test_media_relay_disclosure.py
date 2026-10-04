@@ -138,6 +138,8 @@ def _valves(**overrides):
     ("host", "retention", "expected_span"),
     [
         ("litterbox", "1h", "an hour"),
+        ("litterbox", "12h", "12 hours"),
+        ("litterbox", "24h", "a day"),
         ("litterbox", "72h", "three days"),
         ("catbox", "1h", "stays there for good"),
     ],
@@ -147,17 +149,28 @@ def test_the_stored_message_says_where_the_file_went_and_for_how_long(
 ):
     """The record has to name the host and the retention that actually applied.
 
-    Three combinations, so neither the host name nor the retention phrase can be a
-    constant: a production `return "litterbox ... an hour"` fails two of the three, and
+    Five combinations, so neither the host name nor the retention phrase can be a
+    constant: a production `return "litterbox ... an hour"` fails three of the five, and
     reading `MEDIA_FILE_HOST` instead of what was used fails the catbox row.
+
+    All four published retentions, and both surfaces asserted from the same row. Open
+    WebUI does not persist the toast, so the record is what a person reads months later;
+    `12h` and `24h` had no row here at all, so the sentence that outlives the toast was
+    the one place a wrong duration could survive. Pinning the toast without the record is
+    how a record starts contradicting a notice, so each row checks both.
     """
     valves = _valves(MEDIA_FILE_HOST=host, MEDIA_FILE_HOST_RETENTION=retention)
 
     record = VideoGenerationAdapter._file_host_record(valves, {("video", host)})
+    notice = VideoGenerationAdapter._file_host_notice(valves, {("video", host)})
 
     assert host in record, f"the record does not name the host: {record!r}"
     assert expected_span in record, f"the record does not say how long: {record!r}"
     assert "clip" in record, record
+    assert expected_span in notice, (
+        f"the notice a person reads live and the record they keep disagree about how "
+        f"long the copy lasts: {notice!r} against {record!r}"
+    )
 
 
 @pytest.mark.parametrize(

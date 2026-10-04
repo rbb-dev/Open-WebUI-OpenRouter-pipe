@@ -329,15 +329,12 @@ class EventEmitterHandler:
         """
         error_id, context_defaults = self._create_error_context()
         enriched_variables = {
-            **context_defaults,
-            **{
-                key: (
-                    value
-                    if key in _PIPE_GENERATED_TEMPLATE_KEYS
-                    else (_inline_span(value) if isinstance(value, str) else value)
-                )
-                for key, value in variables.items()
-            },
+            key: (
+                value
+                if key in _PIPE_GENERATED_TEMPLATE_KEYS
+                else (_inline_span(value) if isinstance(value, str) else value)
+            )
+            for key, value in {**context_defaults, **variables}.items()
         }
 
         # Log with error ID for correlation
