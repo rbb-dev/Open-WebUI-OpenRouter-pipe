@@ -21,6 +21,7 @@ import re
 import threading
 import time
 import weakref
+from collections import OrderedDict
 from contextvars import ContextVar
 from decimal import Decimal, InvalidOperation
 from functools import lru_cache
@@ -353,17 +354,27 @@ def _contract_target(valves: Any) -> tuple[str, str]:
 
 
 _ZDR_CREDENTIAL_HISTORY = 4
+_IMAGE_CONTRACT_TARGET_HISTORY = 4
+_ZDR_CREDENTIAL_RETENTION_SECONDS = 4 * 60 * 60
+_ZDR_LIVE_CREDENTIAL_CEILING = 64
 _REGISTRY_CATALOG_TIMEOUT_SECONDS = 15
 
 
-def _trim_credential_history(mapping: dict[str, Any], live: str, aliased: Any) -> bool:
+def _trim_credential_history(
+    mapping: dict[Any, Any], live: Any, aliased: Any, limit: int = _ZDR_CREDENTIAL_HISTORY
+) -> bool:
     if live in mapping:
         mapping[live] = mapping.pop(live)
     dropped_alias = False
-    while len(mapping) > _ZDR_CREDENTIAL_HISTORY:
+    while len(mapping) > limit:
         if mapping.pop(next(iter(mapping))) is aliased:
             dropped_alias = True
     return dropped_alias
+
+
+def _record_zdr_use(touched: OrderedDict[str, float], fingerprint: str, now: float) -> None:
+    touched[fingerprint] = now
+    touched.move_to_end(fingerprint)
 
 
 def _content_digest(
@@ -432,6 +443,7 @@ class OpenRouterModelRegistry:
     )
     _zdr_attempted_key: ClassVar[str | None] = None
     _zdr_settle: ClassVar[dict[str, tuple[int, float]]] = {}
+    _zdr_touched: ClassVar[OrderedDict[str, float]] = OrderedDict()
     _last_fetch: float = 0.0
     _lock: asyncio.Lock = asyncio.Lock()
     _lock_guard: ClassVar[threading.Lock] = threading.Lock()
@@ -462,15 +474,48 @@ class OpenRouterModelRegistry:
         cls._name_map = None
 
     @classmethod
+    def _touch_zdr(cls, fingerprint: str) -> None:
+        _record_zdr_use(cls._zdr_touched, fingerprint, time.time())
+
+    @classmethod
+    def _trim_zdr_history(cls, mapping: dict[str, Any], live: str, now: float) -> bool:
+        _record_zdr_use(cls._zdr_touched, live, now)
+        dropped_alias = False
+        for fingerprint in [
+            entry
+            for entry, stamp in cls._zdr_touched.items()
+            if now - stamp > _ZDR_CREDENTIAL_RETENTION_SECONDS
+        ]:
+            cls._zdr_touched.pop(fingerprint, None)
+            if cls._zdr_rosters.pop(fingerprint, None) is cls._zdr_model_ids:
+                dropped_alias = True
+            cls._zdr_settle.pop(fingerprint, None)
+        while len(cls._zdr_touched) > _ZDR_LIVE_CREDENTIAL_CEILING:
+            oldest = next(iter(cls._zdr_touched))
+            if oldest == live:
+                break
+            cls._zdr_touched.pop(oldest, None)
+            cls._zdr_rosters.pop(oldest, None)
+            cls._zdr_settle.pop(oldest, None)
+        if live in mapping:
+            mapping[live] = mapping.pop(live)
+        return dropped_alias
+
+    @classmethod
     def _key_changed(cls, api_key: str) -> bool:
         fp = _fingerprint(api_key)
         if fp in cls._zdr_rosters or fp in cls._zdr_settle:
+            cls._touch_zdr(fp)
             return False
         return cls._zdr_attempted_key is not None and cls._zdr_attempted_key != fp
 
     @classmethod
     def _credential_settle(cls, api_key: str) -> tuple[int, float] | None:
-        return cls._zdr_settle.get(_fingerprint(api_key))
+        fp = _fingerprint(api_key)
+        stored = cls._zdr_settle.get(fp)
+        if stored is not None:
+            cls._touch_zdr(fp)
+        return stored
 
     @classmethod
     def _settled_until(cls, api_key: str, cache_seconds: int) -> float:
@@ -495,7 +540,7 @@ class OpenRouterModelRegistry:
         prior = cls._credential_settle(api_key)
         fp = _fingerprint(api_key)
         cls._zdr_settle[fp] = ((prior[0] if prior else 0) + 1, until)
-        _trim_credential_history(cls._zdr_settle, fp, cls._zdr_model_ids)
+        cls._trim_zdr_history(cls._zdr_settle, fp, time.time())
 
     @classmethod
     def _clear_settle(cls, api_key: str) -> None:
@@ -503,7 +548,10 @@ class OpenRouterModelRegistry:
 
     @classmethod
     def _zdr_roster_for(cls, api_key: str) -> set[str] | None:
-        stored = cls._zdr_rosters.get(_fingerprint(api_key))
+        fp = _fingerprint(api_key)
+        stored = cls._zdr_rosters.get(fp)
+        if stored is not None:
+            cls._touch_zdr(fp)
         return stored
 
     @classmethod
@@ -518,6 +566,8 @@ class OpenRouterModelRegistry:
         if fp is None:
             return cls._zdr_model_ids
         stored = cls._zdr_rosters.get(fp)
+        if stored is not None:
+            cls._touch_zdr(fp)
         return stored
 
     @classmethod
@@ -789,6 +839,7 @@ class OpenRouterModelRegistry:
             and "video_generation" not in (s.get("features") or set())
             and "text" not in ((s.get("architecture") or {}).get("output_modalities") or [])
         }
+        existing_image_only_norms = existing_image_only_norms - set(cls._chat_catalog_norms)
         if existing_image_only_norms:
             for n in existing_image_only_norms:
                 if n not in specs:
@@ -815,7 +866,7 @@ class OpenRouterModelRegistry:
         if zdr_read_ok:
             fp = _fingerprint(api_key)
             cls._zdr_rosters[fp] = set(zdr_model_ids or ())
-            if _trim_credential_history(cls._zdr_rosters, fp, cls._zdr_model_ids):
+            if cls._trim_zdr_history(cls._zdr_rosters, fp, time.time()):
                 cls._zdr_model_ids = None
         cls._zdr_model_ids = cls._zdr_roster_for(api_key)
         cls._chat_catalog_norms = chat_catalog_norms
@@ -1277,17 +1328,31 @@ class OpenRouterModelRegistry:
 
     _last_image_fetch: float = 0.0
     _last_image_attempt: float = 0.0
-    _last_image_account: str = ""
+    _last_image_account: ClassVar[dict[tuple[str, str] | None, str]] = {}
     _image_catalog_norms: frozenset[str] = frozenset()
     _chat_catalog_norms: frozenset[str] = frozenset()
     _image_endpoints: ClassVar[dict[str, list[dict[str, Any]]]] = {}
+    _image_endpoints_by_target: ClassVar[
+        dict[tuple[str, str] | None, dict[str, list[dict[str, Any]]]]
+    ] = {}
     _image_endpoint_alias: ClassVar[dict[str, list[dict[str, Any]]]] = {}
     _image_endpoint_alias_of: ClassVar[dict[str, list[dict[str, Any]]] | None] = None
-    _last_image_contract_attempt: float = 0.0
-    _last_image_contract_account: str = ""
+    _last_image_contract_attempt: ClassVar[dict[tuple[str, str] | None, float]] = {}
+    _last_image_contract_account: ClassVar[dict[tuple[str, str] | None, str]] = {}
     _image_contract_retry_after: float = 0.0
-    _image_contract_owed: frozenset[str] = frozenset()
+    _image_contract_owed: ClassVar[dict[tuple[str, str] | None, frozenset[str]]] = {}
     _image_contract_target: ClassVar[tuple[str, str] | None] = None
+
+    @classmethod
+    def _image_bucket(cls, target: tuple[str, str] | None) -> dict[str, list[dict[str, Any]]]:
+        if target is None:
+            target = cls._image_contract_target
+        bucket = cls._image_endpoints_by_target.get(target)
+        if bucket is not None:
+            return bucket
+        if target == cls._image_contract_target or cls._image_contract_target is None:
+            return cls._image_endpoints
+        return {}
 
     @classmethod
     def image_contract_target(cls) -> tuple[str, str] | None:
@@ -1297,16 +1362,27 @@ class OpenRouterModelRegistry:
     def adopt_image_contract_target(cls, identity: tuple[str, str]) -> bool:
         if cls._image_contract_target == identity:
             return False
+        departing_had_contracts = bool(cls._image_endpoints)
         cls._image_contract_target = identity
-        cls._image_endpoints = {}
+        bucket = cls._image_endpoints_by_target.get(identity)
+        if bucket is None:
+            bucket = {}
+            cls._image_endpoints_by_target[identity] = bucket
+            _trim_credential_history(
+                cls._image_endpoints_by_target,
+                identity,
+                None,
+                _IMAGE_CONTRACT_TARGET_HISTORY,
+            )
+        cls._image_endpoints = bucket
         cls._image_endpoint_alias = {}
         cls._image_endpoint_alias_of = None
-        cls.clear_image_contract_attempt()
+        cls._image_contract_owed[identity] = frozenset()
         cls._image_contract_retry_after = 0.0
-        return True
+        return departing_had_contracts and not bucket
 
     @classmethod
-    def last_image_contract_attempt(cls) -> float:
+    def last_image_contract_attempt(cls, target: tuple[str, str] | None = None) -> float:
         """When the contract sweep last ran, separately from the model-list fetch.
 
         A caller that skipped the sweep must not satisfy the freshness check that guards
@@ -1314,22 +1390,37 @@ class OpenRouterModelRegistry:
         otherwise suppress the next catalog refresh's sweep for a whole TTL window --
         leaving every model with no controls.
         """
-        return cls._last_image_contract_attempt
+        if target is None:
+            target = cls._image_contract_target
+        return cls._last_image_contract_attempt.get(target, 0.0)
 
     @classmethod
-    def record_image_contract_attempt(cls, api_key: str) -> None:
-        cls._last_image_contract_attempt = time.time()
-        cls._last_image_contract_account = _fingerprint(api_key)
-        cls._last_image_account = cls._last_image_contract_account
+    def record_image_contract_attempt(
+        cls, api_key: str, target: tuple[str, str] | None = None
+    ) -> None:
+        if target is None:
+            target = cls._image_contract_target
+        cls._last_image_contract_attempt[target] = time.time()
+        cls._last_image_contract_account[target] = _fingerprint(api_key)
+        cls._last_image_account[target] = cls._last_image_contract_account[target]
 
     @classmethod
-    def clear_image_contract_attempt(cls) -> None:
-        cls._last_image_contract_attempt = 0.0
-        cls._last_image_contract_account = ""
+    def clear_image_contract_attempt(cls, target: tuple[str, str] | None = None) -> None:
+        if target is None:
+            target = cls._image_contract_target
+        cls._last_image_contract_attempt.pop(target, None)
+        cls._last_image_contract_account.pop(target, None)
 
     @classmethod
-    def image_accounts_match(cls, api_key: str) -> bool:
-        return _fingerprint(api_key) == cls._last_image_account == cls._last_image_contract_account
+    def image_accounts_match(cls, api_key: str, target: tuple[str, str] | None = None) -> bool:
+        if target is None:
+            target = cls._image_contract_target
+        fingerprint = _fingerprint(api_key)
+        return (
+            fingerprint
+            == cls._last_image_account.get(target, "")
+            == cls._last_image_contract_account.get(target, "")
+        )
 
     @classmethod
     def mark_image_contract_retry(cls, cache_seconds: int) -> None:
@@ -1344,20 +1435,32 @@ class OpenRouterModelRegistry:
         cls._image_contract_retry_after = 0.0
 
     @classmethod
-    def image_contract_owed(cls) -> frozenset[str]:
-        return cls._image_contract_owed
+    def image_contract_owed(cls, target: tuple[str, str] | None = None) -> frozenset[str]:
+        if target is None:
+            target = cls._image_contract_target
+        return cls._image_contract_owed.get(target, frozenset())
 
     @classmethod
-    def set_image_contract_owed(cls, model_ids: frozenset[str]) -> None:
-        cls._image_contract_owed = frozenset(model_ids)
+    def set_image_contract_owed(
+        cls, model_ids: frozenset[str], target: tuple[str, str] | None = None
+    ) -> None:
+        if target is None:
+            target = cls._image_contract_target
+        cls._image_contract_owed[target] = frozenset(model_ids)
 
     @classmethod
-    def clear_image_contract_owed(cls) -> None:
-        cls._image_contract_owed = frozenset()
+    def clear_image_contract_owed(cls, target: tuple[str, str] | None = None) -> None:
+        if target is None:
+            target = cls._image_contract_target
+        cls._image_contract_owed[target] = frozenset()
 
     @classmethod
     def set_image_endpoints(
-        cls, records: dict[str, Any] | None, *, known_ids: set[str] | None = None
+        cls,
+        records: dict[str, Any] | None,
+        *,
+        known_ids: set[str] | None = None,
+        target: tuple[str, str] | None = None,
     ) -> None:
         """Hold every published image contract, keyed by the model's OpenRouter id.
 
@@ -1366,6 +1469,8 @@ class OpenRouterModelRegistry:
         lives in the chat catalog, so a contract stored on its spec would have nowhere
         to be written and its filter would silently offer nothing.
         """
+        if target is None:
+            target = cls._image_contract_target
         published: dict[str, list[dict[str, Any]]] = {}
         for key, value in (records or {}).items():
             if not isinstance(key, str) or not key.strip():
@@ -1380,28 +1485,43 @@ class OpenRouterModelRegistry:
         # whole refresh cycle -- which is what the adapter already does with its own
         # cache, so the two now agree. ``known_ids`` bounds the carry-over to models the
         # catalog still lists, so a retired model's contract does not live forever.
-        for key, previous in cls._image_endpoints.items():
+        for key, previous in cls._image_bucket(target).items():
             if key in published:
                 continue
             if known_ids is not None and key not in known_ids:
                 continue
             published[key] = previous
-        cls._image_endpoints = published
+        cls._image_endpoints_by_target[target] = published
+        _trim_credential_history(
+            cls._image_endpoints_by_target, target, None, _IMAGE_CONTRACT_TARGET_HISTORY
+        )
+        if target == cls._image_contract_target:
+            cls._image_endpoints = published
+            cls._image_endpoint_alias = {}
+            cls._image_endpoint_alias_of = None
 
     @classmethod
     def listed_model_ids(cls) -> set[str]:
         return {value for value in cls._id_map.values() if isinstance(value, str) and value.strip()}
 
     @classmethod
-    def image_endpoint(cls, model_id: str) -> list[dict[str, Any]] | None:
+    def image_endpoint(
+        cls, model_id: str, target: tuple[str, str] | None = None
+    ) -> list[dict[str, Any]] | None:
         """Return every published contract for a model, by original or sanitized id."""
         if not isinstance(model_id, str) or not model_id.strip():
             return None
         wanted = model_id.strip()
-        record = cls._image_endpoints.get(wanted)
+        bucket = cls._image_bucket(target)
+        record = bucket.get(wanted)
         if record is not None:
             return record
-        return cls._image_endpoint_aliases().get(wanted)
+        aliases = (
+            cls._image_endpoint_aliases()
+            if bucket is cls._image_endpoints
+            else _build_image_endpoint_aliases(bucket)
+        )
+        return aliases.get(wanted)
 
     @classmethod
     def last_image_fetch(cls) -> float:
@@ -1419,16 +1539,21 @@ class OpenRouterModelRegistry:
         return cls._last_image_attempt
 
     @classmethod
-    def record_image_attempt(cls, api_key: str) -> None:
+    def record_image_attempt(cls, api_key: str, target: tuple[str, str] | None = None) -> None:
         """Stamp `_last_image_attempt` with the current time."""
+        if target is None:
+            target = cls._image_contract_target
         cls._last_image_attempt = time.time()
-        cls._last_image_account = _fingerprint(api_key)
-        cls._last_image_contract_account = cls._last_image_account
+        fingerprint = _fingerprint(api_key)
+        cls._last_image_account[target] = fingerprint
+        cls._last_image_contract_account[target] = fingerprint
 
     @classmethod
-    def reset_image_attempt(cls) -> None:
+    def reset_image_attempt(cls, target: tuple[str, str] | None = None) -> None:
+        if target is None:
+            target = cls._image_contract_target
         cls._last_image_attempt = 0.0
-        cls._last_image_account = ""
+        cls._last_image_account.pop(target, None)
         cls._media_failure_counts.clear()
 
     @classmethod

@@ -566,14 +566,32 @@ _OVER_REFERENCE_BUDGET = (
     "the request's combined frame budget was already spent"
 )
 
+
+def _over_the_relay_cap(size: int | None, already: int, cap: int) -> str:
+    if size is not None and size > cap:
+        return (f"The attachment is {megabytes(size)} and the limit for sending media "
+                f"to a file host is {megabytes(cap)}.")
+    if already + (size or 0) > cap:
+        return (f"The attachments come to {megabytes(already + (size or 0))} and one request "
+                f"sends at most {megabytes(cap)} to a file host.")
+    return f"The attachment is larger than the {megabytes(cap)} one request sends to a file host."
+
+
 _A_COPY_MAY_ALREADY_BE_THERE = (
     "{host} may already hold a copy of it{second}"
+)
+
+_NOTHING_WAS_UPLOADED = "Nothing was uploaded."
+
+_SOMETHING_ELSE_WAS = (
+    "Nothing further was uploaded; an earlier attachment in this turn is already on a "
+    "public host, and sending this one again will not take that one down."
 )
 
 _COULD_NOT_SAY_IT_FIRST = (
     "Your attachment has to be uploaded to {host} before a video model can read it, and "
     "this chat could not be told that before it happened, because {cause}. "
-    "Nothing was uploaded. Reload the chat and send it again."
+    "{uploaded} Reload the chat and send it again."
 )
 
 _COULD_NOT_SAY_IT_HERE_FIRST = (
@@ -613,6 +631,10 @@ _UNRENDERABLE_NOTICE_CAUSE = (
     "the FILE_HOST_NOTICE setting has a placeholder nothing fills: {name}"
 )
 
+_NOTICE_FORMAT_ERRORS = (KeyError, IndexError, ValueError, AttributeError, TypeError)
+
+_RETENTION_SPANS = {"1h": "an hour", "12h": "12 hours", "24h": "a day", "72h": "three days"}
+
 _NOTICE_FILLABLE_WORDS = {"kind": "", "host": "", "retention": ""}
 
 _VIDEO_IS_STILL_RUNNING = (
@@ -629,6 +651,14 @@ _VIDEO_CAN_BE_PICKED_BACK_UP = (
 _VIDEO_POLL_ERRORS_SPENT = (
     "OpenRouter's status endpoint did not answer this video's job {errors} times in "
     "a row, so this message stopped waiting for it. The job was not cancelled and is "
+    "still billed."
+)
+
+_VIDEO_POLL_TOTAL_ERROR_MULTIPLE = 5
+
+_VIDEO_POLL_TOTAL_ERRORS_SPENT = (
+    "OpenRouter's status endpoint did not answer this video's job {errors} times across "
+    "this watch, so this message stopped waiting for it. The job was not cancelled and is "
     "still billed."
 )
 
@@ -2017,6 +2047,7 @@ class VideoGenerationAdapter:
         stall_window = _video_stall_window(valves)
         deadline = time.monotonic() + stall_window
         consecutive_errors = 0
+        total_errors = 0
         last_emit_status = ""
         last_emit_progress = -1
         last_emit_at = 0.0
@@ -2046,9 +2077,14 @@ class VideoGenerationAdapter:
                 raise
             except Exception as exc:
                 consecutive_errors += 1
+                total_errors += 1
                 if consecutive_errors >= int(valves.VIDEO_STATUS_POLL_MAX_ERRORS):
                     raise VideoStatusUnavailable(
                         _VIDEO_POLL_ERRORS_SPENT.format(errors=consecutive_errors)
+                    ) from exc
+                if total_errors >= int(valves.VIDEO_STATUS_POLL_MAX_ERRORS) * _VIDEO_POLL_TOTAL_ERROR_MULTIPLE:
+                    raise VideoStatusUnavailable(
+                        _VIDEO_POLL_TOTAL_ERRORS_SPENT.format(errors=total_errors)
                     ) from exc
                 await asyncio.sleep(min(interval, max_interval))
                 interval = min(max_interval, interval * backoff)
@@ -2880,7 +2916,15 @@ class VideoGenerationAdapter:
                 if declared and declared > image_max:
                     _skip(file_id, "over-single", _over_reference_single)
                     continue
-            if via_file_host:
+                if declared is not None and (
+                    declared > relay_max or relay_bytes + declared > relay_max
+                ):
+                    _skip(
+                        file_id, "over-relay",
+                        _over_the_relay_cap(declared, relay_bytes, relay_max),
+                    )
+                    continue
+            if via_file_host and family != "image":
                 self._refuse_over_the_relay_cap(
                     declared_file_size(file_obj), relay_bytes, relay_max
                 )
@@ -2894,6 +2938,15 @@ class VideoGenerationAdapter:
             except RequiredInternalFileError as exc:
                 if getattr(exc, "kind", None) == "size":
                     if family == "image":
+                        if via_file_host and relay_max < image_max:
+                            _skip(
+                                file_id,
+                                "over-relay",
+                                _over_the_relay_cap(
+                                    declared_file_size(file_obj), relay_bytes, relay_max
+                                ),
+                            )
+                            continue
                         _skip(file_id, "over-single", _over_reference_single)
                         continue
                     bound = relay_max if via_file_host else (
@@ -2945,7 +2998,15 @@ class VideoGenerationAdapter:
                 if spent is not None:
                     spent["total"] = total_bytes
             if via_file_host:
-                self._refuse_over_the_relay_cap(decoded_len, relay_bytes, relay_max)
+                if family == "image":
+                    if decoded_len > relay_max or relay_bytes + decoded_len > relay_max:
+                        _skip(
+                            file_id, "over-relay",
+                            _over_the_relay_cap(decoded_len, relay_bytes, relay_max),
+                        )
+                        continue
+                else:
+                    self._refuse_over_the_relay_cap(decoded_len, relay_bytes, relay_max)
                 if family == "video":
                     note = await self._clip_too_small_note(blob_floor, blob, mime)
                     if note:
@@ -3001,6 +3062,7 @@ class VideoGenerationAdapter:
                         session=relay_session,
                         event_emitter=event_emitter,
                         stored=maybe_stored,
+                        already_uploaded=bool(relayed),
                     )
                     attachments_left -= 1
                     encoded.append({"type": entry.kind, entry.kind: {"url": link}})
@@ -3050,7 +3112,8 @@ class VideoGenerationAdapter:
         return ""
 
     async def _disclose_the_file_host(
-        self, valves: Any, families: set[str], event_emitter: Any, host: str
+        self, valves: Any, families: set[str], event_emitter: Any, host: str,
+        *, already_uploaded: bool = False,
     ) -> set[tuple[str, str]]:
         if not families:
             return set()
@@ -3068,7 +3131,13 @@ class VideoGenerationAdapter:
                 if cause in _CHATS_WITHOUT_NOTICES
                 else _COULD_NOT_SAY_IT_FIRST
             )
-            raise VideoGenerationError(card.format(cause=cause, host=host))
+            raise VideoGenerationError(
+                card.format(
+                    cause=cause, host=host,
+                    uploaded=_SOMETHING_ELSE_WAS if already_uploaded
+                    else _NOTHING_WAS_UPLOADED,
+                )
+            )
         return planned
 
     async def _emit_file_host_notice(
@@ -3098,7 +3167,7 @@ class VideoGenerationAdapter:
     def _unrenderable_notice(cls, valves: Any, relayed: set[tuple[str, str]]) -> str:
         try:
             cls._rendered_file_host_notice(valves, relayed)
-        except (KeyError, IndexError, ValueError) as exc:
+        except _NOTICE_FORMAT_ERRORS as exc:
             return _UNRENDERABLE_NOTICE_CAUSE.format(
                 name=f"{{{cls._the_unfilled_field(valves, exc)}}}"
             )
@@ -3115,7 +3184,7 @@ class VideoGenerationAdapter:
         for placeholder in re.findall(r"\{([^{}]*)\}", template):
             try:
                 ("{" + placeholder + "}").format(**_NOTICE_FILLABLE_WORDS)
-            except (KeyError, IndexError, ValueError):
+            except _NOTICE_FORMAT_ERRORS:
                 return placeholder
         return str(exc)
 
@@ -3158,28 +3227,35 @@ class VideoGenerationAdapter:
                 "and stays there for good, because the upload carries no account and "
                 "nothing here can take it down again"
             )
-        spans = {"1h": "an hour", "12h": "12 hours", "24h": "a day", "72h": "three days"}
+        spans = _RETENTION_SPANS
         span = str(getattr(valves, "MEDIA_FILE_HOST_RETENTION", "1h"))
         deleted = "are deleted" if plural else "is deleted"
         return f"and {deleted} again {spans.get(span, span)} later"
 
     @staticmethod
-    def _maybe_retention_words(*, plural: bool = False) -> str:
-        if plural:
+    def _maybe_retention_words(valves: Any, host: str, *, plural: bool = False) -> str:
+        if host_keeps_forever(host):
+            if plural:
+                return (
+                    "they may stay there for good, because an upload this pipe never got an "
+                    "answer for carries no account and nothing here can take them down again"
+                )
             return (
-                "they may stay there for good, because an upload this pipe never got an "
-                "answer for carries no account and nothing here can take them down again"
+                "it may stay there for good, because an upload this pipe never got an answer "
+                "for carries no account and nothing here can take it down again"
             )
-        return (
-            "it may stay there for good, because an upload this pipe never got an answer "
-            "for carries no account and nothing here can take it down again"
+        span = _RETENTION_SPANS.get(
+            str(getattr(valves, "MEDIA_FILE_HOST_RETENTION", "1h")), ""
         )
+        if plural:
+            return f"they are deleted again {span} later if they are there at all"
+        return f"it is deleted again {span} later if it is there at all"
 
     @classmethod
     def _file_host_notice(cls, valves: Any, relayed: set[tuple[str, str]]) -> str:
         try:
             return cls._rendered_file_host_notice(valves, relayed)
-        except (KeyError, IndexError, ValueError):
+        except _NOTICE_FORMAT_ERRORS:
             return str(getattr(valves, "FILE_HOST_NOTICE", "") or "")
 
     @classmethod
@@ -3241,11 +3317,10 @@ class VideoGenerationAdapter:
                 kind=cls._relay_kinds_spoken(pairs),
                 host=host,
                 retention=cls._maybe_retention_words(
-                    plural=len(cls._relay_kinds_named(pairs)) > 1
+                    valves, host, plural=len(cls._relay_kinds_named(pairs)) > 1
                 ),
             )
             for host, pairs in cls._relay_groups(maybe_stored or set())
-            if not (pairs & relayed)
         )
         return (
             f"{_serialize_kind_marker(RELAY_BLOCK_START, '1')}\n"
@@ -3337,6 +3412,7 @@ class VideoGenerationAdapter:
         family: str, deadline: float, session: aiohttp.ClientSession | None = None,
         event_emitter: Any = None,
         stored: set[tuple[str, str]] | None = None,
+        already_uploaded: bool = False,
     ) -> tuple[str, str]:
         if isinstance(payload, (bytes, bytearray)):
             blob = bytes(payload)
@@ -3359,7 +3435,8 @@ class VideoGenerationAdapter:
                 try:
                     if host != hosts[0]:
                         await self._disclose_the_file_host(
-                            valves, {family}, event_emitter, host
+                            valves, {family}, event_emitter, host,
+                            already_uploaded=already_uploaded,
                         )
                     link = await relay_to_public_url(
                         http,

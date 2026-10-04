@@ -17,7 +17,14 @@ from open_webui_openrouter_pipe.requests.orchestrator import (
 )
 from open_webui_openrouter_pipe.api.transforms import ResponsesBody
 
+# The published contracts are kept per contract target and every reader names its own, so
+# the identity the request path asks about is a value rather than a `Mock` attribute,
+# which fingerprints differently on every read. Pinned on the chat valves below so the
+# registry fixture and the request path agree.
+_CONTRACT_IDENTITY = {"BASE_URL": "https://openrouter.ai/api/v1", "API_KEY": "sk-entries-test"}
+
 _CHAT_VALVES = {
+    **_CONTRACT_IDENTITY,
     "MAX_INPUT_IMAGES_PER_REQUEST": 0,
     "IMAGE_INPUT_SELECTION": "latest_user",
     "BASE64_MAX_SIZE_MB": 10,

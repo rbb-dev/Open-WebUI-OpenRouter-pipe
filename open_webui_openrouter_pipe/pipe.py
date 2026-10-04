@@ -4479,9 +4479,10 @@ class Pipe:
 
         timeout = self.valves.TOOL_SHUTDOWN_TIMEOUT_SECONDS
         try:
-            if timeout <= 0:
-                raise TimeoutError()
-            await asyncio.wait_for(_graceful(), timeout=timeout)
+            if timeout > 0:
+                await asyncio.wait_for(_graceful(), timeout=timeout)
+            else:
+                self.logger.debug("Tool shutdown grace period is off; cancelling workers without waiting.")
         except TimeoutError:
             self.logger.warning(
                 "Tool shutdown exceeded %.1fs; cancelling workers.",
@@ -4571,7 +4572,7 @@ class Pipe:
         for item, task, ask_user_window in zip(batch, tasks, ask_user_windows):
             if item.future.done():
                 continue
-            if task in pending:
+            if task in pending and not (task.done() and not task.cancelled()):
                 if item.holds_slot and breaker is not None and ask_user_window is None:
                     breaker.record_tool_failure(
                         context.user_id,

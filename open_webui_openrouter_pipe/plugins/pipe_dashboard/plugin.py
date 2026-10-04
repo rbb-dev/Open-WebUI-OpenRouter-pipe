@@ -169,11 +169,14 @@ class PipeDashboardPlugin(PluginBase):
             default=False,
             title="Enable Pipe Dashboard plugin",
             description="Enable the Pipe Dashboard virtual model in the model selector. "
-                        "Read from the persisted row, so a committed change holds on every "
-                        "worker without a restart; an unreadable row refuses. The Open WebUI "
-                        "model row behind the dashboard is switched off and back on with this "
-                        "valve, so the admin model lists agree with the selector; a row an "
-                        "administrator switched off themselves is left as they set it.",
+                        "Governs this install only: with two copies of the pipe installed, "
+                        "switching one off closes that copy's panel and evicts that copy's "
+                        "viewers, and leaves the other running. Read from the persisted row, "
+                        "so a committed change holds on every worker without a restart; an "
+                        "unreadable row refuses. The Open WebUI model row behind the dashboard "
+                        "is switched off and back on with this valve, so the admin model lists "
+                        "agree with the selector; a row an administrator switched off themselves "
+                        "is left as they set it.",
         )),
         "PIPE_DASHBOARD_USAGE_COLLECT": (bool, Field(
             default=False,
@@ -289,9 +292,10 @@ class PipeDashboardPlugin(PluginBase):
         self._re_register_registrations(self._get_pipe)
 
     def _re_register_registrations(self, get_pipe: Any) -> None:
-        register_socket_handler(get_pipe)
-        set_pipe_getter(get_pipe)
-        set_snapshot_getter(self._live_snapshot)
+        pipe_id = str(getattr(get_pipe(), "id", "") or "")
+        register_socket_handler(pipe_id, get_pipe)
+        set_pipe_getter(pipe_id, get_pipe)
+        set_snapshot_getter(pipe_id, self._live_snapshot)
         register_action_route()
 
         # Start the per-worker stats publisher background task.
@@ -413,7 +417,8 @@ class PipeDashboardPlugin(PluginBase):
         # Retry both on every model-list request — on_init may fire before
         # OWUI's socket module or the event loop is ready on this worker.
         get_pipe = getattr(self, "_get_pipe", None)
-        register_socket_handler(get_pipe)
+        pipe_id = self._registration_pipe_id()
+        register_socket_handler(pipe_id, get_pipe)
         if get_pipe is not None:
             self._re_register_registrations(get_pipe)
 
@@ -738,14 +743,19 @@ class PipeDashboardPlugin(PluginBase):
         self._tracker.sweep()
         return self._tracker.live_snapshot()
 
+    def _registration_pipe_id(self) -> str:
+        pipe = getattr(getattr(self, "ctx", None), "pipe", None)
+        return str(getattr(pipe, "id", "") or "")
+
     def _clear_module_registrations(self) -> None:
+        pipe_id = self._registration_pipe_id()
         for clear, name in (
             (clear_socket_pipe_getter, "_get_pipe"),
             (clear_routes_pipe_getter, "_get_pipe"),
             (clear_snapshot_getter, "_live_snapshot"),
         ):
             try:
-                clear(self, name)
+                clear(self, name, pipe_id)
             except Exception:
                 logger.debug("pipe_dashboard module-global teardown failed", exc_info=True)
         try:

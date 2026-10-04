@@ -48,6 +48,14 @@ The model provider returned an error:
 
 **Model**: {model_identifier}
 **Error ID**: {error_id}
+{{#if support_email}}
+
+**Support:** {support_email}
+{{/if}}
+{{#if support_url}}
+
+**Support:** {support_url}
+{{/if}}
 """
 
 _DEFAULT_USAGE_STATUS_ICONS: tuple[str, ...] = (

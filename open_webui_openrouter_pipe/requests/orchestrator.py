@@ -78,7 +78,7 @@ from ..integrations.provider_options import (
     restrict_provider_block,
 )
 from ..media.image_conversion import normalise_mime
-from ..models.registry import ModelFamily, OpenRouterModelRegistry
+from ..models.registry import ModelFamily, OpenRouterModelRegistry, _contract_target
 from ..storage.multimodal import Confidence, _sniff_evidence
 from ..storage.owui_files import (
     declared_file_size,
@@ -178,6 +178,16 @@ async def _read_attachment(
         )
     attachment_bytes[memo_key] = (b64, file_obj)
     return b64, file_obj
+
+
+def _prefix_is_text(prefix: bytes) -> bool:
+    if not prefix or b"\x00" in prefix:
+        return False
+    try:
+        prefix.decode("utf-8")
+    except UnicodeDecodeError:
+        prefix.decode("latin-1")
+    return True
 
 
 def _video_data_url(
@@ -1158,6 +1168,32 @@ class RequestOrchestrator:
                         f"Native video attachment declared type {mime!r} is not a media "
                         f"type, so there is no honest way to declare the clip to a provider."
                     )
+                prefix = _decode_base64_prefix(b64)
+                attachment_name = item.get("name")
+                label = (
+                    f"{attachment_name!r} (file {file_id})"
+                    if isinstance(attachment_name, str) and attachment_name.strip()
+                    else f"file {file_id}"
+                )
+                if _prefix_is_text(prefix):
+                    raise ValueError(
+                        f"Native video attachment {label} declares type "
+                        f"{content_type!r} but its leading bytes are text, not a clip, "
+                        f"so nothing was sent. Open WebUI reads those bytes too and "
+                        f"would have relabelled the file text/plain; the declaration is "
+                        f"yours to fix."
+                    )
+                evidence = _sniff_evidence(prefix)
+                if (
+                    evidence is not None
+                    and evidence.confidence is Confidence.IDENTIFIED
+                    and not evidence.mime.startswith("video/")
+                ):
+                    raise ValueError(
+                        f"Native video attachment {label} declares type "
+                        f"{content_type!r} but its leading bytes are "
+                        f"{evidence.mime}, not a video, so nothing was sent."
+                    )
                 data_url = _video_data_url(
                     attachment_bytes, file_id, user_id, content_type, b64
                 )
@@ -1978,12 +2014,15 @@ class RequestOrchestrator:
                 # installs filters, and help still has to describe the model, so fall
                 # back to reading the contract directly -- one request, on an explicit
                 # user action, not on every message.
-                endpoint_record = OpenRouterModelRegistry.image_endpoint(api_model_id)
+                endpoint_record = OpenRouterModelRegistry.image_endpoint(
+                    api_model_id, _contract_target(valves)
+                )
                 if endpoint_record is None:
                     for separator in ("@", ":"):
                         if separator in api_model_id:
                             endpoint_record = OpenRouterModelRegistry.image_endpoint(
-                                api_model_id.rsplit(separator, 1)[0]
+                                api_model_id.rsplit(separator, 1)[0],
+                                _contract_target(valves),
                             )
                             if endpoint_record is not None:
                                 break
@@ -2033,7 +2072,9 @@ class RequestOrchestrator:
             api_model_id = OpenRouterModelRegistry.api_model_id(normalized_model_id) or normalized_model_id
             await self._pipe._ensure_image_generation_adapter().fit_chat_image_config(
                 responses_body=responses_body,
-                published=OpenRouterModelRegistry.image_endpoint(api_model_id),
+                published=OpenRouterModelRegistry.image_endpoint(
+                    api_model_id, _contract_target(valves)
+                ),
                 metadata=__metadata__,
                 event_emitter=__event_emitter__,
                 api_model_id=api_model_id,
@@ -2158,7 +2199,7 @@ class RequestOrchestrator:
             wanted = model if isinstance(model, str) and model.strip() else _image_model
             if not isinstance(wanted, str) or not wanted.strip():
                 return None
-            found = OpenRouterModelRegistry.image_endpoint(wanted)
+            found = OpenRouterModelRegistry.image_endpoint(wanted, _contract_target(valves))
             if not found:
                 return None
             return ImageGenerationAdapter._reachable_records(found, _image_requested) or found

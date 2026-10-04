@@ -22,6 +22,8 @@ import types
 
 import pytest
 
+from tests.conftest import arm_dashboard_pipe
+
 from open_webui_openrouter_pipe.core.warn_latch import warn_level
 
 
@@ -51,13 +53,18 @@ def _latched_import_sites() -> tuple[set[str], list[str]]:
     return warn_level_causes(dashboard_socket, "_warned_import_sites")
 
 
+# Each driver reaches one optional-import seam. The three that resolve a pipe first are
+# handed the id the seam now reads by, because the bindings are per-pipe registries
+# keyed by `Pipe.id` -- a driver that passed none would be refused before it ever
+# reached the import, and the latch it exists to arm would stay quiet.
 _SEAM_DRIVERS = {
     "events": lambda m: m.register_valve_event_sink(),
     "register": lambda m: m.register_socket_handler(),
-    "viewer_sids": lambda m: m.local_viewer_sids(),
-    "emit": lambda m: m.emit_dashboard({"tick": 0}),
-    "reauth": lambda m: m.reauthorize_local_viewers(),
+    "viewer_sids": lambda m: m.local_viewer_sids(_SEAM_PIPE_ID),
+    "emit": lambda m: m.emit_dashboard({"tick": 0}, _SEAM_PIPE_ID),
+    "reauth": lambda m: m.reauthorize_local_viewers(_SEAM_PIPE_ID),
 }
+_SEAM_PIPE_ID = "test-pipe"
 
 
 class TestDashboardSocketImportGuards:
@@ -142,13 +149,11 @@ class TestDashboardSocketImportGuards:
                 return {"ENABLE_PLUGIN_SYSTEM": True, "PIPE_DASHBOARD_ENABLE": True}
 
         monkeypatch.setattr(owf, "Functions", _Row())
-        monkeypatch.setattr(
-            dashboard_socket,
-            "_get_pipe",
-            lambda: types.SimpleNamespace(
-                id="test-pipe",
+        arm_dashboard_pipe(
+            types.SimpleNamespace(
+                id=_SEAM_PIPE_ID,
                 valves=Valves(ENABLE_PLUGIN_SYSTEM=True),
-            ),
+            )
         )
 
         try:

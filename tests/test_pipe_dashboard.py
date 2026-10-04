@@ -877,16 +877,24 @@ class TestDashboardShell:
         assert ".textContent" in html
 
     def test_dashboard_shell_sub_in_user_join_ack(self):
-        """The stats subscribe is emitted inside the user-join ACK (race-safe)."""
+        """The stats subscribe is emitted inside the user-join ACK (race-safe).
+
+        Both properties the original pinned, on the payload form the shell now sends:
+        the sub carries the id of the install this panel belongs to (a worker serving
+        two copies resolves the sub against its own registrations, and refuses one it
+        cannot resolve), and it is still emitted inside the `user-join` ACK, after it.
+        """
         from open_webui_openrouter_pipe.plugins.pipe_dashboard.commands.dashboard_cmd import (
             _build_dashboard_shell,
         )
-        html = _build_dashboard_shell("dash-ack")
+        html = _build_dashboard_shell("dash-ack", "pipe_this_panel_belongs_to")
         assert 'sock.emit("user-join"' in html
-        assert 'sock.emit("openrouter:pipe_dashboard:sub")' in html
-        assert html.index('sock.emit("user-join"') < html.index(
-            'sock.emit("openrouter:pipe_dashboard:sub")'
+        sub = 'sock.emit("openrouter:pipe_dashboard:sub", {"pipe": "pipe_this_panel_belongs_to"})'
+        assert sub in html, (
+            "the subscribe no longer names the install it is for; a worker serving two "
+            "copies cannot tell which dashboard a socket asked to watch"
         )
+        assert html.index('sock.emit("user-join"') < html.index(sub)
 
     def test_dashboard_shell_embeds_socketio_client(self):
         """The vendored socket.io UMD client is inlined in the head."""

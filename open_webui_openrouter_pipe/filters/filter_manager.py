@@ -2068,18 +2068,23 @@ class FilterManager:
     async def image_gen_filter_inputs(
         self, rows: _FilterRows | None = None
     ) -> tuple[str | None, dict[str, Any] | None, list[dict[str, Any]] | None, bool]:
-        from ..models.registry import OpenRouterModelRegistry, uses_dedicated_image_api
+        from ..models.registry import (
+            OpenRouterModelRegistry,
+            _contract_target,
+            uses_dedicated_image_api,
+        )
 
         selected = await self.image_gen_filter_selected_model(rows)
         if selected is None:
             return None, None, None, False
         model_id = selected.strip() or _OPENROUTER_IMAGE_GEN_FILTER_DEFAULT_MODEL
+        target = _contract_target(self.valves)
         spec = OpenRouterModelRegistry.spec(model_id)
         if not isinstance(spec, dict) or not spec:
             return (
                 model_id,
                 None,
-                OpenRouterModelRegistry.image_endpoint(model_id),
+                OpenRouterModelRegistry.image_endpoint(model_id, target),
                 False,
             )
         image_model = spec.get("image_model")
@@ -2088,7 +2093,7 @@ class FilterManager:
         return (
             model_id,
             image_model,
-            OpenRouterModelRegistry.image_endpoint(model_id),
+            OpenRouterModelRegistry.image_endpoint(model_id, target),
             uses_dedicated_image_api(spec),
         )
 
@@ -2568,6 +2573,7 @@ class FilterManager:
         from ..models.registry import (
             ModelFamily,
             OpenRouterModelRegistry,
+            _contract_target,
             sanitize_model_id,
             uses_dedicated_image_api,
         )
@@ -2614,9 +2620,10 @@ class FilterManager:
             )
             spec = OpenRouterModelRegistry.spec(model_id)
             image_model = spec.get("image_model") if isinstance(spec, dict) else None
-            endpoint_record = OpenRouterModelRegistry.image_endpoint(canonical_id)
+            target = _contract_target(self.valves)
+            endpoint_record = OpenRouterModelRegistry.image_endpoint(canonical_id, target)
             if endpoint_record is None:
-                endpoint_record = OpenRouterModelRegistry.image_endpoint(model_id)
+                endpoint_record = OpenRouterModelRegistry.image_endpoint(model_id, target)
             if not isinstance(image_model, dict):
                 image_model = dict(model)
             image_model = {**image_model, "id": sanitize_model_id(canonical_id)}
@@ -2935,7 +2942,7 @@ __PRIORITY_FIELD__
         )
         DIRECT_VIDEO_MIME_ALLOWLIST: str = Field(
             default="video/mp4,video/mpeg,video/quicktime,video/webm",
-            description="Comma-separated MIME allowlist for diverted direct video files. The pattern is matched with `fnmatch` against the declared type, so a wildcard admits declared values that are not media types at all; Non-allowlisted types are fail-open: the item stays on the normal OWUI RAG/Knowledge path instead.",
+            description="Comma-separated MIME allowlist for diverted direct video files. The pattern is matched with `fnmatch` against the *declared* type, so a wildcard admits declared values that are not media types at all; matching the declaration is all this valve does, and the pipe additionally refuses an allowlisted attachment whose leading bytes are text rather than a clip -- a proxy's HTML error page saved as `clip.mp4` is allowlisted and still refused -- or that it positively identifies as another family, naming the file and its declared type on the turn; Non-allowlisted types are fail-open: the item stays on the normal OWUI RAG/Knowledge path instead.",
         )
         DIRECT_AUDIO_FORMAT_ALLOWLIST: str = Field(
             default="wav,mp3,aiff,aac,ogg,flac,m4a,pcm16,pcm24",

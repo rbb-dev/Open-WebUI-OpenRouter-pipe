@@ -383,6 +383,7 @@ def _ffprobe_stream_duration(path: Path) -> float | None:
              "-select_streams", "v:0",
              "-show_entries", "stream=duration", "-of", "csv=p=0",
              "-protocol_whitelist", "file", str(path)],
+            stdin=subprocess.DEVNULL,
             capture_output=True, text=True, timeout=_PROBE_TIMEOUT_S, check=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -457,9 +458,10 @@ def _ffmpeg_video_stream_duration(path: Path, binary: str) -> float | None:
         return None
     try:
         proc = subprocess.run(
-            [binary, "-hide_banner", "-nostats", "-protocol_whitelist", "file",
+            [binary, "-nostdin", "-hide_banner", "-nostats", "-protocol_whitelist", "file",
              "-f", input_format,
              "-loglevel", "debug", "-i", str(path)],
+            stdin=subprocess.DEVNULL,
             capture_output=True, text=True, errors="replace",
             timeout=_PROBE_TIMEOUT_S, check=False,
         )
@@ -476,8 +478,9 @@ def _pinned_probe(path: Path) -> dict[str, Any]:
         raise FrameExtractionError("ffmpeg unavailable")
     try:
         proc = subprocess.run(
-            [binary, "-hide_banner", "-nostats", "-f", input_format,
+            [binary, "-nostdin", "-hide_banner", "-nostats", "-f", input_format,
              "-protocol_whitelist", "file", "-i", str(path)],
+            stdin=subprocess.DEVNULL,
             capture_output=True, text=True, errors="replace",
             timeout=_PROBE_TIMEOUT_S, check=False,
         )
@@ -553,9 +556,10 @@ def _video_track_seconds_sync(
         return None
     try:
         proc = subprocess.run(
-            [binary, "-hide_banner", "-nostats", "-protocol_whitelist", "file",
+            [binary, "-nostdin", "-hide_banner", "-nostats", "-protocol_whitelist", "file",
              "-f", input_format,
              "-i", str(path), "-map", "0:v:0", "-c", "copy", "-f", "null", "-"],
+            stdin=subprocess.DEVNULL,
             capture_output=True, text=True, timeout=_PROBE_TIMEOUT_S, check=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -832,6 +836,7 @@ async def _extract_frame_ffmpeg(
         )
         cmd = [
             ffmpeg_bin,
+            "-nostdin",
             "-protocol_whitelist", "file",
             *seek_args,
             "-f", input_format,
@@ -848,6 +853,7 @@ async def _extract_frame_ffmpeg(
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

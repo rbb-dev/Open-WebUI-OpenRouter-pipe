@@ -871,7 +871,10 @@ async def _installed_user_valves(model_id: str, contract: list[dict[str, Any]]):
         FilterManager,
         _WriteOutcome,
     )
-    from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+    from open_webui_openrouter_pipe.models.registry import (
+        OpenRouterModelRegistry,
+        _contract_target,
+    )
 
     catalog = json.loads(
         (Path(__file__).parent / "fixtures" / "openrouter_image_models.json").read_text()
@@ -884,6 +887,12 @@ async def _installed_user_valves(model_id: str, contract: list[dict[str, Any]]):
     OpenRouterModelRegistry._models = []
     OpenRouterModelRegistry._last_fetch = 0.0
     OpenRouterModelRegistry._next_refresh_after = 0.0
+    pipe = MagicMock()
+    pipe.valves.AUTO_INSTALL_IMAGE_FILTERS = True
+    pipe.valves.ENABLE_OPENROUTER_IMAGE_GENERATION = True
+    # The published contracts are kept per contract target and every reader names its
+    # own, so the store has to be armed for the identity the installer will ask about.
+    OpenRouterModelRegistry._image_contract_target = _contract_target(pipe.valves)
     OpenRouterModelRegistry.set_image_endpoints({model_id: contract})
     if answers_with_text:
         with aioresponses() as http:
@@ -904,9 +913,6 @@ async def _installed_user_valves(model_id: str, contract: list[dict[str, Any]]):
     else:
         OpenRouterModelRegistry.register_image_models([row])
 
-    pipe = MagicMock()
-    pipe.valves.AUTO_INSTALL_IMAGE_FILTERS = True
-    pipe.valves.ENABLE_OPENROUTER_IMAGE_GENERATION = True
     manager = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
     rendered: dict[str, str] = {}
 

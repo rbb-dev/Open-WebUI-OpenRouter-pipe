@@ -588,7 +588,7 @@ async def _write_config_edits(
     rev = getattr(result, "updated_at", None)
     await _release_config_lease(lease)
     change = new_config_change()
-    await emit_config_changed(rev, change)
+    await emit_config_changed(rev, getattr(pipe, "id", "") or "", change)
     await publish_valves_changed(
         getattr(pipe, "id", ""), user, request, data={"pipe_config_change": change}
     )

@@ -165,12 +165,19 @@ from open_webui_openrouter_pipe.plugins.pipe_dashboard.dashboard_socket import (
     DASHBOARD_EVENT,
     DENIED_EVENT,
     SUB_EVENT,
-    VIEWERS_ROOM,
     _pipe_dashboard_sub,
     emit_config_changed,
     register_socket_handler,
+    viewers_room,
 )
+from tests.conftest import arm_dashboard_pipe
 from tests.pipe_limits import set_slot, slot
+
+# Every pipe in this file has this id, so the room it authorsises into is one value.
+# Computed through the shipped `viewers_room`, not restated: the room name is per pipe
+# id now, and a literal here would pass while the shipped name were anything else.
+_PIPE_ID = "test-pipe"
+_VIEWERS_ROOM = viewers_room(_PIPE_ID)
 
 _REAL_SLEEP = asyncio.sleep
 
@@ -185,6 +192,19 @@ _FOREIGN_PIDS_BELOW = (_PID - 3_000_017, _PID - 3_000_029)
 _A, _B = _FOREIGN_PIDS
 _C, _D = _FOREIGN_PIDS_C
 _E, _F = _FOREIGN_PIDS_BELOW
+
+
+def _arm_dashboard(pipe, get_pipe=None):
+    """Register `pipe` with the dashboard's three per-pipe bindings, keyed by its id.
+
+    conftest's `arm_dashboard_pipe`, reached through this module's own name so every arm
+    in this file goes through ONE code path -- the one
+    `PipeDashboardPlugin._re_register_registrations` uses in production, and the one
+    `tests/test_two_installed_copies_do_not_share_a_dashboard.py` drives with two real
+    copies. A file that assigned the registry key by hand would pass while the shipped
+    registration path was broken.
+    """
+    arm_dashboard_pipe(pipe, get_pipe=get_pipe)
 
 
 def _install_socket_stub(monkeypatch, **attrs):
@@ -265,8 +285,8 @@ class TestPipeDashboardSub:
         _install_socket_stub(
             monkeypatch, sio=mock_sio, get_user_id_from_session_pool=lambda sid: None,
         )
-        dashboard_socket._get_pipe = _plugin_on_pipe
-        await _pipe_dashboard_sub("sid-anon")
+        _arm_dashboard(_plugin_on_pipe(), _plugin_on_pipe)
+        await _pipe_dashboard_sub("sid-anon", {"pipe": _PIPE_ID})
         mock_sio.enter_room.assert_not_awaited()
         assert dashboard_socket._resync is False
 
@@ -283,10 +303,10 @@ class TestPipeDashboardSub:
         )
         monkeypatch.setattr(dashboard_socket,"resolve_user", AsyncMock(return_value=object()))
         monkeypatch.setattr(dashboard_socket,"can_view", AsyncMock(return_value=False))
-        dashboard_socket._get_pipe = _plugin_on_pipe
-        await _pipe_dashboard_sub("sid-denied")
+        _arm_dashboard(_plugin_on_pipe(), _plugin_on_pipe)
+        await _pipe_dashboard_sub("sid-denied", {"pipe": _PIPE_ID})
         mock_sio.enter_room.assert_not_awaited()
-        mock_sio.leave_room.assert_awaited_with("sid-denied", VIEWERS_ROOM)
+        mock_sio.leave_room.assert_awaited_with("sid-denied", _VIEWERS_ROOM)
         mock_sio.emit.assert_awaited_once_with(dashboard_socket.DENIED_EVENT, {}, room="sid-denied")
         assert dashboard_socket._resync is False
 
@@ -303,9 +323,9 @@ class TestPipeDashboardSub:
         fake_resolve_user = AsyncMock(return_value=object())
         monkeypatch.setattr(dashboard_socket, "resolve_user", fake_resolve_user)
         monkeypatch.setattr(dashboard_socket,"can_view", AsyncMock(return_value=True))
-        dashboard_socket._get_pipe = _plugin_on_pipe
-        await _pipe_dashboard_sub("sid-authed")
-        mock_sio.enter_room.assert_awaited_once_with("sid-authed", VIEWERS_ROOM)
+        _arm_dashboard(_plugin_on_pipe(), _plugin_on_pipe)
+        await _pipe_dashboard_sub("sid-authed", {"pipe": _PIPE_ID})
+        mock_sio.enter_room.assert_awaited_once_with("sid-authed", _VIEWERS_ROOM)
         assert dashboard_socket._resync is True
         # The resolver is async; a missing await hands resolve_user a coroutine, which
         # denies every subscriber in production while leaving argument-blind stubs green.
@@ -323,8 +343,8 @@ class TestPipeDashboardSub:
         )
         monkeypatch.setattr(dashboard_socket,"resolve_user", AsyncMock(return_value=object()))
         monkeypatch.setattr(dashboard_socket,"can_view", AsyncMock(return_value=True))
-        dashboard_socket._get_pipe = _plugin_on_pipe
-        await _pipe_dashboard_sub("sid-err")
+        _arm_dashboard(_plugin_on_pipe(), _plugin_on_pipe)
+        await _pipe_dashboard_sub("sid-err", {"pipe": _PIPE_ID})
         assert dashboard_socket._resync is False
 
 class _ValveStore:
@@ -382,9 +402,9 @@ class TestReauthorizeLocalViewers:
         )
         monkeypatch.setattr(dashboard_socket,"resolve_user", AsyncMock(return_value=object()))
         monkeypatch.setattr(dashboard_socket,"can_view_known", AsyncMock(return_value=False))
-        dashboard_socket._get_pipe = _plugin_on_pipe
-        await dashboard_socket.reauthorize_local_viewers()
-        mock_sio.leave_room.assert_awaited_once_with("s1", VIEWERS_ROOM)
+        _arm_dashboard(_plugin_on_pipe(), _plugin_on_pipe)
+        await dashboard_socket.reauthorize_local_viewers(_PIPE_ID)
+        mock_sio.leave_room.assert_awaited_once_with("s1", _VIEWERS_ROOM)
         mock_sio.emit.assert_awaited_once_with(dashboard_socket.DENIED_EVENT, {}, room="s1")
 
     @pytest.mark.asyncio
@@ -401,9 +421,9 @@ class TestReauthorizeLocalViewers:
         fake_resolve_user = AsyncMock(return_value=object())
         monkeypatch.setattr(dashboard_socket, "resolve_user", fake_resolve_user)
         monkeypatch.setattr(dashboard_socket,"can_view_known", AsyncMock(return_value=True))
-        dashboard_socket._get_pipe = _plugin_on_pipe
+        _arm_dashboard(_plugin_on_pipe(), _plugin_on_pipe)
         with caplog.at_level(logging.WARNING, logger=dashboard_socket.__name__):
-            await dashboard_socket.reauthorize_local_viewers()
+            await dashboard_socket.reauthorize_local_viewers(_PIPE_ID)
         mock_sio.leave_room.assert_not_awaited()
         fake_resolve_user.assert_awaited_once_with("user-1")
         # Defect 5's other half: an eviction warning that also fires for authorized
@@ -413,7 +433,7 @@ class TestReauthorizeLocalViewers:
     @pytest.mark.asyncio
     async def test_import_failure_safe(self, monkeypatch):
         _install_socket_stub(monkeypatch)
-        await dashboard_socket.reauthorize_local_viewers()
+        await dashboard_socket.reauthorize_local_viewers(_PIPE_ID)
 
     @pytest.mark.asyncio
     async def test_eviction_is_logged(self, monkeypatch, caplog):
@@ -428,9 +448,9 @@ class TestReauthorizeLocalViewers:
         )
         monkeypatch.setattr(dashboard_socket, "resolve_user", AsyncMock(return_value=object()))
         monkeypatch.setattr(dashboard_socket, "can_view_known", AsyncMock(return_value=False))
-        dashboard_socket._get_pipe = _plugin_on_pipe
+        _arm_dashboard(_plugin_on_pipe(), _plugin_on_pipe)
         with caplog.at_level(logging.WARNING, logger=dashboard_socket.__name__):
-            await dashboard_socket.reauthorize_local_viewers()
+            await dashboard_socket.reauthorize_local_viewers(_PIPE_ID)
         warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
         assert any("evicting viewer" in m and "s1" in m for m in warnings), warnings
 
@@ -547,8 +567,8 @@ class TestViewerIdentityOutlivesTheSessionPool:
                              get_user_id_from_session_pool=lambda sid: "user-1")
         monkeypatch.setattr(dashboard_socket, "resolve_user", AsyncMock(return_value=object()))
         monkeypatch.setattr(dashboard_socket, "can_view", AsyncMock(return_value=True))
-        dashboard_socket._get_pipe = _plugin_on_pipe
-        await _pipe_dashboard_sub("sid-authed")
+        _arm_dashboard(_plugin_on_pipe(), _plugin_on_pipe)
+        await _pipe_dashboard_sub("sid-authed", {"pipe": _PIPE_ID})
         mock_sio.save_session.assert_awaited_once_with(
             "sid-authed", {authz.VIEWER_ID_KEY: "user-1"})
 
@@ -564,8 +584,8 @@ class TestViewerIdentityOutlivesTheSessionPool:
                              get_user_id_from_session_pool=lambda sid: "user-1")
         monkeypatch.setattr(dashboard_socket, "resolve_user", AsyncMock(return_value=object()))
         monkeypatch.setattr(dashboard_socket, "can_view", AsyncMock(return_value=False))
-        dashboard_socket._get_pipe = _plugin_on_pipe
-        await _pipe_dashboard_sub("sid-denied")
+        _arm_dashboard(_plugin_on_pipe(), _plugin_on_pipe)
+        await _pipe_dashboard_sub("sid-denied", {"pipe": _PIPE_ID})
         mock_sio.save_session.assert_not_awaited()
 
 
@@ -604,29 +624,29 @@ class TestSocketHelpers:
         _install_socket_stub(
             monkeypatch, get_session_ids_from_room=lambda room: ["s1", "s2"],
         )
-        assert dashboard_socket.local_viewer_sids() == ["s1", "s2"]
+        assert dashboard_socket.local_viewer_sids(_PIPE_ID) == ["s1", "s2"]
 
     def test_local_viewer_sids_import_failure_empty(self, monkeypatch):
         _install_socket_stub(monkeypatch)
-        assert dashboard_socket.local_viewer_sids() == []
+        assert dashboard_socket.local_viewer_sids(_PIPE_ID) == []
 
     def test_local_viewer_sids_error_empty(self, monkeypatch):
         def _boom(room):
             raise RuntimeError("x")
 
         _install_socket_stub(monkeypatch, get_session_ids_from_room=_boom)
-        assert dashboard_socket.local_viewer_sids() == []
+        assert dashboard_socket.local_viewer_sids(_PIPE_ID) == []
 
     @pytest.mark.asyncio
     async def test_emit_dashboard(self, monkeypatch):
         mock_sio = Mock()
         mock_sio.emit = AsyncMock()
         _install_socket_stub(monkeypatch, sio=mock_sio)
-        dashboard_socket._get_pipe = _plugin_on_pipe
-        ok = await dashboard_socket.emit_dashboard({"tick": 0})
+        _arm_dashboard(_plugin_on_pipe(), _plugin_on_pipe)
+        ok = await dashboard_socket.emit_dashboard({"tick": 0}, _PIPE_ID)
         assert ok is True
         mock_sio.emit.assert_awaited_once_with(
-            DASHBOARD_EVENT, {"tick": 0}, room=VIEWERS_ROOM, ignore_queue=True,
+            DASHBOARD_EVENT, {"tick": 0}, room=_VIEWERS_ROOM, ignore_queue=True,
         )
 
     @pytest.mark.asyncio
@@ -634,7 +654,7 @@ class TestSocketHelpers:
         mock_sio = Mock()
         mock_sio.emit = AsyncMock(side_effect=RuntimeError("down"))
         _install_socket_stub(monkeypatch, sio=mock_sio)
-        assert await dashboard_socket.emit_dashboard({"tick": 0}) is False
+        assert await dashboard_socket.emit_dashboard({"tick": 0}, _PIPE_ID) is False
 
     @pytest.mark.asyncio
     async def test_unavailable_socket_warns_once_not_per_tick(self, monkeypatch, caplog):
@@ -642,11 +662,11 @@ class TestSocketHelpers:
         import logging as _logging
 
         _install_socket_stub(monkeypatch)
-        dashboard_socket._get_pipe = _plugin_on_pipe
+        _arm_dashboard(_plugin_on_pipe(), _plugin_on_pipe)
         with caplog.at_level(_logging.WARNING, logger=dashboard_socket.__name__):
-            assert await dashboard_socket.emit_dashboard({"tick": 0}) is False
-            assert await dashboard_socket.emit_dashboard({"tick": 1}) is False
-            assert await dashboard_socket.emit_dashboard({"tick": 2}) is False
+            assert await dashboard_socket.emit_dashboard({"tick": 0}, _PIPE_ID) is False
+            assert await dashboard_socket.emit_dashboard({"tick": 1}, _PIPE_ID) is False
+            assert await dashboard_socket.emit_dashboard({"tick": 2}, _PIPE_ID) is False
         dropped = [r for r in caplog.records if "payloads are being dropped" in r.getMessage()]
         assert len(dropped) == 1
         assert dropped[0].exc_info is not None
@@ -908,7 +928,7 @@ class TestPublisherLoop:
 
     @pytest.mark.asyncio
     async def test_no_viewers_no_emit(self, monkeypatch):
-        monkeypatch.setattr(dashboard_publisher, "local_viewer_sids", lambda: [])
+        monkeypatch.setattr(dashboard_publisher, "local_viewer_sids", lambda pipe_id: [])
         emit = AsyncMock()
         monkeypatch.setattr(dashboard_publisher, "emit_dashboard", emit)
         await self._run_briefly(_make_mock_pipe, lambda: (None, False))
@@ -916,7 +936,7 @@ class TestPublisherLoop:
 
     @pytest.mark.asyncio
     async def test_periodic_reauth_called(self, monkeypatch):
-        monkeypatch.setattr(dashboard_publisher, "local_viewer_sids", lambda: ["s1"])
+        monkeypatch.setattr(dashboard_publisher, "local_viewer_sids", lambda pipe_id: ["s1"])
         monkeypatch.setattr(dashboard_publisher, "consume_resync", lambda: False)
         monkeypatch.setattr(dashboard_publisher, "emit_dashboard", AsyncMock())
         reauth = AsyncMock()
@@ -926,7 +946,7 @@ class TestPublisherLoop:
 
     @pytest.mark.asyncio
     async def test_local_viewers_emit_with_tick_sequence(self, monkeypatch):
-        monkeypatch.setattr(dashboard_publisher, "local_viewer_sids", lambda: ["s1"])
+        monkeypatch.setattr(dashboard_publisher, "local_viewer_sids", lambda pipe_id: ["s1"])
         monkeypatch.setattr(dashboard_publisher, "consume_resync", lambda: False)
         emit = AsyncMock()
         monkeypatch.setattr(dashboard_publisher, "emit_dashboard", emit)
@@ -941,7 +961,7 @@ class TestPublisherLoop:
 
     @pytest.mark.asyncio
     async def test_resync_resets_tick(self, monkeypatch):
-        monkeypatch.setattr(dashboard_publisher, "local_viewer_sids", lambda: ["s1"])
+        monkeypatch.setattr(dashboard_publisher, "local_viewer_sids", lambda pipe_id: ["s1"])
         resyncs = iter([False, True])
         monkeypatch.setattr(dashboard_publisher, "consume_resync", lambda: next(resyncs, False))
         emit = AsyncMock()
@@ -954,7 +974,7 @@ class TestPublisherLoop:
 
     @pytest.mark.asyncio
     async def test_other_worker_active_writes_slice_only(self, monkeypatch):
-        monkeypatch.setattr(dashboard_publisher, "local_viewer_sids", lambda: [])
+        monkeypatch.setattr(dashboard_publisher, "local_viewer_sids", lambda pipe_id: [])
         emit = AsyncMock()
         monkeypatch.setattr(dashboard_publisher, "emit_dashboard", emit)
         client = Mock()
@@ -970,7 +990,7 @@ class TestPublisherLoop:
 
     @pytest.mark.asyncio
     async def test_viewer_activation_sets_flag_and_wakes(self, monkeypatch):
-        monkeypatch.setattr(dashboard_publisher, "local_viewer_sids", lambda: ["s1"])
+        monkeypatch.setattr(dashboard_publisher, "local_viewer_sids", lambda pipe_id: ["s1"])
         monkeypatch.setattr(dashboard_publisher, "consume_resync", lambda: False)
         emit = AsyncMock()
         monkeypatch.setattr(dashboard_publisher, "emit_dashboard", emit)
@@ -994,7 +1014,7 @@ class TestPublisherLoop:
 
     @pytest.mark.asyncio
     async def test_pipe_none_idles(self, monkeypatch):
-        monkeypatch.setattr(dashboard_publisher, "local_viewer_sids", lambda: ["s1"])
+        monkeypatch.setattr(dashboard_publisher, "local_viewer_sids", lambda pipe_id: ["s1"])
         emit = AsyncMock()
         monkeypatch.setattr(dashboard_publisher, "emit_dashboard", emit)
         await self._run_briefly(lambda: None, lambda: (None, False))
@@ -1002,7 +1022,7 @@ class TestPublisherLoop:
 
     @pytest.mark.asyncio
     async def test_emit_iteration_failure_does_not_kill_loop(self, monkeypatch):
-        monkeypatch.setattr(dashboard_publisher, "local_viewer_sids", lambda: ["s1"])
+        monkeypatch.setattr(dashboard_publisher, "local_viewer_sids", lambda pipe_id: ["s1"])
         monkeypatch.setattr(dashboard_publisher, "consume_resync", lambda: False)
         emit = AsyncMock(side_effect=RuntimeError("emit boom"))
         monkeypatch.setattr(dashboard_publisher, "emit_dashboard", emit)
@@ -1011,7 +1031,7 @@ class TestPublisherLoop:
 
     @pytest.mark.asyncio
     async def test_dead_pubsub_is_reset_and_does_not_spin(self, monkeypatch):
-        monkeypatch.setattr(dashboard_publisher, "local_viewer_sids", lambda: [])
+        monkeypatch.setattr(dashboard_publisher, "local_viewer_sids", lambda pipe_id: [])
         emit = AsyncMock()
         monkeypatch.setattr(dashboard_publisher, "emit_dashboard", emit)
         pubsub = Mock()
@@ -1057,14 +1077,14 @@ class TestConfigChangeNotification:
         mock_sio = Mock()
         mock_sio.emit = AsyncMock()
         _install_socket_stub(monkeypatch, sio=mock_sio)
-        assert await emit_config_changed(1234) is True
+        assert await emit_config_changed(1234, _PIPE_ID) is True
         emitted = mock_sio.emit.await_args.args[1]
         assert emitted["rev"] == 1234
         assert isinstance(emitted["change"], str) and emitted["change"], (
             f"the announcement carries no change identity, so the tab's guard has "
             f"nothing to compare: {emitted}"
         )
-        assert mock_sio.emit.await_args.kwargs == {"room": VIEWERS_ROOM}, (
+        assert mock_sio.emit.await_args.kwargs == {"room": _VIEWERS_ROOM}, (
             f"the announcement left the viewers room or asked for an ignore_queue: "
             f"{mock_sio.emit.await_args}"
         )
@@ -1077,11 +1097,11 @@ class TestConfigChangeNotification:
         monkeypatch.setattr(dashboard_socket, "emit_config_changed", spy)
         pipe = Mock()
         pipe.id = "test-pipe"
-        dashboard_socket._get_pipe = lambda: pipe
+        _arm_dashboard(pipe, lambda: pipe)
         event = types.SimpleNamespace(event="function.valves_updated", subject={"id": "test-pipe"})
         await dashboard_socket._ValveEventSink().handle_event({}, event)
         await asyncio.sleep(0)
-        spy.assert_awaited_once_with(999, None)
+        spy.assert_awaited_once_with(999, _PIPE_ID, None)
 
     @pytest.mark.asyncio
     async def test_sink_ignores_other_event(self, monkeypatch):
@@ -1089,7 +1109,7 @@ class TestConfigChangeNotification:
         monkeypatch.setattr(dashboard_socket, "emit_config_changed", spy)
         pipe = Mock()
         pipe.id = "test-pipe"
-        dashboard_socket._get_pipe = lambda: pipe
+        _arm_dashboard(pipe, lambda: pipe)
         event = types.SimpleNamespace(event="function.updated", subject={"id": "test-pipe"})
         await dashboard_socket._ValveEventSink().handle_event({}, event)
         await asyncio.sleep(0)
@@ -1101,7 +1121,7 @@ class TestConfigChangeNotification:
         monkeypatch.setattr(dashboard_socket, "emit_config_changed", spy)
         pipe = Mock()
         pipe.id = "test-pipe"
-        dashboard_socket._get_pipe = lambda: pipe
+        _arm_dashboard(pipe, lambda: pipe)
         event = types.SimpleNamespace(event="function.valves_updated", subject={"id": "other-pipe"})
         await dashboard_socket._ValveEventSink().handle_event({}, event)
         await asyncio.sleep(0)

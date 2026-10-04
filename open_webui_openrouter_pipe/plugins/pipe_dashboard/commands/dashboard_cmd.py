@@ -233,7 +233,7 @@ body {
 # Dashboard shell
 # ---------------------------------------------------------------------------
 
-def _build_dashboard_shell(dash_id: str) -> str:
+def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
     """Build the fully dynamic dashboard HTML shell.
 
     All containers are empty — JavaScript populates them from socket.io
@@ -248,6 +248,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
     or disable the bound entirely, both silently.
     """
     sid = _safe(dash_id)
+    pid = _safe(pipe_id)
 
     return f"""<!DOCTYPE html>
 <html>
@@ -1172,7 +1173,8 @@ def _build_dashboard_shell(dash_id: str) -> str:
     }}
 
     var US_REASONS = {{ dashboard_off: "the Pipe Dashboard is switched off (the Enable Pipe Dashboard valve)",
-      plugin_system_off: "the plugin system is switched off (the Enable plugin system valve)" }};
+      plugin_system_off: "the plugin system is switched off (the Enable plugin system valve)",
+      unknown_pipe: "this panel was saved before the worker learned to tell installed copies apart, so it names no install — reopen the dashboard" }};
     function usReason(c) {{ return (typeof c === "string" && US_REASONS[c]) || c || 'request failed'; }}
 
     function usRender(res) {{
@@ -1664,7 +1666,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
       return fetch("/api/pipe/dashboard/action", {{
         method: "POST",
         headers: {{ "Content-Type": "application/json", "Authorization": "Bearer " + token }},
-        body: JSON.stringify({{ action: name, args: args || {{}} }})
+        body: JSON.stringify({{ action: name, args: args || {{}}, pipe: "{pid}" }})
       }}).then(function(r) {{ return r.json(); }});
     }}
     window.pipeDashboardCallAction = callAction;
@@ -1695,7 +1697,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
         }}, {_PD_HEARTBEAT_MS});
         try {{
           sock.emit("user-join", {{ auth: {{ token: freshToken() || token }} }}, function() {{
-            try {{ sock.emit("{SUB_EVENT}"); }} catch (e) {{}}
+            try {{ sock.emit("{SUB_EVENT}", {{"pipe": "{pid}"}}); }} catch (e) {{}}
           }});
         }} catch (e) {{}}
       }});
@@ -1769,7 +1771,8 @@ async def handle_dashboard(ctx: CommandContext) -> str:
     """Display the live dashboard (OWUI socket.io transport)."""
     register_socket_handler()
     dash_id = "dash-" + secrets.token_hex(8)
-    await ctx.emit_html(_build_dashboard_shell(dash_id))
+    pipe_id = str(getattr(getattr(ctx, "pipe", None), "id", "") or "")
+    await ctx.emit_html(_build_dashboard_shell(dash_id, pipe_id))
     return (
         "Live dashboard rendered above. If no panel appears, enable iframe embeds "
         "(Open WebUI Settings → Interface → iframe sandbox allow same origin)."

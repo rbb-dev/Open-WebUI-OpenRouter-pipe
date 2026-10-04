@@ -19,7 +19,7 @@ import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any, Iterator, get_args
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -630,23 +630,28 @@ async def test_image_catalog_ttl_gate_skips_within_window():
     from open_webui_openrouter_pipe.integrations.image_catalog import ensure_image_catalog_loaded
 
     now = time.time()
-    # Both clocks, and the credential both were stamped under: the gate refuses a
-    # refetch only when the account that stamped them is the one asking.
-    OpenRouterModelRegistry._last_image_attempt = now  # just now
-    OpenRouterModelRegistry._last_image_contract_attempt = now
-    OpenRouterModelRegistry.record_image_attempt("test")
-    OpenRouterModelRegistry.record_image_contract_attempt("test")
-    OpenRouterModelRegistry._last_image_fetch = 0.0
 
     valves = MagicMock()
     valves.ENABLE_OPENROUTER_IMAGE_GENERATION = True
     valves.BASE_URL = "https://openrouter.ai/api/v1"
     valves.HTTP_REFERER_OVERRIDE = ""
+    # Pinned, not left as a MagicMock child: the contract identity is the pair
+    # `(base URL, fingerprint(API_KEY))`, and a fresh object per read fingerprints
+    # differently each time, so the loader would look for an identity nobody stamped.
+    valves.API_KEY = "test"
 
     # The contracts this gate reads are bound to the identity they were read under, so
-    # a within-window skip needs that identity seeded -- an unstamped cache is stale by
-    # construction and the gate would be measuring the identity check instead.
+    # a within-window skip needs that identity in force first -- an unstamped cache is
+    # stale by construction and the gate would be measuring the identity check instead.
+    # Both clocks, and the credential both were stamped under: the gate refuses a
+    # refetch only when the account that stamped them is the one asking. The contract
+    # clock belongs to the identity that swept, so it is stamped through its recorder
+    # against the target in force rather than assigned as a bare float.
     OpenRouterModelRegistry._image_contract_target = _contract_target(valves)
+    OpenRouterModelRegistry._last_image_attempt = now  # just now
+    OpenRouterModelRegistry.record_image_attempt("test")
+    OpenRouterModelRegistry.record_image_contract_attempt("test")
+    OpenRouterModelRegistry._last_image_fetch = 0.0
 
     session = MagicMock()
     # Should return without instantiating client / attempting fetch
@@ -698,9 +703,10 @@ async def test_a_request_that_skipped_contracts_does_not_suppress_the_next_sweep
     OpenRouterModelRegistry._id_map = {}
     OpenRouterModelRegistry._models = []
     OpenRouterModelRegistry._image_endpoints = {}
+    OpenRouterModelRegistry._image_endpoints_by_target = {}
     OpenRouterModelRegistry._last_image_attempt = 0.0
     OpenRouterModelRegistry._last_image_fetch = 0.0
-    OpenRouterModelRegistry._last_image_contract_attempt = 0.0
+    OpenRouterModelRegistry._last_image_contract_attempt = {}
     OpenRouterModelRegistry._image_contract_target = _contract_target(valves)
 
     original = image_catalog.OpenRouterImageClient
@@ -1651,6 +1657,13 @@ def test_a_generated_filter_loads_and_offers_only_the_published_knobs(
         sys.modules.pop(module_name, None)
 
 
+_CONTRACT_BASE_URL = "https://openrouter.ai/api/v1"
+_CONTRACT_API_KEY = "sk-image-generation-test"
+_CONTRACT_TARGET = _contract_target(
+    SimpleNamespace(BASE_URL=_CONTRACT_BASE_URL, API_KEY=_CONTRACT_API_KEY)
+)
+
+
 async def _install_ids(model_ids, endpoint_records):
     """Run the real install loop over a registry holding just these models.
 
@@ -1677,12 +1690,19 @@ async def _install_ids(model_ids, endpoint_records):
     OpenRouterModelRegistry._specs = {}
     OpenRouterModelRegistry._id_map = {}
     OpenRouterModelRegistry._models = []
-    OpenRouterModelRegistry.set_image_endpoints(endpoint_records)
+    # The published contracts are kept per contract target and the installer names its
+    # own, so the identity is pinned here as a value: a `MagicMock` attribute
+    # fingerprints differently on every read and the reader would ask for a target
+    # nobody published under.
+    OpenRouterModelRegistry._image_contract_target = _CONTRACT_TARGET
+    OpenRouterModelRegistry.set_image_endpoints(endpoint_records, target=_CONTRACT_TARGET)
     OpenRouterModelRegistry.register_image_models(picked)
 
     pipe = MagicMock()
     pipe.valves.AUTO_INSTALL_IMAGE_FILTERS = True
     pipe.valves.ENABLE_OPENROUTER_IMAGE_GENERATION = True
+    pipe.valves.BASE_URL = _CONTRACT_BASE_URL
+    pipe.valves.API_KEY = _CONTRACT_API_KEY
     fm = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
     fm._ensure_filter_installed = AsyncMock(
         side_effect=lambda **kwargs: (kwargs["preferred_id"], _WriteOutcome())
@@ -2138,7 +2158,8 @@ async def test_one_models_install_failure_costs_only_that_model():
     OpenRouterModelRegistry._id_map = {}
     OpenRouterModelRegistry._models = []
     records = {m["id"]: record for m in picked}
-    OpenRouterModelRegistry.set_image_endpoints(records)
+    OpenRouterModelRegistry.set_image_endpoints(records, target=_CONTRACT_TARGET)
+    OpenRouterModelRegistry._image_contract_target = _CONTRACT_TARGET
     OpenRouterModelRegistry.register_image_models(picked)
 
     doomed = "openrouter_image_filter_recraft_recraft_v3"
@@ -2149,6 +2170,8 @@ async def test_one_models_install_failure_costs_only_that_model():
         return kwargs["preferred_id"], _WriteOutcome()
 
     pipe = MagicMock()
+    pipe.valves.BASE_URL = _CONTRACT_BASE_URL
+    pipe.valves.API_KEY = _CONTRACT_API_KEY
     fm = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
     fm._ensure_filter_installed = AsyncMock(side_effect=_install)
 
@@ -2426,6 +2449,7 @@ async def test_the_catalog_publishes_contracts_the_installer_can_actually_read(f
     OpenRouterModelRegistry._id_map = {}
     OpenRouterModelRegistry._models = []
     OpenRouterModelRegistry._image_endpoints = {}
+    OpenRouterModelRegistry._image_endpoints_by_target = {}
     OpenRouterModelRegistry._last_image_attempt = 0.0
     OpenRouterModelRegistry._last_image_fetch = 0.0
 
@@ -2464,6 +2488,7 @@ async def test_a_contract_already_read_survives_a_later_failed_read():
 
     record = {"provider_slug": "p", "supported_parameters": {}}
     OpenRouterModelRegistry._image_endpoints = {}
+    OpenRouterModelRegistry._image_endpoints_by_target = {}
     OpenRouterModelRegistry.set_image_endpoints({"a/b": [record]}, known_ids={"a/b", "c/d"})
     assert OpenRouterModelRegistry.image_endpoint("a/b") == [record]
     # The installer looks a model up by whichever id form it holds, so both must resolve.
@@ -2946,6 +2971,7 @@ async def test_help_reads_the_contract_itself_when_nothing_cached_it():
     model = {"id": "recraft/recraft-v3", "name": "Recraft V3"}
 
     OpenRouterModelRegistry._image_endpoints = {}
+    OpenRouterModelRegistry._image_endpoints_by_target = {}
     assert OpenRouterModelRegistry.image_endpoint("recraft/recraft-v3") is None, (
         "nothing cached, so the orchestrator must read the contract itself"
     )
@@ -3588,8 +3614,9 @@ async def test_the_catalogue_ttl_still_applies_when_no_filter_consumes_contracts
     valves.HTTP_REFERER_OVERRIDE = ""
 
     OpenRouterModelRegistry._last_image_attempt = 0.0
-    OpenRouterModelRegistry._last_image_contract_attempt = 0.0
+    OpenRouterModelRegistry._last_image_contract_attempt = {}
     OpenRouterModelRegistry._image_endpoints = {}
+    OpenRouterModelRegistry._image_endpoints_by_target = {}
     OpenRouterModelRegistry._image_contract_target = _contract_target(valves)
 
     original = image_catalog.OpenRouterImageClient
@@ -4271,7 +4298,11 @@ async def test_the_installed_filter_is_built_for_the_model_its_own_valve_names(
     OpenRouterModelRegistry._specs = {}
     OpenRouterModelRegistry._id_map = {}
     OpenRouterModelRegistry._models = []
-    OpenRouterModelRegistry.set_image_endpoints({stored: records})
+    # The published contracts are kept per contract target and the installer names its
+    # own, so the store is armed for the identity it will ask about rather than left
+    # anonymous for whichever reader happens to be first.
+    OpenRouterModelRegistry.set_image_endpoints({stored: records}, target=_CONTRACT_TARGET)
+    OpenRouterModelRegistry._image_contract_target = _CONTRACT_TARGET
     OpenRouterModelRegistry.register_image_models(
         [{"id": stored, "name": stored, "architecture": {"output_modalities": ["image"]}}]
     )
@@ -4287,6 +4318,8 @@ async def test_the_installed_filter_is_built_for_the_model_its_own_valve_names(
 
     monkeypatch.setattr(functions_module, "Functions", _Table)
     pipe = MagicMock()
+    pipe.valves.BASE_URL = _CONTRACT_BASE_URL
+    pipe.valves.API_KEY = _CONTRACT_API_KEY
     manager = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
     captured: dict = {}
 

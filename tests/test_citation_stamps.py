@@ -159,13 +159,28 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # on a chat-message write, and both raise into a caller that catches them and refuses,
 # which is the fail-closed contract the gate requires. Two imports, two counts again, on
 # top of H3588-1's two.
-# Measured on this merged tree: 25 module-scope and 103 lazy. The count is what the scan
+# 101 -> 102 (B1125): `_pipe_dashboard_sub` gains a refusal for a subscribe whose payload
+# names an install this worker does not serve, and that refusal has to reach the browser
+# the same way the other two refusals do -- a `denied` event emitted on the socket -- so
+# it imports `open_webui.socket.main` inside its own guarded `try`, one more lazy import
+# than the three it sat beside. It is a named import inside a `try`, not a `getattr` with
+# a `None` default: a refusal that cannot find the socket to refuse on would return in
+# silence, and a panel waiting on the `denied` handler would sit on a live socket behind
+# a running heartbeat with nothing to act on.
+# Measured on this merged tree: 25 module-scope and 104 lazy. The count is what the scan
+# finds after the change, not a floor and not either side's arithmetic -- the 99 above is
+# B918's and B550's imports on this tree, and B550's earlier port recorded (25, 98)
+# against a tree that did not yet carry T494's or B918's lazy import. This tree is HEAD's
+# (25, 103) plus B1125's one new guarded `open_webui.socket.main` import, so 104 is the
+# count the scan measures rather than either side's arithmetic. The module-scope arm is
+# unchanged: the hoisted `channel_id_for_chat` comes from the pipe's own
+# `.owui_files`, not from Open WebUI.
 # finds after the change, not a floor and not either side's arithmetic -- the 99 above is
 # B918's and B550's imports on this tree, and B550's earlier port recorded (25, 98)
 # against a tree that did not yet carry T494's or B918's lazy import. The module-scope
 # arm is unchanged: the hoisted `channel_id_for_chat` comes from the pipe's own
 # `.owui_files`, not from Open WebUI.
-_EXPECTED_OWUI_IMPORTS = (25, 103)
+_EXPECTED_OWUI_IMPORTS = (25, 104)
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),

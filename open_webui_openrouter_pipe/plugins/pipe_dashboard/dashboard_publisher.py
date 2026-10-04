@@ -56,23 +56,26 @@ from .session_tracker import _task_cost_key
 
 logger = logging.getLogger(__name__)
 
-_pd_snapshot_getter: Any = None
+_pd_snapshot_getters: dict[str, Any] = {}
 
 
-def set_snapshot_getter(getter: Any) -> None:
-    global _pd_snapshot_getter
-    _pd_snapshot_getter = getter
+def _pipe_id(pipe: Any) -> str:
+    return str(getattr(pipe, "id", "") or "")
 
 
-def clear_snapshot_getter(instance: Any, name: str) -> None:
-    global _pd_snapshot_getter
-    current = _pd_snapshot_getter
+def set_snapshot_getter(pipe_id: str, getter: Any) -> None:
+    if pipe_id:
+        _pd_snapshot_getters[pipe_id] = getter
+
+
+def clear_snapshot_getter(instance: Any, name: str, pipe_id: str) -> None:
+    current = _pd_snapshot_getters.get(pipe_id)
     if current is None or current == getattr(instance, name, None):
-        _pd_snapshot_getter = None
+        _pd_snapshot_getters.pop(pipe_id, None)
 
 
-def _snapshot_safe() -> tuple[list[dict[str, Any]], dict[str, float], int]:
-    getter = _pd_snapshot_getter
+def _snapshot_safe(pipe_id: str) -> tuple[list[dict[str, Any]], dict[str, float], int]:
+    getter = _pd_snapshot_getters.get(pipe_id)
     if getter is None:
         return [], {}, 0
     try:
@@ -171,7 +174,7 @@ def _collect_worker_payload(pipe: Any) -> dict[str, Any]:
     rl = collect_rate_limits(pipe)
     s = collect_sessions(pipe)
     v = collect_video_pool(pipe)
-    rows, costs, active_total = _snapshot_safe()
+    rows, costs, active_total = _snapshot_safe(_pipe_id(pipe))
     task_costs: dict[str, float] = {}
     for composite, cost in costs.items():
         cid, _, uid = str(composite).partition("\x1f")
@@ -570,7 +573,7 @@ async def _build_emit_payload(
             payload["degraded"] = True
     else:
         payload.update(_collect_fast_safe(pipe))
-        _snap = _snapshot_safe()
+        _snap = _snapshot_safe(_pipe_id(pipe))
         payload["sessions_live"] = _fold_task_costs(_snap[0], _snap[1])
         payload["sessions"] = {"in_flight": collect_sessions(pipe)["in_flight"], "live_active": _snap[2]}
         payload["workers_rss"] = _worker_health(pipe).get("rss", 0)
@@ -716,7 +719,9 @@ async def run_dashboard_publisher(
                 await asyncio.sleep(_PD_POLL_INTERVAL)
                 continue
 
-            if local_viewer_sids():
+            pipe_id = _pipe_id(pipe)
+
+            if local_viewer_sids(pipe_id):
                 if consume_resync() or not emitting:
                     tick = 0
                 if redis_ok:
@@ -725,7 +730,7 @@ async def run_dashboard_publisher(
                         await asyncio.sleep(_PD_SETTLE_DELAY)
                 emitting = True
                 try:
-                    await reauthorize_local_viewers()
+                    await reauthorize_local_viewers(pipe_id)
                 except Exception:
                     logger.debug("viewer re-auth failed", exc_info=True)
                 try:
@@ -738,7 +743,7 @@ async def run_dashboard_publisher(
                         slow_state,
                         agg_state,
                     )
-                    await emit_dashboard(payload)
+                    await emit_dashboard(payload, pipe_id)
                 except Exception:
                     logger.debug("Dashboard emit iteration failed", exc_info=True)
                 tick += 1

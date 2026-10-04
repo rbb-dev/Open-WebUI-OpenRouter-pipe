@@ -30,6 +30,32 @@ def _on_valves() -> Any:
     return _SERVING_PIPE
 
 
+def _pipe_id_of(client: Any) -> str:
+    """The id this helper registered for `client`, which every arm here must name."""
+    return str(getattr(client, "pipe_id", ""))
+
+
+def _carry_pipe_id(client: Any, pipe_id: str) -> None:
+    """Put the id this helper registered on the client, so its arms name the same one.
+
+    A `TestClient` has no slot for it, and returning a `(client, pipe_id)` pair would
+    make every caller unpack a tuple to reach the object it already had.
+    """
+    client.pipe_id = pipe_id  # type: ignore[attr-defined]
+
+
+def _serve(get_pipe: Any) -> str:
+    """Register the pipe the action route resolves for, and hand back the id to send.
+
+    The route answers for the install the request body NAMES, so every arm here has to
+    register through `set_pipe_getter` and put the same id in the body. One helper for
+    both, so an arm cannot register one pipe and ask about another.
+    """
+    pipe_id = str(getattr(get_pipe(), "id", "") or "")
+    http_routes.set_pipe_getter(pipe_id, get_pipe)
+    return pipe_id
+
+
 class _PersistedSwitchOn:
     """Open WebUI's `Functions` stand-in holding the row an operator's save leaves.
 
@@ -161,14 +187,15 @@ def test_route_binds_body_200_not_422(monkeypatch):
 
     monkeypatch.setattr(http_routes, "bearer_user", AsyncMock(return_value=SimpleNamespace(id="u1", role="user")))
     monkeypatch.setattr(http_routes, "_live_dispatch", lambda: AsyncMock(return_value=(200, {"ok": True, "result": {"x": 1}})))
-    http_routes.set_pipe_getter(lambda: SimpleNamespace(id="p", valves=Valves(ENABLE_PLUGIN_SYSTEM=True)))
+    _route_pid = _serve(lambda: SimpleNamespace(id="p", valves=Valves(ENABLE_PLUGIN_SYSTEM=True)))
     http_routes._coarse_state.clear()
 
     app = FastAPI()
     app.add_api_route(http_routes._ACTION_PATH, http_routes._action_route, methods=["POST"])
     client = TestClient(app)
+    _carry_pipe_id(client, _route_pid)
 
-    ok = client.post(http_routes._ACTION_PATH, json={"action": "whoami", "args": {}})
+    ok = client.post(http_routes._ACTION_PATH, json={"action": "whoami", "args": {}, "pipe": _pipe_id_of(client)})
     assert ok.status_code == 200 and ok.json()["ok"] is True
 
     missing = client.post(http_routes._ACTION_PATH, json={"args": {}})
@@ -185,13 +212,13 @@ def test_route_forbidden_flows_through(monkeypatch):
 
     monkeypatch.setattr(http_routes, "bearer_user", AsyncMock(return_value=SimpleNamespace(id="u2", role="user")))
     monkeypatch.setattr(http_routes, "_live_dispatch", lambda: AsyncMock(return_value=(403, {"error": "forbidden"})))
-    http_routes.set_pipe_getter(lambda: SimpleNamespace(id="p", valves=Valves(ENABLE_PLUGIN_SYSTEM=True)))
+    _route_pid = _serve(lambda: SimpleNamespace(id="p", valves=Valves(ENABLE_PLUGIN_SYSTEM=True)))
     http_routes._coarse_state.clear()
 
     app = FastAPI()
     app.add_api_route(http_routes._ACTION_PATH, http_routes._action_route, methods=["POST"])
     client = TestClient(app)
-    r = client.post(http_routes._ACTION_PATH, json={"action": "echo", "args": {"message": "x"}})
+    r = client.post(http_routes._ACTION_PATH, json={"action": "echo", "args": {"message": "x"}, "pipe": _route_pid})
     assert r.status_code == 403
 
 
@@ -218,7 +245,7 @@ def test_registered_route_resolves_real_config_get(monkeypatch):
     monkeypatch.setattr(http_routes, "_fresh_dispatch", None)
     monkeypatch.setattr(http_routes, "_reconcile_retry_until", 0.0)
     monkeypatch.setattr(actions, "_current_config_rev", AsyncMock(return_value=1000))
-    http_routes.set_pipe_getter(lambda: SimpleNamespace(id="openrouter", valves=Valves(ENABLE_PLUGIN_SYSTEM=True)))
+    _route_pid = _serve(lambda: SimpleNamespace(id="openrouter", valves=Valves(ENABLE_PLUGIN_SYSTEM=True)))
     http_routes._registered_paths.clear()
     actions._rate_state.clear()
 
@@ -226,12 +253,12 @@ def test_registered_route_resolves_real_config_get(monkeypatch):
     client = TestClient(app)
 
     http_routes._coarse_state.clear()
-    ok = client.post(http_routes._ACTION_PATH, json={"action": "config_get", "args": {}})
+    ok = client.post(http_routes._ACTION_PATH, json={"action": "config_get", "args": {}, "pipe": _route_pid})
     assert ok.status_code == 200, ok.json()
     assert "valves" in ok.json()["result"]
 
     http_routes._coarse_state.clear()
-    missing = client.post(http_routes._ACTION_PATH, json={"action": "does_not_exist", "args": {}})
+    missing = client.post(http_routes._ACTION_PATH, json={"action": "does_not_exist", "args": {}, "pipe": _route_pid})
     assert missing.status_code == 404
     http_routes._registered_paths.clear()
 
@@ -262,13 +289,13 @@ def test_route_self_heals_unknown_action(monkeypatch):
     monkeypatch.setattr(http_routes, "_resolve_fresh", AsyncMock(return_value=(_fresh, serving_pipe)))
     monkeypatch.setattr(http_routes, "_fresh_dispatch", None)
     monkeypatch.setattr(http_routes, "_reconcile_retry_until", 0.0)
-    http_routes.set_pipe_getter(lambda: serving_pipe)
+    _route_pid = _serve(lambda: serving_pipe)
     http_routes._registered_paths.clear()
 
     assert http_routes.register_action_route() is True
     client = TestClient(app)
     http_routes._coarse_state.clear()
-    r = client.post(http_routes._ACTION_PATH, json={"action": "config_get_v99", "args": {}})
+    r = client.post(http_routes._ACTION_PATH, json={"action": "config_get_v99", "args": {}, "pipe": _route_pid})
     assert r.status_code == 200
     # The reconcile's freshly exec'd Pipe has `_plugin_registry = None` -- only
     # `pipes()` initialises it, and an action route never reaches `pipes()`. So the
@@ -294,14 +321,14 @@ def test_route_reconcile_requires_can_view(monkeypatch):
     monkeypatch.setattr(http_routes, "_resolve_fresh", resolve)
     monkeypatch.setattr(http_routes, "_fresh_dispatch", None)
     monkeypatch.setattr(http_routes, "_reconcile_retry_until", 0.0)
-    http_routes.set_pipe_getter(_on_valves)
+    _route_pid = _serve(_on_valves)
     http_routes._registered_paths.clear()
     actions._rate_state.clear()
 
     assert http_routes.register_action_route() is True
     client = TestClient(app)
     http_routes._coarse_state.clear()
-    r = client.post(http_routes._ACTION_PATH, json={"action": "unknown_x", "args": {}})
+    r = client.post(http_routes._ACTION_PATH, json={"action": "unknown_x", "args": {}, "pipe": _route_pid})
     assert r.status_code == 403
     resolve.assert_not_awaited()
     http_routes._registered_paths.clear()
@@ -312,4 +339,7 @@ def _post(client, action):
 
     http_routes._coarse_state.clear()
     actions._rate_state.clear()
-    return client.post(http_routes._ACTION_PATH, json={"action": action, "args": {}})
+    return client.post(
+        http_routes._ACTION_PATH,
+        json={"action": action, "args": {}, "pipe": _pipe_id_of(client)},
+    )

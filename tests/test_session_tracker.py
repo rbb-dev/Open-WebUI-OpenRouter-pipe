@@ -296,6 +296,9 @@ def _persisted_master_switch(monkeypatch):
     monkeypatch.setattr(fn_mod, "Functions", _Functions(), raising=False)
 
 
+_PIPE_ID = "pipe_b1125_tracker"
+
+
 def _make_plugin():
     from open_webui_openrouter_pipe.plugins.pipe_dashboard.plugin import PipeDashboardPlugin
 
@@ -354,13 +357,9 @@ def test_live_snapshot_failure_reaches_the_publisher_log(caplog):
     plugin = _make_plugin()
     plugin._tracker = Mock()
     plugin._tracker.sweep.side_effect = RuntimeError("boom")
-    previous = dp._pd_snapshot_getter
-    dp.set_snapshot_getter(plugin._live_snapshot)
-    try:
-        with caplog.at_level(_logging.DEBUG, logger=dp.__name__):
-            assert dp._snapshot_safe() == ([], {}, 0)
-    finally:
-        dp.set_snapshot_getter(previous)
+    dp.set_snapshot_getter(_PIPE_ID, plugin._live_snapshot)
+    with caplog.at_level(_logging.DEBUG, logger=dp.__name__):
+        assert dp._snapshot_safe(_PIPE_ID) == ([], {}, 0)
     assert any(r.exc_info for r in caplog.records)
 
 

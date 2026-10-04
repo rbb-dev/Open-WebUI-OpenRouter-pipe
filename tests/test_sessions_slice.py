@@ -12,11 +12,15 @@ from tests.pipe_limits import set_slot
 from open_webui_openrouter_pipe.plugins.pipe_dashboard import dashboard_publisher as sp
 
 
+# The snapshot registry is keyed by `Pipe.id`; conftest's
+# `_reset_dashboard_socket_state` empties it at both ends of every test, so this file has
+# no fixture of its own to keep it out of the next one.
+_PIPE_ID = "pipe_b1125_slice"
+
+
 @pytest.fixture(autouse=True)
 def _reset_getter():
-    original = sp._pd_snapshot_getter
-    yield
-    sp._pd_snapshot_getter = original
+    sp._pd_snapshot_getters.clear()
 
 
 def _row(started: float, done: float | None = None, pid: int = 1, user_id: str = "u1") -> dict:
@@ -42,6 +46,9 @@ def _row(started: float, done: float | None = None, pid: int = 1, user_id: str =
 
 def _bare_pipe() -> Mock:
     pipe = Mock()
+    # The publisher reads the snapshot registry by `Pipe.id`, so the pipe this file
+    # collects for has to carry the id the rows were registered under.
+    pipe.id = _PIPE_ID
     pipe._active_pipes_calls = 0
     set_slot(pipe, "request_semaphore", None)
     set_slot(pipe, "request_limit", 0)
@@ -60,7 +67,7 @@ def _bare_pipe() -> Mock:
 
 
 def test_worker_payload_includes_sessions_from_getter():
-    sp.set_snapshot_getter(lambda: ([_row(100.0)], {"c9": 0.003}, 1))
+    sp.set_snapshot_getter(_PIPE_ID, lambda: ([_row(100.0)], {"c9": 0.003}, 1))
     payload = sp._collect_worker_payload(_bare_pipe())
     assert payload["sl"] == [_row(100.0)]
     # The stubbed key carries no user half, so the composite's user half is empty.
@@ -69,12 +76,12 @@ def test_worker_payload_includes_sessions_from_getter():
 
 
 def test_snapshot_getter_failure_yields_empty_snapshot():
-    sp.set_snapshot_getter(lambda: (_ for _ in ()).throw(RuntimeError("boom")))
-    assert sp._snapshot_safe() == ([], {}, 0)
-    sp.set_snapshot_getter(lambda: "not-a-tuple")
-    assert sp._snapshot_safe() == ([], {}, 0)
-    sp.set_snapshot_getter(None)
-    assert sp._snapshot_safe() == ([], {}, 0)
+    sp.set_snapshot_getter(_PIPE_ID, lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert sp._snapshot_safe(_PIPE_ID) == ([], {}, 0)
+    sp.set_snapshot_getter(_PIPE_ID, lambda: "not-a-tuple")
+    assert sp._snapshot_safe(_PIPE_ID) == ([], {}, 0)
+    sp.set_snapshot_getter(_PIPE_ID, None)
+    assert sp._snapshot_safe(_PIPE_ID) == ([], {}, 0)
 
 
 def test_expand_passes_sessions_through():

@@ -1415,8 +1415,10 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "the old one's state. The video catalog's clock is stamped with the account that "
             "asked as well, so a changed key refetches the video model list for the same reason. "
             "The image models' published settings are cached on the same "
-            "window, and that cache is dropped at once when the base URL or the API key changes, "
-            "rather than being kept for the rest of the window. The video and image catalogs are gated on "
+            "window, and that cache is rebound per (base URL, credential fingerprint) rather "
+            "than kept for the rest of the window: a reader is answered only from the pair it "
+            "names, and a genuine change to either half rebinds rather than deleting, so a "
+            "second installed copy's contracts are left alone. The video and image catalogs are gated on "
             "the same interval and back off on the same ladder after a failed fetch: 5 seconds, then 10, 20, "
             "40, 80 and 160, capped by this interval whenever it is set below 160, counted per OpenRouter "
             "account and per media catalog so one account's outage never paces another's, and reset by any "
@@ -1774,7 +1776,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "wrote no `strict` - the value that endpoint already defaults to, stated rather than left to it. "
             "On the Responses route the registry and direct-tool specs the pipe advertises also carry "
             "`strict: true`, so the provider enforces the strictified schema. A tool the pipe does not "
-            "strictify (Open WebUI tool mode, a hand-back, or this valve off) is sent there with an "
+            "strictify (Open WebUI tool mode, or this valve off) is sent there with an "
             "explicit `strict: false`, so that endpoint's own `true` default never applies to a schema "
             "the pipe did not strictify. The strictified schema is not "
             "renamed to meet strict mode's property-name rules, so a tool whose author gave a property a name "
@@ -2137,7 +2139,8 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=DEFAULT_DIRECT_UPLOAD_FAILURE_TEMPLATE,
         description=(
             "Markdown template used when OpenRouter Direct Uploads cannot be applied (e.g. incompatible attachment combinations, "
-            "missing stored files, or other checks that fail before the request is sent)."
+            "missing stored files, a declared type that is not a media type, or a video attachment whose leading bytes are text "
+            "or that they positively identify as another family rather than as a clip, or other checks that fail before the request is sent)."
         ),
     )
     FUSION_PANEL_TOO_LARGE_TEMPLATE: str = Field(
@@ -2302,7 +2305,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         ge=1,
         le=50,
         description=(
-            "Number of failures one user may accumulate before their requests are refused, a failing tool is skipped, or their database reads and writes are skipped; raise it for fewer trips in noisy environments. A request failure is a failed chat call to OpenRouter (an error reply; a connection that cannot be opened, drops or times out; an error reported inside a response; or a stream that stops before its final event). A request counts once however many attempts it took: a 429, a 5xx, a 408 that names the provider-timeout kind, or that failure reported inside a response before anything has been shown is retried first, up to TRANSIENT_RETRY_MAX_ATTEMPTS extra tries, and the request is a single failure whichever attempt gave up on it. A /responses failure that AUTO_FALLBACK_CHAT_COMPLETIONS repairs on /chat/completions is the one exception and is not counted at all: that one strike is taken back as soon as the fallback is decided, and the user's other failures in the window are left standing. A body carrying a content decision is the exception and is never retried, whatever status it arrived on. An internal Fusion run is one such request: its panel, judge and final-answer calls each spend nothing, and the run spends one failure of its own when no panel model answered, whatever the panel's size and however many of those calls failed. A generation on a picture-only image model or a video model that fails after it was sent to OpenRouter is also a request failure, counted once, except a generation whose response arrived whole and was not an OpenRouter document (a body a proxy, CDN or WAF rewrote, or one that is not a JSON object at all): that is not a failure of the request and never counts toward the limit. A chat turn that completes without delivering anything the reader can use -- no assistant text, no named tool call and no emitted item -- is reported as an error and still counts nothing. A video generation whose clip the pipe's own download policy refused (address gate, insecure-HTTP policy, size cap, MIME allowlist) is the other exception: it still fails, still shows the card, and is not a failure of the request either. Request and database failures count within BREAKER_WINDOW_SECONDS. Raising or lowering the setting mid-session re-reads the failures already recorded: it does not discard them, and a lowered setting applies from the next request without evicting anything. Request failures clear when a request ends without an error and delivered something the reader can use (assistant text, a named tool call, or an emitted item) (for a picture-only image model or a video model, only once its result is delivered whole; a stream that breaks after the finished image arrived is a delivered result and a failed call, counted once and clearing nothing, and for an internal Fusion run, only if a panel model answered); a request the user stops clears no request failures. Housekeeping tasks such as title generation neither count nor clear; Open WebUI's merge-responses task counts but never clears. Database failures also clear when a database operation succeeds. A fault in the artifact cache refill after a successful read is neither counted nor reported as a lost round: the rows are returned, the window still clears, and a WARNING names the cache rather than the database. A fault sealing rows for storage on the way to the database is likewise neither counted nor blamed on it: nothing reached the database, the round is dropped, and a WARNING names the seal and the affected row count. The request breaker never refuses a request whose last message is a tool result, or is Open WebUI's own message that comes right after a tool result and hands the model a tool's images; a question or picture the user sends is refused like any other request. The exemption is from the refusal only: a request like that that fails still counts against the limit, and one that ends without an error still clears the count. Each tool counts its failures in a row: errors it raises, per-call timeouts, running calls cut off by TOOL_BATCH_TIMEOUT_SECONDS, and calls whose tool server cannot be reached or answers with an HTTP error status; an ask_user timeout and a call to an MCP tool whose session has closed do not count. The count belongs to the tool the call resolved to, so a name the model padded with surrounding whitespace is the same tool and spends the same budget. A SystemExit, KeyboardInterrupt or GeneratorExit from a tool is shown as failed but is not a failure of that tool: it signals the process rather than the tool, and it never adds to the count or clears it. An error the tool reports in a result it returns normally is shown as failed but neither adds to the count nor clears it, whether the judgement is made by Open WebUI's own classifier or by the pipe's copy of it A tool the breaker has taken out of service for a call it refuses before the batch is queued is announced once per round, however many such calls that round asked for; a call it takes out of service after the batch was queued is announced for that call alone. A call the breaker itself refuses is not a failure of that tool: it is never counted, and it never extends the window either, so the tool is offered again `BREAKER_WINDOW_SECONDS` after its last real failure rather than after the last time the model asked for it. A rejected credential is a separate mechanism this valve does not govern: a 401, or a 403 that names no kind and carries no content decision, arms a fixed 60-second pause on that user's background tasks rather than a failure this valve records, and neither this valve nor BREAKER_WINDOW_SECONDS has any say in it. That pause is one timestamp rather than a count - no setting changes its length, a request that succeeds does not clear it, and another rejected credential re-arms it - and while it holds, that user's Open WebUI background tasks are refused, each with `OpenRouter access is temporarily disabled after an authentication failure.`, whereas their chat requests are not refused and reach the model as usual. The dashboard's `Auth` row is how many users are inside that pause at once."
+            "Number of failures one user may accumulate before their requests are refused, a failing tool is skipped, or their database reads and writes are skipped; raise it for fewer trips in noisy environments. A request failure is a failed chat call to OpenRouter (an error reply; a connection that cannot be opened, drops or times out; an error reported inside a response; or a stream that stops before its final event). A request counts once however many attempts it took: a 429, a 5xx, a 408 that names the provider-timeout kind, or that failure reported inside a response before anything has been shown is retried first, up to TRANSIENT_RETRY_MAX_ATTEMPTS extra tries, and the request is a single failure whichever attempt gave up on it. A /responses failure that AUTO_FALLBACK_CHAT_COMPLETIONS repairs on /chat/completions is the one exception and is not counted at all: that one strike is taken back as soon as the fallback is decided, and the user's other failures in the window are left standing. A body carrying a content decision is the exception and is never retried, whatever status it arrived on. An internal Fusion run is one such request: its panel, judge and final-answer calls each spend nothing, and the run spends one failure of its own when no panel model answered, whatever the panel's size and however many of those calls failed. A generation on a picture-only image model or a video model that fails after it was sent to OpenRouter is also a request failure, counted once, except a generation whose response arrived whole and was not an OpenRouter document (a body a proxy, CDN or WAF rewrote, or one that is not a JSON object at all): that is not a failure of the request and never counts toward the limit. A chat turn that completes without delivering anything the reader can use -- no assistant text, no named tool call and no emitted item -- is reported as an error and still counts nothing. A video generation whose clip the pipe's own download policy refused (address gate, insecure-HTTP policy, size cap, MIME allowlist) is the other exception: it still fails, still shows the card, and is not a failure of the request either. Request and database failures count within BREAKER_WINDOW_SECONDS. Raising or lowering the setting mid-session re-reads the failures already recorded: it does not discard them, and a lowered setting applies from the next request without evicting anything. Request failures clear when a request ends without an error and delivered something the reader can use (assistant text, a named tool call, or an emitted item) (for a picture-only image model or a video model, only once its result is delivered whole; a stream that breaks after the finished image arrived is a delivered result and a failed call, counted once and clearing nothing, and for an internal Fusion run, only if a panel model answered); a request the user stops clears no request failures. Housekeeping tasks such as title generation neither count nor clear; Open WebUI's merge-responses task counts but never clears. Database failures also clear when a database operation succeeds. A fault in the artifact cache refill after a successful read is neither counted nor reported as a lost round: the rows are returned, the window still clears, and a WARNING names the cache rather than the database. A fault sealing rows for storage on the way to the database is likewise neither counted nor blamed on it: nothing reached the database, the round is dropped, and a WARNING names the seal and the affected row count. The request breaker never refuses a request whose last message is a tool result, or is Open WebUI's own message that comes right after a tool result and hands the model a tool's images; a question or picture the user sends is refused like any other request. The exemption is from the refusal only: a request like that that fails still counts against the limit, and one that ends without an error still clears the count. Each tool counts its failures in a row: errors it raises, per-call timeouts, running calls cut off by TOOL_BATCH_TIMEOUT_SECONDS, and calls whose tool server cannot be reached or answers with an HTTP error status; an ask_user timeout and a call to an MCP tool whose session has closed do not count. A call that answered inside the five seconds a cancelled call is given to acknowledge the batch's cancellation keeps its own result and counts for nothing, and neither does an error raised on a call's own cancellation path, because a cleanup that blows up is not the tool's service failing. The count belongs to the tool the call resolved to, so a name the model padded with surrounding whitespace is the same tool and spends the same budget. A SystemExit, KeyboardInterrupt or GeneratorExit from a tool is shown as failed but is not a failure of that tool: it signals the process rather than the tool, and it never adds to the count or clears it. An error the tool reports in a result it returns normally is shown as failed but neither adds to the count nor clears it, whether the judgement is made by Open WebUI's own classifier or by the pipe's copy of it A tool the breaker has taken out of service for a call it refuses before the batch is queued is announced once per round, however many such calls that round asked for; a call it takes out of service after the batch was queued is announced for that call alone. A call the breaker itself refuses is not a failure of that tool: it is never counted, and it never extends the window either, so the tool is offered again `BREAKER_WINDOW_SECONDS` after its last real failure rather than after the last time the model asked for it. A rejected credential is a separate mechanism this valve does not govern: a 401, or a 403 that names no kind and carries no content decision, arms a fixed 60-second pause on that user's background tasks rather than a failure this valve records, and neither this valve nor BREAKER_WINDOW_SECONDS has any say in it. That pause is one timestamp rather than a count - no setting changes its length, a request that succeeds does not clear it, and another rejected credential re-arms it - and while it holds, that user's Open WebUI background tasks are refused, each with `OpenRouter access is temporarily disabled after an authentication failure.`, whereas their chat requests are not refused and reach the model as usual. The dashboard's `Auth` row is how many users are inside that pause at once."
         ),
     )
     BREAKER_WINDOW_SECONDS: int = Field(
@@ -2781,9 +2784,11 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "How long a video generation job may go without a word from OpenRouter before "
             "this stops watching it. The clock restarts every time a status check comes "
             "back saying the job is still running, so a slow render is never cut off for "
-            "taking a long time \u2014 only one that has gone quiet is. This is one of two "
+            "taking a long time \u2014 only one that has gone quiet is. This is one of three "
             "limits that do the same thing: a run of unanswered status checks stops the "
-            "watching too, without cancelling the job. When either one runs out the chat "
+            "watching too, without cancelling the job, and so does a separate, larger "
+            "budget that bounds the status errors spent in total across one whole watch. "
+            "When any one of them runs out the chat "
             "keeps the job's card and says the render is still going at "
             "OpenRouter: nothing is cancelled and OpenRouter still bills the job, and the "
             "person can press Continue Response on that message to pick it back up. The "
@@ -2804,7 +2809,11 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "than written off as a failure: nothing is cancelled, the render is still "
             "going at OpenRouter, and the person can press Continue Response on that "
             "message to pick it back up. A later check that reports the job as failed or "
-            "expired ends it for real, as it would have anyway."
+            "expired ends it for real, as it would have anyway. A second, larger "
+            "budget bounds the total failures as well: this many times the configured "
+            "value, counted across one whole watch however they are spaced, also stops "
+            "the watching, because an endpoint that fails every other poll never runs out "
+            "a run of them."
         ),
     )
     SEND_MEDIA_VIA_FILE_HOST: bool = Field(
@@ -2866,7 +2875,10 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "Largest attachment that will be uploaded to the file host, and the most one "
             "request may upload in total. A file over this, or a set of attachments coming "
             "to more than this, is refused and the request stops rather than generating "
-            "without it."
+            "without it -- unless the one over the cap is a picture sent as a reference, "
+            "which is left out with a notice naming it and the cap it broke, and the video "
+            "is generated from the rest. A clip or a sound file over this stops the request; "
+            "a picture does not."
         ),
     )
     SEND_VIDEO_VIA_FILE_HOST: bool = Field(
@@ -2892,7 +2904,10 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "`Maximum single frame size` holds whichever way the picture travels, and an "
             "oversize one is left out of the request with a note in the chat naming it. What "
             "this adds on top is the host's own `Largest attachment to upload` ceiling, so a "
-            "picture is the one reference kind you can hand over as a link."
+            "picture is the one reference kind you can hand over as a link. A reference "
+            "picture over that ceiling is left out with a notice too, not refused: it is a "
+            "picture, and every cap a picture breaks on this route withholds it rather than "
+            "failing the turn."
         ),
     )
     TELL_USERS_ABOUT_THE_FILE_HOST: bool = Field(
@@ -2925,13 +2940,19 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         ),
         description=(
             "The wording of that advance warning. Rewrite it in your own words or your own "
-            "language. {kind} becomes clip, sound file or picture; {host} names the file "
+            "language. {kind} names what is being sent -- clip, sound file or picture -- "
+            "and names several of them joined by \"and\" when a turn sends more than one, "
+            "so a turn with two reads \"clip and picture\"; {host} names the file "
             "host; {retention} says how long each host named keeps the file, and where two "
-            "of them keep files for different lengths of time it names both. Leave out any "
+            "of them keep files for different lengths of time it names both. {retention} is "
+            "put in the matching number, so a sentence carrying its own verb has to be "
+            "written to agree with it. Leave out any "
             "you do not want, "
             "but keep enough that a sentence is left: an empty or blank setting leaves the "
             "warning nothing to say, and so does a placeholder nothing can fill -- one "
-            "misspelled, one numbered, or one carrying a formatting flag. The wording you "
+            "misspelled, one numbered, one carrying a formatting flag, or one reaching into "
+            "a name for a part the pipe does not supply (a dotted, called or subscripted "
+            "placeholder such as {host.kind}). The wording you "
             "typed is shown to you here as written and the placeholder is named in the "
             "server log, and it stops the upload, or the request, the same way an empty "
             "one does. While the setting above is on, a warning that "

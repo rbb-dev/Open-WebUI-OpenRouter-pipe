@@ -39,7 +39,7 @@ _PD_OFF_AUDIT_EVERY_S = 300.0
 
 _PD_RECONCILE_BACKOFF_S = 5.0
 
-_routes_get_pipe: Any = None
+_routes_get_pipes: dict[str, Any] = {}
 _reconcile_lock: asyncio.Lock | None = None
 _fresh_dispatch: Any = None
 _reconcile_retry_until: float = 0.0
@@ -72,22 +72,22 @@ def _live_reconcile_state() -> Any:
     return mod
 
 
-def set_pipe_getter(get_pipe: Any) -> None:
+def set_pipe_getter(pipe_id: str, get_pipe: Any) -> None:
     state = _live_reconcile_state()
     if state is None:
         return
-    if state._routes_get_pipe is get_pipe:
+    if state._routes_get_pipes.get(pipe_id) is get_pipe:
         return
-    state._routes_get_pipe = get_pipe
+    if pipe_id:
+        state._routes_get_pipes[pipe_id] = get_pipe
     state._teardown_epoch += 1
     state._fresh_dispatch = None
 
 
-def clear_routes_pipe_getter(instance: Any, name: str) -> None:
-    global _routes_get_pipe
-    current = _routes_get_pipe
+def clear_routes_pipe_getter(instance: Any, name: str, pipe_id: str) -> None:
+    current = _routes_get_pipes.get(pipe_id)
     if current is None or current == getattr(instance, name, None):
-        _routes_get_pipe = None
+        _routes_get_pipes.pop(pipe_id, None)
 
 
 async def _plugins_enabled(pipe: Any) -> bool:
@@ -143,6 +143,7 @@ def _coarse_rate_limited(user_id: str) -> bool:
 class ActionBody(BaseModel):
     action: str
     args: dict = {}
+    pipe: str = ""
 
 
 _MAX_JSON_DEPTH = 64
@@ -260,26 +261,26 @@ def _live_dispatch() -> Any:
     return getattr(mod, "dispatch_action", None)
 
 
-def _live_routes_get_pipe() -> Any:
+def _live_routes_get_pipe(pipe_id: str) -> Any:
     try:
         mod = importlib.import_module(_ROUTES_MODNAME)
     except Exception:
         logger.warning("pipe_dashboard action-route pipe lookup failed", exc_info=True)
         return None
-    getter = getattr(mod, "_routes_get_pipe", None)
+    getter = getattr(mod, "_routes_get_pipes", {}).get(pipe_id)
     if getter is None:
         return None
     return getter()
 
 
-def _preferred_dispatch(action: str) -> Any:
+def _preferred_dispatch(action: str, pipe_id: str) -> Any:
     live = _live_dispatch()
     if live is not None and action in (_live_actions() or {}):
         return live
     state = _live_reconcile_state()
     if state is not None:
         cached = state._fresh_dispatch
-        if cached is not None and cached[1] is _live_routes_get_pipe():
+        if cached is not None and cached[1] is _live_routes_get_pipe(pipe_id):
             return cached[0]
     if live is not None:
         return live
@@ -300,7 +301,7 @@ async def _current_dispatch(request: Any, user: Any, pipe: Any, fid: Any, action
                     state._reconcile_retry_until = 0.0
                 elif state is not None:
                     state._reconcile_retry_until = time.monotonic() + _PD_RECONCILE_BACKOFF_S
-    return _preferred_dispatch(action), pipe
+    return _preferred_dispatch(action, str(getattr(pipe, "id", "") or "")), pipe
 
 
 async def _action_route(
@@ -312,7 +313,10 @@ async def _action_route(
     from fastapi.responses import JSONResponse
 
     user = await bearer_user(request)
-    pipe = _live_routes_get_pipe()
+    pipe_id = str(body.pipe or "")
+    pipe = _live_routes_get_pipe(pipe_id)
+    if not pipe_id or pipe is None:
+        return JSONResponse({"error": "unknown pipe"}, status_code=404)
     if not await _plugins_enabled(pipe):
         _audit_off(user, body.action, _client_ip(request))
         return JSONResponse({"error": "plugin_system_off"}, status_code=404)

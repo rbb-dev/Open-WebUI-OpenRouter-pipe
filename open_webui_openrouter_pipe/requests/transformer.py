@@ -967,8 +967,10 @@ def _handoff_ahead(messages: list[dict[str, Any]], position: int) -> bool:
     for offset in range(position + 1, len(messages)):
         if is_tool_image_handoff_for_round(results, messages[offset]):
             return True
-        if not _round_results_across(messages, (offset,), results):
-            return False
+        role = (messages[offset].get("role") or "").lower()
+        if role in ("tool", "assistant", "system", "developer"):
+            continue
+        return False
     return False
 
 
@@ -1087,7 +1089,12 @@ def _tool_picture_verdict_gate(
         elif verdicts.get(url) is True:
             admitted.append(url)
             continue
-        refused.append((url, "could not be fetched, so it was not sent", "remote_unfetched"))
+        verdict = None if verdicts is None else verdicts.get(url)
+        if verdict is None:
+            refused.append((url, "could not be checked in time, so it was not sent",
+                            "uncheckable_tool_picture"))
+        else:
+            refused.append((url, "could not be fetched, so it was not sent", "remote_unfetched"))
     return admitted, refused
 
 

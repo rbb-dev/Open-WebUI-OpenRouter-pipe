@@ -18,6 +18,7 @@ import base64
 import json
 import sys
 import time
+from collections import OrderedDict
 from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -914,32 +915,100 @@ def _reset_filter_pass_accumulators():
 
 _DASHBOARD_SOCKET_MODULES = (
     ("open_webui_openrouter_pipe.plugins.pipe_dashboard.dashboard_socket",
-     ("_get_pipe", "_registered", "_resync")),
+     ("_pipe_getters", "_registered", "_resync")),
     ("open_webui_openrouter_pipe.plugins.pipe_dashboard.http_routes",
-     ("_routes_get_pipe",)),
+     ("_routes_get_pipes",)),
+    ("open_webui_openrouter_pipe.plugins.pipe_dashboard.dashboard_publisher",
+     ("_pd_snapshot_getters",)),
 )
-_DASHBOARD_SOCKET_UNSET = {"_get_pipe": None, "_registered": False, "_resync": False,
-                           "_routes_get_pipe": None}
+# The three dicts are the per-pipe REGISTRIES: `Pipe.id -> getter`. They are cleared
+# in place at both ends of every test and never saved and restored -- a saved dict is
+# the same object the test mutated, so restoring it would put the arming straight back.
+_DASHBOARD_SOCKET_CONTAINERS = ("_pipe_getters", "_routes_get_pipes", "_pd_snapshot_getters")
+_DASHBOARD_SOCKET_UNSET = {"_registered": False, "_resync": False}
+
+
+def arm_dashboard_pipe(pipe: Any, *, get_pipe: Any = None, snapshot_getter: Any = None) -> str:
+    """Register `pipe` on all three dashboard bindings, keyed by its own `Pipe.id`.
+
+    The bindings are per-pipe REGISTRIES, so a test arms them by REGISTERING rather than
+    by assigning: `dashboard_socket._pipe_getters[pid] = getter`. Two calls with the same
+    id and different instances model a hot reload, two calls with different ids model two
+    installed copies -- which is how the reload tests and
+    `tests/test_two_installed_copies_do_not_share_a_dashboard.py` end up running ONE code
+    path, so a bug in the fix shows up in both rather than in one of them.
+
+    `get_pipe` and `snapshot_getter` default to the pipe itself, which is right for a test
+    that only needs the id resolved. A test with a getter of its own passes it, because
+    the getters are what the identity guards compare by identity.
+    """
+    pipe_id = str(getattr(pipe, "id", "") or "")
+    getter = get_pipe if get_pipe is not None else (lambda: pipe)
+    for module_name in (
+        "open_webui_openrouter_pipe.plugins.pipe_dashboard.dashboard_socket",
+        "open_webui_openrouter_pipe.plugins.pipe_dashboard.http_routes",
+        "open_webui_openrouter_pipe.plugins.pipe_dashboard.dashboard_publisher",
+    ):
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        if module_name.endswith("dashboard_socket"):
+            module._pipe_getters[pipe_id] = getter
+        elif module_name.endswith("http_routes"):
+            module._routes_get_pipes[pipe_id] = getter
+        elif snapshot_getter is not None:
+            module._pd_snapshot_getters[pipe_id] = snapshot_getter
+    return pipe_id
+
+
+def _clear_dashboard_socket_containers() -> None:
+    """Empty every per-pipe dashboard registry the tree has loaded.
+
+    `.clear()`, never `setattr(module, name, {})`: replacing the dict would swap the
+    object the production code and any binding installed through it hold, so a value
+    written before the swap would be lost from one side and kept on the other. And never
+    `setattr(module, name, None)` -- the unkeyed shape put `None` there, and a module
+    whose registry is `None` raises `AttributeError` mid-test, which reads like a bug in
+    the code under test rather than like a broken fixture.
+    """
+    for name, attrs in _DASHBOARD_SOCKET_MODULES:
+        module = sys.modules.get(name)
+        if module is None:
+            continue
+        for attr in attrs:
+            if attr not in _DASHBOARD_SOCKET_CONTAINERS:
+                continue
+            container = getattr(module, attr, None)
+            if isinstance(container, dict):
+                container.clear()
 
 
 @pytest.fixture(autouse=True)
 def _reset_dashboard_socket_state():
-    """Put back the four process-wide singletons the socket gates and the action route read.
+    """Repair the dashboard's per-pipe registries and process-wide flags around every test.
 
-    `_get_pipe`, `_registered` and `_resync` in `dashboard_socket`, and their twin
-    `_routes_get_pipe` in `http_routes`, are module globals. Nothing in the package
-    clears them, which is right for a live worker -- a socket gate must stay bound to the
-    pipe it was bound to -- and wrong for a test process, where the bound pipe is drained
-    and closed by the time the next test runs. This fixture repairs all four at both ends
-    of every test, and no test module restores any of them itself: a test that writes one
-    of these globals is relying on the repair below, not on a fixture of its own.
-    `tests/test_dashboard_socket_isolation.py` arms and reads; it is the witness, and
-    `tests/test_a_test_module_does_not_restore_what_conftest_resets.py` is the census
-    that keeps a per-file save/restore from being added back.
+    The dashboard binds three registries keyed by `Pipe.id` -- `_pipe_getters` in
+    `dashboard_socket`, `_routes_get_pipes` in `http_routes`, `_pd_snapshot_getters` in
+    `dashboard_publisher` -- and holds two process-wide flags beside them, `_registered`
+    and `_resync` in `dashboard_socket`. The bindings are keyed so two installed copies
+    of the pipe each reach their own admin; the flags stay process-wide because
+    `_registered` guards one `sio.on(SUB_EVENT, ...)` for the process and `_resync` is a
+    tick signal carrying no viewer state or data.
 
-    `_routes_get_pipe` is in scope because the SAME call
-    (`UpdateService._install_revived_getters`) writes it and `_get_pipe`. Repairing one
-    half leaves the twin armed for the same test.
+    Nothing in the package clears any of them, which is right for a live worker -- a
+    socket gate must stay bound to the pipe it was bound to -- and wrong for a test
+    process, where the bound pipe is drained and closed by the time the next test runs.
+    This fixture repairs all five at BOTH ends of every test, and no test module restores
+    any of them itself: a test that writes one of these is relying on the repair below,
+    not on a fixture of its own. `tests/test_dashboard_socket_isolation.py` arms and
+    reads; it is the witness, and
+    `tests/test_a_test_module_does_not_restore_what_conftest_resets.py` is the census that
+    keeps a per-file save/restore from being added back.
+
+    The three registries are in scope together because ONE call
+    (`PipeDashboardPlugin._re_register_registrations`) writes all three, and every
+    `on_shutdown` reads back all three. Repairing one or two leaves the rest armed for
+    the same test, which is the shape a two-installed-copies test would read as a leak.
 
     `_teardown_epoch` is deliberately NOT reset. `set_pipe_getter` and
     `clear_fresh_dispatch` both increment it, and its whole job is to be monotonic ACROSS
@@ -949,39 +1018,45 @@ def _reset_dashboard_socket_state():
     real semantics. Resetting it to `True`-ish is the other trap: `_registered` is
     restored, never re-armed.
 
-    Save/restore rather than reset-to-default at teardown: a bundle may have set
-    `_registered = True` at import, and clobbering that breaks the bundle tier. BOTH ends,
-    as `_reset_package_caches` records: the setup end discards whatever a finalizer
-    ordering put back, the teardown end stops this test's arm poisoning the next.
+    The two flags are saved and restored at teardown; the three registries are only
+    cleared. A bundle may have set `_registered = True` at import and clobbering that
+    breaks the bundle tier, while a restored registry would be the very object the test
+    just wrote to. BOTH ends, as `_reset_package_caches` records: the setup end discards
+    whatever a finalizer ordering put back, the teardown end stops this test's arm
+    poisoning the next.
 
     Resolved through `sys.modules` and skipped when absent, the shape
     `_reset_stub_chat_files` already uses: a no-plugins bundle omits
     `plugins/pipe_dashboard` entirely, and a bare import here would be a collection
     error in the one mode that has no dashboard to reset.
 
-    This covers the `bool`/`bool`/`Any` globals only. The module-level CONTAINERS in
-    these same modules are a separate defect with a separate reset --
-    `_reset_module_state_containers` -- and the census in
-    `tests/test_module_state_census.py` inventories those. That census cannot see these
-    four: its declaration shape admits only mutable containers, and a reader looking for
-    a fourth global beside these three finds nothing to complain about. Neither guard
-    covers the other, which is why both exist.
+    The three registries are containers, so the census in
+    `tests/test_module_state_census.py` can see them; `_teardown_epoch`, `_fresh_dispatch`
+    and the two flags are not, and that gap is the split this docstring records. The
+    census reaches them because their names appear literally below, not because they are
+    listed in `_MODULE_STATE_CONTAINERS` -- a name in both lists is the duplicate that
+    census exists to name.
     """
     saved = [
         (sys.modules[name], attr, getattr(sys.modules[name], attr))
         for name, attrs in _DASHBOARD_SOCKET_MODULES
         if name in sys.modules
         for attr in attrs
+        if attr not in _DASHBOARD_SOCKET_CONTAINERS
     ]
     for name, attrs in _DASHBOARD_SOCKET_MODULES:
         module = sys.modules.get(name)
         if module is None:
             continue
         for attr in attrs:
+            if attr in _DASHBOARD_SOCKET_CONTAINERS:
+                continue
             setattr(module, attr, _DASHBOARD_SOCKET_UNSET[attr])
+    _clear_dashboard_socket_containers()
     yield
     for module, attr, original in saved:
         setattr(module, attr, original)
+    _clear_dashboard_socket_containers()
 
 
 _MODULE_STATE_CONTAINERS = (
@@ -1042,11 +1117,14 @@ def _reset_module_state_containers():
     and a no-plugins bundle has no `plugins/pipe_dashboard` at all. The census, not
     this fixture, is what covers a container in a module nothing imported.
 
-    It cannot reach the four SINGLES in `_reset_dashboard_socket_state` above, and that
-    is the split between the two fixtures: `dashboard_socket._get_pipe`/`._registered`/
-    `._resync` and `http_routes._routes_get_pipe` are a bool, a bool and two `Any`, and
-    this census admits only containers. Reading one list for the other is how a fourth
-    global beside those three would arrive unaccounted for.
+    It cannot reach the two SINGLES in `_reset_dashboard_socket_state` above, and that
+    is the split between the two fixtures: `dashboard_socket._registered` and
+    `._resync` are bools, and this census admits only containers. The three per-pipe
+    registries that fixture also repairs (`_pipe_getters`, `_routes_get_pipes`,
+    `_pd_snapshot_getters`) appear literally in its text, so the census derives them into
+    its covered side on its own; adding them here as well would be the duplicate this
+    census exists to name. Reading one list for the other is how a fourth global beside
+    those would arrive unaccounted for.
     """
     def _clear() -> None:
         for module_name, attr in _MODULE_STATE_CONTAINERS:
@@ -1097,6 +1175,7 @@ def _reset_model_registry():
     reg._zdr_settle = {}
     reg._zdr_stamped_specs = None
     reg._enriched_cache = None
+    reg._zdr_touched = OrderedDict()
     reg._last_fetch = 0.0
     reg._last_video_fetch = 0.0
     reg._last_video_attempt = 0.0
@@ -1104,13 +1183,14 @@ def _reset_model_registry():
     reg._last_video_modality_attempt = 0.0
     reg._last_image_fetch = 0.0
     reg._image_endpoints = {}
-    reg._last_image_contract_attempt = 0.0
+    reg._image_endpoints_by_target = {}
+    reg._last_image_contract_attempt = {}
     reg._last_image_attempt = 0.0
-    reg._last_image_account = ""
-    reg._last_image_contract_account = ""
+    reg._last_image_account = {}
+    reg._last_image_contract_account = {}
     reg._image_contract_retry_after = 0.0
     reg._image_contract_target = None
-    reg._image_contract_owed = frozenset()
+    reg._image_contract_owed = {}
     reg._image_catalog_norms = frozenset()
     reg._video_catalog_norms = frozenset()
     reg._chat_catalog_norms = frozenset()

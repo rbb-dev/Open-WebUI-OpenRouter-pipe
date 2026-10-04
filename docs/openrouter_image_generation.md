@@ -1550,7 +1550,7 @@ counting.
 
 | Valve | Default | Range | Purpose |
 |-------|---------|-------|---------|
-| `ENABLE_OPENROUTER_IMAGE_GENERATION` | `True` | bool | Master kill switch. False drops pure-image-only models from the model list AND clears them from OWUI's catalog on the next model-list build, ahead of the catalogue refresh window, so it does not wait on `MODEL_CATALOG_REFRESH_SECONDS`. It withdraws the published contracts of the models it drops as well, narrowed to the ids the registry can still route to; a text+image chat model is not one of them, so its own contract and its `image_config` vetting are untouched. Multimodal models stay since they're in the chat catalog. It is a master kill switch for what is *offered*, not for what is *read*: with an image filter valve on, the published-contract sweep still runs so the Image Generation tool's own six controls are built, and only the models stay out of the picker. |
+| `ENABLE_OPENROUTER_IMAGE_GENERATION` | `True` | bool | Master kill switch. False drops pure-image-only models from the model list AND clears them from OWUI's catalog on the next model-list build, ahead of the catalogue refresh window, so it does not wait on `MODEL_CATALOG_REFRESH_SECONDS`. It withdraws the published contracts of the models it drops as well, narrowed to the ids the registry can still route to; a text+image chat model is not one of them, so its own contract and its `image_config` vetting are untouched. It also discards any contract reads a cut-off sweep left owed under this base URL and key, so the first sweep after the valve comes back on is a full one rather than a repair of a sweep that will never run again. Multimodal models stay since they're in the chat catalog. It is a master kill switch for what is *offered*, not for what is *read*: with an image filter valve on, the published-contract sweep still runs so the Image Generation tool's own six controls are built, and only the models stay out of the picker. |
 | `AUTO_INSTALL_IMAGE_FILTERS` | `True` | bool | Install and keep current one settings panel per image model, built from what that model publishes. It is one of the four valves that pay for that read — `AUTO_ATTACH_IMAGE_FILTERS`, `AUTO_INSTALL_IMAGE_GEN_FILTER` and `AUTO_ATTACH_IMAGE_GEN_FILTER` read the same contracts for the Image Generation tool's own panel, and with all four off no contract is read at all. Every panel also carries `Output size`, where a tier is checked against the tiers that model publishes -- or against `512`, `1K`, `2K` and `4K` where it publishes none -- while exact pixels such as `1024x1024` travel as typed; and a model that answers with a picture and no text carries `Provider options`, `Reference images` and `Reference image links` on top of that. A model whose settings list has never been read gets no panel; one read before keeps its last successful set -- and keeps it until a refresh does read the model, so a catalogue that is momentarily unreadable for one model costs it nothing. |
 | `AUTO_ATTACH_IMAGE_FILTERS` | `True` | bool | Attach each model's own settings panel to it, so its settings appear in the chat controls when that model is selected. A single model can opt out with the `disable_image_filter_auto_attach` advanced parameter. |
 | `AUTO_DEFAULT_IMAGE_FILTERS` | `True` | bool | Keep attached image filters enabled by default per chat. Re-asserted on every catalog metadata sync. |
@@ -1827,7 +1827,12 @@ pipes()
           │  nothing consumes a contract and none is read.
           ├─ a sweep the 45s budget cut off leaves the contract clock
           │  unsatisfied and records the models it abandoned, so the next
-          │  refresh inside the window re-reads only those. A repair that
+          │  refresh under the same base URL and key, inside the window,
+          │  re-reads only those. The debt belongs to the identity that
+          │  incurred it and is discarded when the contracts are unbound —
+          │  a repoint at another base URL or key, or a cycle of
+          │  ENABLE_OPENROUTER_IMAGE_GENERATION — because the next sweep
+          │  after either is a full one. A repair that
           │  is itself cut off is the second consecutive cut-off, and it
           │  is NOT paid for on the next build: the debt is state, not a
           │  deadline, so the latch is spent, the clock stays stamped, and
@@ -1955,7 +1960,10 @@ to `False`, the pipe drops the models registered while it was on, together
 with the published contracts of the models it dropped -- a server tool still
 naming one of them in its metadata finds no contract to read. The narrowing
 is to the ids the registry can still route to, so a text+image chat model,
-which this valve does not drop, keeps its own. The drop runs on the next
+which this valve does not drop, keeps its own. It also discards whatever a
+cut-off sweep left owed under this base URL and key, so the first sweep
+after the valve comes back on reads every model rather than only the ones
+an earlier identity's sweep never finished. The drop runs on the next
 model-list build, ahead of the catalogue refresh window, so the models are
 gone from that same model list rather than lingering for up to
 `MODEL_CATALOG_REFRESH_SECONDS`. The published-contract sweep is unaffected
@@ -1988,7 +1996,14 @@ window. Both the cached records and that window belong to one credential: a
 change of `BASE_URL` or `API_KEY` drops them together, so the new
 credential's first read is made rather than paced, and a read that is still
 in flight when the credential changes
-answers the caller that asked for it and is published to no one.
+answers the caller that asked for it and is published to no one. The
+registry's own store is kept per credential target too, the pair above:
+the published contracts a second installed copy's sweep read stay under
+that copy's own pair rather than being withdrawn when the first copy
+builds, and a real change of pair rebinds that identity to its own
+records instead of deleting them. The registry's owed set — the contract
+reads a cut-off sweep did not finish — belongs to that same identity and
+is dropped with it, beside the published contracts it was owed for.
 
 Key files:
 

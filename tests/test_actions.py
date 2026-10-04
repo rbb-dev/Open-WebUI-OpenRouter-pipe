@@ -489,10 +489,11 @@ async def test_config_set_invalid_value_raises_before_write(fake_functions):
 async def test_config_set_emits_config_changed_on_save(monkeypatch, fake_functions):
     spy = AsyncMock()
     monkeypatch.setattr(actions, "emit_config_changed", spy)
+    pipe = _config_pipe()
     result = await actions.ACTIONS["config_set"].handler(
-        _config_pipe(), _user(), {"edits": {"MAX_CONCURRENT_REQUESTS": 250}, "rev": 1000}
+        pipe, _user(), {"edits": {"MAX_CONCURRENT_REQUESTS": 250}, "rev": 1000}
     )
-    spy.assert_awaited_once_with(result["rev"], result["change"])
+    spy.assert_awaited_once_with(result["rev"], pipe.id, result["change"])
 
 
 @pytest.mark.asyncio

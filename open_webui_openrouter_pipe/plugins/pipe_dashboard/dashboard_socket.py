@@ -1,9 +1,4 @@
 """OWUI socket.io integration for the dashboard.
-
-The dashboard iframe emits ``openrouter:pipe_dashboard:sub`` after its
-``user-join`` acknowledges; the handler joins that socket to the shared
-viewers room. Room membership is the entire "who is watching" state —
-socket.io removes members on disconnect and deletes the empty room.
 """
 
 from __future__ import annotations
@@ -27,11 +22,15 @@ from .authz import (
 
 logger = logging.getLogger(__name__)
 
-VIEWERS_ROOM = "pipe_dashboard_viewers"
+VIEWERS_ROOM_PREFIX = "pipe_dashboard_viewers"
 DASHBOARD_EVENT = "openrouter:pipe_dashboard"
 SUB_EVENT = "openrouter:pipe_dashboard:sub"
 DENIED_EVENT = "openrouter:pipe_dashboard:denied"
 CONFIG_EVENT = "openrouter:pipe_dashboard:config"
+
+
+def viewers_room(pipe_id: str) -> str:
+    return f"{VIEWERS_ROOM_PREFIX}:{pipe_id}"
 
 _config_change_n = 0
 
@@ -44,7 +43,7 @@ def new_config_change() -> str:
 
 _registered = False
 _resync = False
-_get_pipe: Any = None
+_pipe_getters: dict[str, Any] = {}
 
 _warned_import_sites: set[str] = set()
 
@@ -75,22 +74,23 @@ async def _socket_dashboard_enabled(pipe: Any) -> bool:
     return (await _socket_dashboard_state(pipe))[0]
 
 
-def _current_pipe() -> Any:
-    return _get_pipe() if _get_pipe else None
+def _current_pipe(pipe_id: str) -> Any:
+    getter = _pipe_getters.get(pipe_id)
+    return getter() if getter else None
 
 
-async def _evict(sio: Any, sid: str, reason: str) -> None:
+async def _evict(sio: Any, sid: str, reason: str, pipe_id: str) -> None:
     logger.warning("pipe_dashboard: evicting viewer sid=%s (%s)", sid, reason)
     try:
-        await sio.leave_room(sid, VIEWERS_ROOM)
+        await sio.leave_room(sid, viewers_room(pipe_id))
         await sio.emit(DENIED_EVENT, {}, room=sid)
     except Exception:
         logger.warning("pipe_dashboard viewer eviction failed for sid=%s", sid, exc_info=True)
 
 
-async def _deny(sio: Any, sid: str) -> None:
+async def _deny(sio: Any, sid: str, pipe_id: str) -> None:
     try:
-        await sio.leave_room(sid, VIEWERS_ROOM)
+        await sio.leave_room(sid, viewers_room(pipe_id))
     except Exception:
         logger.debug("pipe_dashboard leave_room failed for sid=%s", sid, exc_info=True)
     try:
@@ -99,18 +99,32 @@ async def _deny(sio: Any, sid: str) -> None:
         logger.debug("pipe_dashboard denied-notice emit failed for sid=%s", sid, exc_info=True)
 
 
-async def _evict_every_viewer() -> None:
+async def _evict_every_viewer(pipe_id: str) -> None:
     try:
         from open_webui.socket.main import get_session_ids_from_room, sio
     except Exception:  # noqa: BLE001
         return
-    for sid in list(get_session_ids_from_room(VIEWERS_ROOM) or []):
-        await _evict(sio, sid, "dashboard disabled")
+    for sid in list(get_session_ids_from_room(viewers_room(pipe_id)) or []):
+        await _evict(sio, sid, "dashboard disabled", pipe_id)
 
 
-async def _pipe_dashboard_sub(sid: str, _data: Any = None) -> None:
+async def _pipe_dashboard_sub(sid: str, data: Any = None) -> None:
     global _resync
-    pipe = _current_pipe()
+    pipe_id = str((data or {}).get("pipe") or "")
+    pipe = _current_pipe(pipe_id)
+    if not pipe_id or pipe is None:
+        logger.warning(
+            "pipe_dashboard: viewer sid=%s refused (no registered install %r)",
+            sid,
+            pipe_id,
+        )
+        try:
+            from open_webui.socket.main import sio
+
+            await _deny(sio, sid, pipe_id)
+        except Exception:
+            logger.debug("pipe_dashboard unknown-install notice failed for sid=%s", sid, exc_info=True)
+        return
     enabled, read_ok = await _socket_dashboard_state(pipe)
     if not enabled:
         logger.warning(
@@ -122,7 +136,7 @@ async def _pipe_dashboard_sub(sid: str, _data: Any = None) -> None:
         try:
             from open_webui.socket.main import sio
 
-            await _deny(sio, sid)
+            await _deny(sio, sid, pipe_id)
         except Exception:
             logger.debug("pipe_dashboard disabled-notice emit failed for sid=%s", sid, exc_info=True)
         return
@@ -132,14 +146,14 @@ async def _pipe_dashboard_sub(sid: str, _data: Any = None) -> None:
         try:
             from open_webui.socket.main import sio
 
-            await _deny(sio, sid)
+            await _deny(sio, sid, pipe_id)
         except Exception:
             logger.debug("pipe_dashboard denied-notice emit failed for sid=%s", sid, exc_info=True)
         return
     try:
         from open_webui.socket.main import sio
 
-        await sio.enter_room(sid, VIEWERS_ROOM)
+        await sio.enter_room(sid, viewers_room(pipe_id))
     except Exception:
         logger.debug("pipe_dashboard sub failed for sid=%s", sid, exc_info=True)
         return
@@ -148,7 +162,7 @@ async def _pipe_dashboard_sub(sid: str, _data: Any = None) -> None:
     _resync = True
 
 
-async def emit_config_changed(rev: Any, change: str | None = None) -> bool:
+async def emit_config_changed(rev: Any, pipe_id: str, change: str | None = None) -> bool:
     try:
         from open_webui.socket.main import sio
     except ImportError:
@@ -163,7 +177,9 @@ async def emit_config_changed(rev: Any, change: str | None = None) -> bool:
     if change is None:
         change = new_config_change()
     try:
-        await sio.emit(CONFIG_EVENT, {"rev": rev, "change": change}, room=VIEWERS_ROOM)
+        await sio.emit(
+            CONFIG_EVENT, {"rev": rev, "change": change}, room=viewers_room(pipe_id)
+        )
         return True
     except Exception:
         logger.debug("pipe_dashboard config emit failed", exc_info=True)
@@ -199,7 +215,7 @@ async def read_config_rev(pipe_id: str) -> tuple[Any, str | None]:
 
 async def _emit_config_rev(pipe_id: str, change: str | None = None) -> None:
     rev, _state = await read_config_rev(pipe_id)
-    await emit_config_changed(rev, change)
+    await emit_config_changed(rev, pipe_id, change)
 
 
 _pending_emits: set[Any] = set()
@@ -208,10 +224,12 @@ _pending_emits: set[Any] = set()
 class _ValveEventSink:
     async def handle_event(self, app: Any, event: Any, request: Any = None) -> None:
         name = getattr(event, "event", None)
-        pipe = _current_pipe()
-        pipe_id = getattr(pipe, "id", None)
         subject = getattr(event, "subject", None)
-        if not pipe_id or not isinstance(subject, dict) or subject.get("id") != pipe_id:
+        if not isinstance(subject, dict) or not subject.get("id"):
+            return
+        pipe_id = str(subject["id"])
+        pipe = _current_pipe(pipe_id)
+        if pipe is None:
             return
         if name == "function.deleted":
             from .plugin import release_registrations_for
@@ -223,7 +241,7 @@ class _ValveEventSink:
             return
         enabled, read_ok = await _socket_dashboard_state(pipe)
         if not enabled and read_ok:
-            await _evict_every_viewer()
+            await _evict_every_viewer(pipe_id)
         change = (getattr(event, "data", None) or {}).get("pipe_config_change")
         try:
             task = asyncio.create_task(_emit_config_rev(pipe_id, change))
@@ -298,17 +316,16 @@ async def publish_function_updated(
     return await _publish_function_event("FUNCTION_UPDATED", pipe_id, actor, request, data)
 
 
-def clear_socket_pipe_getter(instance: Any, name: str) -> None:
-    global _get_pipe
-    current = _get_pipe
+def clear_socket_pipe_getter(instance: Any, name: str, pipe_id: str) -> None:
+    current = _pipe_getters.get(pipe_id)
     if current is None or current == getattr(instance, name, None):
-        _get_pipe = None
+        _pipe_getters.pop(pipe_id, None)
 
 
-def register_socket_handler(get_pipe: Any = None) -> bool:
-    global _registered, _get_pipe
-    if get_pipe is not None:
-        _get_pipe = get_pipe
+def register_socket_handler(pipe_id: str = "", get_pipe: Any = None) -> bool:
+    global _registered
+    if get_pipe is not None and pipe_id:
+        _pipe_getters[pipe_id] = get_pipe
     register_valve_event_sink()
     if _registered:
         return True
@@ -339,7 +356,7 @@ def consume_resync() -> bool:
     return False
 
 
-def local_viewer_sids() -> list[str]:
+def local_viewer_sids(pipe_id: str) -> list[str]:
     try:
         from open_webui.socket.main import get_session_ids_from_room
     except Exception:
@@ -351,14 +368,14 @@ def local_viewer_sids() -> list[str]:
         )
         return []
     try:
-        return list(get_session_ids_from_room(VIEWERS_ROOM) or [])
+        return list(get_session_ids_from_room(viewers_room(pipe_id)) or [])
     except Exception:
         logger.debug("pipe_dashboard viewer lookup failed", exc_info=True)
         return []
 
 
-async def emit_dashboard(payload: dict[str, Any]) -> bool:
-    if not await _socket_dashboard_enabled(_current_pipe()):
+async def emit_dashboard(payload: dict[str, Any], pipe_id: str) -> bool:
+    if not await _socket_dashboard_enabled(_current_pipe(pipe_id)):
         return False
     try:
         from open_webui.socket.main import sio
@@ -371,15 +388,17 @@ async def emit_dashboard(payload: dict[str, Any]) -> bool:
         )
         return False
     try:
-        await sio.emit(DASHBOARD_EVENT, payload, room=VIEWERS_ROOM, ignore_queue=True)
+        await sio.emit(
+            DASHBOARD_EVENT, payload, room=viewers_room(pipe_id), ignore_queue=True
+        )
         return True
     except Exception:
         logger.debug("pipe_dashboard emit failed", exc_info=True)
         return False
 
 
-async def reauthorize_local_viewers() -> None:
-    pipe = _current_pipe()
+async def reauthorize_local_viewers(pipe_id: str) -> None:
+    pipe = _current_pipe(pipe_id)
     try:
         from open_webui.socket.main import get_session_ids_from_room, sio
     except Exception:
@@ -393,10 +412,10 @@ async def reauthorize_local_viewers() -> None:
     enabled, read_ok = await _socket_dashboard_state(pipe)
     if not enabled:
         if read_ok:
-            for sid in list(get_session_ids_from_room(VIEWERS_ROOM) or []):
-                await _evict(sio, sid, "dashboard disabled")
+            for sid in list(get_session_ids_from_room(viewers_room(pipe_id)) or []):
+                await _evict(sio, sid, "dashboard disabled", pipe_id)
         return
-    sids = list(get_session_ids_from_room(VIEWERS_ROOM) or [])
+    sids = list(get_session_ids_from_room(viewers_room(pipe_id)) or [])
     if not sids:
         return
     resolved, model = await resolve_view_model(pipe)
@@ -408,7 +427,7 @@ async def reauthorize_local_viewers() -> None:
                 await resolve_user(uid), pipe, model if resolved else _VIEW_MODEL_UNREAD
             )
         if verdicts[uid] is False:
-            await _evict(sio, sid, "authorization no longer holds")
+            await _evict(sio, sid, "authorization no longer holds", pipe_id)
 
 
 register_socket_handler()

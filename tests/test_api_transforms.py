@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from copy import deepcopy
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import MagicMock, AsyncMock
 
 import pytest
@@ -961,6 +961,23 @@ class TestChatToolsToResponsesTools:
         ]
         result = _chat_tools_to_responses_tools(tools)
         assert "cache_control" not in result[0]
+
+    # The one table for the whole property: which `strict` reaches the wire, in which shape,
+    # and what a caller's own value is worth on each arm. Six values against two shapes, so a
+    # fix written as a coercion (``get("strict", False)``, ``get("strict", True)``, an
+    # ``isinstance(..., bool)`` test) is caught on the cell it invents a value for and not only
+    # on the cell that motivated the fix. `_MISSING` is the absent case, which is the one cell
+    # whose two arms genuinely differ: chat-shaped states the endpoint's own fallback, a
+    # Responses-shaped arrival that wrote none gains no key at all.
+    _MISSING: ClassVar[Any] = object()
+    _STRICT_VALUES: ClassVar[list[Any]] = [
+        pytest.param(_MISSING, id="absent"),
+        pytest.param(None, id="null"),
+        pytest.param(True, id="true"),
+        pytest.param(False, id="false"),
+        pytest.param("yes", id="str"),
+        pytest.param(1, id="int"),
+    ]
 
 # ============================================================================
 # Tool Choice Conversion Tests

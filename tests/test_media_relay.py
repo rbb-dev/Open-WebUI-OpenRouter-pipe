@@ -722,7 +722,7 @@ def _adapter_with_files(records, reads, uploads):
 
     async def _relay(
         self, valves, b64, *, filename, mime, family, deadline, session=None,
-        event_emitter=None, stored=None,
+        event_emitter=None, stored=None, already_uploaded=False,
     ):
         uploads.append((filename, mime, family))
         return f"https://files.example/{family}.bin", "litterbox"

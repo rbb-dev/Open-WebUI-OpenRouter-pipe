@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.doc_truth_anchors import config_meta_detail, doc, valve_field_description
 from tests.pipe_limits import slot, set_slot
 from open_webui_openrouter_pipe import EncryptedStr, Pipe
 from open_webui_openrouter_pipe.core.config import _PIPE_METADATA_KEY
@@ -198,6 +199,9 @@ def _sentences(text: str) -> list[str]:
             if len(candidate) >= 15:
                 out.append(candidate)
     return out
+
+
+_ATLAS = doc("valves_and_configuration_atlas.md")
 
 
 """Published parameters still rendered by the generic fallback rather than a descriptor.

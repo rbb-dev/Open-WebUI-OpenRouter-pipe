@@ -111,7 +111,7 @@ class Filter:
         )
         DIRECT_VIDEO_MIME_ALLOWLIST: str = Field(
             default="video/mp4,video/mpeg,video/quicktime,video/webm",
-            description="Comma-separated MIME allowlist for diverted direct video files. The pattern is matched with `fnmatch` against the declared type, so a wildcard admits declared values that are not media types at all; Non-allowlisted types are fail-open: the item stays on the normal OWUI RAG/Knowledge path instead.",
+            description="Comma-separated MIME allowlist for diverted direct video files. The pattern is matched with `fnmatch` against the *declared* type, so a wildcard admits declared values that are not media types at all; matching the declaration is all this valve does, and the pipe additionally refuses an allowlisted attachment whose leading bytes are text rather than a clip -- a proxy's HTML error page saved as `clip.mp4` is allowlisted and still refused -- or that it positively identifies as another family, naming the file and its declared type on the turn; Non-allowlisted types are fail-open: the item stays on the normal OWUI RAG/Knowledge path instead.",
         )
         DIRECT_AUDIO_FORMAT_ALLOWLIST: str = Field(
             default="wav,mp3,aiff,aac,ogg,flac,m4a,pcm16,pcm24",

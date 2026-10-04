@@ -191,6 +191,9 @@ class NonStreamingAdapter:
                 message = choices[0].get("message")
                 finish_reason = choices[0].get("finish_reason")
             message_obj = message if isinstance(message, dict) else {}
+            refusal_text = message_obj.get("refusal")
+            if task_request and isinstance(refusal_text, str) and refusal_text.strip():
+                raise TaskProviderRefusal("task_model_refusal")
             unhandled_citations_signalled = False
 
             usage = chat_response.get("usage") if isinstance(chat_response, dict) else None
@@ -370,9 +373,6 @@ class NonStreamingAdapter:
                     )
 
             assistant_text = _extract_chat_message_text(message_obj)
-            refusal_text = message_obj.get("refusal")
-            if task_request and isinstance(refusal_text, str) and refusal_text.strip():
-                raise TaskProviderRefusal("task_model_refusal")
             if isinstance(refusal_text, str) and refusal_text.strip():
                 refusal_text = refusal_text.strip()
                 assistant_text = (

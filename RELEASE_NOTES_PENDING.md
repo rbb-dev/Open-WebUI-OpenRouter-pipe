@@ -36,6 +36,16 @@
   whether a second admin can *open* the dashboard is still that administrator's setting; only the actions he can run
   once it is open follow Open WebUI now. A model row whose read raises is still undeterminable rather than a verdict.
 
+- **Two installed copies of the pipe no longer share one dashboard** — every dashboard binding is now keyed by the
+  pipe's own `Pipe.id`: the socket handler's, the action route's and the publisher's registrations, the socket.io
+  viewers room, and the model row a subscribe or an action authorises against. A worker serving two copies of the
+  pipe therefore resolves each request against the install that named it instead of whichever copy registered last,
+  and one installed copy's off switch, config save or valve event no longer reaches the other's viewers. The action
+  route takes the install's id in the request body (`pipe`) and refuses an id this worker has no registration for with
+  `404 {"error": "unknown pipe"}`, before any authorization read. **A dashboard panel persisted in a chat message
+  before this change carries no such id**, so its Config and Update tabs answer `unknown pipe` until the panel is
+  reopened; the panel says so in words rather than showing a raw refusal.
+
 - **Session log assembler, one offer per pass** — a turn the assembler already offered, or already failed, inside a
   pass is not offered again by that pass, and a turn whose assembly lock another pass holds is offered once per pass
   instead of once per re-listing round. The pass re-lists itself after meeting a lock-contended turn so the window
@@ -77,6 +87,37 @@
   reached OpenRouter is still retried, and an in-band or status-level provider error keeps its own class and its own
   budget. A mid-body timeout now renders the connection card rather than the network-timeout card; the timeout valve
   it was read from is unchanged, and so is every knob an operator can set.
+
+- **Tool pictures, the sanitizer's leg** — a picture link a tool result carries is now refused on
+  every leg that carries one, plain HTTP included. The address check behind `ENABLE_SSRF_PROTECTION`
+  resolves a tool result's link once per request and memoises the verdict, but the request sanitizer
+  read that memo for `https` alone — so with `ALLOW_INSECURE_HTTP` on and the host allowlisted, a
+  cleartext link whose address the check had refused was forwarded unexamined. Cleartext links now
+  go through the same memo, and a check that reached no verdict inside its budget is refused in its
+  own words (`could not be checked in time`, cause `uncheckable_tool_picture`) rather than being
+  reported as a failed download, which is what the valve's help text already promised. An `https`
+  link that resolves to a public address is unchanged, and so is every link a request never resolved.
+- **Tool calling, a caller's own `strict` on a Responses-shaped tool** — a `strict` the caller wrote
+  is now forwarded instead of being dropped. A tool already in Responses shape reached
+  `/responses` through a branch that only read a `strict` out of a nested `function` block, so the
+  key went out with the entry missing it, and that endpoint's own default for an absent `strict` is
+  `true`: a caller's opt-in arrived non-strict and a caller's opt-out arrived strict. A tool that
+  arrived without a `strict` still goes out without one, and a Chat-shaped tool still states the
+  endpoint's fallback explicitly; a tool that arrives in Responses shape now keeps exactly the keys
+  the caller sent, which is what Open WebUI's own converter does.
+
+- **Video generation, status-poll errors** — `VIDEO_STATUS_POLL_MAX_ERRORS` now bounds two things instead of
+  one. It still reads as "how many status checks **in a row** may come back as an error", and an endpoint
+  failing every time in a row is given up on after exactly that many, with the same card and the same single
+  circuit-breaker charge. It now also bounds the errors spent **in total across one whole watch**: a second,
+  larger budget of the configured value times five, counted however the errors are spaced. Nothing about the
+  valve's own meaning changed, and a stored value of it is honoured as stored — but the pipe can now stop
+  watching a job whose status endpoint is failing intermittently rather than only one that is failing
+  outright, which it could not before: any successful poll resets the consecutive tally, so an endpoint
+  answering every other call never ran one out and the job was watched until it rendered or the silence
+  window ran out. Nothing is cancelled either way. The card is the resumable still-running one, the job's
+  marker stays, Continue Response still picks the same job back up, and the person is told how many times the
+  endpoint did not answer across the watch rather than in a row.
 
 - **Pipe dashboard, viewer payload** — the live dashboard payload no longer carries the data-dir path, so a viewer
   holding only a read grant no longer learns the server's filesystem layout from the System tab. The key was published
@@ -695,3 +736,35 @@
   Open WebUI handed it over — a block the provider does not accept, carrying text the pipe had not finished
   preparing. The turn itself is unchanged: the model goes on with whatever else it carried, and a turn whose only
   block faulted still says so in-band. A block the pipe has no converter for is still passed through untouched.
+
+- **Video attachments and the file host** — three changes to what a turn says and does when an attachment goes to a
+   public file host. A **reference picture** over `MEDIA_FILE_HOST_MAX_SIZE_MB` — over the cap on its own, or over what
+   one request may publish put together — is now left out with a notice naming it and the cap it broke, and the rest of
+   the turn is generated as asked, instead of refusing the whole request; a **clip or a sound file** over the same cap
+   still stops the request, naming the cap, because a clip the person attached is the thing being edited. The durable
+   record's **"may have been uploaded"** line now speaks for each attachment that reached each host rather than being
+   suppressed whenever another attachment of the same kind landed on the same host, so an ordinary two-clip turn records
+   both, in one block; and it names that host's own retention, hedged on the file being there at all, instead of
+   promising permanence on a host that deletes its own files. The **second-host failure card** no longer says "Nothing
+   was uploaded" when an earlier attachment in the same turn already reached a host: it says that nothing further was
+   uploaded, that an earlier attachment is already on a public host, and that sending the turn again will not take that
+   one down. All four need the opt-ins below, which ship off.
+- **Tool shutdown at `TOOL_SHUTDOWN_TIMEOUT_SECONDS=0`** — the per-request `WARNING` an operator who chose that
+  documented quiet value saw on every turn stops appearing. A tool context is built for every request, whether or not
+  the turn called a tool, and shut down at the end of the job, so the valve's own "there is no grace wait" path was
+  the one path that always fell through into the wait-timed-out handler and wrote `Tool shutdown exceeded 0.0s;
+  cancelling workers.` — a line describing a stall that could not have happened, on precisely the installations where
+  cleanup was instant and deliberate. Nothing was waited for before either, and nothing changes now: the workers are
+  still cancelled at the same instant, the reply is unchanged, and log-based alerting on `WARNING` stops firing on a
+  configuration that is working as documented. The valve is now a positive guard rather than a synthesised timeout, so
+  a wait that genuinely expires still warns exactly once and still names the valve's own value; and a DEBUG line
+  records that the grace period was off, which is what tells an operator why the workers died instantly (genuinely
+  abandoned tool tasks are left behind on this path).
+- **Empty provider-error cards** — the card a reader gets when the operator's own template renders to nothing now
+  names their configured support contact, on a `channel:` read as well as an ordinary one. The stub that replaces an
+  empty card named the model and an error id but no way to reach a human, so on exactly the path where an admin's
+  wording had been withheld from a channel reader, the card they were left holding had no support handle either. The
+  two rows appear only when `Support email` or `Support link` is set, in the same guarded shape the shipped templates
+  already use; with neither set — the shipped default — the card renders exactly as before, byte for byte, and the
+  shipped 400 card is untouched. A non-streaming API caller reads the same text off `choices[0].message.content`, so
+  they gain the same handle in the same string.
