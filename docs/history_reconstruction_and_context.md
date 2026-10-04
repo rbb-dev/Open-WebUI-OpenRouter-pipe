@@ -401,7 +401,9 @@ for this purpose: it stays inside its round's turn on both the generating and th
 the model had after the turn is replayed after it.
 
 On `/chat/completions` a replayed reasoning item rides on the assistant message that carries the tool calls, as
-`reasoning_details`, matching Open WebUI's `convert_output_to_messages(raw=True)`. A message that names a
+`reasoning_details`, matching Open WebUI's `convert_output_to_messages(raw=True)`; a reasoning item with no
+assistant message of its own to ride on is emitted as an assistant message of its own before the round's results
+and before the round's picture handoff. A message that names a
 different `model` has its whole `reasoning_details` block dropped before the request is built, the way Open WebUI
 does at `utils/middleware.py:2516-2521`; a message that names no model, or a blank one, keeps it, because the
 pipe's own gateway puts `model` on the chunk and never on the message and a missing id cannot be attributed.

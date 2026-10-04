@@ -448,7 +448,6 @@ class TestConsumerWiring:
             video_meta={},
         )
 
-
 STORED = {
     "VIDEO_DURATION": 8,
     "VIDEO_ASPECT_RATIO": "9:16",

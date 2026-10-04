@@ -34,7 +34,7 @@ Operational guidance:
 - If you store secrets in valves, configure `WEBUI_SECRET_KEY` (or the deprecated `WEBUI_JWT_SECRET_KEY` it falls back to) so Open WebUI can store `EncryptedStr` values encrypted at rest.
 - A save whose secret box is **blank** — empty, or nothing but whitespace, which is what a stray keystroke leaves behind — is not an edit: the stored value survives byte-for-byte and the save reports that setting as not saved. So a stored key is only ever removed deliberately, by the dashboard's **Clear** control, which sends `None`; nothing an admin can type into the box removes one by accident.
 
-The decrypted key is resolved per request, passed into the call that needs it as an argument, and never stored on a long-lived object. Where the pipe has to remember *which* key something happened to — the background warm-up, which arms a five-minute backoff against the key that failed — it keeps that key's `sha256` digest rather than the key, and every key-identity comparison in the package is made over the digest. Nothing on a `Pipe` instance holds the plaintext key once a request is being served.
+The decrypted key is resolved per request, passed into the call that needs it as an argument, and never stored on a long-lived object. Where the pipe has to remember *which* key something happened to — the background warm-up, which arms a five-minute backoff against the key that failed and the base URL it dialled with — it keeps that pair's `sha256` digest rather than the key, and every key-identity comparison in the package is made over the digest. Nothing on a `Pipe` instance holds the plaintext key once a request is being served.
 
 ### Protecting secret valve values at rest (the application secret)
 

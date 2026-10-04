@@ -525,6 +525,7 @@ ALLOWED_OPENROUTER_FIELDS = {
     "presence_penalty",
     "prompt",
     "prompt_cache_key",
+    "prompt_cache_options",
     "safety_identifier",
     "service_tier",
     "store",
@@ -579,6 +580,7 @@ ALLOWED_OPENROUTER_CHAT_FIELDS = {
     "debug",
     "service_tier",
     "prompt_cache_key",
+    "prompt_cache_options",
     "image_config",
     "modalities",
     "transforms",
@@ -936,7 +938,7 @@ def _media_link_is_server_only(value: Any) -> bool:
     return url_scheme(value) not in _FETCHABLE_MEDIA_SCHEMES
 
 
-def _input_audio_from_string(value: str) -> dict[str, Any] | None:
+def _input_audio_string_shape(value: str) -> tuple[dict[str, Any], str | None] | None:
     from ..requests.transformer import _map_audio_format
 
     stripped = value.strip()
@@ -953,16 +955,37 @@ def _input_audio_from_string(value: str) -> dict[str, Any] | None:
         return {
             "type": "input_audio",
             "input_audio": {"data": "".join(payload.split()), "format": audio_format},
-        }
+        }, None
     cleaned = "".join(stripped.split())
-    try:
-        base64.b64decode(cleaned, validate=True)
-    except (binascii.Error, ValueError):
-        return None
     return {
         "type": "input_audio",
         "input_audio": {"data": cleaned, "format": _map_audio_format(None)},
-    }
+    }, cleaned
+
+
+def _input_audio_from_string(value: str) -> dict[str, Any] | None:
+    shaped = _input_audio_string_shape(value)
+    if shaped is None:
+        return None
+    block, cleaned = shaped
+    if cleaned is not None:
+        try:
+            base64.b64decode(cleaned, validate=True)
+        except (binascii.Error, ValueError):
+            return None
+    return block
+
+
+async def _validated_input_audio_from_string(value: str) -> dict[str, Any] | None:
+    from ..requests.transformer import _validate_inline_payload
+
+    shaped = _input_audio_string_shape(value)
+    if shaped is None:
+        return None
+    block, cleaned = shaped
+    if cleaned is not None and not await _validate_inline_payload(cleaned):
+        return None
+    return block
 
 
 def _image_file_payload(block: dict[str, Any]) -> dict[str, Any] | None:
@@ -1501,7 +1524,7 @@ async def _responses_input_to_chat_messages(
                                     media_refusals[id(block)] = refusal
                                     continue
                             elif isinstance(audio, str):
-                                converted = _input_audio_from_string(audio)
+                                converted = await _validated_input_audio_from_string(audio)
                                 if converted is None:
                                     continue
                                 audio = converted["input_audio"]
@@ -1816,6 +1839,7 @@ async def _responses_input_to_chat_messages(
             continue
 
         if itype == "function_call_output":
+            _flush_pending_reasoning()
             call_id = item.get("call_id")
             output = item.get("output")
             if isinstance(call_id, str) and call_id.strip():
@@ -1933,6 +1957,7 @@ async def _responses_payload_to_chat_completions_payload(
         "max_tool_calls",
         "service_tier",
         "prompt_cache_key",
+        "prompt_cache_options",
     )
     for key in passthrough:
         if key in responses_payload:
@@ -1964,10 +1989,9 @@ async def _responses_payload_to_chat_completions_payload(
                 "Conflicting structured output config: preferring `response_format` over `text.format` for /chat/completions."
             )
 
-        if "verbosity" not in chat_payload:
-            verbosity = responses_text.get("verbosity")
-            if isinstance(verbosity, str) and verbosity.strip():
-                chat_payload["verbosity"] = verbosity.strip()
+        verbosity = responses_text.get("verbosity")
+        if isinstance(verbosity, str) and verbosity.strip():
+            chat_payload["verbosity"] = verbosity.strip()
 
     # Token limit mapping
     explicit_cap = chat_payload.get("max_completion_tokens")

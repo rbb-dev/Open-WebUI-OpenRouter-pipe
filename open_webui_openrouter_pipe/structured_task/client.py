@@ -59,6 +59,15 @@ def _join_content_parts(value: list[Any]) -> str:
     return "".join(parts)
 
 
+def _measure_answer_dict(value: dict[str, Any]) -> None:
+    try:
+        measured = len(json.dumps(value, ensure_ascii=False, default=str))
+    except (ValueError, RecursionError):
+        measured = _TASK_RESPONSE_MAX_BYTES + 1
+    if measured > _TASK_RESPONSE_MAX_BYTES:
+        raise TaskModelFault("task_model_response_too_large", f"{measured}")
+
+
 class TaskModelFault(RuntimeError):
     def __init__(self, code: str, detail: str | None = None) -> None:
         super().__init__(code if detail is None else f"{code}: {detail}")
@@ -293,6 +302,11 @@ async def read_task_model_response_json(
         part_refusal = content_value.get("refusal")
         if isinstance(part_refusal, str) and part_refusal.strip():
             raise TaskModelFault("task_model_refusal")
+    if schema_keys is not None and isinstance(content_value, dict) and (
+        schema_keys & content_value.keys()
+    ):
+        _measure_answer_dict(content_value)
+        return content_value
     if isinstance(content_value, dict) and (
         "text" in content_value
         or "content" in content_value
@@ -300,12 +314,7 @@ async def read_task_model_response_json(
     ):
         content_value = _content_part_text(content_value) or ""
     if isinstance(content_value, dict):
-        try:
-            measured = len(json.dumps(content_value, ensure_ascii=False, default=str))
-        except (ValueError, RecursionError):
-            measured = _TASK_RESPONSE_MAX_BYTES + 1
-        if measured > _TASK_RESPONSE_MAX_BYTES:
-            raise TaskModelFault("task_model_response_too_large", f"{measured}")
+        _measure_answer_dict(content_value)
         _schema_verdict(content_value, schema_keys)
         return content_value
     if isinstance(content_value, str):

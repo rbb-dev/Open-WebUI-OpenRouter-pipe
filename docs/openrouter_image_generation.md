@@ -178,8 +178,9 @@ it in context alongside the picture it is about to produce, and describe what it
 finds there; clearing the box on it trades a working feature for a billed RAG
 round trip whose text goes into a prompt the model reads. So the box is cleared
 only on models whose catalog row lists no `text` in `output_modalities` — the pure
-image models, the video models, and routers that publish a picture among their
-outputs while answering with words.
+image models and the video models. A router that publishes a picture among its outputs
+while answering with words — `openrouter/auto` — emits `text` too, so it is exempt on the
+same terms as any other chat model that can draw.
 
 As with the tools box, the pipe fills it in only where a model has no setting yet,
 so a box you tick yourself is left alone. The `Files` box inside `Built-in tools` follows

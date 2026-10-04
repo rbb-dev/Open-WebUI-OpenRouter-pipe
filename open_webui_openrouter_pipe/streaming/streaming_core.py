@@ -4679,6 +4679,7 @@ class StreamingHandler:
             resolved_message_id = resolve_message_id(metadata)
             request_id = SessionLogger.request_id.get() or ""
             if request_id:
+                SessionLogger.drain_queued_for(request_id)
                 with SessionLogger._state_lock:
                     log_events = list(SessionLogger.logs.get(request_id, []))
                 if log_events and self.logger.isEnabledFor(logging.DEBUG):

@@ -94,7 +94,7 @@ class TestNoFrameSupport:
             prior_videos=[{
                 "index": 0, "message_index": 0,
                 "file_url": "/api/v1/files/abc/content",
-                "model_id_if_known": "", "duration_seconds_if_known": None,
+                "model_id_if_known": "",
             }],
             video_model={"supported_frame_images": []},
             explicit_frame_images_present=False,
@@ -138,7 +138,7 @@ class TestNoFrameSupport:
             prior_videos=[{
                 "index": 0, "message_index": 0,
                 "file_url": "/api/v1/files/abc/content",
-                "model_id_if_known": "", "duration_seconds_if_known": None,
+                "model_id_if_known": "",
             }],
             video_model={"supported_frame_images": ["last_frame", "input_reference"]},
             explicit_frame_images_present=False,
@@ -163,7 +163,7 @@ class TestNoFrameSupport:
             prior_videos=[{
                 "index": 0, "message_index": 0,
                 "file_url": "/api/v1/files/abc/content",
-                "model_id_if_known": "", "duration_seconds_if_known": None,
+                "model_id_if_known": "",
             }],
             video_model={"supported_frame_images": ["first_frame", "last_frame"]},
             explicit_frame_images_present=False,
@@ -216,7 +216,7 @@ class TestExplicitAttachmentsRetarget:
             prior_videos=[{
                 "index": 0, "message_index": 0,
                 "file_url": "/api/v1/files/abc/content",
-                "model_id_if_known": "", "duration_seconds_if_known": None,
+                "model_id_if_known": "",
             }],
             video_model={"supported_frame_images": ["first_frame", "last_frame"]},
             explicit_frame_images_present=True,

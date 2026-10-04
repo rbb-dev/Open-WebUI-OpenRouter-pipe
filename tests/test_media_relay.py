@@ -33,6 +33,7 @@ from open_webui_openrouter_pipe.integrations.media_relay import (
     MediaRelayError,
     _as_the_host_put_it,
     host_keeps_forever,
+    megabytes,
     relay_to_public_url,
 )
 from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
@@ -115,26 +116,44 @@ def test_a_notice_that_names_no_placeholders_is_left_alone():
     )
 
 
-@pytest.mark.parametrize(("size_mb", "cap_mb"), [(4, 1), (300, 200)])
+@pytest.mark.parametrize(("size_mb", "cap_mb"), [(4, 1), (300, 200), (200, 200)])
 def test_a_file_over_the_cap_is_refused_before_anything_is_uploaded(size_mb, cap_mb):
-    """The refusal names both numbers, because 'too big' alone tells an operator nothing."""
-    session = MagicMock()
-    session.post = MagicMock(side_effect=AssertionError("an oversize file must not be posted"))
+    """The refusal names both numbers, because 'too big' alone tells an operator nothing.
 
-    with pytest.raises(MediaRelayError) as raised:
-        asyncio.run(
-            relay_to_public_url(
-                session,
-                b"x" * (size_mb * 1024 * 1024),
-                filename="clip.mp4",
-                mime="video/mp4",
-                host="litterbox",
-                retention="1h",
-                max_bytes=cap_mb * 1024 * 1024,
-            )
+    `(200, 200)` is the boundary arm: a blob of exactly `max_bytes` is NOT over the
+    cap, so it must reach the host. The row's `size_mb > cap_mb` is therefore read
+    off the pair rather than assumed, and the `session.post` guard below fires on
+    the over arms only.
+    """
+    session = MagicMock()
+    over = size_mb > cap_mb
+    if over:
+        session.post = MagicMock(
+            side_effect=AssertionError("an oversize file must not be posted")
         )
-    message = str(raised.value)
-    assert f"{size_mb}.0 MB" in message and f"{cap_mb}.0 MB" in message, message
+
+    if over:
+        with pytest.raises(MediaRelayError) as raised:
+            asyncio.run(
+                relay_to_public_url(
+                    session,
+                    b"x" * (size_mb * 1024 * 1024),
+                    filename="clip.mp4",
+                    mime="video/mp4",
+                    host="litterbox",
+                    retention="1h",
+                    max_bytes=cap_mb * 1024 * 1024,
+                )
+            )
+        message = str(raised.value)
+        assert f"{size_mb}.0 MB" in message and f"{cap_mb}.0 MB" in message, message
+    else:
+        link, wire = asyncio.run(_relayed([(200, "https://litter.catbox.moe/ok.mp4")]))
+        assert link == "https://litter.catbox.moe/ok.mp4", link
+        assert len(wire.calls) == 1, (
+            f"a blob of exactly the cap posted {len(wire.calls)} time(s); at the cap it "
+            f"is not over it and must be uploaded"
+        )
 
 
 def test_a_host_this_pipe_does_not_know_is_refused_by_name():

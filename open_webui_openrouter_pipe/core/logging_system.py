@@ -588,6 +588,30 @@ class SessionLogger:
             return cls._records_in_flight.get(request_id, 0)
 
     @classmethod
+    def drain_queued_for(cls, request_id: str) -> None:
+        queue = cls.log_queue
+        if not request_id or queue is None:
+            return
+        pending = queue.qsize()
+        drained: list[logging.LogRecord] = []
+        while pending > 0:
+            pending -= 1
+            try:
+                record = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            queue.task_done()
+            if getattr(record, "request_id", None) == request_id:
+                drained.append(record)
+                continue
+            try:
+                queue.put_nowait(record)
+            except asyncio.QueueFull:
+                cls.process_record(record)
+        for record in drained:
+            cls.process_record(record)
+
+    @classmethod
     def _passes_threshold(cls, record: logging.LogRecord) -> bool:
         """The one decision about whether a record is shown, for every console sink.
 

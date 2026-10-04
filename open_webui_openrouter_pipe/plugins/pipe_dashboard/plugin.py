@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 _PIPE_DASHBOARD_MODEL_ID = "pipe-dashboard"
 _PD_OFF_META_KEY = "openrouter_pipe:dashboard_switched_off_by_pipe"
+_PD_MASTER_SWITCH_MEMO_MAX = 512
 
 
 def _as_int(value: Any, default: int) -> int:
@@ -177,8 +178,7 @@ class PipeDashboardPlugin(PluginBase):
         "on_request_alive": 50,
         "on_generation_complete": 50,
     }
-    _master_switch_request_id: str | None = None
-    _master_switch_on: bool = False
+    _master_switch_memo: dict[str, bool] = {}  # noqa: RUF012 - a seed; on_init gives every instance its own
 
     plugin_valves: ClassVar[dict[str, tuple]] = {
         "PIPE_DASHBOARD_ENABLE": (bool, Field(
@@ -301,8 +301,7 @@ class PipeDashboardPlugin(PluginBase):
     def on_init(self, ctx: PluginContext, **kwargs: Any) -> None:
         self.ctx = ctx
         self._get_pipe = lambda: getattr(ctx, "pipe", None)
-        self._master_switch_request_id: str | None = None
-        self._master_switch_on: bool = False
+        self._master_switch_memo = {}
 
         from .update_service import UpdateService
 
@@ -361,12 +360,15 @@ class PipeDashboardPlugin(PluginBase):
 
     async def _plugin_system_on_for(self, request_id: str = "") -> bool:
         key = str(request_id or "")
-        if key and self._master_switch_request_id == key:
-            return self._master_switch_on
+        if key:
+            hit = self._master_switch_memo.get(key)
+            if hit is not None:
+                return hit
         on = await _plugins_enabled(getattr(getattr(self, "ctx", None), "pipe", None))
         if key:
-            self._master_switch_request_id = key
-            self._master_switch_on = on
+            if len(self._master_switch_memo) >= _PD_MASTER_SWITCH_MEMO_MAX:
+                self._master_switch_memo.pop(next(iter(self._master_switch_memo)), None)
+            self._master_switch_memo[key] = on
         return on
 
     def _maybe_start_sweep(self) -> None:
@@ -715,7 +717,9 @@ class PipeDashboardPlugin(PluginBase):
 
     async def on_generation_complete(self, usage: Any, status: str, **kwargs: Any) -> None:
         try:
-            self._tracker.finalize(str(kwargs.get("request_id") or ""), usage, str(status))
+            request_id = str(kwargs.get("request_id") or "")
+            self._master_switch_memo.pop(request_id, None)
+            self._tracker.finalize(request_id, usage, str(status))
         except Exception:
             logging.getLogger(__name__).debug("session finalize failed", exc_info=True)
 

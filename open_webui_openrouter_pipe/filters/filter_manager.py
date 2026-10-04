@@ -19,8 +19,10 @@ import hashlib
 import itertools
 import json
 import logging
+import os
 import re
 import time
+import types
 from collections import OrderedDict
 from collections.abc import Callable, Iterable
 from functools import lru_cache
@@ -410,6 +412,305 @@ def _offered_web_tools(content: str) -> frozenset[str] | None:
                     return frozenset(name for name, _ in declared if name in toggles)
     return None
 
+
+@lru_cache(maxsize=512)
+def _routing_source_memo(
+    model_slug: str,
+    providers: tuple[str, ...],
+    quantizations: tuple[str, ...],
+    visibility: str,
+    short_name: str,
+    provider_names: tuple[tuple[str, str], ...] | None,
+    transport: str,
+    owner: str,
+    pipe_version: str,
+) -> str:
+    safe_id = FilterManager.sanitize_model_for_filter_id(model_slug)
+    filter_id = f"{_PROVIDER_ROUTING_FILTER_ID_PREFIX}{safe_id}"
+
+    if not isinstance(model_slug, str) or not model_slug:
+        raise ValueError("model_slug must be a non-empty string")
+    safe_model_slug_escaped = json.dumps(model_slug)[1:-1]
+
+    display_name = short_name.strip() if short_name else model_slug.split("/")[-1]
+    safe_display_name = FilterManager.validate_provider_name(display_name, slug=model_slug)
+    safe_display_name_escaped = json.dumps(safe_display_name)[1:-1]
+
+    marker = f"{_PROVIDER_ROUTING_FILTER_MARKER_PREFIX}{model_slug}:{_PROVIDER_ROUTING_FILTER_MARKER_VERSION}"
+    safe_marker_escaped = json.dumps(marker)[1:-1]
+    owner_assignment = f"{_PROVIDER_ROUTING_OWNER_PREFIX} = {json.dumps(str(owner))}" if owner else ""
+
+    safe_providers = [
+        p for p in providers
+        if isinstance(p, str) and _PROVIDER_SLUG_PATTERN.fullmatch(p) and len(p) <= 64
+    ][:_PROVIDER_ROUTING_MAX_PROVIDERS]
+
+    prov_names = dict(provider_names) if provider_names else {}
+    provider_display_options: list[str] = []
+    provider_slug_map_entries: list[str] = []
+    display_to_slug: dict[str, str] = {}
+    seen_labels: set[str] = set()
+    for pslug in safe_providers:
+        disp = prov_names.get(pslug, pslug.replace("-", " ").title())
+        safe_disp = FilterManager.validate_provider_name(disp, slug=pslug)
+        if safe_disp in seen_labels:
+            safe_disp = f"{safe_disp} ({pslug})"
+        seen_labels.add(safe_disp)
+        provider_display_options.append(safe_disp)
+        display_to_slug[safe_disp] = pslug
+        provider_slug_map_entries.append(f'    {FilterManager.safe_literal_string(safe_disp)}: {FilterManager.safe_literal_string(pslug)}')
+
+    no_pref = "(no preference)"
+    only_ignore_options = [no_pref] + provider_display_options
+    only_ignore_literal = ", ".join(FilterManager.safe_literal_string(opt) for opt in only_ignore_options)
+
+    # Build provider map code block
+    provider_map_code = "{\n" + ",\n".join(provider_slug_map_entries) + "\n}" if provider_slug_map_entries else "{}"
+
+    order_display_options: list[str] = []
+    order_map_entries: list[str] = []
+
+    if len(provider_display_options) <= _PROVIDER_ROUTING_ORDER_PERMUTATION_MAX:
+        for perm in itertools.permutations(provider_display_options):
+            perm_disp = " > ".join(perm)
+            order_display_options.append(perm_disp)
+            perm_slugs = [display_to_slug[d] for d in perm]
+            slugs_literal = ", ".join(FilterManager.safe_literal_string(s) for s in perm_slugs)
+            order_map_entries.append(f'    {FilterManager.safe_literal_string(perm_disp)}: [{slugs_literal}]')
+    else:
+        for disp in provider_display_options:
+            first_disp = f"{disp} first"
+            order_display_options.append(first_disp)
+            slug_literal = FilterManager.safe_literal_string(display_to_slug[disp])
+            order_map_entries.append(f'    {FilterManager.safe_literal_string(first_disp)}: [{slug_literal}]')
+
+    order_options = [no_pref] + order_display_options
+    order_literal = ", ".join(FilterManager.safe_literal_string(opt) for opt in order_options)
+
+    # Build order map code block
+    order_map_code = "{\n" + ",\n".join(order_map_entries) + "\n}" if order_map_entries else "{}"
+
+    safe_quantizations = [
+        q for q in quantizations
+        if isinstance(q, str) and _QUANTIZATION_PATTERN.fullmatch(q) and len(q) <= 32
+    ][:_PROVIDER_ROUTING_MAX_PROVIDERS]
+
+    quant_options = [no_pref] + safe_quantizations
+    quantizations_literal = ", ".join(FilterManager.safe_literal_string(q) for q in quant_options)
+
+    toggle_value = "False" if visibility == "admin" else "True"
+
+    drawn = FilterManager._routing_controls(transport)
+    control_lines = {
+        "ORDER": f'        ORDER: Literal[{order_literal}] = Field(default=_NO_PREF, description="Provider priority order")',
+        "ALLOW_FALLBACKS": '        ALLOW_FALLBACKS: bool = Field(default=True, description="Allow backup providers if preferred unavailable")',
+        "REQUIRE_PARAMETERS": '        REQUIRE_PARAMETERS: bool = Field(default=False, description="Only use providers supporting all request params")',
+        "DATA_COLLECTION": '        DATA_COLLECTION: Literal[_NO_PREF, "allow", "deny"] = Field(default=_NO_PREF, description="Data collection policy; a stored no-preference written as a null is read as no preference, and a value outside the three options is still refused")',
+        "ZDR": '        ZDR: bool = Field(default=False, description="Zero Data Retention - only ZDR endpoints")',
+        "ENFORCE_DISTILLABLE_TEXT": '        ENFORCE_DISTILLABLE_TEXT: bool = Field(default=False, description="Only use providers whose author allows text distillation")',
+        "ONLY": f'        ONLY: Literal[{only_ignore_literal}] = Field(default=_NO_PREF, description="Use only this provider")',
+        "IGNORE": f'        IGNORE: Literal[{only_ignore_literal}] = Field(default=_NO_PREF, description="Avoid this provider")',
+        "QUANTIZATION": f'        QUANTIZATION: Literal[{quantizations_literal}] = Field(default=_NO_PREF, description="Filter by quantization")',
+        "SORT": '        SORT: Literal[_NO_PREF, "price", "throughput", "latency", "exacto"] = Field(default=_NO_PREF, description="Sort providers by; exacto favours endpoints that reproduce the model most faithfully")',
+        "SORT_PARTITION": '        SORT_PARTITION: Literal[_NO_PREF, "model", "none"] = Field(default=_NO_PREF, description="Whether sorting groups endpoints by model first (model) or ranks them all together (none)")',
+        "MIN_THROUGHPUT": '        MIN_THROUGHPUT: float = Field(default=0, ge=0, description="Min throughput (tokens/sec); 0 clears the admin default, omit for no constraint")',
+        "MAX_LATENCY": '        MAX_LATENCY: float = Field(default=0, ge=0, description="Max latency (seconds); 0 clears the admin default, omit for no constraint")',
+        "MAX_PRICE_PROMPT": '        MAX_PRICE_PROMPT: float = Field(default=0, ge=0, description="Max price for prompt ($/M tokens); 0 clears the admin default, omit for no limit")',
+        "MAX_PRICE_COMPLETION": '        MAX_PRICE_COMPLETION: float = Field(default=0, ge=0, description="Max price for completion ($/M tokens); 0 clears the admin default, omit for no limit")',
+        "MAX_PRICE_IMAGE": '        MAX_PRICE_IMAGE: float = Field(default=0, ge=0, description="Max price per image ($/image); 0 clears the admin default, omit for no limit")',
+        "MAX_PRICE_AUDIO": '        MAX_PRICE_AUDIO: float = Field(default=0, ge=0, description="Max price for audio ($/unit); 0 clears the admin default, omit for no limit")',
+        "MAX_PRICE_REQUEST": '        MAX_PRICE_REQUEST: float = Field(default=0, ge=0, description="Max price per request ($/request); 0 clears the admin default, omit for no limit")',
+    }
+    if set(control_lines) != set(_ROUTING_CONTROL_KEYS):
+        raise ValueError(
+            "every routing control needs both a field and a request field to write; "
+            f"unpaired: {sorted(set(control_lines) ^ set(_ROUTING_CONTROL_KEYS))}"
+        )
+    rendered_controls = "\n".join(
+        line for name, line in control_lines.items() if name in drawn
+    )
+    guarded = [
+        name
+        for name in ("ORDER", "ONLY", "IGNORE", "QUANTIZATION", "SORT", "SORT_PARTITION")
+        if name in drawn
+    ]
+    guarded_literal = ", ".join(json.dumps(name) for name in guarded)
+    stale_choice_guard = f'''
+        @field_validator({guarded_literal}, mode="before")
+        @classmethod
+        def _coerce_stale_choice(cls, value: Any, info: ValidationInfo) -> Any:
+            options = get_args(cls.model_fields[info.field_name].annotation)
+            if value in options:
+                return value
+            kept = _NO_PREF
+            if info.field_name == "ORDER" and isinstance(value, str):
+                head = value.split(" > ")[0].strip()
+                if head and f"{{head}} first" in options:
+                    kept = f"{{head}} first"
+            _warn_stale_choice(info.field_name, value, kept)
+            return kept
+''' if guarded else ""
+    dropped = sorted(
+        name for name in drawn
+        if name not in guarded and name != "DATA_COLLECTION"
+    )
+    dropped_literal = ", ".join(json.dumps(name) for name in dropped)
+    stale_value_guard = f'''
+        @field_validator({dropped_literal}, mode="before")
+        @classmethod
+        def _drop_unusable_setting(cls, value: Any, info: ValidationInfo) -> Any:
+            field = cls.model_fields[info.field_name]
+            table = _adapters_for(cls)
+            adapter = table.get(info.field_name)
+            if adapter is None:
+                metadata = field.metadata
+                annotated = (
+                    Annotated[(field.annotation, *metadata)]
+                    if metadata
+                    else field.annotation
+                )
+                adapter = table[info.field_name] = TypeAdapter(annotated)
+            try:
+                adapter.validate_python(value)
+            except ValidationError:
+                _warn_unusable_setting(info.field_name, value, field.get_default())
+                return field.get_default(call_default_factory=True)
+            return value
+''' if dropped else ""
+    null_choice_guard = '''
+        @field_validator("DATA_COLLECTION", mode="before")
+        @classmethod
+        def _null_means_no_preference(cls, value: Any, info: ValidationInfo) -> Any:
+            if value is None:
+                return _NO_PREF
+            return value
+''' if "DATA_COLLECTION" in drawn else ""
+    priority_guard = _DROP_UNUSABLE_PRIORITY
+
+    admin_controls = (
+        f"{rendered_controls}\n{stale_choice_guard}{stale_value_guard}"
+        f"{null_choice_guard}"
+        if visibility in ("admin", "both")
+        else ""
+    )
+    valves_class = f'''
+    class Valves(BaseModel):
+        """Admin-level provider routing preferences."""
+{_PRIORITY_FIELD}
+{admin_controls}{priority_guard}'''
+
+    user_valves_class = ""
+    if visibility in ("user", "both"):
+        user_valves_class = f'''
+    class UserValves(BaseModel):
+        """User-level provider routing preferences (can override admin defaults)."""
+{rendered_controls}
+{stale_choice_guard}{stale_value_guard}{null_choice_guard}'''
+
+    # Generate init based on visibility
+    init_body = "        self.log = logging.getLogger(f\"openrouter.provider.{MODEL_SLUG}\")\n        self.log.setLevel(SRC_LOG_LEVELS.get(\"OPENAI\", logging.INFO))"
+    init_body += "\n        self.valves = self.Valves()"
+    if visibility in ("user", "both"):
+        init_body += "\n        self.user_valves = self.UserValves()"
+
+    inlet_logic = FilterManager._generate_inlet_logic(visibility, transport)
+
+    return (f'''"""
+title: Provider: {safe_display_name_escaped}
+author: Open-WebUI-OpenRouter-pipe
+author_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
+id: {filter_id}
+description: Provider routing for {safe_display_name_escaped}
+version: 0.2.0
+license: MIT
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Annotated, Any, Literal, get_args
+
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError, ValidationInfo, field_validator
+
+{_ADAPTER_CACHE}
+
+try:
+    from open_webui.env import SRC_LOG_LEVELS
+except Exception:  # noqa: BLE001 - open_webui.env does filesystem work on import
+    SRC_LOG_LEVELS = {{}}
+
+OWUI_OPENROUTER_PIPE_MARKER = "{safe_marker_escaped}"
+{owner_assignment}
+MODEL_SLUG = "{safe_model_slug_escaped}"
+OPENROUTER_PIPE_VERSION = {pipe_version!r}
+
+# Sentinel value for "no preference" dropdown option
+_NO_PREF = "(no preference)"
+
+# Map display names to provider slugs
+_PROVIDER_MAP: dict[str, str] = {provider_map_code}
+
+# Map ORDER display values to provider slug lists
+_ORDER_MAP: dict[str, list[str]] = {order_map_code}
+
+_warned_stale_choices: set[tuple[str, str, str]] = set()
+_warned_unusable_settings: set[tuple[str, str, str]] = set()
+_warned_unmapped_choices: set[tuple[str, str]] = set()
+
+
+def _warn_stale_choice(field: str, value: Any, kept: str) -> None:
+    marker = (field, str(value), kept)
+    if marker in _warned_stale_choices:
+        return
+    _warned_stale_choices.add(marker)
+    logging.getLogger(MODEL_SLUG).warning(
+        "Provider routing valve %s: no longer offered; using %r",
+        field,
+        kept,
+    )
+
+
+def _warn_unusable_setting(field: str, value: Any, kept: Any) -> None:
+    marker = (field, str(value), str(kept))
+    if marker in _warned_unusable_settings:
+        return
+    _warned_unusable_settings.add(marker)
+    logging.getLogger(MODEL_SLUG).warning(
+        "Provider routing valve %s: stored value is not usable by this filter "
+        "build; using the field default %r",
+        field,
+        kept,
+    )
+
+
+def _warn_unmapped_choice(field: str, value: Any) -> None:
+    marker = (field, str(value))
+    level = logging.DEBUG if marker in _warned_unmapped_choices else logging.WARNING
+    _warned_unmapped_choices.add(marker)
+    logging.getLogger(f"openrouter.provider.{{MODEL_SLUG}}").log(
+        level, "%s value %r not found in the routing map", field, value
+    )
+
+
+class Filter:
+    toggle = {toggle_value}
+{valves_class}{user_valves_class}
+    def __init__(self) -> None:
+{init_body}
+
+    def inlet(
+        self,
+        body: dict[str, Any],
+        __metadata__: dict[str, Any] | None = None,
+        __user__: dict[str, Any] | None = None,
+        __model__: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Inject provider routing preferences into request metadata."""
+{inlet_logic}
+        return body
+''').replace("__PIPE_META_KEY__", _PIPE_METADATA_KEY)
+
+
 _PROVIDER_ROUTING_OWNER_PREFIX = "OWUI_PIPE_OWNER"
 
 
@@ -565,6 +866,8 @@ _REPLACE_IMPORTS_REFUSAL = (
     "would rewrite it back on the next refresh: its unanchored replace of 'from " "utils', "
     "'from " "apps', 'from " "main' or 'from " "config' matched somewhere in the generated text"
 )
+
+_GENERATED_FILTER_PROBE_NAME = "openrouter_generated_filter_validation_probe"
 
 
 class _FilterEnumerationUnavailable(RuntimeError):
@@ -733,6 +1036,7 @@ class FilterManager:
         self._pipe = pipe
         self._valves = valves
         self._provider_routing_state_hash = ""
+        self._web_tools_resolved_id: str | None = None
         self.logger = logger
         self._unresolved_image_filter_ids = frozenset()
         self._retired_image_filter_ids = frozenset()
@@ -918,7 +1222,7 @@ class FilterManager:
             return False, "Empty or invalid source"
 
         try:
-            compile(source, "<generated-filter>", "exec")
+            code = compile(source, "<generated-filter>", "exec")
         except SyntaxError as e:
             if e.lineno:
                 error_msg = f"Line {e.lineno}: {e}"
@@ -944,6 +1248,13 @@ class FilterManager:
 
         if rewritten != source:
             return False, _REPLACE_IMPORTS_REFUSAL
+        try:
+            module = types.ModuleType(f"function_{os.urandom(8).hex()}")
+            module.__dict__["__file__"] = "<generated-filter>"
+            module.__dict__["__name__"] = _GENERATED_FILTER_PROBE_NAME
+            exec(code, module.__dict__)  # noqa: S102 - proving the generated filter loads is this check's purpose
+        except Exception as exc:  # noqa: BLE001 - what a generated source raises is this check's answer, and Open WebUI's loader catches the same set
+            return False, f"The source raised when Open WebUI loaded it: {type(exc).__name__}: {exc}"
         return True, None
 
     # GENERIC FILTER INSTALL / UPDATE
@@ -1677,8 +1988,23 @@ class FilterManager:
     ) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
         from open_webui.models.functions import Functions
 
-        function_id = _OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID
+        memoised_id = self._web_tools_resolved_id
+        function_id = memoised_id or _OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID
         owner = self._install_owner()
+
+        def _warn_id_taken(held_id: str, resolved: str) -> None:
+            self.logger.log(
+                bounded_warn_level(
+                    _warned_stale_filter_rows,
+                    f"web_tools_id_taken:{resolved}", _PER_MODEL_INSTALL_WARN_WINDOW,
+                ),
+                "The OpenRouter Web Tools function id %r is held by a row this "
+                "pipe does not own; the per-user configuration the panel "
+                "members run against is read from %r instead.",
+                held_id,
+                resolved,
+            )
+
         try:
             row = await Functions.get_function_by_id(function_id)
             if (
@@ -1703,18 +2029,11 @@ class FilterManager:
                     row = picked
                     resolved = str(getattr(picked, "id", "") or "")
                     if resolved and resolved != function_id:
-                        self.logger.log(
-                            bounded_warn_level(
-                                _warned_stale_filter_rows,
-                                f"web_tools_id_taken:{resolved}", _PER_MODEL_INSTALL_WARN_WINDOW,
-                            ),
-                            "The OpenRouter Web Tools function id %r is held by a row this "
-                            "pipe does not own; the per-user configuration the panel "
-                            "members run against is read from %r instead.",
-                            function_id,
-                            resolved,
-                        )
+                        _warn_id_taken(function_id, resolved)
                         function_id = resolved
+                        self._web_tools_resolved_id = resolved
+            elif memoised_id and memoised_id != _OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID:
+                _warn_id_taken(_OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID, function_id)
         except Exception as exc:
             self.logger.debug("Web tools filter lookup failed: %s", exc, exc_info=True)
             return None
@@ -2226,9 +2545,12 @@ class FilterManager:
         desired_source = render_image_gen_filter_source(
             spec, catalog_match=catalog_match, selected_model=model_id
         ).strip() + "\n"
-        valid, error = self.validate_filter_source(desired_source)
-        if not valid:
-            raise ValueError(f"Generated OpenRouter Image Generation filter is invalid: {error}")
+        if not getattr(self.valves, "AUTO_INSTALL_IMAGE_GEN_FILTER", False):
+            valid, error = self.validate_filter_source(desired_source)
+            if not valid:
+                raise ValueError(
+                    f"Generated OpenRouter Image Generation filter is invalid: {error}"
+                )
 
         function_id, _outcome = await self._ensure_filter_installed(
             desired_source=desired_source,
@@ -3845,292 +4167,20 @@ __KEEP_WHAT_STILL_FITS__
             short_name: Human-readable model name for filter title (e.g., 'GPT-4o')
             provider_names: Mapping of provider slug to display name (e.g., {'openai': 'OpenAI'})
         """
-        safe_id = FilterManager.sanitize_model_for_filter_id(model_slug)
-        filter_id = f"{_PROVIDER_ROUTING_FILTER_ID_PREFIX}{safe_id}"
-
         from open_webui_openrouter_pipe import __version__
 
-        if not isinstance(model_slug, str) or not model_slug:
-            raise ValueError("model_slug must be a non-empty string")
-        safe_model_slug_escaped = json.dumps(model_slug)[1:-1]
-
-        display_name = short_name.strip() if short_name else model_slug.split("/")[-1]
-        safe_display_name = FilterManager.validate_provider_name(display_name, slug=model_slug)
-        safe_display_name_escaped = json.dumps(safe_display_name)[1:-1]
-
-        marker = f"{_PROVIDER_ROUTING_FILTER_MARKER_PREFIX}{model_slug}:{_PROVIDER_ROUTING_FILTER_MARKER_VERSION}"
-        safe_marker_escaped = json.dumps(marker)[1:-1]
-        owner_assignment = f"{_PROVIDER_ROUTING_OWNER_PREFIX} = {json.dumps(str(owner))}" if owner else ""
-
-        safe_providers = [
-            p for p in providers
-            if isinstance(p, str) and _PROVIDER_SLUG_PATTERN.fullmatch(p) and len(p) <= 64
-        ][:_PROVIDER_ROUTING_MAX_PROVIDERS]
-
-        prov_names = provider_names or {}
-        provider_display_options: list[str] = []
-        provider_slug_map_entries: list[str] = []
-        display_to_slug: dict[str, str] = {}
-        seen_labels: set[str] = set()
-        for pslug in safe_providers:
-            disp = prov_names.get(pslug, pslug.replace("-", " ").title())
-            safe_disp = FilterManager.validate_provider_name(disp, slug=pslug)
-            if safe_disp in seen_labels:
-                safe_disp = f"{safe_disp} ({pslug})"
-            seen_labels.add(safe_disp)
-            provider_display_options.append(safe_disp)
-            display_to_slug[safe_disp] = pslug
-            provider_slug_map_entries.append(f'    {FilterManager.safe_literal_string(safe_disp)}: {FilterManager.safe_literal_string(pslug)}')
-
-        no_pref = "(no preference)"
-        only_ignore_options = [no_pref] + provider_display_options
-        only_ignore_literal = ", ".join(FilterManager.safe_literal_string(opt) for opt in only_ignore_options)
-
-        # Build provider map code block
-        provider_map_code = "{\n" + ",\n".join(provider_slug_map_entries) + "\n}" if provider_slug_map_entries else "{}"
-
-        order_display_options: list[str] = []
-        order_map_entries: list[str] = []
-
-        if len(provider_display_options) <= _PROVIDER_ROUTING_ORDER_PERMUTATION_MAX:
-            for perm in itertools.permutations(provider_display_options):
-                perm_disp = " > ".join(perm)
-                order_display_options.append(perm_disp)
-                perm_slugs = [display_to_slug[d] for d in perm]
-                slugs_literal = ", ".join(FilterManager.safe_literal_string(s) for s in perm_slugs)
-                order_map_entries.append(f'    {FilterManager.safe_literal_string(perm_disp)}: [{slugs_literal}]')
-        else:
-            for disp in provider_display_options:
-                first_disp = f"{disp} first"
-                order_display_options.append(first_disp)
-                slug_literal = FilterManager.safe_literal_string(display_to_slug[disp])
-                order_map_entries.append(f'    {FilterManager.safe_literal_string(first_disp)}: [{slug_literal}]')
-
-        order_options = [no_pref] + order_display_options
-        order_literal = ", ".join(FilterManager.safe_literal_string(opt) for opt in order_options)
-
-        # Build order map code block
-        order_map_code = "{\n" + ",\n".join(order_map_entries) + "\n}" if order_map_entries else "{}"
-
-        safe_quantizations = [
-            q for q in quantizations
-            if isinstance(q, str) and _QUANTIZATION_PATTERN.fullmatch(q) and len(q) <= 32
-        ][:_PROVIDER_ROUTING_MAX_PROVIDERS]
-
-        quant_options = [no_pref] + safe_quantizations
-        quantizations_literal = ", ".join(FilterManager.safe_literal_string(q) for q in quant_options)
-
-        toggle_value = "False" if visibility == "admin" else "True"
-
-        drawn = FilterManager._routing_controls(transport)
-        control_lines = {
-            "ORDER": f'        ORDER: Literal[{order_literal}] = Field(default=_NO_PREF, description="Provider priority order")',
-            "ALLOW_FALLBACKS": '        ALLOW_FALLBACKS: bool = Field(default=True, description="Allow backup providers if preferred unavailable")',
-            "REQUIRE_PARAMETERS": '        REQUIRE_PARAMETERS: bool = Field(default=False, description="Only use providers supporting all request params")',
-            "DATA_COLLECTION": '        DATA_COLLECTION: Literal[_NO_PREF, "allow", "deny"] = Field(default=_NO_PREF, description="Data collection policy; a stored no-preference written as a null is read as no preference, and a value outside the three options is still refused")',
-            "ZDR": '        ZDR: bool = Field(default=False, description="Zero Data Retention - only ZDR endpoints")',
-            "ENFORCE_DISTILLABLE_TEXT": '        ENFORCE_DISTILLABLE_TEXT: bool = Field(default=False, description="Only use providers whose author allows text distillation")',
-            "ONLY": f'        ONLY: Literal[{only_ignore_literal}] = Field(default=_NO_PREF, description="Use only this provider")',
-            "IGNORE": f'        IGNORE: Literal[{only_ignore_literal}] = Field(default=_NO_PREF, description="Avoid this provider")',
-            "QUANTIZATION": f'        QUANTIZATION: Literal[{quantizations_literal}] = Field(default=_NO_PREF, description="Filter by quantization")',
-            "SORT": '        SORT: Literal[_NO_PREF, "price", "throughput", "latency", "exacto"] = Field(default=_NO_PREF, description="Sort providers by; exacto favours endpoints that reproduce the model most faithfully")',
-            "SORT_PARTITION": '        SORT_PARTITION: Literal[_NO_PREF, "model", "none"] = Field(default=_NO_PREF, description="Whether sorting groups endpoints by model first (model) or ranks them all together (none)")',
-            "MIN_THROUGHPUT": '        MIN_THROUGHPUT: float = Field(default=0, ge=0, description="Min throughput (tokens/sec); 0 clears the admin default, omit for no constraint")',
-            "MAX_LATENCY": '        MAX_LATENCY: float = Field(default=0, ge=0, description="Max latency (seconds); 0 clears the admin default, omit for no constraint")',
-            "MAX_PRICE_PROMPT": '        MAX_PRICE_PROMPT: float = Field(default=0, ge=0, description="Max price for prompt ($/M tokens); 0 clears the admin default, omit for no limit")',
-            "MAX_PRICE_COMPLETION": '        MAX_PRICE_COMPLETION: float = Field(default=0, ge=0, description="Max price for completion ($/M tokens); 0 clears the admin default, omit for no limit")',
-            "MAX_PRICE_IMAGE": '        MAX_PRICE_IMAGE: float = Field(default=0, ge=0, description="Max price per image ($/image); 0 clears the admin default, omit for no limit")',
-            "MAX_PRICE_AUDIO": '        MAX_PRICE_AUDIO: float = Field(default=0, ge=0, description="Max price for audio ($/unit); 0 clears the admin default, omit for no limit")',
-            "MAX_PRICE_REQUEST": '        MAX_PRICE_REQUEST: float = Field(default=0, ge=0, description="Max price per request ($/request); 0 clears the admin default, omit for no limit")',
-        }
-        if set(control_lines) != set(_ROUTING_CONTROL_KEYS):
-            raise ValueError(
-                "every routing control needs both a field and a request field to write; "
-                f"unpaired: {sorted(set(control_lines) ^ set(_ROUTING_CONTROL_KEYS))}"
-            )
-        rendered_controls = "\n".join(
-            line for name, line in control_lines.items() if name in drawn
+        return _routing_source_memo(
+            model_slug,
+            tuple(providers),
+            tuple(quantizations),
+            visibility,
+            short_name,
+            tuple(sorted((provider_names or {}).items())) or None,
+            transport,
+            owner,
+            __version__,
         )
-        guarded = [
-            name
-            for name in ("ORDER", "ONLY", "IGNORE", "QUANTIZATION", "SORT", "SORT_PARTITION")
-            if name in drawn
-        ]
-        guarded_literal = ", ".join(json.dumps(name) for name in guarded)
-        stale_choice_guard = f'''
-        @field_validator({guarded_literal}, mode="before")
-        @classmethod
-        def _coerce_stale_choice(cls, value: Any, info: ValidationInfo) -> Any:
-            options = get_args(cls.model_fields[info.field_name].annotation)
-            if value in options:
-                return value
-            kept = _NO_PREF
-            if info.field_name == "ORDER" and isinstance(value, str):
-                head = value.split(" > ")[0].strip()
-                if head and f"{{head}} first" in options:
-                    kept = f"{{head}} first"
-            _warn_stale_choice(info.field_name, value, kept)
-            return kept
-''' if guarded else ""
-        dropped = sorted(
-            name for name in drawn
-            if name not in guarded and name != "DATA_COLLECTION"
-        )
-        dropped_literal = ", ".join(json.dumps(name) for name in dropped)
-        stale_value_guard = f'''
-        @field_validator({dropped_literal}, mode="before")
-        @classmethod
-        def _drop_unusable_setting(cls, value: Any, info: ValidationInfo) -> Any:
-            field = cls.model_fields[info.field_name]
-            table = _adapters_for(cls)
-            adapter = table.get(info.field_name)
-            if adapter is None:
-                metadata = field.metadata
-                annotated = (
-                    Annotated[(field.annotation, *metadata)]
-                    if metadata
-                    else field.annotation
-                )
-                adapter = table[info.field_name] = TypeAdapter(annotated)
-            try:
-                adapter.validate_python(value)
-            except ValidationError:
-                _warn_unusable_setting(info.field_name, value, field.get_default())
-                return field.get_default(call_default_factory=True)
-            return value
-''' if dropped else ""
-        null_choice_guard = '''
-        @field_validator("DATA_COLLECTION", mode="before")
-        @classmethod
-        def _null_means_no_preference(cls, value: Any, info: ValidationInfo) -> Any:
-            if value is None:
-                return _NO_PREF
-            return value
-''' if "DATA_COLLECTION" in drawn else ""
-        priority_guard = _DROP_UNUSABLE_PRIORITY
 
-        admin_controls = (
-            f"{rendered_controls}\n{stale_choice_guard}{stale_value_guard}"
-            f"{null_choice_guard}"
-            if visibility in ("admin", "both")
-            else ""
-        )
-        valves_class = f'''
-    class Valves(BaseModel):
-        """Admin-level provider routing preferences."""
-{_PRIORITY_FIELD}
-{admin_controls}{priority_guard}'''
-
-        user_valves_class = ""
-        if visibility in ("user", "both"):
-            user_valves_class = f'''
-    class UserValves(BaseModel):
-        """User-level provider routing preferences (can override admin defaults)."""
-{rendered_controls}
-{stale_choice_guard}{stale_value_guard}{null_choice_guard}'''
-
-        # Generate init based on visibility
-        init_body = "        self.log = logging.getLogger(f\"openrouter.provider.{MODEL_SLUG}\")\n        self.log.setLevel(SRC_LOG_LEVELS.get(\"OPENAI\", logging.INFO))"
-        init_body += "\n        self.valves = self.Valves()"
-        if visibility in ("user", "both"):
-            init_body += "\n        self.user_valves = self.UserValves()"
-
-        inlet_logic = FilterManager._generate_inlet_logic(visibility, transport)
-
-        return (f'''"""
-title: Provider: {safe_display_name_escaped}
-author: Open-WebUI-OpenRouter-pipe
-author_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
-id: {filter_id}
-description: Provider routing for {safe_display_name_escaped}
-version: 0.2.0
-license: MIT
-"""
-
-from __future__ import annotations
-
-import logging
-from typing import Annotated, Any, Literal, get_args
-
-from pydantic import BaseModel, Field, TypeAdapter, ValidationError, ValidationInfo, field_validator
-
-{_ADAPTER_CACHE}
-
-try:
-    from open_webui.env import SRC_LOG_LEVELS
-except Exception:  # noqa: BLE001 - open_webui.env does filesystem work on import
-    SRC_LOG_LEVELS = {{}}
-
-OWUI_OPENROUTER_PIPE_MARKER = "{safe_marker_escaped}"
-{owner_assignment}
-MODEL_SLUG = "{safe_model_slug_escaped}"
-OPENROUTER_PIPE_VERSION = {__version__!r}
-
-# Sentinel value for "no preference" dropdown option
-_NO_PREF = "(no preference)"
-
-# Map display names to provider slugs
-_PROVIDER_MAP: dict[str, str] = {provider_map_code}
-
-# Map ORDER display values to provider slug lists
-_ORDER_MAP: dict[str, list[str]] = {order_map_code}
-
-_warned_stale_choices: set[tuple[str, str, str]] = set()
-_warned_unusable_settings: set[tuple[str, str, str]] = set()
-_warned_unmapped_choices: set[tuple[str, str]] = set()
-
-
-def _warn_stale_choice(field: str, value: Any, kept: str) -> None:
-    marker = (field, str(value), kept)
-    if marker in _warned_stale_choices:
-        return
-    _warned_stale_choices.add(marker)
-    logging.getLogger(MODEL_SLUG).warning(
-        "Provider routing valve %s: no longer offered; using %r",
-        field,
-        kept,
-    )
-
-
-def _warn_unusable_setting(field: str, value: Any, kept: Any) -> None:
-    marker = (field, str(value), str(kept))
-    if marker in _warned_unusable_settings:
-        return
-    _warned_unusable_settings.add(marker)
-    logging.getLogger(MODEL_SLUG).warning(
-        "Provider routing valve %s: stored value is not usable by this filter "
-        "build; using the field default %r",
-        field,
-        kept,
-    )
-
-
-def _warn_unmapped_choice(field: str, value: Any) -> None:
-    marker = (field, str(value))
-    level = logging.DEBUG if marker in _warned_unmapped_choices else logging.WARNING
-    _warned_unmapped_choices.add(marker)
-    logging.getLogger(f"openrouter.provider.{{MODEL_SLUG}}").log(
-        level, "%s value %r not found in the routing map", field, value
-    )
-
-
-class Filter:
-    toggle = {toggle_value}
-{valves_class}{user_valves_class}
-    def __init__(self) -> None:
-{init_body}
-
-    def inlet(
-        self,
-        body: dict[str, Any],
-        __metadata__: dict[str, Any] | None = None,
-        __user__: dict[str, Any] | None = None,
-        __model__: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """Inject provider routing preferences into request metadata."""
-{inlet_logic}
-        return body
-''').replace("__PIPE_META_KEY__", _PIPE_METADATA_KEY)
 
     async def ensure_provider_routing_filters(
         self,
@@ -4211,28 +4261,30 @@ class Filter:
         filters_by_slug: dict[str, list[Any]] = {}
         for f in all_filters:
             content = getattr(f, "content", "") or ""
-            if _PROVIDER_ROUTING_FILTER_MARKER_PREFIX in content:
-                # Extract model slug from marker
-                for line in content.split("\n"):
-                    if _PROVIDER_ROUTING_FILTER_MARKER_PREFIX in line:
-                        try:
-                            marker_val = line.split("=", 1)[1].strip().strip('"').strip("'")
-                            parts = marker_val.split(":", 2)
-                            if (
-                                len(parts) == 3
-                                and parts[0] == _PIPE_METADATA_KEY
-                                and parts[1] == "provider_routing"
-                                and ":" in parts[2]
-                            ):
-                                slug = parts[2].rsplit(":", 1)[0]
-                                if slug:
-                                    filters_by_slug.setdefault(slug, []).append(f)
-                        except IndexError:
-                            self.logger.debug(
-                                "Ignoring malformed provider routing marker in filter %s",
-                                getattr(f, "id", "?"),
-                            )
-                        break
+            marker_at = content.find(_PROVIDER_ROUTING_FILTER_MARKER_PREFIX)
+            if marker_at >= 0:
+                line = content[
+                    _line_break_before(content, marker_at) : _line_break_after(
+                        content, marker_at
+                    )
+                ]
+                try:
+                    marker_val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    parts = marker_val.split(":", 2)
+                    if (
+                        len(parts) == 3
+                        and parts[0] == _PIPE_METADATA_KEY
+                        and parts[1] == "provider_routing"
+                        and ":" in parts[2]
+                    ):
+                        slug = parts[2].rsplit(":", 1)[0]
+                        if slug:
+                            filters_by_slug.setdefault(slug, []).append(f)
+                except IndexError:
+                    self.logger.debug(
+                        "Ignoring malformed provider routing marker in filter %s",
+                        getattr(f, "id", "?"),
+                    )
 
         existing_filters: dict[str, Any] = {}
         orphan_filters: list[Any] = []

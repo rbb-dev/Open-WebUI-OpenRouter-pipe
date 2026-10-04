@@ -655,6 +655,10 @@ def _admission_bound(max_concurrent_requests: int, queue_maxsize: int) -> int:
     return max_concurrent_requests + queue_maxsize + 2
 
 
+def _warmup_identity(api_key: str | None, base_url: str | None) -> str:
+    return _fingerprint(f"{api_key or ''}\n{base_url or ''}")
+
+
 def _model_rows(selected_models: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         {"id": m["id"], "name": m.get("name", m["id"])}
@@ -1028,7 +1032,7 @@ class Pipe:
             return
 
         assert api_key_value is not None
-        if _fingerprint(api_key_value) != self._warmup_failed_key:
+        if _warmup_identity(api_key_value, self.valves.BASE_URL) != self._warmup_failed_key:
             self._warmup_retry_at = 0.0
         elif time.monotonic() < self._warmup_retry_at:
             return
@@ -3278,7 +3282,7 @@ class Pipe:
         except Exception as exc:  # pragma: no cover - depends on IO
             self.logger.warning("OpenRouter warmup failed: %s", exc, exc_info=True)
             self._warmup_failed = True
-            self._warmup_failed_key = _fingerprint(api_key or "")
+            self._warmup_failed_key = _warmup_identity(api_key, self.valves.BASE_URL)
             self._warmup_retry_at = time.monotonic() + _WARMUP_RETRY_SECONDS
             self._startup_checks_complete = False
             self._startup_checks_pending = True
@@ -3856,6 +3860,8 @@ class Pipe:
                     with contextlib.suppress(Exception):
                         await session.close()
             finally:
+                if session_rid:
+                    SessionLogger.drain_queued_for(session_rid)
                 SessionLogger.release(session_rid)
                 if job.counter_state is not None:
                     Pipe._release_stream_counter(job.pipe, job.counter_state)

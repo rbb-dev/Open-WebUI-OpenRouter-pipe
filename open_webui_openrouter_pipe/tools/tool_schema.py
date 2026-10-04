@@ -54,7 +54,11 @@ _JSON_TYPE_OF_VALUE = {
 }
 
 
-def _type_from_pinned_values(node: dict[str, Any]) -> str | None:
+def _declares_composition(node: dict[str, Any]) -> bool:
+    return any(key in node for key in _COMPOSITION_KEYS)
+
+
+def _pinned_json_kinds(node: dict[str, Any]) -> list[str] | None:
     if isinstance(node.get("enum"), list):
         values = node["enum"]
     elif "const" in node:
@@ -63,15 +67,23 @@ def _type_from_pinned_values(node: dict[str, Any]) -> str | None:
         return None
     if not values:
         return None
-    kinds: set[str] = set()
-    for value in values:
-        kind = _JSON_TYPE_OF_VALUE.get(type(value))
-        if kind is None:
-            return None
-        kinds.add(kind)
-    if kinds == {"integer", "number"}:
-        return "number"
-    return kinds.pop() if len(kinds) == 1 else None
+    kinds: set[str] = {
+        kind for kind in (_JSON_TYPE_OF_VALUE.get(type(value)) for value in values)
+        if kind is not None
+    }
+    if "number" in kinds:
+        kinds.discard("integer")
+    return sorted(kinds)
+
+
+def _pin_has_no_json_type(node: dict[str, Any]) -> bool:
+    if isinstance(node.get("enum"), list):
+        values = node["enum"]
+    elif "const" in node:
+        values = [node["const"]]
+    else:
+        return False
+    return any(_JSON_TYPE_OF_VALUE.get(type(value)) is None for value in values)
 
 
 def _strip_unsupported(node: dict[str, Any]) -> None:
@@ -186,7 +198,8 @@ def _inline_allof_once(
             node["properties"] = combined_props
         else:
             node["properties"] = merged_props
-        node.setdefault("type", "object")
+        if not _declares_composition(node):
+            node.setdefault("type", "object")
     if merged_required:
         existing_required = node.get("required")
         combined = list(existing_required) if isinstance(existing_required, list) else []
@@ -222,7 +235,15 @@ def _declared_parameter_names(parameters: Any) -> frozenset[str]:
     _resolve_root_refs(node, defs_lookup, [64])
     if isinstance(node.get("properties"), dict):
         return frozenset(k for k in node["properties"] if isinstance(k, str))
-    return frozenset()
+    names: set[str] = set()
+    if isinstance(node.get("properties"), dict):
+        names |= {k for k in node["properties"] if isinstance(k, str)}
+    branches = node.get("allOf")
+    if isinstance(branches, list):
+        for branch in branches:
+            if isinstance(branch, dict) and isinstance(branch.get("properties"), dict):
+                names |= {k for k in branch["properties"] if isinstance(k, str)}
+    return frozenset(names)
 
 
 def _advertised_root_params(parameters: Any, *, strictify: bool = True) -> set[str]:
@@ -531,52 +552,54 @@ def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
                 if not isinstance(p, dict):
                     continue
 
+                had_default = "default" in p and p["default"] is not None
                 _strip_unsupported(p)
                 _inline_allof(p, defs_lookup, resolve_budget)
                 _strip_unsupported(p)
                 if "$ref" in p:
-                    if name in optional_candidates:
+                    if name in optional_candidates and not had_default:
                         _make_optional_nullable(p)
                     continue
 
                 # Ensure every property schema has a type key (strict mode requirement)
-                if "type" not in p:
-                    pinned_type = _type_from_pinned_values(p)
-                    if pinned_type is not None:
-                        p["type"] = pinned_type
-                if "type" not in p:
-                    schema_structure_keys = {"properties", "items", "anyOf", "oneOf", "allOf"}
-                    has_nested_structure = any(k in p for k in schema_structure_keys)
+                if "type" not in p and not _declares_composition(p):
+                    pinned_kinds = _pinned_json_kinds(p)
+                    if pinned_kinds is not None:
+                        if not _pin_has_no_json_type(p):
+                            p["type"] = pinned_kinds[0] if len(pinned_kinds) == 1 else pinned_kinds
+                    else:
+                        schema_structure_keys = {"properties", "items", "anyOf", "oneOf", "allOf"}
+                        has_nested_structure = any(k in p for k in schema_structure_keys)
 
-                    if has_nested_structure:
-                        if "properties" in p:
+                        if has_nested_structure:
+                            if "properties" in p:
+                                p["type"] = "object"
+                                logger.debug(
+                                    "Added inferred type 'object' to property '%s' which has 'properties' but no explicit type. "
+                                    "Consider fixing the schema definition at the source.",
+                                    name
+                                )
+                            elif "items" in p:
+                                p["type"] = "array"
+                                logger.debug(
+                                    "Added inferred type 'array' to property '%s' which has 'items' but no explicit type. "
+                                    "Consider fixing the schema definition at the source.",
+                                    name
+                                )
+                            # For anyOf/oneOf/allOf without type, don't add a default
+                            # Let OpenAI validation handle these complex cases
+                        else:
+                            # Empty or minimal schema (e.g., {"description": "..."} or just {})
+                            # Default to object as the safest, most flexible type
                             p["type"] = "object"
                             logger.debug(
-                                "Added inferred type 'object' to property '%s' which has 'properties' but no explicit type. "
-                                "Consider fixing the schema definition at the source.",
+                                "Added default type 'object' to property '%s' with no type or schema structure. "
+                                "This indicates an incomplete schema definition that should be fixed at the source.",
                                 name
                             )
-                        elif "items" in p:
-                            p["type"] = "array"
-                            logger.debug(
-                                "Added inferred type 'array' to property '%s' which has 'items' but no explicit type. "
-                                "Consider fixing the schema definition at the source.",
-                                name
-                            )
-                        # For anyOf/oneOf/allOf without type, don't add a default
-                        # Let OpenAI validation handle these complex cases
-                    else:
-                        # Empty or minimal schema (e.g., {"description": "..."} or just {})
-                        # Default to object as the safest, most flexible type
-                        p["type"] = "object"
-                        logger.debug(
-                            "Added default type 'object' to property '%s' with no type or schema structure. "
-                            "This indicates an incomplete schema definition that should be fixed at the source.",
-                            name
-                        )
 
                 # Handle optional fields by adding null to type
-                if name in optional_candidates:
+                if name in optional_candidates and not had_default:
                     _make_optional_nullable(p)
                 stack.append(p)
 
@@ -588,13 +611,17 @@ def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
                 and "properties" not in items
                 and "items" not in items
                 and "$ref" not in items
-                and not any(k in items for k in _COMPOSITION_KEYS)
+                and not _declares_composition(items)
             ):
-                items["type"] = _type_from_pinned_values(items) or "object"
-                logger.debug(
-                    "Added default type '%s' to items schema with no type or schema structure",
-                    items["type"],
-                )
+                pinned_kinds = _pinned_json_kinds(items)
+                if pinned_kinds is None:
+                    items["type"] = "object"
+                    logger.debug(
+                        "Added default type '%s' to items schema with no type or schema structure",
+                        items["type"],
+                    )
+                elif not _pin_has_no_json_type(items):
+                    items["type"] = pinned_kinds[0] if len(pinned_kinds) == 1 else pinned_kinds
             if _is_free_form_items_node(items):
                 items[_FREE_FORM_ITEMS_KEY] = True
             stack.append(items)
@@ -614,12 +641,16 @@ def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
                             and "properties" not in br
                             and "items" not in br
                             and "$ref" not in br
-                            and not any(k in br for k in _COMPOSITION_KEYS)
+                            and not _declares_composition(br)
                         ):
-                            br["type"] = _type_from_pinned_values(br) or "object"
-                            logger.debug(
-                                "Added default type '%s' to empty %s branch", br["type"], key
-                            )
+                            pinned_kinds = _pinned_json_kinds(br)
+                            if pinned_kinds is None:
+                                br["type"] = "object"
+                                logger.debug(
+                                    "Added default type '%s' to empty %s branch", br["type"], key
+                                )
+                            elif not _pin_has_no_json_type(br):
+                                br["type"] = pinned_kinds[0] if len(pinned_kinds) == 1 else pinned_kinds
                         stack.append(br)
 
     return schema

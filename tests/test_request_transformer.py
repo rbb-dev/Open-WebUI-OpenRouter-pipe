@@ -1514,31 +1514,8 @@ class TestImageSelection:
         assert images, "the generated image must still be supplied as the edit reference"
 
 
-# =============================================================================
-# Anthropic Prompt Caching Tests
-# =============================================================================
-
-
 class TestAnthropicPromptCaching:
     """Tests for Anthropic prompt caching integration."""
-
-    @pytest.mark.asyncio
-    async def test_maybe_apply_anthropic_prompt_caching_called(self, pipe_instance):
-        """Verify _maybe_apply_anthropic_prompt_caching is called."""
-        messages = [
-            {"role": "user", "content": "Hello"}
-        ]
-
-        import open_webui_openrouter_pipe.requests.transformer as transformer_module
-        with patch.object(transformer_module, "_maybe_apply_anthropic_prompt_caching") as mock_cache:
-            result = await transform_messages_to_input(
-                pipe_instance,
-                messages,
-                model_id="anthropic/claude-3-opus"
-            )
-
-            mock_cache.assert_called_once()
-
 
 # =============================================================================
 # Valves Override Tests

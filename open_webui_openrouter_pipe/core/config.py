@@ -1666,7 +1666,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "path. A reasoning.max_tokens written as a number in a string is read as that number, and one that "
             "expresses no number is left out of the request. "
             "A request that carries its own verbosity keeps it on both endpoints, whichever of the two "
-            "spellings it used, and this setting never overrides it. Use 'xhigh' when maximum depth is desired "
+            "spellings it used, and this setting never overrides it. When a request sets both spellings and "
+            "they disagree, text.verbosity is the one honoured, on both endpoints. Use 'xhigh' when maximum "
+            "depth is desired "
             "(only on supporting models)."
         ),
     )
@@ -1809,10 +1811,18 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "resolved and its properties advertised, as far as the resolver's depth and budget reach. "
             "Every property becomes required, and an optional one instead accepts null - a `null` beside the type it "
             "already had, or, for a node that states no type of its own such as a bare `$ref` or an `anyOf`/`oneOf`, a "
-            "`null` branch added to it with the node itself kept as the first branch. A missing field type is filled in "
+            "`null` branch added to it with the node itself kept as the first branch. A property that arrived with a "
+            "concrete `default` is the one exemption: the author had already answered it, so it keeps its concrete type "
+            "and stays required, because a `null` is the opposite of the default that was written. A `default` of `null` "
+            "is not a default - Open WebUI's own schema cleaner deletes exactly that one - so such a property is still "
+            "made nullable. A missing field type is filled in "
             "too: a property, an array's `items` and an `anyOf`/`oneOf` branch whose values are pinned by `enum` or "
             "`const` is given the type those values have - `string`, `integer`, `number`, `boolean` or `null` - and one "
-            "that pins no values is given `object`, or `array` where it declares `items`. A node that declares "
+            "whose `enum` pins values of more than one of those types is given the union of them, written in a stable "
+            "order, so every value the `enum` pins is a value the schema admits. One that pins no values at all - an "
+            "empty `enum` included - is given `object`, or `array` where it declares `items`, and one that pins a "
+            "container value has no honest type to be given: it keeps its `enum` and is left without a `type`, and so "
+            "unsealed. A node that declares "
             "`anyOf`, `oneOf` or `allOf` states its own type, so none of those three places gives it one: the "
             "composition is left as it was written rather than constrained by a type beside it that no value would "
             "satisfy. "
@@ -1834,8 +1844,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "properties, can be rejected by a strict provider; turn this valve off for such a tool. "
             "When False, the schema is forwarded untouched and the executor still filters a call's arguments "
             "against the names that schema declares, with a root carried by `$ref` or `allOf` resolved for that "
-            "purpose only; a root that is not an object and is not advertised under the pipe's `value` envelope "
-            "declares no names, so nothing is delivered for it."
+            "purpose only and the top-level property names an `allOf` branch spells out in plain text still "
+            "declared where the resolver declines that root; a root that is not an object and is not advertised "
+            "under the pipe's `value` envelope declares no names, so nothing is delivered for it."
         ),
     )
     MAX_FUNCTION_CALL_LOOPS: int = Field(
@@ -2013,7 +2024,8 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         description=(
             "How often (in seconds) to check the database for log pieces waiting to be packed and build one zip per message. "
             "The same number is the wall-clock budget one pass gets, counted from when the pass starts assembling: it takes no new turn once this much time has elapsed, "
-            "and leaves the rest of its window to the next pass. The pass spends its stale-lock sweep and its two candidate listings before that window opens, "
+            "and leaves the rest of its window to the next pass. The budget stops the re-listing too: once this much time has elapsed the pass issues no further candidate listing, "
+            "and the lock-contended turns it set aside are offered again by the next pass. The pass spends its stale-lock sweep and its two candidate listings before that window opens, "
             "so on a slow host a pass can run longer than this number. Read on every pass, so a change applies with no restart."
         ),
     )
@@ -2033,7 +2045,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "the pipe never archives — does not consume a slot, and is offered at most once per listing per pass, so a "
             "stranded one cannot hold the window. A turn whose lock another worker is already holding does the same for "
             "the rest of that pass: the pass sets it aside and lists again without it, so a contended head cannot shut the "
-            "window either — which is why a pass that meets one may offer more than this number across its re-listings. "
+            "window either. A pass lists its candidates at most twice, so it may offer at most twice this number. "
             "A pass then assembles as many of those as SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS of wall clock allows, "
             "leaving the rest staged for the next pass."
         ),
@@ -2541,7 +2553,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     # Model metadata synchronization
     UPDATE_MODEL_IMAGES: bool = Field(
         default=True,
-        description="When enabled, automatically sync profile image URLs from OpenRouter's frontend catalog to Open WebUI model metadata, falling back to a model maker's logo when the catalog answered and has no icon for that model. A pass whose catalog read did not answer leaves every stored icon alone, whoever put it there, and the next pass that does answer applies the fallback. While the remembered source URL is unchanged the download is skipped, and for a model taking its maker's logo the maker's page is not re-fetched either. The two sweeps this runs -- the maker pages, and the icon downloads -- are each bounded as a whole, not only per read, so a slow icon host delays one pass by a bounded time rather than by the size of the catalogue. A model the budget abandoned keeps the icon it already has and is offered again on the next pass. Disable to manage images manually.",
+        description="When enabled, automatically sync profile image URLs from OpenRouter's frontend catalog to Open WebUI model metadata, falling back to a model maker's logo when the catalog answered and has no icon for that model. A pass whose catalog read did not answer leaves every stored icon alone, whoever put it there, and the next pass that does answer applies the fallback. While the remembered source URL is unchanged the download is skipped, and for a model taking its maker's logo the maker's page is not re-fetched either. The two sweeps this runs -- the maker pages, and the icon downloads -- are each bounded as a whole, not only per read, so a slow icon host delays one pass by a bounded time rather than by the size of the catalogue. A model the budget abandoned keeps the icon it already has and is offered again on the next sync-key change — a new catalogue fetch, a settings change such as a valve edit, or a restart. Disable to manage images manually.",
     )
     UPDATE_MODEL_CAPABILITIES: bool = Field(
         default=True,
@@ -3398,7 +3410,7 @@ class UserValves(BaseModel):
     REASONING_EFFORT: Literal["none", "minimal", "low", "medium", "high", "xhigh"] = Field(
         default="medium",
         title="Reasoning depth",
-        description="Choose how much thinking the AI should do before answering (higher depth is slower but more thorough). 'none' switches reasoning off where the model allows it; a model that always reasons gets the lightest level its catalog entry lists other than `none` instead - the lowest of the gateway's when that entry accepts every level, and no level at all when it exposes no effort selection. A request that only hides the reasoning trace (`reasoning.exclude` of `true`) is not one of these offs: it keeps the depth you chose here and draws no status line. A request that carries its own verbosity keeps it on both endpoints, whichever of the two spellings it used. Use 'xhigh' for maximum depth when available.",
+        description="Choose how much thinking the AI should do before answering (higher depth is slower but more thorough). 'none' switches reasoning off where the model allows it; a model that always reasons gets the lightest level its catalog entry lists other than `none` instead - the lowest of the gateway's when that entry accepts every level, and no level at all when it exposes no effort selection. A request that only hides the reasoning trace (`reasoning.exclude` of `true`) is not one of these offs: it keeps the depth you chose here and draws no status line. A request that carries its own verbosity keeps it on both endpoints, whichever of the two spellings it used; when a request sets both spellings and they disagree, text.verbosity is the one honoured, on both endpoints. Use 'xhigh' for maximum depth when available.",
     )
     REASONING_SUMMARY_MODE: Literal["auto", "concise", "detailed", "disabled"] = Field(
         default="auto",

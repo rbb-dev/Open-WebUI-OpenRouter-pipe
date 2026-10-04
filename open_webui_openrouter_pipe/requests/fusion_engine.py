@@ -61,7 +61,6 @@ def _member_faulted_after_send() -> str:
 
 
 _LOG_DRAIN_TIMEOUT_SECONDS = 1.0
-_GENERATION_COMPLETE_DISPATCH_TIMEOUT_SECONDS = 5.0
 
 
 async def _await_own_records_processed(rid: str) -> None:
@@ -76,14 +75,6 @@ async def _drop_member_log_buffer(rid: str) -> None:
                 _await_own_records_processed(rid), _LOG_DRAIN_TIMEOUT_SECONDS
             )
     SessionLogger.release(rid)
-
-
-async def _settle_member_dispatch(sink: dict[str, Any]) -> None:
-    pending = sink.pop("generation_complete_dispatch", None)
-    if pending is None:
-        return
-    with contextlib.suppress(Exception, asyncio.CancelledError):
-        await asyncio.wait_for(pending, _GENERATION_COMPLETE_DISPATCH_TIMEOUT_SECONDS)
 
 
 def _inner_metadata(metadata: Any) -> dict[str, Any]:
@@ -367,8 +358,6 @@ async def run_fusion_member(
                 worker.cancel()
             await asyncio.gather(*ctx.workers, return_exceptions=True)
         await asyncio.shield(_drop_member_log_buffer(inner_rid))
-        await _settle_member_dispatch(sink)
-        pipe._generation_complete_dispatched.discard(inner_rid)
 
 
 def build_inner_valves(valves: Any, *, max_tool_calls: int) -> Any:
@@ -445,7 +434,7 @@ ANALYSIS_SCHEMA: dict[str, Any] = {
 
 def build_analysis_response_format(judge_model: str) -> dict[str, Any]:
     return build_response_format_for_model(
-        name="fusion_analysis", schema=ANALYSIS_SCHEMA, model_id=judge_model
+        name="fusion_analysis", schema=copy.deepcopy(ANALYSIS_SCHEMA), model_id=judge_model
     )
 
 
@@ -515,7 +504,7 @@ def degrade_note(result: FusionMemberResult) -> str:
 
 def member_delivered_text(result: FusionMemberResult) -> str:
     if result.truncated:
-        return f"{result.content}\n\n*(cut off before it finished: {result.truncated})*"
+        return f"{result.content}\n\n{synthesis_truncated_note(result)}"
     if not result.failed:
         return result.content
     delivered = result.delivered.strip()
@@ -529,9 +518,13 @@ def synthesis_degrade_note(result: FusionMemberResult) -> str:
     return f"*(final answer cut off: {reason})*"
 
 
+def synthesis_truncated_note(result: FusionMemberResult) -> str:
+    return f"*(cut off before it finished: {result.truncated})*"
+
+
 def _member_draft(res: FusionMemberResult) -> str:
     if res.truncated:
-        return f"{res.content}\n\n*(cut off before it finished: {res.truncated})*"
+        return f"{res.content}\n\n{synthesis_truncated_note(res)}"
     return degrade_note(res) if res.failed else res.content
 
 
@@ -867,14 +860,20 @@ async def run_internal_fusion(
                 yield notice
             if synth_result.usage:
                 total_usage = merge_usage_stats(total_usage, synth_result.usage)
-            if not synth_result.failed and synth_result.content:
+            if not synth_result.failed and synth_result.content and not synth_result.truncated:
                 final_text = synth_result.content
-            elif synth_text:
+            elif not synth_result.truncated and synth_text:
                 final_text = join_answer_and_card(
                     synth_text, synthesis_degrade_note(synth_result)
                 )
                 yield {"type": "response.output_text.delta", "output_index": 1,
                        "delta": final_text[len(synth_text):]}
+            elif synth_result.truncated:
+                final_text = join_answer_and_card(
+                    synth_result.content, synthesis_truncated_note(synth_result)
+                )
+                yield {"type": "response.output_text.delta", "output_index": 1,
+                       "delta": synthesis_truncated_note(synth_result)}
             else:
                 final_text = (
                     "The final synthesis step failed, but the panel answers above are "

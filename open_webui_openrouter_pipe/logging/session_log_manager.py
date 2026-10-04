@@ -19,6 +19,7 @@ import logging
 import os
 import queue
 import random
+import re
 import sys
 import threading
 import time
@@ -230,6 +231,8 @@ _WRITER_DRAIN_SECONDS = 1.0
 
 _MAX_EXCLUDED_TURNS = 1000
 
+_MAX_ASSEMBLER_LISTINGS = 2
+
 _EXCLUDED_KEY_SEP = "\x1f"
 
 _MAX_DRAIN_LATCH_KEYS = 32
@@ -393,9 +396,12 @@ def _known_task_names() -> frozenset[str]:
     return _TASK_QUALIFIERS
 
 
+_INTENT_TASK_RE = re.compile(r"^video_intent_v\d+$")
+
+
 def _split_archive_key(message_id: str) -> tuple[str, str]:
     head, dot, tail = message_id.rpartition(".")
-    if dot and tail in _TASK_QUALIFIERS:
+    if dot and (tail in _TASK_QUALIFIERS or _INTENT_TASK_RE.match(tail)):
         return head, tail
     return message_id, ""
 
@@ -1241,7 +1247,7 @@ class SessionLogManager:
         )
         deadline = time.monotonic() + budget
         set_aside: list[tuple[str, str]] = []
-        while True:
+        for _listing in range(_MAX_ASSEMBLER_LISTINGS):
             del contended[:]
             over_budget = False
             for index, (terminal, turns) in enumerate(candidates):
@@ -1274,6 +1280,16 @@ class SessionLogManager:
                     assembled = False
                 _record(turns, assembled, stale_arm=not terminal)
             if over_budget or not contended:
+                break
+            if time.monotonic() >= deadline:
+                self.logger.debug(
+                    "Session log assembler pass stopped re-listing at its %.1fs wall-clock budget; "
+                    "%d lock-contended turn(s) are offered again by the next pass",
+                    budget,
+                    len(contended),
+                )
+                break
+            if _listing + 1 == _MAX_ASSEMBLER_LISTINGS:
                 break
             set_aside.extend(key for key in contended if key not in set_aside)
             candidates = self._candidate_turns(

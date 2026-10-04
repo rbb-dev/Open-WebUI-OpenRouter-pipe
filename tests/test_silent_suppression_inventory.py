@@ -79,23 +79,21 @@ _EXPECTED: dict[str, int] = {
     # `CancelledError` because the caller's own task may be cancelled while it waits, and
     # a release that must happen on every path cannot raise out of the cancellation that
     # is already unwinding the turn.
-    # 2nd: the member's own `generation_complete` dispatch, which the member awaits
-    # (bounded, five seconds) before it releases its own `on_generation_complete` mark.
-    # The mark is only correct if the dispatch that writes it has already run: on a
-    # cancelled member the dispatch is shielded inside the streaming loop, so its `add`
-    # can otherwise land after the release and leave the id in a process-lifetime set for
-    # the life of the worker. It also swallows `CancelledError` because the member's own
-    # `finally` runs while the cancellation is unwinding, and the release that follows
-    # must happen on that path too -- the close is the better answer to a cross-loop
-    # close than a second orphan.
-    # 3rd: `_archive_publish_changed_file`'s `stat()` after the write, whose only
+    # A second one used to sit here: the member's own `generation_complete` dispatch,
+    # which the member awaited (bounded, five seconds) before releasing its own
+    # `on_generation_complete` mark. Both that await and the release it guarded are gone
+    # -- no dispatch site a member can reach is reachable, because every one of them is
+    # `fusion_inner`-guarded, so nothing ever writes that mark and there was nothing for
+    # the release to take back out. `tests/test_no_fusion_dispatch_site_adds_a_member_id.py`
+    # is the census that pins the guards, so a future unguarded site is caught there.
+    # 2nd: `_archive_publish_changed_file`'s `stat()` after the write, whose only
     # consequence is falling back to "unchanged", i.e. keeping the rows.
-    # 4th: unlinking the finished temporary archive when the publish-time ownership guard
+    # 3rd: unlinking the finished temporary archive when the publish-time ownership guard
     # refuses, so a pass that abandoned its write leaves no full archive on disk under a
     # name the reader would take for the turn's. A refusal must not be able to raise out
     # of the writer, which swallows its own failures by contract, and an unlink that fails
     # is reaped by the same cleanup sweep either way.
-    "requests/fusion_engine.py": 2,
+    "requests/fusion_engine.py": 1,
     # 7th: the cost snapshot, now one guarded helper reached from all three exits. A job
     # OpenRouter has already billed for is recorded whatever the pipe does with the
     # bytes, and a storage error while recording it must not replace the failure the

@@ -836,7 +836,7 @@ def media_capability_defaults(
         pipe_capabilities.get("video_generation") or pipe_capabilities.get("image_output")
     ):
         return {}
-    exempt = answers_in_text and not pipe_capabilities.get("video_generation")
+    exempt = answers_in_text
     defaults: dict[str, Any] = {}
     if not exempt:
         defaults["file_context"] = False
@@ -1326,7 +1326,8 @@ class ModelCatalogManager:
         try:
             self.logger.error(
                 "Model metadata sync incomplete (%s); the key is released so the next "
-                "model-list refresh retries it",
+                "model-list refresh retries it, but not before the "
+                f"{_SYNC_RETRY_FLOOR_SECONDS:.0f}s retry floor elapses",
                 exc or f"{len(incomplete)} model(s) were not written or not attempted",
                 exc_info=exc,
             )
@@ -1698,7 +1699,8 @@ class ModelCatalogManager:
             self.logger.warning(
                 "The provider routing endpoint sweep ran past %ds with %d of %d model(s) "
                 "still unfinished; those keep whatever provider data they already had and "
-                "the next pass retries.",
+                "are offered again on the next sync-key change (a new catalogue fetch or a "
+                "valve edit), never on a timer.",
                 _PROVIDER_OVERLAY_BUDGET_SECONDS,
                 len(abandoned),
                 len(unique),
@@ -1817,8 +1819,9 @@ class ModelCatalogManager:
             abandoned = frozenset(m for m in unique if m not in completed)
             self.logger.warning(
                 "The maker-profile sweep ran past %ds with %d of %d maker(s) still "
-                "unfinished; those keep whatever icon they already had and the next pass "
-                "retries.",
+                "unfinished; those keep whatever icon they already had and are offered again "
+                "on the next sync-key change (a new catalogue fetch or a valve edit), never "
+                "on a timer.",
                 _ICON_SWEEP_BUDGET_SECONDS,
                 len(abandoned),
                 len(unique),
@@ -2018,8 +2021,9 @@ class ModelCatalogManager:
                         abandoned_urls = frozenset(u for u in unique_urls if u not in completed_urls)
                         self.logger.warning(
                             "The icon sweep ran past %ds with %d of %d read(s) still "
-                            "unfinished; those keep whatever icon they already had and the "
-                            "next pass retries.",
+                            "unfinished; those keep whatever icon they already had and are "
+                            "offered again on the next sync-key change (a new catalogue fetch "
+                            "or a valve edit), never on a timer.",
                             _ICON_SWEEP_BUDGET_SECONDS,
                             len(abandoned_urls),
                             len(unique_urls),
@@ -2736,6 +2740,21 @@ class ModelCatalogManager:
             ]
             if len(pruned) == len(filter_ids):
                 continue
+
+            fresh = await Models.get_model_by_id(model.id)
+            if fresh is not None and fresh.meta is not None:
+                meta_dict = fresh.meta.model_dump()
+                filter_ids = meta_dict.get("filterIds", [])
+                if not isinstance(filter_ids, list) or not filter_ids:
+                    continue
+                pruned = [
+                    fid for fid in filter_ids
+                    if not isinstance(fid, str)
+                    or not fid.startswith("openrouter_")
+                    or fid in valid_ids
+                ]
+                if len(pruned) == len(filter_ids):
+                    continue
 
             removed = set(filter_ids) - set(pruned)
             meta_dict["filterIds"] = pruned

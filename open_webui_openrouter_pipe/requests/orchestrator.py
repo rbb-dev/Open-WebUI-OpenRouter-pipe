@@ -585,6 +585,15 @@ def _required_with_no_callable_tool(responses_body: ResponsesBody) -> bool:
     return not has_active_fusion_entry(responses_body.plugins)
 
 
+def _tool_entry_is(tool: Any, name: str) -> bool:
+    if not isinstance(tool, dict):
+        return False
+    if tool.get("name") == name:
+        return True
+    function = tool.get("function")
+    return isinstance(function, dict) and function.get("name") == name
+
+
 def _reconcile_tool_fields(responses_body: ResponsesBody) -> None:
     if _required_with_no_callable_tool(responses_body):
         responses_body.tool_choice = None
@@ -595,6 +604,16 @@ def _reconcile_tool_fields(responses_body: ResponsesBody) -> None:
             isinstance(t, dict) and t.get("type") == named for t in (responses_body.tools or [])
         ):
             responses_body.tool_choice = None
+        elif named == "function" and responses_body.tools:
+            target = choice.get("name")
+            if not (isinstance(target, str) and target.strip()):
+                inner = choice.get("function")
+                if isinstance(inner, dict):
+                    target = inner.get("name")
+            if isinstance(target, str) and not any(
+                _tool_entry_is(t, target.strip()) for t in (responses_body.tools or [])
+            ):
+                responses_body.tool_choice = None
     if responses_body.stop_server_tools_when and not _has_server_tool(responses_body.tools):
         responses_body.stop_server_tools_when = None
 
