@@ -18,8 +18,12 @@ from ..core.config import (
     _select_openrouter_http_referer,
 )
 from ..core.costs import maybe_dump_costs_snapshot
-from ..core.error_formatter import _admission_error_response
-from ..core.errors import OpenRouterAPIError, UpstreamBodyUnreadable
+from ..core.error_formatter import (
+    _admission_error_response,
+    _api_caller_error_response,
+    _unreadable_body_failure_response,
+)
+from ..core.errors import OpenRouterAPIError, UpstreamBodyUnreadable, is_sign_in_failure
 from ..core.logging_system import SessionLogger
 from ..core.utils import clamp_text, summarise_names
 from ..core.warn_latch import warn_level
@@ -1219,24 +1223,51 @@ class ImageGenerationAdapter:
         except OpenRouterAPIError as exc:
             await self._close_status(event_emitter)
             await self._settle(outcome, valves, user, metadata, user_obj, api_model_id)
-            content = await self._pipe._ensure_error_formatter()._report_openrouter_error(
-                exc,
-                event_emitter=event_emitter,
-                normalized_model_id=normalized_model_id,
-                api_model_id=api_model_id,
+            escape = (
+                _api_caller_error_response(
+                    exc,
+                    stream=False,
+                    path=getattr(getattr(request, "url", None), "path", "") or "",
+                )
+                if _is_api_caller(metadata) and not bool(body.get("stream"))
+                else None
             )
+            if escape is not None:
+                if is_sign_in_failure(exc):
+                    self._pipe._note_auth_failure()
+                content = escape
+            else:
+                content = await self._pipe._ensure_error_formatter()._report_openrouter_error(
+                    exc,
+                    event_emitter=event_emitter,
+                    normalized_model_id=normalized_model_id,
+                    api_model_id=api_model_id,
+                )
         except UpstreamBodyUnreadable as exc:
             outcome["provider_document"] = False
             await self._close_status(event_emitter)
             await self._settle(outcome, valves, user, metadata, user_obj, api_model_id)
-            content = await self._pipe._ensure_error_formatter()._emit_templated_error(
-                event_emitter,
-                template=valves.SERVICE_ERROR_TEMPLATE,
-                variables={"error_type": type(exc).__name__, "status_code": "502",
-                           "reason": exc.summary(), "body_excerpt": exc.body_excerpt_block()},
-                log_message=(f"Image generation body was not an OpenRouter document: {exc} "
-                             f"(Content-Type: {exc.content_type}): {exc.body_excerpt[:200]}"),
+            escape = (
+                _unreadable_body_failure_response(
+                    exc,
+                    code=502,
+                    stream=False,
+                    path=getattr(getattr(request, "url", None), "path", "") or "",
+                )
+                if _is_api_caller(metadata) and not bool(body.get("stream"))
+                else None
             )
+            if escape is not None:
+                content = escape
+            else:
+                content = await self._pipe._ensure_error_formatter()._emit_templated_error(
+                    event_emitter,
+                    template=valves.SERVICE_ERROR_TEMPLATE,
+                    variables={"error_type": type(exc).__name__, "status_code": "502",
+                               "reason": exc.summary(), "body_excerpt": exc.body_excerpt_block()},
+                    log_message=(f"Image generation body was not an OpenRouter document: {exc} "
+                                 f"(Content-Type: {exc.content_type}): {exc.body_excerpt[:200]}"),
+                )
         except ImageGenerationError as exc:
             self._logger.warning("Image generation failed for %r: %s", api_model_id, exc)
             await self._close_status(event_emitter)
@@ -1251,7 +1282,7 @@ class ImageGenerationAdapter:
             await self._settle(outcome, valves, user, metadata, user_obj, api_model_id)
             machine_envelope = (
                 _admission_error_response(500, "Image generation failed.", request=request)
-                if _is_api_caller(metadata)
+                if _is_api_caller(metadata) and not bool(body.get("stream"))
                 else None
             )
             if machine_envelope is not None:

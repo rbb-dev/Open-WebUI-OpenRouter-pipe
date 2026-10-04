@@ -287,6 +287,13 @@ def _native_message_items(emitted):
 
 @pytest.mark.asyncio
 async def test_fusion_emits_native_message_item_with_clean_answer(monkeypatch, pipe_instance_async):
+    """The item the pipe publishes for a Fusion answer is the same string the turn returns.
+
+    The panel wrapper is part of that string: `streaming_core` wraps `assistant_message`
+    before it builds the item, records it and emits it, so the recorded copy a channel is
+    handed carries the answer panel too. This used to pin the opposite -- that the item
+    carried the bare answer -- which is the defect H3305-1 fixed.
+    """
     result, emitted = await _run(pipe_instance_async, monkeypatch, fusion_live_enabled=True)
 
     added, done = _native_message_items(emitted)
@@ -296,12 +303,13 @@ async def test_fusion_emits_native_message_item_with_clean_answer(monkeypatch, p
     assert item["role"] == "assistant"
     assert item["status"] == "completed"
     assert item["id"].startswith("msg-")
-    assert item["content"] == [{"type": "output_text", "text": "The answer is 42."}]
-    assert "<details" not in item["content"][0]["text"]
+    assert [part["type"] for part in item["content"]] == ["output_text"]
+    text = item["content"][0]["text"]
+    assert text.startswith("<details type=\"fusion_answer\"")
+    assert "<summary>Final answer</summary>" in text
+    assert "The answer is 42." in text
+    assert text == result, f"the published item and the returned string differ: {text!r} vs {result!r}"
     assert done[0]["item"] == item
-
-    assert (result or "").startswith("<details")
-    assert "The answer is 42." in (result or "")
 
     final_frames = [
         e for e in emitted

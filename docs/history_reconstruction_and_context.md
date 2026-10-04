@@ -116,7 +116,7 @@ If the assistant text contains embedded marker lines, the pipe splits the text i
 - text segments (emitted as assistant `output_text` messages), and
 - marker segments (used to replay persisted artifacts).
 
-When a marker split produces several `output_text` items for one assistant message, `annotations` and `reasoning_details` go on the **last** of them, once each, and on no other item.
+When a marker split produces several `output_text` items for one assistant message, `annotations` and `reasoning_details` go on the **last** of them, once each, and on no other item. When a turn emits no text item at all — a round that reasoned and called a tool without writing prose — the two lists go on one assistant `message` item whose `output_text` is empty, emitted immediately before that round's tool calls, and only when there is something to carry.
 
 Marker detection and splitting is performed by helper functions (for example `contains_marker(...)` and `split_text_by_markers(...)`); an assistant message's spans are computed once per message per request and read by every consumer of them, and a message carrying no `]: #` is not scanned at all. The marker format is:
 
@@ -372,7 +372,9 @@ or beyond the turn's message count places the block after the last message, in t
 carried turn ends in reasoning produces exactly that one-past ordinal. That ordinal counts **every** assistant
 message in the turn, on the writing side exactly as on the reading side: a message the model sent without a
 `phase` marker counts like any other, and a `phase`-emitting model and a non-`phase` model produce identical
-ordinals for the same event sequence. An API call (no `chat_id`) is the one exception, because none of its
+ordinals for the same event sequence. A turn that wrote no prose is one such message: the `/responses` reading
+leg emits the same empty-text assistant `message` item the write side emitted for it, in the same order, so
+the two sides still count one message for it. An API call (no `chat_id`) is the one exception, because none of its
 messages are written to the database and are replayed, so its counter does not advance.
 
 Anchors are **scoped to a turn**, where a turn is the region between user messages. Tool `call_id` values are

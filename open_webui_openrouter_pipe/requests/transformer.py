@@ -574,6 +574,11 @@ def _payload_is_present(value: Any) -> bool:
     return False
 
 
+def _block_text(block: dict[str, Any]) -> str:
+    value = block.get("text")
+    return value if isinstance(value, str) else ""
+
+
 def _block_is_usable(block: dict[str, Any]) -> bool:
     btype = block.get("type")
     if btype == "input_text":
@@ -2937,8 +2942,8 @@ async def transform_messages_to_input(
                     return b
 
                 block_transform = {
-                    "text":       lambda b: {"type": "input_text",  "text": b.get("text", "")},
-                    "input_text": lambda b: {"type": "input_text",  "text": b.get("text", "")},
+                    "text":       lambda b: {"type": "input_text",  "text": _block_text(b)},
+                    "input_text": lambda b: {"type": "input_text",  "text": _block_text(b)},
                     "image_url":  _to_input_image,
                     "input_image": _to_input_image,
                     "image":      _to_input_image,
@@ -3490,6 +3495,14 @@ async def transform_messages_to_input(
             else:
                 _append_assistant_text_chunks(assistant_text)
 
+            if not appended_text_chunks and (msg_annotations or msg_reasoning_details):
+                carrier = {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": ""}],
+                }
+                openai_input.append(carrier)
+                appended_text_chunks.append(carrier)
             if appended_text_chunks:
                 if msg_annotations:
                     appended_text_chunks[-1]["annotations"] = msg_annotations

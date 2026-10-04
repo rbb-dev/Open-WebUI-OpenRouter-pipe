@@ -8,6 +8,8 @@ audited; write outcomes include args + client_ip.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import logging
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping
@@ -16,6 +18,7 @@ from typing import Any, NamedTuple, cast
 
 from pydantic import ValidationError
 
+from ...core.config import EncryptedStr, _application_secret
 from .authz import can_act, can_view
 from .config_service import (
     _ClientInput,
@@ -237,8 +240,6 @@ def _redacted_args(pipe: Any, args: Any, entry: ActionEntry | None = None) -> An
     if not isinstance(args, dict):
         return args
     fields = _secret_fields(pipe)
-    if not fields:
-        return args
     protocol = _protocol_keys(entry)
     return {k: _mask(k, v, fields, protocol) for k, v in args.items()}
 
@@ -433,6 +434,7 @@ def _config_snapshot(
             spec["value"] = None
             spec["secret_set"] = bool(str(getattr(valves, name, "") or ""))
             spec["secret_stored"] = bool(stored is not None and name in stored)
+            spec["secret_fingerprint"] = _secret_fingerprint(valves, name)
         else:
             spec["value"] = json_safe(getattr(valves, name, None))
     return {"valves": specs, "drift": drift(valves_cls)}
@@ -460,6 +462,7 @@ async def _saved_values(
             spec["name"]: {
                 "set": bool(spec["secret_set"]),
                 "stored": bool(spec["secret_stored"]),
+                "fingerprint": spec["secret_fingerprint"],
             }
             for spec in snapshot["valves"]
             if spec["name"] in wanted and spec["secret"]
@@ -544,11 +547,26 @@ def _config_write_lock(pipe_id: str) -> asyncio.Lock:
     return lock
 
 
+def _secret_fingerprint(valves: Any, name: str) -> str | None:
+    secret = _application_secret()
+    if not secret:
+        return None
+    stored = str(getattr(valves, name, "") or "")
+    plain = EncryptedStr.read(stored)
+    subject = stored if plain is None else plain
+    return hmac.new(
+        secret.encode("utf-8"), subject.encode("utf-8"), hashlib.sha256
+    ).hexdigest()[:16]
+
+
 def _base_still_holds(valves_cls: type, effective: Any, name: str, base: Any) -> bool:
     if not isinstance(base, dict) or name not in base:
         return False
     fld = valves_cls.model_fields.get(name)
     if fld is not None and is_secret(fld.annotation):
+        if isinstance(base[name], str):
+            fingerprint = _secret_fingerprint(effective, name)
+            return fingerprint is not None and fingerprint == base[name]
         return bool(base[name]) == bool(str(getattr(effective, name, "") or ""))
     return json_safe(getattr(effective, name, None)) == json_safe(base[name])
 
@@ -763,8 +781,13 @@ async def _update_check(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
     svc, refused = await _update_gate(pipe, _update_check_refusal)
     if refused is not None:
         return refused
-    force = bool(args.get("force", False)) and getattr(user, "role", None) == "admin"
-    return await _run_update_call(svc.check(force=force))
+    is_admin = getattr(user, "role", None) == "admin"
+    return await _run_update_call(
+        svc.check(
+            force=bool(args.get("force", False)) and is_admin,
+            cached_only=not is_admin,
+        )
+    )
 
 
 @register_action(

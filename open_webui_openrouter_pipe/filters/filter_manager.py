@@ -503,6 +503,19 @@ _AUTO_INSTALL_FAMILY_MARKERS: tuple[tuple[str, str], ...] = (
     ("AUTO_INSTALL_DIRECT_UPLOADS_FILTER", _DIRECT_UPLOADS_FILTER_MARKER),
 )
 
+_WEB_TOOLS_INSTALL_VALVE = "AUTO_INSTALL_WEB_TOOLS_FILTER"
+
+
+def _families_whose_install_valve_is_off(
+    valves: Any, *, web_tools_still_offered: bool
+) -> list[tuple[str, str]]:
+    return [
+        (valve, marker)
+        for valve, marker in _AUTO_INSTALL_FAMILY_MARKERS
+        if not getattr(valves, valve, False)
+        and not (valve == _WEB_TOOLS_INSTALL_VALVE and web_tools_still_offered)
+    ]
+
 
 _REPLACE_IMPORTS_REFUSAL = (
     "Open WebUI rewrites this source when it loads it and stores the result, so the pipe "
@@ -1924,7 +1937,12 @@ class FilterManager:
         )
 
     async def reactivate_filters_by_marker(
-        self, marker: str, *, log_label: str, rows: _FilterRows | None = None
+        self,
+        marker: str,
+        *,
+        log_label: str,
+        rows: _FilterRows | None = None,
+        web_tools_still_offered: bool = False,
     ) -> None:
         owner = self._install_owner()
         try:
@@ -1950,8 +1968,9 @@ class FilterManager:
             raise _FilterEnumerationUnavailable(str(exc)) from exc
         retired_valves = {
             family_marker: valve
-            for valve, family_marker in _AUTO_INSTALL_FAMILY_MARKERS
-            if not getattr(self.valves, valve, False)
+            for valve, family_marker in _families_whose_install_valve_is_off(
+                self.valves, web_tools_still_offered=web_tools_still_offered
+            )
         }
         for row in found or []:
             if not _is_filter_carrying(getattr(row, "content", ""), marker):
@@ -2444,12 +2463,9 @@ class FilterManager:
         owner = self._install_owner()
         if not owner:
             return
-        families = [
-            (valve, marker)
-            for valve, marker in _AUTO_INSTALL_FAMILY_MARKERS
-            if not getattr(self.valves, valve, False)
-            and not (valve == "AUTO_INSTALL_WEB_TOOLS_FILTER" and web_tools_still_offered)
-        ]
+        families = _families_whose_install_valve_is_off(
+            self.valves, web_tools_still_offered=web_tools_still_offered
+        )
         if not families:
             return
         try:

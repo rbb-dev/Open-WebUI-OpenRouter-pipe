@@ -4413,7 +4413,7 @@ async def test_a_partial_metadata_sync_failure_is_reported_with_its_counts(
     aggregates = [
         r
         for r in emitted(caplog, min_level=_logging.WARNING)
-        if _re.search(r"sync failed for \d+/\d+ model", r.getMessage())
+        if _re.search(r"sync did not complete for \d+/\d+ model", r.getMessage())
     ]
     assert len(aggregates) == 1, (
         f"expected exactly one aggregate sync-failure warning, got {len(aggregates)}: "
@@ -4433,7 +4433,7 @@ async def test_a_partial_metadata_sync_failure_is_reported_with_its_counts(
     )
     reported = aggregates[0].getMessage()
     failed, total = (int(part) for part in _re.search(
-        r"sync failed for (\d+)/(\d+) model", reported
+        r"sync did not complete for (\d+)/(\d+) model", reported
     ).groups())
     assert (failed, total) == expected, (
         f"the warning reported {failed}/{total} model(s) failed; {expected[0]} of "

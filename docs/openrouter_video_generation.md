@@ -1307,8 +1307,11 @@ rules:
   skipped when blank.
 - The `Provider options JSON` knob accepts a raw JSON object keyed by
   provider slug — see [Provider passthrough](#provider-passthrough).
-- The Frames knob has 4 modes, and 3 on a model that publishes no first
-  frame — it draws only the modes that model can honour. Meaning:
+- The Frames knob draws only the modes that model can honour: 4 when it
+  publishes both a first and a last frame, 3 when it publishes a first
+  frame and no last one, and 2 when it publishes neither — a model that
+  takes only a `last_frame`, or only reference images, is offered `auto`
+  and `none` alone. Meaning:
   - `auto`: if you attach images, the first becomes `first_frame` (and if
     the model supports `last_frame` AND you attached more, the last
     becomes `last_frame`).

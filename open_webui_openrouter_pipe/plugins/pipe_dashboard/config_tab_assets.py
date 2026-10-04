@@ -238,7 +238,7 @@ function setEdit(v,val){
 const isClearStaged=n=>n in edits&&edits[n]===null;
 function stageClear(v){ edits[v.name]=null; updateBar(); renderDetail(v); buildTree(); }
 function encodeEdits(){ const out={}; Object.keys(edits).forEach(n=>{out[n]=edits[n]===null?null:edits[n];}); return out; }
-function encodeBase(){ const out={}; Object.keys(edits).forEach(n=>{ const v=byName[n]; out[n]=v&&v.secret?!!v.secret_set:baseline[n]; }); return out; }
+function encodeBase(){ const out={}; Object.keys(edits).forEach(n=>{ const v=byName[n]; out[n]=v&&v.secret?(v.secret_fingerprint??!!v.secret_set):baseline[n]; }); return out; }
 function updateBar(){
   const n=Object.keys(edits).length;
   $("#dirtyN").textContent=n;
@@ -454,9 +454,9 @@ function refuseSave(btn, names, detail, err){
 }
 function adoptSecretFlags(r,n,v,sec){
   const fl=sec[n];
-  if(fl){v.secret_set=!!fl.set;v.secret_stored=!!fl.stored;return true;}
+  if(fl){v.secret_set=!!fl.set;v.secret_stored=!!fl.stored;if(typeof fl.fingerprint!=="undefined")v.secret_fingerprint=fl.fingerprint;return true;}
   const sp=Array.isArray(r.valves)?r.valves.find(x=>x&&x.name===n):null;
-  if(sp&&(typeof sp.secret_set!=="undefined"||typeof sp.secret_stored!=="undefined")){v.secret_set=!!sp.secret_set;v.secret_stored=!!sp.secret_stored;return true;}
+  if(sp&&(typeof sp.secret_set!=="undefined"||typeof sp.secret_stored!=="undefined")){v.secret_set=!!sp.secret_set;v.secret_stored=!!sp.secret_stored;if(typeof sp.secret_fingerprint!=="undefined")v.secret_fingerprint=sp.secret_fingerprint;return true;}
   return false;
 }
 function commitSave(){

@@ -1510,6 +1510,20 @@ than as a `/api/v1/files/.../content` link. On the dedicated image route
 neither case applies: a chatless call there still gets a `Files` row and
 still comes back as a `/api/v1/files/.../content` link.
 
+A **failure** on either of those chatless routes is answered in the shape a
+program can branch on rather than as a card: a provider rejection and a body
+a proxy rewrote both leave the pipe as an HTTP error envelope, carrying the
+resolved upstream status on the status line and in `code` (`502` for a
+mangled body, on both surfaces) and naming the endpoint and the upstream
+`Content-Type` where a mangled body is composed of them without quoting the
+proxy's own text. The full exception, with its traceback, is at ERROR in the
+session log. A caller that does have a `chat_id` and a `message_id` keeps its
+card on those same faults, and a fault the pipe owns — a blank prompt, a
+refused caption, storage refusing the file — is still delivered as prose to
+every caller; a streamed turn of any of these faults still delivers its card
+rather than an envelope. See
+[Error handling](error_handling_and_user_experience.md#c-api-callers-with-no-chat-http-error-instead-of-a-card).
+
 ---
 
 ## Pricing and cost display
@@ -1914,7 +1928,7 @@ configured and is not.
 
 pipe(body, ...)
   └─ orchestrator._inject_image_modalities(body)
-        ├─ no-op if model not in registry or no image in output_modalities
+        ├─ no-op if model not in registry or its row carries no image_output feature
         ├─ pure-image: body["modalities"] = ["image"]
         └─ multimodal: body["modalities"] = ["image", "text"]
 
@@ -2086,10 +2100,9 @@ def _inject_image_modalities(body, *, logger=None):
     spec = OpenRouterModelRegistry.spec(raw_model)
     if not isinstance(spec, dict):
         return
-    arch = spec.get("architecture") or {}
-    out_mods = arch.get("output_modalities") or []
-    if "image" not in out_mods:
+    if "image_output" not in set(spec.get("features") or set()):
         return
+    out_mods = (spec.get("architecture") or {}).get("output_modalities") or []
     if "text" in out_mods:
         body["modalities"] = ["image", "text"]
     else:
@@ -2098,8 +2111,11 @@ def _inject_image_modalities(body, *, logger=None):
 
 Key behavior:
 
-- **No-op on non-image models.** No injection if `output_modalities`
-  doesn't contain `image`.
+- **No-op on non-image models.** No injection unless the model's
+  catalogue row carries the `image_output` feature. The worked example is
+  `openrouter/auto`: it publishes `output_modalities: ["text", "image"]`,
+  but `is_image_output_architecture` refuses a Router row, so it carries no
+  `image_output` feature and gets no `modalities` from here either.
 - **Respects user override.** If `body.modalities` is already set
   (manual config or an older settings row), the orchestrator leaves it
   alone.

@@ -3397,15 +3397,17 @@ class StreamingHandler:
                                 await _emit_fusion_event(_straggler)
                         if fusion_armed and fusion_state is not None:
                             _fusion_resp = event.get("response")
-                            if isinstance(_fusion_resp, dict) and "elapsed_seconds" not in _fusion_resp:
-                                _fc = _fusion_resp.get("created_at")
-                                _fco = _fusion_resp.get("completed_at")
-                                if isinstance(_fc, (int, float)) and isinstance(_fco, (int, float)) and _fco >= _fc:
-                                    _fusion_resp["elapsed_seconds"] = round(float(_fco) - float(_fc), 1)
-                                else:
-                                    _fstart = stream_started_at or request_started_at
-                                    if _fstart is not None:
-                                        _fusion_resp["elapsed_seconds"] = round(max(0.0, perf_counter() - _fstart), 1)
+                            if isinstance(_fusion_resp, dict):
+                                await _emit_fusion_sources(_fusion_resp.get("sources"))
+                                if "elapsed_seconds" not in _fusion_resp:
+                                    _fc = _fusion_resp.get("created_at")
+                                    _fco = _fusion_resp.get("completed_at")
+                                    if isinstance(_fc, (int, float)) and isinstance(_fco, (int, float)) and _fco >= _fc:
+                                        _fusion_resp["elapsed_seconds"] = round(float(_fco) - float(_fc), 1)
+                                    else:
+                                        _fstart = stream_started_at or request_started_at
+                                        if _fstart is not None:
+                                            _fusion_resp["elapsed_seconds"] = round(max(0.0, perf_counter() - _fstart), 1)
                             if fusion_state.record(event):
                                 await _emit_fusion_embed_once()
                                 _synth_terminal = fusion_state.synthesize_missing_analysis()
@@ -4739,6 +4741,13 @@ class StreamingHandler:
                 fusion_armed and fusion_state is not None and fusion_state.fusion_index is not None
                 and assistant_message and not error_occurred and not was_cancelled
             ):
+                assistant_message = (
+                    '<details type="fusion_answer" done="true">\n'
+                    '<summary>Final answer</summary>\n\n'
+                    + assistant_message
+                    + '\n</details>'
+                )
+                recorded_message_chars = len(assistant_message)
                 if event_emitter:
                     fusion_answer_item = {
                         "type": "message",
@@ -4748,7 +4757,6 @@ class StreamingHandler:
                         "content": [{"type": "output_text", "text": assistant_message}],
                     }
                     try:
-                        recorded_message_chars = len(assistant_message)
                         await _record_output_item(fusion_answer_item, assistant_message)
                         answer_index = _output_index(fusion_answer_item)
                         await event_emitter({
@@ -4766,13 +4774,6 @@ class StreamingHandler:
                         self.logger.debug(
                             "Failed to emit fusion answer output item", exc_info=True
                         )
-                assistant_message = (
-                    '<details type="fusion_answer" done="true">\n'
-                    '<summary>Final answer</summary>\n\n'
-                    + assistant_message
-                    + '\n</details>'
-                )
-                recorded_message_chars = len(assistant_message)
 
             if (
                 fusion_armed and fusion_state is not None and fusion_state.fusion_index is not None

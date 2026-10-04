@@ -101,9 +101,7 @@ class ReasoningConfigManager:
             return cfg, False
         if not cls._model_requires_reasoning(model_id):
             return cfg, False
-        consumed = (
-            ("enabled", "exclude", "max_tokens") if off_from_settings else ("enabled", "exclude")
-        )
+        consumed = ("enabled", "max_tokens") if off_from_settings else ("enabled",)
         repaired = {k: v for k, v in cfg.items() if k not in consumed}
         repaired["enabled"] = True
         if "max_tokens" in repaired:
@@ -235,7 +233,7 @@ class ReasoningConfigManager:
         if "reasoning" not in ModelFamily.catalog_supported_parameters(responses_body.model):
             return None
         cfg = dict(responses_body.reasoning) if isinstance(responses_body.reasoning, dict) else {}
-        requested = bool(responses_body.include_reasoning) or bool(cfg and cfg.get("enabled", True) and not cfg.get("exclude", False))
+        requested = bool(responses_body.include_reasoning) or bool(cfg and cfg.get("enabled", True))
         if not requested:
             self._set_include_reasoning(responses_body, None)
             return None
@@ -257,7 +255,6 @@ class ReasoningConfigManager:
             and not isinstance(requested_budget, bool)
             and requested_budget >= 1
             and cfg.get("enabled") is not False
-            and cfg.get("exclude") is not True
             and _normalised_effort(cfg) != _NO_EFFORT
         )
         if brought and isinstance(requested_budget, int):

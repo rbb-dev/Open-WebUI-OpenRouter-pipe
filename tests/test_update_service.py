@@ -2710,7 +2710,7 @@ _SECRET_ROTATED = "a-different-key-for-encryption"
             None,
         ),
         (partial(_mint, {}, _SECRET_ROTATED), {}, False, _SECRET_28, None),
-        ("not-a-fernet-token", {}, False, _SECRET_28, None),
+        ("not-a-fernet-token", {}, True, _SECRET_28, None),
         (partial(_mint, {}, _SECRET_28), {}, True, None, None),
         ({}, {}, True, _SECRET_28, None),
         (partial(_mint, {}, _SECRET_28), {}, True, None, _SECRET_28),
@@ -2770,6 +2770,20 @@ async def test_an_undecodable_valve_blob_is_not_read_as_no_override(
     from the empty string, and `sha256(b"")` is a *valid* Fernet key, so the decrypt
     would fail on every blob healthy included and the update surface would be denied
     wholesale on an unkeyed host.
+
+    The `non-ciphertext-garbage` arm records the same principle from the other side, and
+    it is a real behaviour change rather than an accident of the fixture. A column holding
+    text that is not a Fernet token carries no key evidence at all: this surface has no
+    evidence the row was ever encrypted, and Open WebUI answered `{}` about it for reasons
+    it could not report. Refusing on the strength of a guess about a key it never applied
+    denies the update surface on a row nobody has shown to be undecodable -- and the other
+    reader of the same question (`storage.persistence.raw_valve_column_decodes`, which also
+    arms the artifact guard) reads the SHAPE before the cipher, so it answers `True` there.
+    One row, two readers, two answers, and one of them is a refusal this surface cannot
+    justify. `tests/test_the_two_valve_column_readers_agree_on_every_shape.py` drives both
+    readers over every shape and states the property as their EQUALITY, because a
+    direction assertion would pass under the over-correction in the other direction.
+    Recorded, not endorsed.
     """
     import contextlib
     import sys

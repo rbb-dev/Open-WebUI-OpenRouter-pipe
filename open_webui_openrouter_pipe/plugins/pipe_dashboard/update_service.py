@@ -24,6 +24,7 @@ from typing import Any
 
 from ...core.utils import _await_if_needed
 from ...core.warn_latch import warn_level
+from ...storage.persistence import raw_valve_column_decodes
 from .dashboard_socket import publish_function_updated
 
 logger = logging.getLogger(__name__)
@@ -486,7 +487,9 @@ class UpdateService:
             raise err
         raise UpdateError("offline", f"GitHub returned HTTP {status}")
 
-    async def check(self, *, force: bool = False) -> dict[str, Any]:
+    async def check(
+        self, *, force: bool = False, cached_only: bool = False
+    ) -> dict[str, Any]:
         valves, valves_read_ok = await self._row_valves_checked()
         if not valves_read_ok:
             raise UpdateError(
@@ -509,6 +512,7 @@ class UpdateService:
         repo = ""
         release: dict | None = None
         cached = False
+        cached_only_served_nothing = False
         try:
             repo = self._repo(valves.get("PIPE_DASHBOARD_UPDATE_REPO"))
             memo = self._last_good
@@ -520,6 +524,14 @@ class UpdateService:
             ):
                 release = memo.get("release")
                 cached = True
+            elif cached_only:
+                if memo is not None and memo.get("repo") == repo:
+                    release = memo.get("release")
+                    cached = True
+                else:
+                    release = None
+                    cached = False
+                    cached_only_served_nothing = True
             else:
                 release = await self._fetch_latest(repo)
                 self._last_good = {"repo": repo, "at": now, "release": release}
@@ -591,6 +603,12 @@ class UpdateService:
 
         memo = self._last_good
         repo_shown = repo or str(valves.get("PIPE_DASHBOARD_UPDATE_REPO") or "")
+        if cached and memo is not None:
+            checked_at: float | None = float(memo.get("at", 0.0))
+        elif cached_only_served_nothing:
+            checked_at = None
+        else:
+            checked_at = now
         return {
             "enabled": bool(valves.get("PIPE_DASHBOARD_UPDATE_ENABLE", True)),
             "repo": repo_shown,
@@ -605,7 +623,7 @@ class UpdateService:
             "no_matching_asset": no_matching_asset,
             "snapshots": await self._payload_from(records),
             "snapshot_storage_error": snapshot_storage_error,
-            "checked_at": float(memo.get("at", 0.0)) if (cached and memo) else now,
+            "checked_at": checked_at,
             "cached": cached,
             "last_check_error": dict(self._last_error) if self._last_error else None,
             "auto": {
@@ -1437,25 +1455,13 @@ class UpdateService:
                     exc_info=True,
                 )
                 raw = None
-            if isinstance(raw, str) and raw.strip():
-                _secret = os.getenv("WEBUI_SECRET_KEY", os.getenv("WEBUI_JWT_SECRET_KEY", ""))
-                if _secret:
-                    try:
-                        import base64
-                        import hashlib
-
-                        from cryptography.fernet import Fernet
-                        _key = _secret.encode()
-                        if len(_secret) != 44:
-                            _key = base64.urlsafe_b64encode(hashlib.sha256(_key).digest())
-                        Fernet(_key).decrypt(raw.encode())
-                    except Exception:  # noqa: BLE001 - any failure to decode is the answer
-                        logger.warning(
-                            "update: the stored valve blob did not decode (a rotated "
-                            "WEBUI_SECRET_KEY does this); update actions that require a "
-                            "confirmed setting will be refused"
-                        )
-                        stored_read_ok = False
+            if not raw_valve_column_decodes(raw):
+                logger.warning(
+                    "update: the stored valve blob did not decode (a rotated "
+                    "WEBUI_SECRET_KEY does this); update actions that require a "
+                    "confirmed setting will be refused"
+                )
+                stored_read_ok = False
         if stored is None:
             stored_read_ok = False
         if isinstance(stored, dict):

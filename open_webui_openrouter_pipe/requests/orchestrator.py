@@ -258,6 +258,8 @@ _SERVER_TOOL_TYPE_OVERRIDES = {
 
 _IMAGE_GENERATION_TOOL_TYPE = "openrouter:image_generation"
 
+_NO_MODEL_NAMED = "no model named"
+
 _ENDPOINT_OVERRIDE_CONFLICT_REFUSAL = (
     "Endpoint Override Conflict: the pipe refused this member before sending it, "
     "because the request needs an OpenRouter endpoint this model cannot use."
@@ -321,7 +323,6 @@ def _build_server_tool_entries(
 ) -> tuple[list[dict[str, Any]], list[tuple[str, Any]]]:
     from ..integrations.image import (
         ImageGenerationAdapter,
-        _Note,
         size_consistency_notes,
     )
 
@@ -344,28 +345,16 @@ def _build_server_tool_entries(
                 cleaned_params = {k: v for k, v in tool_params.items() if v is not None and v != ""}
                 if tool_type == _IMAGE_GENERATION_TOOL_TYPE:
                     drawn_by = cleaned_params.get("model")
-                    if (
-                        model_resolver is not None
-                        and not (isinstance(drawn_by, str) and drawn_by.strip())
-                        and "size" in cleaned_params
-                    ):
-                        _wanted = repr(cleaned_params["size"])
-                        _shown = _wanted if len(_wanted) <= 60 else _wanted[:57] + "..."
-                        superseded.append(
-                            (
-                                tool_key,
-                                _Note(
-                                    "unreadable-model",
-                                    "size",
-                                    f"Output size (size)={_shown} was not sent (the "
-                                    "model could not be read)",
-                                ),
-                            )
-                        )
-                        cleaned_params.pop("size")
                     superseded.extend(
-                        (str(drawn_by) if isinstance(drawn_by, str) and drawn_by else tool_key, note)
-                        for note in size_consistency_notes(cleaned_params, _declared_for(cleaned_params))
+                        (
+                            str(drawn_by).strip()
+                            if isinstance(drawn_by, str) and drawn_by.strip()
+                            else _NO_MODEL_NAMED,
+                            note,
+                        )
+                        for note in size_consistency_notes(
+                            cleaned_params, _declared_for(cleaned_params)
+                        )
                     )
                 if cleaned_params:
                     entry["parameters"] = cleaned_params
@@ -785,6 +774,7 @@ class RequestOrchestrator:
         resolved_user_model: Any = _UNSET,
         resolved_user_done: bool = False,
         attachment_bytes: dict[Any, Any] | None = None,
+        input_file_sizes: dict[str, Any] | None = None,
     ) -> dict[str, Any] | str | StreamingResponse | None:
         user_id = user_id or str(__user__.get("id") or __metadata__.get("user_id") or "")
         user_model, user_model_resolved = await _resolve_user_model(
@@ -1546,7 +1536,7 @@ class RequestOrchestrator:
         responses_body._continued_turn = continued_turn_counts(responses_body.input)
         responses_body._continues_after_marker = ends_on_hidden_marker_line(CONTINUED_REPLY.get())
         responses_body.input_file_sizes = await index_referenced_file_payloads(
-            responses_body.input, self.logger, user=user_model
+            responses_body.input, self.logger, user=user_model, known=input_file_sizes
         )
         if valves.USE_MODEL_MAX_OUTPUT_TOKENS and (
             responses_body.max_output_tokens is None

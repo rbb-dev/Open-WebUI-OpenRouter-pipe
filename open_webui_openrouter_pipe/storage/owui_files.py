@@ -878,16 +878,32 @@ async def _file_records_by_id(
 
 
 async def index_referenced_file_payloads(
-    items: Any, logger: logging.Logger, *, user: Any
+    items: Any,
+    logger: logging.Logger,
+    *,
+    user: Any,
+    known: dict[str, tuple[int, str, str] | None] | None = None,
 ) -> dict[str, tuple[int, str, str]]:
     try:
         references = _referenced_file_ids(items)
         if not references:
             return {}
-        records = await _file_records_by_id(references.values(), logger)
+        memo = known if isinstance(known, dict) else {}
+        unresolved = {
+            reference: file_id
+            for reference, file_id in references.items()
+            if reference not in memo
+        }
+        records = await _file_records_by_id(unresolved.values(), logger) if unresolved else {}
         index: dict[str, tuple[int, str, str]] = {}
         for reference, file_id in references.items():
+            if reference in memo:
+                entry = memo[reference]
+                if entry is not None:
+                    index[reference] = entry
+                continue
             record = records.get(file_id)
+            entry = None
             if record is not None and not await authorize_file_read(record, user, logger):
                 logger.log(
                     warn_level(_warned_reference_sizes, "unauthorized-record"),
@@ -895,23 +911,25 @@ async def index_referenced_file_payloads(
                     "context budget charges it nothing",
                     file_id,
                 )
-                continue
-            size = declared_file_size(record) if record is not None else None
-            if size is None:
-                logger.log(
-                    warn_level(_warned_reference_sizes, "unsized-record"),
-                    "Referenced Open WebUI file %s has no readable declared size; the "
-                    "context budget charges it nothing",
-                    file_id,
-                )
-                continue
-            meta = getattr(record, "meta", None)
-            name = meta.get("name") if isinstance(meta, dict) else None
-            index[reference] = (
-                size,
-                infer_file_mime_type(record),
-                name if isinstance(name, str) else "",
-            )
+            else:
+                size = declared_file_size(record) if record is not None else None
+                if size is None:
+                    logger.log(
+                        warn_level(_warned_reference_sizes, "unsized-record"),
+                        "Referenced Open WebUI file %s has no readable declared size; the "
+                        "context budget charges it nothing",
+                        file_id,
+                    )
+                else:
+                    meta = getattr(record, "meta", None)
+                    name = meta.get("name") if isinstance(meta, dict) else None
+                    entry = (
+                        size,
+                        infer_file_mime_type(record),
+                        name if isinstance(name, str) else "",
+                    )
+                    index[reference] = entry
+            memo[reference] = entry
         return index
     except Exception:
         logger.log(

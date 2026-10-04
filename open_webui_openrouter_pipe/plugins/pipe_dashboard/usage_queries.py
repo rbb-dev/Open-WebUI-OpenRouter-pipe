@@ -257,6 +257,7 @@ def _window_users(model: Any, session: Any, lo: Any, counted: Any) -> list[dict[
             func.sum(func.coalesce(model.tools_failed, 0)),
             func.sum(func.coalesce(model.tools_skipped, 0)),
             func.sum(func.coalesce(model.cost, 0.0)),
+            func.sum(case((model.kind == "task", func.coalesce(model.cost, 0.0)), else_=0.0)),
             func.max(model.ts),
         )
         .where(model.ts >= lo, counted)
@@ -277,7 +278,8 @@ def _window_users(model: Any, session: Any, lo: Any, counted: Any) -> list[dict[
                 "tools_failed": _int(row[6]),
                 "tools_skipped": _int(row[7]),
                 "cost": _float(row[8]),
-                "last_active": _epoch_or_zero(row[9]),
+                "task_cost": _float(row[9]),
+                "last_active": _epoch_or_zero(row[10]),
             }
         )
     return out
@@ -390,6 +392,7 @@ def query_usage_stats(
         "tools_failed": u["tools_failed"],
         "tools_skipped": u["tools_skipped"],
         "cost": round(u["cost"], 6),
+        "task_cost": round(u["task_cost"], 6),
         "last_active": int(u["last_active"]) or None,
     } for u in sorted(grouped_users, key=lambda u: -u["cost"])]
 

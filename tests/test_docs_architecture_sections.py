@@ -58,6 +58,7 @@ SECTIONS: list[tuple[str, int, str, int, tuple[str, ...]]] = [
             '["image", "text"]',
             '["image"]',
             "output_modalities",
+            "image_output",
         ),
     ),
     (

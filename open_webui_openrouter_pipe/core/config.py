@@ -426,6 +426,9 @@ DEFAULT_OPENROUTER_ERROR_TEMPLATE = (
     "{{#if request_id_reference}}\n"
     "{request_id_reference}\n"
     "{{/if}}\n"
+    "{{#if support_email}}\n"
+    "\n**Support:** {support_email}\n"
+    "{{/if}}\n"
 )
 
 DEFAULT_NETWORK_TIMEOUT_TEMPLATE = (
@@ -774,6 +777,9 @@ DEFAULT_MODEL_RESTRICTED_TEMPLATE = (
     "- **Tool-calling model filter**: `{tool_calling_filter}`\n"
     "{{/if}}\n\n"
     "Choose an allowed model or ask your admin to update the pipe filters.\n"
+    "{{#if support_email}}\n"
+    "\n**Support:** {support_email}\n"
+    "{{/if}}\n"
 )
 
 DEFAULT_VIDEO_CATALOG_LOADING_TEMPLATE = (
@@ -783,6 +789,9 @@ DEFAULT_VIDEO_CATALOG_LOADING_TEMPLATE = (
     "- **Requested model**: `{requested_model}`\n"
     "{{#if normalized_model_id}}\n"
     "- **Normalized model id**: `{normalized_model_id}`\n"
+    "{{/if}}\n"
+    "{{#if support_email}}\n"
+    "\n**Support:** {support_email}\n"
     "{{/if}}\n"
 )
 
@@ -1645,7 +1654,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "except on Gemini 2.5 Pro, which cannot stop thinking; on such a model the pipe keeps asking regardless, "
             "and in a chat it says so in a status line naming the model (a background task shows nothing). "
             "A request that carries its own reasoning.max_tokens overrides this budget, except while reasoning is "
-            "switched off; there a per-chat thinking budget is ignored. A reasoning.max_tokens written as a number "
+            "switched off; there a per-chat thinking budget is ignored. A request that only hides the trace — "
+            "`reasoning.exclude` of `true` — is not one of these offs: the model still thinks at the level chosen "
+            "here and the trace is simply not returned. A reasoning.max_tokens written as a number "
             "in a string is read as that number, and one that expresses no number is left out of the request "
             "rather than sent. A request that carries its own output limit has the budget reduced to fit inside it, the "
             "limit itself is never changed, and when the limit leaves no room the pipe asks for no bounded budget and "
@@ -2033,7 +2044,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=200,
         ge=1,
         le=2000,
-        description="Maximum number of in-flight OpenRouter requests allowed per process. Takes effect without a restart, in both directions: a higher value admits more requests at once, and a lower one binds from the moment it is saved, counting the requests already running, which finish first. A request holds its slot until its own tool calls have finished cleanup, so a tool-bearing request occupies its slot a little longer than its answer; a request the person stopped, or one that failed before its request body ran, returns its slot immediately, and so does one the worker is shut down while it is still running — a code reload cancels it and gives the slot back before the new worker starts taking work. The wait list behind this limit is bounded: the pipe queues further requests and sheds load once that queue is full — a chat caller sees a \"Server busy (503)\" card, and an API caller gets a 503 response carrying the same sentence. The same refusal reaches a request already waiting for a permit when the pipe is superseded, and is answered rather than cancelled.",
+        description="Maximum number of in-flight OpenRouter requests allowed per process. It counts admitted turns, and it counts their upstream calls: a Fusion turn fans its panel out across a second, equally wide process pool, so its members draw on this same ceiling — the whole panel runs at once when the limit is wide enough for it, and never more of it at a time than the limit allows — while that turn's judge call and its synthesis call are serial and draw on the same ceiling as well. Takes effect without a restart, in both directions: a higher value admits more requests at once, and a lower one binds from the moment it is saved, counting the requests already running, which finish first. A request holds its slot until its own tool calls have finished cleanup, so a tool-bearing request occupies its slot a little longer than its answer; a request the person stopped, or one that failed before its request body ran, returns its slot immediately, and so does one the worker is shut down while it is still running — a code reload cancels it and gives the slot back before the new worker starts taking work. The wait list behind this limit is bounded: the pipe queues further requests and sheds load once that queue is full — a chat caller sees a \"Server busy (503)\" card, and an API caller gets a 503 response carrying the same sentence. The same refusal reaches a request already waiting for a permit when the pipe is superseded, and is answered rather than cancelled.",
     )
     SSE_WORKERS_PER_REQUEST: int = Field(
         default=4,
@@ -2133,6 +2144,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "endpoint override valves, or a request that requires /responses (e.g. a Fusion model, whose panel "
             "renders only from /responses — on /chat/completions Fusion returns a flattened text transcript "
             "with no structured events) on a model forced to /chat/completions."
+            + _CHANNEL_CARD_RULE
         ),
     )
     DIRECT_UPLOAD_FAILURE_TEMPLATE: str = Field(
@@ -2141,6 +2153,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "Markdown template used when OpenRouter Direct Uploads cannot be applied (e.g. incompatible attachment combinations, "
             "missing stored files, a declared type that is not a media type, or a video attachment whose leading bytes are text "
             "or that they positively identify as another family rather than as a clip, or other checks that fail before the request is sent)."
+            + _CHANNEL_CARD_RULE
         ),
     )
     FUSION_PANEL_TOO_LARGE_TEMPLATE: str = Field(
@@ -2154,6 +2167,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "1-8 rule. Every other route into a Fusion panel (the Fusion filter, a preset) is already inside the "
             "limit, so this card is for a hand-edited plugin entry, an API caller posting `plugins` directly, or a "
             "per-chat panel edit."
+            + _CHANNEL_CARD_RULE
         ),
     )
 
@@ -2177,6 +2191,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=DEFAULT_RATE_LIMIT_TEMPLATE,
         description=(
             "Markdown template for HTTP 429 rate-limit errors, and for a rate_limit_exceeded failure OpenRouter reports, on either path. A decline carrying `metadata.patterns`, `metadata.reasons` or `metadata.flagged_input` does not reach it even under the rate_limit_exceeded kind, whatever status the decline arrived on: that is OPENROUTER_ERROR_TEMPLATE, which renders the moderation rows. Use placeholders such as {error_id}, {timestamp}, {openrouter_code}, {retry_after_seconds}, {rate_limit_type}, {request_id}, {support_email}, and the standard context variables. {request_id} is OpenRouter's own reference for the rejected request, which its support can look up; the built-in text shows it on its own row whenever the rejection carried one. A {{#if}} block renders its body for any value the pipe supplies, and a number is a value at every number: a {retry_after_seconds} parsed from an HTTP-date that has already expired is 0, and its row renders as 0s, which says the delay is over."
+            + _CHANNEL_CARD_RULE
         ),
     )
 
@@ -2276,6 +2291,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=DEFAULT_STREAM_INTERRUPTED_TEMPLATE,
         description=(
             "Markdown template appended to the assistant message when a reply's stream stops before its final event: the stream closes early or, after answer text has arrived or the model has named the tool it is calling, its connection fails, drops or times out. Any partial content is kept, with this notice after it. The panel, judge and final-answer calls inside internal Fusion never get this notice. When none of the answer has arrived, NETWORK_TIMEOUT_TEMPLATE is used instead for a timeout, and CONNECTION_ERROR_TEMPLATE for a failed connection or a stream that sent nothing. Available variables: {model}, {timestamp}, {support_email}, {support_url}."
+            + _CHANNEL_CARD_RULE
         ),
     )
 
@@ -3031,12 +3047,14 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default="other_task_model",
         description=(
             "Fallback strategy when the chosen task model fails. 'none' disables "
-            "fallback; 'other_task_model' switches between internal/external. If "
-            "neither task model is configured at all, the classifier is skipped for "
-            "the turn and the turn is recorded as a classifier failure with reason "
+            "fallback; 'other_task_model' switches between internal/external. A Task "
+            "Model the host no longer offers is skipped before it is called, so the same "
+            "handling covers it. If neither task model is configured at all, or both are "
+            "configured to a model this host no longer offers, the classifier is skipped "
+            "for the turn and the turn is recorded as a classifier failure with reason "
             "'no_task_model_candidates' -- the video still generates, without "
-            "cross-turn intent analysis, and the person in the chat is warned once "
-            "per chat."
+            "cross-turn intent analysis, the person in the chat is warned once "
+            "per chat, and no per-user classifier outage is opened."
         ),
     )
     VIDEO_INTENT_SKIP_WHEN_EMPTY_CHAT: bool = Field(

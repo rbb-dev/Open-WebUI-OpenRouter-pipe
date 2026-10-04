@@ -708,9 +708,9 @@ def _reset_process_semaphores():
     semaphore can wait for a permit that never comes back
     (`tests/test_video_generation.py` then `tests/test_api_call_video.py` hung that way).
 
-    All three pools need it, not just the video one: the slots live in a holder keyed by
-    pipe id that outlives the test that filled it, so a request or tool permit leaked here
-    hangs the next test the same way a video permit did.
+    Every pool needs it, not just the video one: the slots live in a holder keyed by
+    pipe id that outlives the test that filled it, so a request, tool or panel permit leaked
+    here hangs the next test the same way a video permit did.
     """
     reset_all_slots()
     yield

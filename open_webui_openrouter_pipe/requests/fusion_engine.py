@@ -183,6 +183,7 @@ class FusionInnerInvocation:
     user_model: Any = _UNSET
     user_model_resolved: bool = False
     attachment_bytes: dict = field(default_factory=dict)
+    input_file_sizes: dict = field(default_factory=dict)
     no_usable_member: bool = False
     tool_breaker: Any = None
 
@@ -310,6 +311,7 @@ async def run_fusion_member(
             resolved_user_model=invocation.user_model,
             resolved_user_done=invocation.user_model_resolved,
             attachment_bytes=invocation.attachment_bytes,
+            input_file_sizes=invocation.input_file_sizes,
         )
         content = result if isinstance(result, str) else ""
         if captured_files:
@@ -502,6 +504,12 @@ def asks_for_help(text: str) -> bool:
     return text.strip().lower() == "help"
 
 
+def _panel_gate(pipe: Any) -> Any:
+    from ..pipe import _get_process_limits
+
+    return _get_process_limits().for_id(getattr(pipe, "id", "")).panel_semaphore
+
+
 def degrade_note(result: FusionMemberResult) -> str:
     reason = (result.fail_reason or "no usable answer").strip()
     return f"*(panel member failed: {reason})*"
@@ -616,17 +624,29 @@ async def run_internal_fusion(
             })
         return fresh
 
+    async def _upstream_call(coro: Any) -> Any:
+        gate = _panel_gate(pipe)
+        if gate is None:
+            return await coro
+        await gate.acquire()
+        try:
+            return await coro
+        finally:
+            gate.release()
+
     async def _member_wrapper(member_model: str) -> None:
         try:
-            res = await run_fusion_member(
-                pipe,
-                invocation,
-                model=member_model,
-                messages=invocation.messages,
-                system_prompt=panel_prompt,
-                max_tool_calls=plan.max_tool_calls,
-                live_queue=live_queue,
-                server_tools_config=web_tools_config,
+            res = await _upstream_call(
+                run_fusion_member(
+                    pipe,
+                    invocation,
+                    model=member_model,
+                    messages=invocation.messages,
+                    system_prompt=panel_prompt,
+                    max_tool_calls=plan.max_tool_calls,
+                    live_queue=live_queue,
+                    server_tools_config=web_tools_config,
+                )
             )
         except asyncio.CancelledError:
             raise
@@ -680,6 +700,9 @@ async def run_internal_fusion(
         if not usable:
             pipe._circuit_breaker.record_failure(invocation.user_id)
         analysis: dict[str, Any] | None = None
+        judge_res: FusionMemberResult | None = None
+        repair_res: FusionMemberResult | None = None
+        synth_result: FusionMemberResult | None = None
         question = latest_user_text(invocation.messages)
 
         if usable:
@@ -689,17 +712,19 @@ async def run_internal_fusion(
 
             async def _judge_wrapper(judge_messages: list) -> None:
                 try:
-                    res = await run_fusion_member(
-                        pipe,
-                        invocation,
-                        model=plan.judge_model,
-                        messages=judge_messages,
-                        system_prompt=judge_prompt,
-                        max_tool_calls=plan.max_tool_calls,
-                        live_queue=judge_queue,
-                        server_tools_config=web_tools_config,
-                        temperature=0.0,
-                        response_format=build_analysis_response_format(plan.judge_model),
+                    res = await _upstream_call(
+                        run_fusion_member(
+                            pipe,
+                            invocation,
+                            model=plan.judge_model,
+                            messages=judge_messages,
+                            system_prompt=judge_prompt,
+                            max_tool_calls=plan.max_tool_calls,
+                            live_queue=judge_queue,
+                            server_tools_config=web_tools_config,
+                            temperature=0.0,
+                            response_format=build_analysis_response_format(plan.judge_model),
+                        )
                     )
                 except asyncio.CancelledError:
                     raise
@@ -715,7 +740,6 @@ async def run_internal_fusion(
 
             judge_task = asyncio.create_task(_judge_wrapper(build_judge_input(question, ordered)))
             member_tasks.append(judge_task)
-            judge_res = None
             while judge_res is None:
                 kind, _judge_model, payload = await judge_queue.get()
                 if kind == "reasoning":
@@ -741,7 +765,6 @@ async def run_internal_fusion(
                     ]
                 ))
                 member_tasks.append(repair_task)
-                repair_res = None
                 while repair_res is None:
                     kind, _judge_model, payload = await judge_queue.get()
                     if kind == "reasoning":
@@ -769,7 +792,9 @@ async def run_internal_fusion(
         }
         if analysis is not None:
             done_item["analysis"] = analysis
-        run_sources = aggregate_sources(ordered)
+        run_sources = aggregate_sources(
+            ordered + [r for r in (judge_res, repair_res) if r is not None]
+        )
         if run_sources:
             done_item["sources"] = run_sources
         yield {"type": "response.output_item.done", "output_index": 0, "item": done_item}
@@ -796,15 +821,17 @@ async def run_internal_fusion(
 
             async def _synth_wrapper() -> None:
                 try:
-                    res = await run_fusion_member(
-                        pipe,
-                        invocation,
-                        model=plan.synthesis_model,
-                        messages=synth_messages,
-                        system_prompt=synthesis_prompt,
-                        max_tool_calls=plan.max_tool_calls,
-                        live_queue=synth_queue,
-                        server_tools_config=web_tools_config,
+                    res = await _upstream_call(
+                        run_fusion_member(
+                            pipe,
+                            invocation,
+                            model=plan.synthesis_model,
+                            messages=synth_messages,
+                            system_prompt=synthesis_prompt,
+                            max_tool_calls=plan.max_tool_calls,
+                            live_queue=synth_queue,
+                            server_tools_config=web_tools_config,
+                        )
                     )
                 except asyncio.CancelledError:
                     raise
@@ -821,7 +848,6 @@ async def run_internal_fusion(
             synth_task = asyncio.create_task(_synth_wrapper())
             member_tasks.append(synth_task)
             opened = False
-            synth_result: FusionMemberResult | None = None
             while synth_result is None:
                 kind, _model, payload = await synth_queue.get()
                 if kind == "delta":
@@ -866,8 +892,15 @@ async def run_internal_fusion(
                        "item": {"type": "message"}}
             yield {"type": "response.output_text.done", "output_index": 1, "text": final_text}
 
-        yield {"type": "response.completed",
-               "response": {"model": invocation.outer_model_id, "output": [], "usage": total_usage}}
+        completed_response: dict[str, Any] = {
+            "model": invocation.outer_model_id, "output": [], "usage": total_usage,
+        }
+        terminal_sources = aggregate_sources(
+            [*ordered, *(r for r in (judge_res, repair_res, synth_result) if r is not None)]
+        )
+        if terminal_sources:
+            completed_response["sources"] = terminal_sources
+        yield {"type": "response.completed", "response": completed_response}
     finally:
         for task in member_tasks:
             if not task.done():

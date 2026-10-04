@@ -145,6 +145,17 @@ def task_model_owned_by(request: Any, model_id: str) -> str:
     return owned_by if isinstance(owned_by, str) else ""
 
 
+def _host_publishes(request: Any, model_id: str) -> bool:
+    state = getattr(getattr(request, "app", None), "state", None)
+    models = getattr(state, "MODELS", None)
+    try:
+        if not models:
+            return True
+        return model_id in models
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def select_task_model_candidates(
     rows: dict[str, str] | None,
     *,
@@ -180,7 +191,7 @@ def select_task_model_candidates(
     if fallback == "other_task_model" and other and other not in candidates:
         candidates.append(other)
 
-    return candidates
+    return [model_id for model_id in candidates if _host_publishes(request, model_id)]
 
 
 async def resolve_task_model_candidates(

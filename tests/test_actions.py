@@ -574,8 +574,8 @@ class _FakeUpdateService:
     async def _row_valves_checked(self):
         return dict(self.row_valves), self.stored_read_ok
 
-    async def check(self, *, force=False):
-        self.calls.append(("check", {"force": force}))
+    async def check(self, *, force=False, cached_only=False):
+        self.calls.append(("check", {"force": force, "cached_only": cached_only}))
         if self.raise_error:
             raise self.raise_error
         return {"enabled": True, "update_available": True, "rev": 7}
@@ -626,7 +626,7 @@ async def test_update_check_delegates_and_passes_force(update_env):
     )
     assert status == 200
     assert payload["result"]["update_available"] is True
-    assert update_env.svc.calls == [("check", {"force": True})]
+    assert update_env.svc.calls == [("check", {"force": True, "cached_only": False})]
 
 
 @pytest.mark.asyncio
@@ -635,7 +635,7 @@ async def test_update_check_force_downgraded_for_non_admin(update_env):
         update_env.pipe, _user(role="user"), "update_check", {"force": True}, request=_req()
     )
     assert status == 200
-    assert update_env.svc.calls == [("check", {"force": False})]
+    assert update_env.svc.calls == [("check", {"force": False, "cached_only": True})]
 
 
 @pytest.mark.asyncio

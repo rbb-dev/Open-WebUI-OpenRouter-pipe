@@ -197,6 +197,7 @@ body {
 .us-card-v { font-size: 20px; font-weight: 800; font-family: 'JetBrains Mono', monospace;
   letter-spacing: -0.02em; color: var(--text); }
 .us-card-sub { font-size: 10px; color: var(--text-faint); margin-top: 2px; }
+.us-sub { font-size: 10px; color: var(--text-faint); }
 /* Compact second row — smaller padding + value font */
 .us-cards.us-sm .us-card { padding: 8px 11px; }
 .us-cards.us-sm .us-card-h { margin-bottom: 3px; }
@@ -781,7 +782,7 @@ def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
         '<td class="r">' + esc(String(r.sessions)) + '</td>' +
         '<td class="r">' + tok3(r.tokens_in, r.tokens_cached, r.tokens_out) + '</td>' +
         '<td class="r">' + toolsCell(r.tools, r.tools_failed, r.tools_skipped) + '</td>' +
-        '<td class="r">' + esc(fmtCost(r.cost)) + '</td>' +
+        '<td class="r">' + esc(fmtCost(r.cost)) + (r.task_cost ? '<div class="us-sub">incl. ' + esc(fmtCost(r.task_cost)) + ' task models</div>' : '') + '</td>' +
         '<td class="r">' + esc(last) + '</td></tr>';
     }}
 
@@ -817,27 +818,28 @@ def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
       match: function(r, q) {{ return String(r.user_name || '').toLowerCase().indexOf(q) >= 0; }},
       cap: 10,
       aggregate: function(rest) {{
-        var o = {{ user_name: rest.length + ' others', sessions: 0, tokens_in: 0, tokens_cached: 0, tokens_out: 0, tools: 0, tools_failed: 0, cost: 0, last_active: 0 }};
+        var o = {{ user_name: rest.length + ' others', sessions: 0, tokens_in: 0, tokens_cached: 0, tokens_out: 0, tools: 0, tools_failed: 0, cost: 0, task_cost: 0, last_active: 0 }};
         for (var i = 0; i < rest.length; i++) {{
           var r = rest[i];
           o.sessions += r.sessions || 0; o.tokens_in += r.tokens_in || 0; o.tokens_cached += r.tokens_cached || 0;
           o.tokens_out += r.tokens_out || 0; o.tools += r.tools || 0; o.tools_failed += r.tools_failed || 0; o.cost += r.cost || 0;
+          o.task_cost += r.task_cost || 0;
         }}
         return o;
       }},
       footerRow: function(rows) {{
-        var s = 0, ti = 0, tc = 0, to = 0, tl = 0, tlf = 0, tsk = 0, co = 0;
+        var s = 0, ti = 0, tc = 0, to = 0, tl = 0, tlf = 0, tsk = 0, co = 0, tco = 0;
         for (var i = 0; i < rows.length; i++) {{
           var r = rows[i];
           s += r.sessions || 0; ti += r.tokens_in || 0; tc += r.tokens_cached || 0;
           to += r.tokens_out || 0; tl += r.tools || 0; tlf += r.tools_failed || 0;
-          tsk += r.tools_skipped || 0; co += r.cost || 0;
+          tsk += r.tools_skipped || 0; co += r.cost || 0; tco += r.task_cost || 0;
         }}
         return '<tr class="tot-row"><td class="name">Totals</td>' +
           '<td class="r">' + esc(String(s)) + '</td>' +
           '<td class="r">' + tok3(ti, tc, to) + '</td>' +
           '<td class="r">' + toolsCell(tl, tlf, tsk) + '</td>' +
-          '<td class="r">' + esc(fmtCost(co)) + '</td>' +
+          '<td class="r">' + esc(fmtCost(co)) + (tco ? '<div class="us-sub">incl. ' + esc(fmtCost(tco)) + ' task models</div>' : '') + '</td>' +
           '<td class="r">\\u2014</td></tr>';
       }},
       cols: [

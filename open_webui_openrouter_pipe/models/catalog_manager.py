@@ -890,6 +890,16 @@ def needs_frontend_catalog(valves: Any, provider_routing_enabled: bool) -> bool:
     )
 
 
+def _frontend_catalogue_unusable(
+    frontend_data: Any, valves: Any, provider_routing_enabled: bool
+) -> bool:
+    return bool(
+        needs_frontend_catalog(valves, provider_routing_enabled)
+        and frontend_data is None
+        and (valves.UPDATE_MODEL_DESCRIPTIONS or valves.UPDATE_MODEL_IMAGES)
+    )
+
+
 def syncs_owui_models(valves: Any, provider_routing_enabled: bool) -> bool:
     return bool(
         valves.UPDATE_MODEL_CAPABILITIES
@@ -1248,9 +1258,9 @@ class ModelCatalogManager:
             incomplete = []
         try:
             self.logger.error(
-                "Model metadata sync failed (%s); the key is released so the next "
+                "Model metadata sync incomplete (%s); the key is released so the next "
                 "model-list refresh retries it",
-                exc or f"{len(incomplete)} model(s) were not written",
+                exc or f"{len(incomplete)} model(s) were not written or not attempted",
                 exc_info=exc,
             )
         except Exception:
@@ -1764,7 +1774,10 @@ class ModelCatalogManager:
                 frontend_data = await self._fetch_frontend_model_catalog(session)
 
             if frontend_data is None:
-                self.logger.debug("Frontend catalog fetch returned None")
+                if _frontend_catalogue_unusable(frontend_data, valves, provider_routing_enabled):
+                    self.logger.warning("Frontend catalog fetch returned None")
+                else:
+                    self.logger.debug("Frontend catalog fetch returned None")
             elif isinstance(frontend_data, dict):
                 data_items = frontend_data.get("data")
                 if isinstance(data_items, list):
@@ -2272,7 +2285,13 @@ class ModelCatalogManager:
                     exc_info=True,
                 )
 
-            sync_failures: list[str] = []
+            sync_failures: list[str] = (
+                [str(model.get("id") or "<unknown>") for model in models]
+                if _frontend_catalogue_unusable(
+                    frontend_data, valves, provider_routing_enabled
+                )
+                else []
+            )
 
             async def _apply(model: dict[str, Any]) -> None:
                 openrouter_id = model.get("id")
@@ -2575,8 +2594,8 @@ class ModelCatalogManager:
                     )
             if sync_failures:
                 self.logger.warning(
-                    "Model metadata sync failed for %d/%d model(s); their capabilities, "
-                    "descriptions and filter attachments are unchanged. First failures: %s. "
+                    "Model metadata sync did not complete for %d/%d model(s); whatever the "
+                    "pass could not obtain or write is left as it was. First: %s. "
                     "Enable DEBUG logging for per-model tracebacks.",
                     len(sync_failures),
                     len(models),

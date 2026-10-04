@@ -464,6 +464,8 @@ class _ProcessLimits:
         self.request_limit: int = 0
         self.tool_semaphore: asyncio.Semaphore | None = None
         self.tool_limit: int = 0
+        self.panel_semaphore: asyncio.Semaphore | None = None
+        self.panel_limit: int = 0
         self.video_semaphore: asyncio.Semaphore | None = None
         self.video_limit: int = 0
 
@@ -1956,7 +1958,10 @@ class Pipe:
         elif not every_web_tool_is_off(self.valves):
             try:
                 await self._ensure_filter_manager().reactivate_filters_by_marker(
-                    _OPENROUTER_WEB_TOOLS_FILTER_MARKER, log_label="Web Tools", rows=rows
+                    _OPENROUTER_WEB_TOOLS_FILTER_MARKER,
+                    log_label="Web Tools",
+                    rows=rows,
+                    web_tools_still_offered=not every_web_tool_is_off(self.valves),
                 )
             except Exception as exc:
                 ok = False
@@ -3293,7 +3298,7 @@ class Pipe:
                 )
                 self.logger.debug("Started request queue worker")
 
-            for attr in ("request_semaphore", "tool_semaphore"):
+            for attr in ("request_semaphore", "tool_semaphore", "panel_semaphore"):
                 sem = getattr(slots, attr, None)
                 if sem is None:
                     continue
@@ -3326,6 +3331,17 @@ class Pipe:
                 lambda: slots.tool_limit,
                 lambda value: setattr(slots, "tool_limit", value),
                 "tool semaphore",
+                live=not superseded,
+            )
+            self._apply_limit(
+                "MAX_CONCURRENT_REQUESTS (panel fan-out)",
+                valves.MAX_CONCURRENT_REQUESTS,
+                slots.panel_semaphore,
+                lambda: slots.panel_semaphore,
+                lambda value: setattr(slots, "panel_semaphore", value),
+                lambda: slots.panel_limit,
+                lambda value: setattr(slots, "panel_limit", value),
+                "panel fan-out semaphore",
                 live=not superseded,
             )
 
