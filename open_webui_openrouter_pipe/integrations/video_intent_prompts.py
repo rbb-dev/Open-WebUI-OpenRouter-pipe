@@ -161,7 +161,6 @@ Question must be: in `language`; one short sentence; 2-4 `options` strings when 
 ## Step 5. Build prompt
 - use_user_prompt=true: copy latest_user_text minus meta/control phrases and placeholder tokens.
 - use_user_prompt=false: resolve pronouns to explicit referents from conversation; drop wiring instructions; drop placeholders; stay in user language; for modify_prior_video produce FULL self-contained scene description; for continue_prior_video describe next beat.
-- use_user_prompt=false AND `standing_instructions` non-empty: fold those instructions into `prompt` so the clip is shot that way. `prompt` is the only field that reaches the video model, so a style left out here is lost. Never present them as something the user asked for, and never let them displace what the user actually wants.
 - prompt MUST NOT include placeholder tokens like [video:N] or [image:N].
 
 ## Step 6. Set confidence and reason
@@ -223,7 +222,7 @@ Output: {"intent":"ambiguous","frame_plan":[],"prompt":"","use_user_prompt":fals
 
 ## Ex 13a — Standing instructions configured on the model
 Input: latest_user_text="a cat walking through tall grass"; standing_instructions="STUDIO RULE: hand-held camera, 35mm grain"; prior_videos=[]; attachments=[].
-Output: {"intent":"text_to_video","frame_plan":[],"prompt":"a cat walking through tall grass, shot hand-held with 35mm grain","use_user_prompt":false,"language":"en","confidence":"high","clarification":{"needs":false,"question":"","options":null,"reason":""},"reason":"Fresh text-only request; the model's standing style folded into the prompt."}
+Output: {"intent":"text_to_video","frame_plan":[],"prompt":"a cat walking through tall grass","use_user_prompt":false,"language":"en","confidence":"high","clarification":{"needs":false,"question":"","options":null,"reason":""},"reason":"Fresh text-only request; the pipe sends the standing instructions ahead of the prompt, so the prompt is the bare scene."}
 
 ## Ex 13 — Timestamp out of range
 Input: latest_user_text="use the frame at 30 seconds as start"; prior_videos=[{index:0,...,duration_seconds_if_known:4}].

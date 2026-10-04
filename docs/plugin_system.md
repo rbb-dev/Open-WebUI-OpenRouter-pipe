@@ -219,7 +219,7 @@ The hook uses chain dispatch: if multiple plugins subscribe, each receives the (
 
 ### on_tool_result — Observe Tool Outcomes
 
-Fires once for every tool call the pipe runs in a batch, as each result lands — including every tool still unfinished when its batch exceeds its timeout (those resolve as `failed`). It does not fire for a call answered before it is queued (a missing or unknown tool, invalid arguments, a breaker that already skips the tool, an `ask_user` that is not the only call, an exhausted internal Fusion tool budget); for a call `TOOL_IDLE_TIMEOUT_SECONDS` had already given up on, even if that call later finishes; for the call whose result the pipe was waiting for when the user pressed Stop, even if it finishes during the cleanup wait; or for a call still unfinished when request cleanup cancels the request's tool workers (once `TOOL_SHUTDOWN_TIMEOUT_SECONDS` runs out, including after a Stop, or inside internal Fusion as soon as a model's answer ends). You receive the tool name and its real execution status (`completed`, `failed` or `skipped`, before it is flattened for emission). This is an observe-only hook: there is no return value and you cannot alter the tool result. Use it for per-request tool tallies, success-rate metrics, or audit trails. It runs on the hot path with no timeout, so keep the work trivial.
+Fires once for every tool call the pipe settles in a round, as each result lands — including every call answered before it was queued (a missing or unknown tool, invalid arguments, a breaker that already skips the tool, an `ask_user` that is not the only call, an exhausted internal Fusion tool budget; those arrive as `failed`, `skipped` or `incomplete`), every tool still unfinished when its batch exceeds its timeout and every call `TOOL_IDLE_TIMEOUT_SECONDS` gave up on (both of those `failed`). It does not fire for the call whose result the pipe was waiting for when the user pressed Stop, even if it finishes during the cleanup wait; or for a call still unfinished when request cleanup cancels the request's tool workers (once `TOOL_SHUTDOWN_TIMEOUT_SECONDS` runs out, including after a Stop, or inside internal Fusion as soon as a model's answer ends). You receive the tool name and its real execution status (`completed`, `failed` or `skipped`, before it is flattened for emission). This is an observe-only hook: there is no return value and you cannot alter the tool result. Use it for per-request tool tallies, success-rate metrics, or audit trails. It runs on the hot path with no timeout, so keep the work trivial.
 
 ### on_request_retry — Observe Retry Decisions
 
@@ -865,11 +865,11 @@ async def on_tool_result(
 ) -> None:
 ```
 
-**When:** Fires once per tool call the pipe runs in a batch, from `_execute_tool_batch` — for each tool as its result lands, and once for every tool still unfinished when its batch exceeds its timeout (those resolve as `failed`). Calls answered before they are queued, calls `TOOL_IDLE_TIMEOUT_SECONDS` had already given up on, the call whose result the pipe was waiting for when the user pressed Stop, and calls still unfinished when request cleanup cancels the request's tool workers never reach this hook. `status` is the executor's real per-tool outcome (`completed`, `failed` or `skipped`) **before** it is flattened for emission.
+**When:** Fires once per tool call the round settles — for each tool as its result lands from `_execute_tool_batch`, once for every tool still unfinished when its batch exceeds its timeout, once for every call answered before it was queued, and once for every call `TOOL_IDLE_TIMEOUT_SECONDS` gave up on; the last three all resolve as `failed` except a breaker skip (`skipped`) and a call Open WebUI owns (`incomplete`). The call whose result the pipe was waiting for when the user pressed Stop, and calls still unfinished when request cleanup cancels the request's tool workers, never reach this hook. `status` is the executor's real per-tool outcome (`completed`, `failed` or `skipped`) **before** it is flattened for emission.
 
 **Extra kwargs:** `request_id` — the pipe's per-request id, `metadata` — the request's OWUI metadata dict.
 
-**Dispatch location:** `_hand_back_tool_result` (`pipe.py`), which `_execute_tool_batch` calls as each call's result is handed back:
+**Dispatch location:** four places, all in the executor's own path. `_hand_back_tool_result` (`pipe.py`), which `_execute_tool_batch` calls as each call's result is handed back:
 ```python
 item.future.set_result(payload)
 await self._dispatch_plugin_event(
@@ -880,6 +880,7 @@ await self._dispatch_plugin_event(
     metadata=context.metadata or {},
 )
 ```
+and, in `tools/tool_executor.py`, `_append_and_notify` for a call answered before it was queued, plus `_dispatch_settled` for the two give-up sites `_execute_function_calls` owns — the enqueue cut (the queue was still full when the batch ceiling ran out) and the idle settle (`TOOL_IDLE_TIMEOUT_SECONDS`), both carrying the literal `failed`. The last three send the trimmed `resolved_tool_name(call)`; `_hand_back_tool_result` sends `item.call.get("name")` untrimmed, which is pre-existing and unchanged.
 
 **Dispatch type:** **Void broadcast (observer)** — all subscribers run in priority order, each awaited in turn inside a per-plugin `try/except`. Unlike the transform hooks, observer dispatch is a plain `await` with **no** 30 s `wait_for` timeout — these are hot-path observers, so keep the work trivial. Dispatch is routed through `_dispatch_plugin_event()`, which is a no-op when `ENABLE_PLUGIN_SYSTEM` is `False` or the registry was never created.
 

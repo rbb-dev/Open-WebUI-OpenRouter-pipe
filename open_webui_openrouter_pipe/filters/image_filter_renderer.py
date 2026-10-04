@@ -251,6 +251,16 @@ def _agreed_parameters(records: list[dict]) -> dict[str, dict]:
             )
             if numeric:
                 agreed[name] = {"type": "range", "min": max(lows), "max": min(highs)}  # type: ignore[type-var]
+        elif kind == "integer":
+            lows = [descriptor.get("min"), *(other.get("min") for other in others)]  # type: ignore[union-attr]
+            highs = [descriptor.get("max"), *(other.get("max") for other in others)]  # type: ignore[union-attr]
+            numeric = all(
+                isinstance(v, (int, float)) and not isinstance(v, bool) for v in (*lows, *highs)
+            )
+            if numeric:
+                agreed[name] = {"type": "integer", "min": max(lows), "max": min(highs)}  # type: ignore[type-var]
+            else:
+                agreed[name] = dict(descriptor)
         else:
             agreed[name] = descriptor
     return agreed
@@ -425,6 +435,13 @@ def _renderable_knobs(
             high = _descriptor_bound(descriptor, "max")
             if low is not None and high is not None and high > low:
                 ranges.append((name, low, high))
+        elif kind == "integer":
+            low = _descriptor_bound(descriptor, "min")
+            high = _descriptor_bound(descriptor, "max")
+            if low is not None and high is not None and high > low:
+                ranges.append((name, low, high))
+            else:
+                supported_names.append(name)
         elif kind == "boolean":
             supported_names.append(name)
     return enums, narrowed, ranges, supported_names

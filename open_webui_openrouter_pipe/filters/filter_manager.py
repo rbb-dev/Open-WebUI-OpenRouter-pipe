@@ -117,6 +117,11 @@ def _stored_meta(row: Any) -> dict[str, Any]:
     return stored if isinstance(stored, dict) else {}
 
 
+async def _live_row(Functions: Any, row: Any) -> Any:
+    live = await Functions.get_function_by_id(str(getattr(row, "id", "") or ""))
+    return live if live is not None else row
+
+
 def _manifest_id_for(desired_meta: dict[str, Any], function_id: str) -> dict[str, Any]:
     manifest = desired_meta.get("manifest")
     if not isinstance(manifest, dict) or "id" not in manifest or manifest["id"] == function_id:
@@ -1059,6 +1064,9 @@ class FilterManager:
                         Functions,
                         candidate_id,
                         {
+                            "content": desired_source,
+                            "name": desired_name,
+                            "type": "filter",
                             "is_active": True,
                             "is_global": False,
                             "meta": _merged_meta(
@@ -1808,10 +1816,11 @@ class FilterManager:
                 if getattr(row, "is_active", False):
                     row_id = getattr(row, "id", "")
                     raised: list[Exception] = []
+                    live = await _live_row(Functions, row)
                     landed = await _write_function(
                         Functions,
                         str(row_id or ""),
-                        {"is_active": False, "meta": switched_off_meta(row)},
+                        {"is_active": False, "meta": switched_off_meta(live)},
                         "every OpenRouter Web Tools tool being disabled",
                         self.logger,
                         raised,
@@ -1942,10 +1951,11 @@ class FilterManager:
                 continue
             if not getattr(row, "is_active", False):
                 continue
+            live = await _live_row(Functions, row)
             if await _write_function(
                 Functions,
                 str(getattr(row, "id", "") or ""),
-                {"is_active": False, "meta": switched_off_meta(row)},
+                {"is_active": False, "meta": switched_off_meta(live)},
                 "disabling a Video Generation filter ENABLE_VIDEO_GENERATION switched off",
                 self.logger,
             ):
@@ -2017,10 +2027,11 @@ class FilterManager:
                 continue
             if marker in retired_valves and owner and _installed_by(row) == owner:
                 continue
+            live = await _live_row(Functions, row)
             if await _write_function(
                 Functions,
                 str(getattr(row, "id", "") or ""),
-                {"is_active": True, "meta": _merged_meta(row, {}, off_by_pipe=False)},
+                {"is_active": True, "is_global": False, "meta": _merged_meta(live, {}, off_by_pipe=False)},
                 f"re-enabling a {log_label} filter the pipe had switched off",
                 self.logger,
             ):
@@ -2551,10 +2562,11 @@ class FilterManager:
                     )
                 if not function_id:
                     continue
+                live = await _live_row(Functions, row)
                 if await _write_function(
                     Functions,
                     function_id,
-                    {"is_active": False, "meta": switched_off_meta(row)},
+                    {"is_active": False, "meta": switched_off_meta(live)},
                     f"retiring a {valve} filter whose install valve is off",
                     self.logger,
                 ):
@@ -2768,10 +2780,11 @@ class FilterManager:
                 continue
             if not _claimable_by(row, self._install_owner()):
                 continue
+            live = await _live_row(Functions, row)
             if not await _write_function(
                 Functions,
                 row_id,
-                {"is_active": False, "meta": switched_off_meta(row)},
+                {"is_active": False, "meta": switched_off_meta(live)},
                 "retiring a superseded image filter",
                 self.logger,
                 refused_out=refused_out,
@@ -2809,10 +2822,11 @@ class FilterManager:
                 continue
             if getattr(row, "is_active", True) is False:
                 continue
+            live = await _live_row(Functions, row)
             if not await _write_function(
                 Functions,
                 row_id,
-                {"is_active": False, "meta": switched_off_meta(row)},
+                {"is_active": False, "meta": switched_off_meta(live)},
                 "retiring a superseded per-model video filter",
                 self.logger,
                 refused_out=refused_out,
@@ -4451,10 +4465,11 @@ class Filter:
             if orphan_id and _row_owner(orphan) in ("", pipe_identifier):
                 if _is_already_switched_off(orphan):
                     continue
+                live = await _live_row(Functions, orphan)
                 if await _write_function(
                     Functions,
                     orphan_id,
-                    {"is_active": False, "meta": switched_off_meta(orphan)},
+                    {"is_active": False, "meta": switched_off_meta(live)},
                     "disabling a duplicate provider routing filter",
                     self.logger,
                 ):
@@ -4471,9 +4486,10 @@ class Filter:
                         continue
                     if not getattr(existing, "is_active", False):
                         continue
+                    live = await _live_row(Functions, existing)
                     deactivation = {
                         "is_active": False,
-                        "meta": switched_off_meta(existing),
+                        "meta": switched_off_meta(live),
                     }
                     if await _write_function(
                         Functions,

@@ -69,6 +69,40 @@
   worker logs one WARNING naming the model, what it makes, and where to set a Task Model
   (**Admin Settings → Interface**); every later skip logs the same line at DEBUG.
 
+- **A video model's own instructions now apply on "use my prompt verbatim" turns too** — the
+  classifier writes the scene, but a turn where it was asked to hand the person's own words back
+  untouched used to hand the video model those words *alone*: the deployment's system prompt, which
+  the pipe prepends to every other video turn, was dropped from the wire, and the footer said
+  nothing about it. The pipe now composes on both arms, so the model's standing instructions go
+  ahead of the scene exactly once whichever arm a turn takes, and the classifier's own prompt no
+  longer tells it to fold them in as well. The footer keeps showing the scene alone and adds one
+  line saying the instructions were sent too — a system prompt is configuration, not something a
+  person asked to read in their own chat. No valve and no configuration change.
+
+- **Video generation, dual models** — a model the chat and video catalogues both list now publishes one verdict
+  about pictures instead of two. `capabilities.vision` and `capabilities.file_upload` restate the row's merged
+  feature set rather than keeping the chat twin's own answer, so a model whose chat twin takes no picture but whose
+  video row takes a first frame is offered the `vision` box instead of being refused the attach it would have sent,
+  and a twin that takes pictures keeps the box when the video row takes none. The other seven capability boxes are
+  unchanged, so an image-generation answer the chat catalogue published still stands. The Direct Uploads decision
+  is unaffected: it is read from the row's features, not from this dict.
+
+- **A tool call the pipe gave up on is now counted as a failure on the dashboard** — a round could
+  settle a call without ever reporting it: a call cut when the tool queue was still full when the
+  batch ceiling ran out (it never started), and a call `TOOL_IDLE_TIMEOUT_SECONDS` gave up on,
+  whether it had started or was still waiting for a worker. Both build the model's output exactly
+  as before and both dispatch to plugins now, so a call the pipe answered the model about is a call
+  the operator's Live row shows, and the Live row returns to `streaming` instead of being stranded
+  on `status: "tool:<name>"`. Nothing the model sees changes: the output list for every one of those
+  arms is byte-identical, and no valve moves — `TOOL_IDLE_TIMEOUT_SECONDS` is still unset by default
+  and the plugin system is still off unless an admin turns it on. **Not comparable across this
+  release:** persisted usage rows (`db_row` writes `tools_failed`, and every Usage window sums it)
+  written before this fix count fewer failures than rows written after it, so a `tools_failed`
+  figure that crosses this version is comparing two different things. Both give-ups are rare — the
+  idle arm needs an idle limit an admin has set, the enqueue arm needs a round wider than the
+  queue with no free worker for the whole batch ceiling — which is exactly why the shortfall it
+  closes survived on the rows an operator is chasing.
+
 - **Admin's Max Upload Size, no longer gated on the RAG bypass flag** — an install that turned
   `rag.bypass_embedding_and_retrieval` on stopped being held to the cap its admin last saved under
   **Admin → Settings → Documents → Max Upload Size**: the pipe read the bypass flag beside the stored
@@ -146,6 +180,20 @@
   published, the closing frame carries no replacing content on a continuing turn, and the answer stays where the
   browser had it. A saved chat that is not continuing, an API caller with no chat, a temporary chat and a temporary
   answer are all unchanged.
+
+- **A skipped oversized image names the kind of file, not the caller's path segment** — a stored
+  Open WebUI picture that is too large to inline is skipped, and the record that says so used to
+  carry the file id the caller wrote in the `image_url` as its subject:
+  `Skipping an attached image (01JQ8ABCDEFGHJKMNPQRSTVWXYZ01): larger than the 1048576-byte inline
+  limit [cause=oversized_inline]`. That segment is the caller's own string — Open WebUI's file-id
+  pattern admits any run of letters, digits and hyphens, so a person's name spelled as a path
+  segment is as legal as an id — and a subject is not shortened on its way to the log. The record
+  now reads `Skipping an attached image (image): …`, naming the kind of attachment the way its
+  sibling arms already name `audio` and `video`. Everything an operator triages on is unchanged:
+  the kind, the cause, the byte limit, the single WARNING per cause, the
+  `Images: skipped 1 (larger than the 1048576-byte inline limit).` status the person sees, and the
+  answer. A file that is genuinely gone is untouched — that refusal still names the id, because
+  there the sentence goes to the person, not to the log.
 
 - **Session log assembler, one offer per pass** — a turn the assembler already offered, or already failed, inside a
   pass is not offered again by that pass, and a turn whose assembly lock another pass holds is offered once per pass
@@ -400,6 +448,10 @@
   that has already started skips the whole write region instead of only the part before it. A refresh on a live
   instance is unaffected, and nothing a person sees in a chat changes.
 - **Media on the `/chat/completions` leg** — a turn resolved to the chat endpoint — by `DEFAULT_LLM_ENDPOINT=chat_completions`, by a model in `FORCE_CHAT_COMPLETIONS_MODELS`, or by the `AUTO_FALLBACK_CHAT_COMPLETIONS` fallback — now judges every media link its converter copies, by the same rule the `/responses` leg applies at ingress: the transport (`http://` only with `ALLOW_INSECURE_HTTP` **and** an allowlisted host), the scheme, a link naming this Open WebUI's own `/api/v1/files/` endpoint, and the inline size bound. Such a link used to be copied verbatim onto the wire, and the cleartext valve was never asked about it on this leg. A refused block is dropped from the turn and named on it as `[An attached item was not sent: …]`, in the request side's own words, beside whatever else survived — except an `input_file` that also carries a `file_id`, which keeps that id and drops only the refused link, exactly as on the other leg. An admin who allows cleartext HTTP sees the same link forwarded as before, and a `https://` link, a `data:` URL and raw base64 in `file_data` are untouched. One asymmetry is worth naming: a `data:` video sent to a chat-leg model is now held to the same size bound as on the other leg (`BASE64_MAX_SIZE_MB`, not `VIDEO_MAX_SIZE_MB`), so a clip over it is reported as not sent instead of forwarded.
+
+- **A refused tool picture on the unstreamed `/chat/completions` route** — a picture a tool result carried that the chat-leg conversion drops (over `BASE64_MAX_SIZE_MB`, a cleartext `http://` link, an unusable scheme) is now named to the person on the turn that carried it. The streamed chat leg already did; nothing in the chain above the unstreamed leaf carried an event emitter, so the refusal was collected and dropped. The sentence is the same `Images: skipped N (<reason>).` every other leg uses, so which leg dropped it is not something a reader can tell. A turn that loses no picture still reports nothing, and a headless caller with no emitter still sends its request.
+- **A refused picture no longer re-reports itself on every later turn** — under the default `Image input reuse`, a picture an earlier turn's gate had already refused was put into the reuse pool without being measured, so the reuse arm re-derived that refusal and named it again on each later turn for as long as `Image reuse window` could reach the pool — for a picture over `Maximum base64 upload size`, four turns' worth. The pool is now gated on admission, so a refused picture never enters it, is not re-measured on a later turn, and is not re-reported there; the refusal is logged at the reuse arm's own wording and the person still hears about it once, on the turn that carried the picture. Nothing else moved: a picture within the cap is still measured on the same terms at admission and is still reused on the same window, and `user_turn_only`, which never reaches the reuse arm, is unchanged.
+- **A refused file is named on the turn that carried it and on no later turn** — the third disjunct of the notice gate (`or status_files`) was not keyed on the turn, so a refusal filed on any turn satisfied the emit condition by itself, on every later request that replayed that history: measured over a six-turn history, one `Files: skipped 1 (…)` status per turn, unbounded. For a caller with no `chat_id`/`message_id` the same unbounded set was joined into `choices[0].message.content`, so pipe prose sat in the value an automation reads as the model's answer, once per historical turn. The gate now carries a turn-window bound (`_NOTICE_LOOKBACK_TURNS`, keyed on the turn index, not on a message index), and the aggregated `attachment_notices` list rides the same predicate, so the body carries the same bounded lines the status did. The operator decided (N25, 2026-10-04) that the window is `0`: a refusal is reported on its own turn only, which is what the sentence in `docs/multimodal_ingestion_pipeline.md` now says. Nothing else moved — the report is not deleted, the turn that carried the attachment still names it, and a turn that refused nothing still says nothing.
 
 - **Presets** — a request naming a preset in the spelling the pipe itself dispatches (`<base>@preset/<slug>`) is now served instead of being refused as blocked. The pipe publishes presets as `<base>:preset/<slug>` and dispatches them with the `@`; the model-restriction gate read the dispatched spelling as a model of its own, so an id copied out of a request log or a response body came back as the `Blocked model message`. The published row was already enforced under the picker spelling, so nothing new is admitted — the two spellings now name one model. A preset turn also stops being billed to the 128 000-token fallback and picks up its base model's real context window, so a tool result the base's window can hold is no longer trimmed away and one it cannot is no longer shipped whole.
 - **image generation, a rewritten response body** — when something in front of OpenRouter answers the image endpoint with an error page or a WAF challenge instead of an OpenRouter response, the failure card now shows that text as a quoted code block instead of as ordinary message text. The provider's words are still on the card in full — nothing is shortened, rewritten or hidden — but they are contained, so a beacon embedded in the page no longer makes the reader's browser fetch it and a phishing link in it is no longer a live link. The two facts the card leads with, the endpoint that answered and the upstream `Content-Type`, are unchanged and remain ordinary prose. The fence is carried by the value rather than by a placeholder, so it holds on an installation that has never opened a template, and it is sized past the payload's own backtick run, so a page carrying its own fence cannot escape one. This affects every caller of a picture-only image model, on a surface that is on by default, and it is the same rule the text legs' error cards already applied.

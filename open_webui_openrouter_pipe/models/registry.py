@@ -261,7 +261,7 @@ class ModelFamily:
             _head, separator, tag = norm.rpartition(":")
             if not separator or not tag or tag.startswith("preset/"):
                 return base_name
-            if "/" not in _head and "." not in _head:
+            if "." not in _head:
                 return base_name
             return f"{base_name} {tag.capitalize()}"
         return name

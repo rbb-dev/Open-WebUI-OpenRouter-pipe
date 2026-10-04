@@ -43,7 +43,7 @@ Open WebUI does not provide a "pipe can inject new toggles" frontend extension p
 
 The pipe implements OpenRouter Web Search as part of the **OpenRouter Web Tools** toggleable filter:
 
-- The pipe can **auto-install / auto-update** this filter when `AUTO_INSTALL_WEB_TOOLS_FILTER` is enabled. A switch-off reaches every copy this pipe installed, and every copy that carries no install record, whether it is on or off, and a copy this version switched off comes back on its own when a web tool is on again, including one installed by hand and with `AUTO_INSTALL_WEB_TOOLS_FILTER` off.
+- The pipe can **auto-install / auto-update** this filter when `AUTO_INSTALL_WEB_TOOLS_FILTER` is enabled. A switch-off reaches every copy this pipe installed, and every copy that carries no install record, whether it is on or off, and a copy this version switched off comes back on its own when a web tool is on again, including one installed by hand and with `AUTO_INSTALL_WEB_TOOLS_FILTER` off. It comes back private rather than shared: Open WebUI puts every filter marked Global at the front of every model's list, so a row an admin made Global is made private again in the same write that re-enables it.
 - The pipe can **auto-attach** it to pipe models when `AUTO_ATTACH_WEB_TOOLS_FILTER` is enabled.
 - The pipe can **enable it by default** on models when `AUTO_DEFAULT_WEB_TOOLS_FILTER` is enabled.
 

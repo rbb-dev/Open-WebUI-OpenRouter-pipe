@@ -139,7 +139,7 @@ def _responses_spec_from_owui_tool_cfg(tool_cfg: dict[str, Any], *, strictify: b
         params = {"type": "object", "properties": {}}
     out: dict[str, Any] = {
         "type": "function",
-        "name": name.strip(),
+        "name": name,
         "description": spec.get("description") or name.strip(),
         "parameters": _strictify_schema(params) if strictify else params,
     }
@@ -401,7 +401,7 @@ def _build_collision_safe_tool_specs_and_registry(
         if isinstance(carried_origin, str) and carried_origin.strip():
             origin_name = carried_origin.strip()
         else:
-            origin_name = key.strip() if isinstance(key, str) and key.strip() else spec["name"]
+            origin_name = key if isinstance(key, str) and key.strip() else spec["name"]
         spec["name"] = origin_name
         if (not owui_tool_passthrough) and tool_cfg.get("callable") is None:
             continue

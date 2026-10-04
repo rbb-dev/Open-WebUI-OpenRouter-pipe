@@ -40,7 +40,7 @@ Provider routing filters support **two visibility modes** that control who can c
 | **User-configurable** | Users (UserValves) | Yes (`toggle=True`) | Let users choose preferences (the sort key stays an admin knob: OWUI reads `priority` from the admin class only, so this mode also gets a one-field admin `Valves`) |
 | **Both** | Both (user overrides admin) | Yes | Admin defaults + user choice |
 
-An admin-only row carries `toggle=False`, and Open WebUI runs a filter whose module has no truthy `toggle` on *every* model on the instance rather than only the ones you listed. So a per-slug row that an admin ticks Global stops being per-slug: its provider preferences would apply to every model in the workspace. The pipe writes `is_global: False` on every update to a row it owns, so a Global tick on a routing entry is undone on the next model-list refresh.
+An admin-only row carries `toggle=False`, and Open WebUI runs a filter whose module has no truthy `toggle` on *every* model on the instance rather than only the ones you listed. So a per-slug row that an admin ticks Global stops being per-slug: its provider preferences would apply to every model in the workspace. The pipe writes `is_global: False` on every update to a row it owns, so a Global tick on a routing entry is undone on the next model-list refresh. That is the rule for every filter row the pipe owns, not only a routing one: Open WebUI prepends each active Global filter to every model's filter chain, so the same tick on a Web Tools, Fusion, Image Generation, Video Generation or Direct Uploads row would offer that panel on models it has no business on. Each of those writers now carries the key, including the re-arm that switches a row the pipe switched off back on — the write an operator in Workspace ▸ Functions could not make private from the Model Editor.
 
 When a model appears in **both** `ADMIN_PROVIDER_ROUTING_MODELS` and `USER_PROVIDER_ROUTING_MODELS`, the filter has both `Valves` (admin defaults) and `UserValves` (user overrides), with user settings taking precedence.
 
@@ -352,7 +352,11 @@ only a row whose off the pipe does not own is yours to switch back on by hand.
 Note that the entry may still be visible in the model's filter list while it is inactive.
 Open WebUI applies only the active entries, so a listed-but-inactive provider routing entry
 does nothing until it is switched on again. An entry an admin left Global stays in every
-model's Integrations list until the next model-list refresh repairs it.
+model's Integrations list until the next model-list refresh repairs it, and the same holds
+for every other filter row this pipe owns: the re-arm that brings a switched-off row back
+on writes `is_global: False` with it, so a Global row the pipe re-enables comes back
+private. The Model Editor cannot undo that tick — its filter selector leaves global rows
+out of the list — so it has to be undone in Workspace ▸ Functions.
 
 A row the pipe could not switch on is named in the log with its id, is not attached while it
 is off, and is retried on the next catalog refresh. The retry stops once it succeeds, so a

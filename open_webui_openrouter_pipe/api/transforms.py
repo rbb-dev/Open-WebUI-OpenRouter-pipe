@@ -1115,6 +1115,24 @@ def responses_refusal_text(item: Any) -> str | None:
     return None
 
 
+def _without_marker_lines(block: Any, stripped: dict[int, str] | None = None) -> Any:
+    if not isinstance(block, dict):
+        return block
+    out: dict[Any, Any] = {}
+    for key, value in block.items():
+        if not isinstance(value, str):
+            out[key] = value
+            continue
+        if stripped is not None and id(value) in stripped:
+            out[key] = stripped[id(value)]
+            continue
+        cleaned = strip_hidden_marker_lines(value)
+        if stripped is not None:
+            stripped[id(value)] = cleaned
+        out[key] = cleaned
+    return out
+
+
 def _replay_blocks_or_note(
     blocks: list[Any],
     siblings: list[Any] | None = None,
@@ -1146,13 +1164,15 @@ def _replay_blocks_or_note(
         {"type": "text", "text": f"[An attached item was not sent: {'; '.join(refusals)}.]"}
     ] if refusals else []
     if survivors:
-        return survivors + note
+        return [_without_marker_lines(b, stripped) for b in survivors] + note
     if not refusals:
         if role != "user":
             return blocks
         if any(_replay_block_is_usable(b, refused, stripped=stripped) for b in originals):
             return [
-                b for b in originals if _replay_block_is_usable(b, refused, stripped=stripped)
+                _without_marker_lines(b, stripped)
+                for b in originals
+                if _replay_block_is_usable(b, refused, stripped=stripped)
             ]
         return [{"type": "text", "text": OPENAI_EMPTY_USER_TURN_FALLBACK}]
     return note

@@ -90,7 +90,7 @@ from ..storage.owui_files import (
     materialize_owui_file_to_temp,
 )
 from ..storage.video_persistence import VideoPersistence
-from .image_types import capability_declared_off, prompt_with_system
+from .image_types import capability_declared_off, prompt_with_system, system_prompt_text
 from .media_relay import (
     MAX_RELAY_SECONDS_PER_REQUEST,
     RELAY_HOSTS,
@@ -894,6 +894,11 @@ def _safe_video_job_id(value: str) -> str:
     return text[:_VIDEO_JOB_ID_MAX_CHARS]
 
 
+def _with_standing_instructions(body: dict[str, Any], prompt: str) -> str:
+    standing = system_prompt_text(body.get("messages") if isinstance(body, dict) else None)
+    return f"{standing}\n\n{prompt}" if standing else prompt
+
+
 class VideoGenerationAdapter:
 
     TERMINAL_SUCCESS: ClassVar[set[str]] = {"completed", "succeeded", "success"}
@@ -1215,20 +1220,24 @@ class VideoGenerationAdapter:
                         pipe_meta = metadata.setdefault(_PIPE_METADATA_KEY, {})
                         if isinstance(pipe_meta, dict):
                             pipe_meta["video_generation"] = video_meta_pre
-                    if should_emit_confirmation_footer(
+                    footer_due = should_emit_confirmation_footer(
                         intent_result, confirm_mode=confirm_mode,
                         person_prompt_text=(
                             prompt
                             if intent_result.prompt == prompt
                             else self._extract_user_prompt(body)
                         ),
-                    ):
+                    )
+                    standing_sent = False
+                    if intent_result.prompt and intent_result.prompt != prompt:
+                        prompt = _with_standing_instructions(body, intent_result.prompt)
+                        standing_sent = prompt != intent_result.prompt
+                    if footer_due:
                         disclosure_block = render_intent_disclosure_block(
                             intent=intent_result,
                             thumb_urls=thumbs,
+                            standing_sent=standing_sent,
                         )
-                    if intent_result.prompt:
-                        prompt = intent_result.prompt
                     self._emit_intent_telemetry(intent_result, valves=valves, chat_id=chat_id)
                 except asyncio.CancelledError:
                     raise

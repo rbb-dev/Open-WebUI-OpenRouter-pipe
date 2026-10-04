@@ -1,12 +1,13 @@
 
 import asyncio
+import contextlib
 import logging
 import re
 from typing import Any, cast
 
 import pytest
 
-from open_webui_openrouter_pipe import Pipe, ResponsesBody
+from open_webui_openrouter_pipe import EncryptedStr, Pipe, ResponsesBody
 from open_webui_openrouter_pipe.core.utils import contains_marker
 from tests.log_capture import emitted
 
@@ -140,7 +141,6 @@ class TestFusionPanelDeltaStreaming:
         await _run(pipe_instance_async, monkeypatch,
                    fusion_live_enabled=True, events=REASONING_DELTA_EVENTS)
         assert "reasoning" not in src_completed
-
 
 PLAIN_EVENTS = [
     {"type": "response.created", "response": {"model": "anthropic/claude-opus"}},

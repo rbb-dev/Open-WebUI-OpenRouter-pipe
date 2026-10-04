@@ -193,6 +193,7 @@ _PIPE_OWNED_ROW_TYPES = frozenset({
 _STORED_VALVE_UNREADABLE_MEMO_MAX = 32
 
 _RETENTION_CACHE_PURGE_BATCH = 500
+_ARTIFACT_SHARED_FRAGMENT_COOLDOWN_S = 3600.0
 
 REPLY_MEMORY_IDLE_SECONDS = 900.0
 REPLY_MEMORY_MAX_BYTES = 64 * 1024 * 1024
@@ -262,6 +263,32 @@ def _sanitize_table_fragment(value: str) -> str:
     return fragment
 
 
+def _other_installed_fragments(store: Any) -> set[str] | None:
+    session_factory = getattr(store, "_session_factory", None)
+    if session_factory is None:
+        return None
+    table = ArtifactStore._quote_identifier("function")
+    item_table = getattr(getattr(store, "_item_model", None), "__table__", None)
+    schema_name = getattr(item_table, "schema", None)
+    if isinstance(schema_name, str) and schema_name.strip():
+        table = f"{ArtifactStore._quote_identifier(schema_name.strip())}.{table}"
+    own_id = str(getattr(store, "id", "") or "")
+    column = ArtifactStore._quote_identifier("id")
+    try:
+        with _db_session(session_factory) as session:
+            rows = session.execute(text(f"SELECT {column} FROM {table}")).all()
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "the installed function ids could not be read", exc_info=True
+        )
+        return None
+    return {
+        _sanitize_table_fragment(str(row[0]))
+        for row in rows
+        if row and row[0] is not None and str(row[0]) != own_id
+    }
+
+
 def _index_name(table_name: str, suffix: str) -> str:
     digest = hashlib.sha256(table_name.encode("utf-8", "ignore")).hexdigest()[:16]
     return f"ix_{digest}_{suffix}"
@@ -311,6 +338,14 @@ def _db_session(factory: Callable[..., Session]):
     finally:
         with contextlib.suppress(Exception):
             session.close()
+
+
+def _committed_after_failure(rows: list[dict[str, Any]]) -> set[str]:
+    return {
+        str(row.get("id"))
+        for row in rows
+        if row.get("_persisted") and row.get("id")
+    }
 
 
 def _detect_redis_config(valves: Any, logger: logging.Logger) -> tuple[str, str, str, bool]:
@@ -706,6 +741,8 @@ class ArtifactStore:
 
         self._artifact_key_warning_emitted = False
         self._write_refusal_notified = False
+        self._read_unconfigured_notified = False
+        self._read_fault_notified = False
         self._artifact_key_unreadable = False
         self._table_key = ""
         self._stored_valve_unreadable_memo: dict[tuple[str, str, str], bool] = {}
@@ -819,6 +856,37 @@ class ArtifactStore:
             level="warning",
         )
 
+    async def _note_read_loss(self, arm: str, text: str) -> None:
+        context = self._TOOL_CONTEXT.get() if self._TOOL_CONTEXT else None
+        emitter = context.event_emitter if context else None
+        if not self._emit_notification:
+            self.logger.debug(
+                "Artifact read degraded (%s) with no notification seam to report it on.", arm
+            )
+            return
+        latched = (
+            self._read_unconfigured_notified if arm == "unconfigured" else self._read_fault_notified
+        )
+        if latched:
+            self.logger.debug(
+                "Artifact read degraded again (%s); already told this episode.", arm
+            )
+            return
+        try:
+            delivered = await self._emit_notification(emitter, text, level="warning")
+        except Exception:
+            self.logger.debug("Artifact read loss notice could not be delivered", exc_info=True)
+            return
+        if not delivered:
+            self.logger.debug(
+                "Artifact read degraded (%s) and the notice reached no live turn.", arm
+            )
+            return
+        if arm == "unconfigured":
+            self._read_unconfigured_notified = True
+        else:
+            self._read_fault_notified = True
+
     async def _note_write_loss(self, context: Any, text: str) -> None:
         emitter = context.event_emitter if context else None
         if self._emit_notification:
@@ -891,6 +959,7 @@ class ArtifactStore:
         self._session_factory: sessionmaker | None = None
         self._item_model: type[Any] | None = None
         self._artifact_table_name: str | None = None
+        self._artifact_table_fragment: str | None = None
         self._db_executor: ThreadPoolExecutor | None = None
         self._artifact_store_signature: tuple[str, str] | None = None
         self._owui_schema: str | None = None
@@ -901,6 +970,7 @@ class ArtifactStore:
         """Initialize cleanup worker state."""
         self._cleanup_task: asyncio.Task | None = None
         self._pipe_owned_row_reapers: list = []
+        self._retired_warn: dict[str, float] = {}
 
 
     @timed
@@ -1132,6 +1202,7 @@ class ArtifactStore:
             self._session_factory = None
             self._item_model = None
             self._artifact_table_name = None
+            self._artifact_table_fragment = None
             self._artifact_store_signature = None
             return None, None
 
@@ -1230,6 +1301,7 @@ class ArtifactStore:
             self._session_factory = None
             self._item_model = None
             self._artifact_table_name = None
+            self._artifact_table_fragment = None
             self._artifact_store_signature = None
             return
 
@@ -1240,11 +1312,13 @@ class ArtifactStore:
             self._session_factory = None
             self._item_model = None
             self._artifact_table_name = None
+            self._artifact_table_fragment = None
             self._artifact_store_signature = None
             return
 
         self._item_model = item_model
         self._artifact_table_name = table_name
+        self._artifact_table_fragment = table_fragment
         self._artifact_store_signature = (table_fragment, self._table_key)
         if not table_exists:
             self.logger.info("Artifact table ready: %s (key hash: %s). Changing ARTIFACT_ENCRYPTION_KEY creates a new table; old artifacts become inaccessible.", table_name, suffix.rsplit("_", 1)[-1])
@@ -1752,14 +1826,12 @@ class ArtifactStore:
             row["is_encrypted"] = is_encrypted
 
     async def _seal_rows(self, rows: list[dict[str, Any]], *, form_settled: bool = False) -> None:
-        if self._db_executor is None:
-            self._prepare_rows_for_storage(rows, form_settled=form_settled)
-            return
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(
-            self._db_executor,
-            functools.partial(self._prepare_rows_for_storage, rows, form_settled=form_settled),
-        )
+        call = functools.partial(self._prepare_rows_for_storage, rows, form_settled=form_settled)
+        if self._db_executor is None:
+            await loop.run_in_executor(None, call)
+            return
+        await loop.run_in_executor(self._db_executor, call)
 
     def _reply_memory_for(self, chat_id: Any) -> ReplyMemory:
         return self._api_reply_memory if not chat_id else self._reply_memory
@@ -2416,13 +2488,10 @@ class ArtifactStore:
                 "Artifact store is not configured; %d stored item(s) could not be loaded.",
                 len(missing_ids),
             )
-            context = self._TOOL_CONTEXT.get() if self._TOOL_CONTEXT else None
-            if self._emit_notification:
-                await self._emit_notification(
-                    context.event_emitter if context else None,
-                    "Earlier tool results could not be loaded, so the model did not receive them.",
-                    level="warning",
-                )
+            await self._note_read_loss(
+                "unconfigured",
+                "Earlier tool results could not be loaded, so the model did not receive them.",
+            )
             return _load_result(cached, producers, with_producers)
 
         from open_webui_openrouter_pipe.core.logging_system import SessionLogger
@@ -2434,13 +2503,9 @@ class ArtifactStore:
                 "DB reads disabled for user_id=%s due to repeated failures",
                 user_id,
             )
-            context = self._TOOL_CONTEXT.get() if self._TOOL_CONTEXT else None
-            if self._emit_notification:
-                await self._emit_notification(
-                    context.event_emitter if context else None,
-                    "DB ops skipped due to repeated errors.",
-                    level="warning",
-                )
+            await self._note_read_loss(
+                "breaker", "DB ops skipped due to repeated errors."
+            )
             return _load_result(cached, producers, with_producers)
 
         try:
@@ -2452,21 +2517,15 @@ class ArtifactStore:
         except Exception as exc:
             self._record_db_failure(user_id)
             self.logger.warning("Artifact fetch failed: %s", exc, exc_info=True)
-            context = self._TOOL_CONTEXT.get() if self._TOOL_CONTEXT else None
-            if self._emit_notification:
-                try:
-                    await self._emit_notification(
-                        context.event_emitter if context else None,
-                        "Earlier tool results could not be loaded, so the model did not receive them.",
-                        level="warning",
-                    )
-                except Exception:
-                    self.logger.debug(
-                        "Artifact fetch fault notice could not be delivered", exc_info=True
-                    )
+            await self._note_read_loss(
+                "fault",
+                "Earlier tool results could not be loaded, so the model did not receive them.",
+            )
         else:
             if user_id:
                 self._reset_db_failure(user_id)
+            self._read_unconfigured_notified = False
+            self._read_fault_notified = False
             cached.update(fetched)
             for item_id in [item_id for item_id in fetched if item_id in unreadable]:
                 unreadable.pop(item_id)
@@ -2902,6 +2961,7 @@ class ArtifactStore:
             self._note_flush_ready()
 
             entries_by_row: list[tuple[str, dict[str, Any]]] = []
+            rows: list[dict[str, Any]] = []
             committed: set[str] = set()
             returned_to_queue = False
             try:
@@ -2966,7 +3026,11 @@ class ArtifactStore:
                     }
                 except Exception as exc:
                     failure = f"{type(exc).__name__}: {exc}"
-                    self.logger.exception("❌ DB flush failed! %d artifacts could not be persisted", len(rows))
+                    committed = _committed_after_failure(rows)
+                    self.logger.exception(
+                        "❌ DB flush failed! %d artifacts could not be persisted",
+                        len(rows) - len(committed),
+                    )
                 if committed:
                     committed_rows = [row for row in rows if row.get("id") in committed]
                     dropped = await self._drop_rows_deleted_while_queued(committed_rows)
@@ -3033,7 +3097,9 @@ class ArtifactStore:
                     raise RuntimeError(failure) from None
             except BaseException:
                 if not returned_to_queue:
-                    await self._return_popped_entries_on_cancel(entries_by_row, committed)
+                    await self._return_popped_entries_on_cancel(
+                        entries_by_row, committed or _committed_after_failure(rows)
+                    )
                 raise
         finally:
             if lock_acquired and self._redis_client:
@@ -3395,9 +3461,10 @@ class ArtifactStore:
     async def _run_cleanup_once(self) -> None:
         if not (self._db_executor and self._item_model and self._session_factory):
             return
+        loop = asyncio.get_running_loop()
         for reap in list(self._pipe_owned_row_reapers):
             try:
-                reap()
+                await loop.run_in_executor(self._db_executor, reap)
             except Exception as exc:
                 self.logger.warning(
                     "Pipe-owned row reap failed on the artifact cleanup pass: %s",
@@ -3413,7 +3480,6 @@ class ArtifactStore:
                 "invalidate every entry, so no artifact row is deleted on this pass"
             )
             return
-        loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             self._db_executor,
             functools.partial(self._cleanup_sync, cutoff),
@@ -3557,13 +3623,43 @@ class ArtifactStore:
                 exc_info=True,
             )
             return []
-        return [
+        candidates = [
             name
             for name in names
             if name != self._artifact_table_name
             and name.startswith(prefix)
             and re.fullmatch(r"[0-9a-f]{8}", name[len(prefix):])
         ]
+        if not candidates:
+            return []
+        other_fragments = _other_installed_fragments(self)
+        if other_fragments is None:
+            for name in candidates:
+                self.logger.log(
+                    warn_level(
+                        self._retired_warn,
+                        f"artifact_retired_unverified:{name}",
+                        cooldown_s=_ARTIFACT_SHARED_FRAGMENT_COOLDOWN_S,
+                    ),
+                    "artifact table %s was not swept: the installed function ids could not be read, "
+                    "so the pipe cannot tell its own retired tables apart from another installed copy's",
+                    name,
+                )
+            return []
+        if self._artifact_table_fragment in other_fragments:
+            for name in candidates:
+                self.logger.log(
+                    warn_level(
+                        self._retired_warn,
+                        f"artifact_retired_shared:{name}",
+                        cooldown_s=_ARTIFACT_SHARED_FRAGMENT_COOLDOWN_S,
+                    ),
+                    "artifact table %s is not swept: another installed function id sanitizes to the "
+                    "same table fragment (%s), so the pipe cannot tell its own retired tables apart "
+                    "from the ones that copy is still writing into", name, self._artifact_table_fragment,
+                )
+            return []
+        return candidates
 
     def _purge_retired_table(self, name: str, cutoff: datetime.datetime) -> None:
         engine = self._engine

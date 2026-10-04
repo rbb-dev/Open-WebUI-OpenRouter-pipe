@@ -239,14 +239,12 @@ class ChatCompletionsAdapter:
         """
         self._pipe = pipe
         self.logger = logger
-        self._refused_tool_pictures: list[tuple[str, str, str]] = []
 
     async def _report_refused_tool_pictures(
         self, refusals: list[tuple[str, str, str]], event_emitter: Any
     ) -> None:
         from ...requests.transformer import _tool_picture_notice
 
-        self._refused_tool_pictures = list(refusals)
         if not refusals or event_emitter is None:
             return
         await self._pipe._event_emitter_handler._emit_status(

@@ -41,7 +41,8 @@ user turn ─► VideoGenerationAdapter.generate
             VIDEO_INTENT_ENABLED?
                 │
             ┌───┴───┐
-           yes      no ─► send only latest user message (no context, no questions)
+           yes      no ─► send the model's own instructions, then the latest
+                                    user message (no context, no questions)
             │
             ▼
        resolve_intent (task model + JSON schema)
@@ -61,7 +62,8 @@ user turn ─► VideoGenerationAdapter.generate
                                  render Intent Disclosure Block
                                      │
                                      ▼
-                                 submit to /videos with frames + cleaned prompt
+                                 submit to /videos with frames + the model's
+                                 own instructions then the cleaned prompt
 ```
 
 The classifier returns one of five **intents**:
@@ -114,7 +116,11 @@ Prompt: "a black cat walking through tall grass"
 [generated video appears below]
 ```
 
-The block also appears on a turn that reuses no frame at all, whenever the classifier wrote the prompt that was sent instead of the person's own words, or stopped asking because the clarifying question limit was reached and guessed. Both need no frame to be worth showing, so on a text-to-video turn the block carries the `Prompt:` line, the `⚠️` note, or both, and no thumbnail. The `VIDEO_INTENT_CONFIRM_MODE` setting still decides: `never` suppresses the block in every one of these cases.
+The block also appears on a turn that reuses no frame at all, whenever the classifier wrote the scene that was sent instead of the person's own words, or stopped asking because the clarifying question limit was reached and guessed. Both need no frame to be worth showing, so on a text-to-video turn the block carries the `Prompt:` line, the `⚠️` note, or both, and no thumbnail. The `VIDEO_INTENT_CONFIRM_MODE` setting still decides: `never` suppresses the block in every one of these cases.
+
+The prompt the video model is sent is composed by the pipe and not by the classifier: the model's own system instructions, then the scene — which is what the classifier wrote, or the person's own words when it was asked for them unchanged ("use my prompt verbatim", and the equivalents in other languages). Both arms are composed by the pipe, so a model carrying a house style is shot in it whichever one a turn takes, and the instructions are never sent twice. On a turn that skips the classifier the scene is the latest user message.
+
+The `Prompt:` line shows the scene alone. When the instructions went ahead of it the block adds one line under it saying so, and quotes none of their text: a system prompt is configuration, not something a person asked to read in their own chat.
 
 The `Prompt:` line, the clarifying question and each clarification option are each whitespace-flattened onto one line — every run of whitespace becomes a single space — so nothing a person or the classifier writes can be read back as a hidden marker. A two-line prompt therefore reads back as one line; the words and their order are unchanged.
 
@@ -153,13 +159,15 @@ Before a `first_frame` extraction decodes anything, the pipe reads the source's 
 
 Every frame the extractor returns is also held under the `VIDEO_FRAME_IMAGE_MAX_BYTES` byte budget, the same limit video generation reads each uploaded frame back against, and the budget is checked on all five paths out of the extractor — including the retry that re-aims a failed timestamp at the end of the file, which previously returned the producer's frame ungated and so armed the turn to fail later, at a read-back neither caller had refused. The gate is measured on the bytes that are actually sent: the **produced PNG** where the allowlist leaves PNG in, and the re-encoded artefact otherwise, checked after the conversion and before the frame is written, so an over-budget frame is never stored and then refused on the way back. A frame over it is dropped with its own ⚠️ note and the turn continues; on the ffmpeg leg the child is stopped part-way through the read once the budget is passed, so a frame that is going to be refused is not buffered whole in the parent first; before this it failed the whole video request from a call site nothing caught. Because a PNG's size follows its entropy and the two producers encode the same frame to slightly different byte counts, the boundary where a frame stops being accepted is a band a few tens of kilobytes wide whose position depends on the ffmpeg build, not a line: a frame inside that band can be accepted for one target and refused for another. With the byte budget at its 12 MiB default and the long-edge bound in front of it, that band sits far from the reachable geometries rather than across them: the largest picture the bound permits is 1920x1920, whose worst case as an incompressible lossless PNG measures about 10.6 MiB, some 88% of the 12 MiB cap. A frame the pipe extracts from a previous video is therefore bounded inside the budget before it is ever encoded, and the budget is a real limit on what the pipe can be handed rather than on what it produced — which is exactly what an **attached** frame still is, and what a previous video's frame is not.
 
+Whichever leg those frames arrive by, the prompt that goes with them is composed the same way: the model's own system instructions, then the scene. That holds on every path through this section and every path out of it, including the branch where the classifier hands back the person's own words because they asked for their prompt verbatim — there the pipe puts the instructions ahead of those words itself rather than leaving it to the classifier, so the clip is shot in the model's house style whatever the classifier chose to do with the style.
+
 ## Configuration valves (admin)
 
 All admin-scoped on the global `Valves` model. User-tunable per-chat versions of four of these are also exposed on each video model's filter UserValves (see "User-tunable settings" below).
 
 | Valve | Type | Default | Purpose |
 |---|---|---|---|
-| `VIDEO_INTENT_ENABLED` | `bool` | `True` | Master switch. When False, the classifier is bypassed entirely; only the latest user message is sent to the video model. |
+| `VIDEO_INTENT_ENABLED` | `bool` | `True` | Master switch. When False, the classifier is bypassed entirely and the latest user message alone is sent to the video model, behind the model's own system instructions as on every other turn. |
 | `VIDEO_INTENT_TASK_MODEL_MODE` | `internal` / `external` | `external` | Which of Open WebUI's two Task Models to use as the classifier, as configured in Open WebUI's admin Task Model settings. `internal` reads the local-model setting; `external` reads the API-model one. |
 | `VIDEO_INTENT_TASK_MODEL_FALLBACK` | `none` / `other_task_model` | `other_task_model` | Failure fallback strategy. `none` returns only the primary task model; `other_task_model` also tries the other (internal/external) Task Model. With neither configured the classifier is skipped, the turn is recorded as a classifier failure (`failure_reason` `no_task_model_candidates`), the person is warned once per chat through the same toast latch, and the turn still generates from the latest user message. No per-user breaker is armed for this path. The warning about it is latched per chat, and the cadence is the same three cases as the notification toast: once for a saved or `channel:` chat, on **every** failing turn for a temporary chat (whose id is never held as the key), and once per process for a call that carries no `chat_id` at all. |
 | `VIDEO_INTENT_SKIP_WHEN_EMPTY_CHAT` | `bool` | `True` | Skip the classifier when the chat has no prior turns and no attachments — there is nothing to classify against, so the call is wasted. Turn off if you want clarifying questions on first-turn ambiguous prompts. |

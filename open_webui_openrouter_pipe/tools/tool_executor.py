@@ -729,6 +729,15 @@ class ToolExecutor:
                 metadata=context.metadata or {},
             )
 
+        async def _dispatch_settled(call: dict, status: str) -> None:
+            await self._pipe._dispatch_plugin_event(
+                "dispatch_on_tool_result",
+                str(resolved_tool_name(call) or "?"),
+                status,
+                request_id=context.request_id,
+                metadata=context.metadata or {},
+            )
+
         async def _refuse(index: int, call: dict, text: str) -> None:
             await _append_and_notify(
                 index, call, self._build_tool_output(call, text, status="failed"), "failed"
@@ -884,6 +893,7 @@ class ToolExecutor:
                     f"busy {enqueue_allowance:.0f}s after the round asked for it (queue wait).",
                     status="failed",
                 ))
+                await _dispatch_settled(item.call, "failed")
         if unqueued:
             self.logger.warning("Tool queue wait: %d call(s) were never started", len(unqueued))
 
@@ -953,6 +963,7 @@ class ToolExecutor:
                     )
                     self.logger.warning("Tool never started: %s", message)
                 result = self._build_tool_output(call, message, status="failed")
+                await _dispatch_settled(call, "failed")
             if _on_complete and pending_index not in notified:
                 with contextlib.suppress(Exception):
                     await _on_complete(call, result)
@@ -1027,8 +1038,7 @@ class ToolExecutor:
                     if not isinstance(spec, dict) or not isinstance(server, dict):
                         continue
                     raw_name = spec.get("name")
-                    name = raw_name.strip() if isinstance(raw_name, str) else ""
-                    if not name:
+                    if not isinstance(raw_name, str) or not raw_name.strip():
                         continue
 
                     allowed_params: set[str] = set()
@@ -1040,12 +1050,12 @@ class ToolExecutor:
                             allowed_params = _advertised_root_params(parameters, strictify=True)
 
                     spec_payload = dict(spec)
-                    spec_payload["name"] = name
+                    spec_payload["name"] = raw_name
                     server_payload = dict(server)
                     with contextlib.suppress(Exception):
                         server_payload.pop("specs", None)
 
-                    origin_key = f"{name}::direct"
+                    origin_key = f"{raw_name}::direct"
                     registry_key = origin_key
                     ordinal = 2
                     while registry_key in direct_registry:
@@ -1055,7 +1065,7 @@ class ToolExecutor:
                         "spec": spec_payload,
                         "direct": True,
                         "server": server_payload,
-                        "callable": _browser_call(allowed_params, name, server_payload, event_call),
+                        "callable": _browser_call(allowed_params, raw_name, server_payload, event_call),
                         "origin_key": origin_key,
                     }
                 except Exception:

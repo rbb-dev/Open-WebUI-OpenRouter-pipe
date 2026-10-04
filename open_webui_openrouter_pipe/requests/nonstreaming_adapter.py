@@ -92,6 +92,7 @@ class NonStreamingAdapter:
         owui_chat_id: str | None = None,
         transient_retry: bool = True,
         task_request: bool = False,
+        event_emitter: Any = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Send a non-streaming request and yield Responses-style events."""
         effective_valves = valves or self._pipe.valves
@@ -190,6 +191,7 @@ class NonStreamingAdapter:
                 owui_chat_id=owui_chat_id,
                 transient_retry=transient_retry,
                 files_inlined=True,
+                event_emitter=event_emitter,
             )
             choices = chat_response.get("choices") if isinstance(chat_response, dict) else None
             message = None

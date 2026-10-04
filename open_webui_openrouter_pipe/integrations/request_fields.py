@@ -9,8 +9,8 @@ IMAGE_FIELD_ROUTES: dict[str, str] = {
         "any links given in the reference-links control"
     ),
     "model": "the model picked in the chat",
-    "n": "per-model control, bounded by the published range",
-    "output_compression": "per-model control, bounded by the published range",
+    "n": "per-model control, bounded by what the model publishes",
+    "output_compression": "per-model control, bounded by what the model publishes",
     "output_format": "per-model control, drawn when the model publishes its containers",
     "prompt": "the message typed in the chat, with the model's own system text prefixed",
     "provider": (
@@ -113,7 +113,12 @@ VIDEO_FIELD_GAPS: dict[str, str] = {
 }
 
 VIDEO_CATALOG_FIELD_ROUTES: dict[str, str] = {
-    "allowed_passthrough_parameters": "the names a typed control is drawn for, or a free-text box when none exists",
+    "allowed_passthrough_parameters": (
+        "the names a typed control is drawn for, or a free-text box when none exists; "
+        "`size` and `aspectRatio` are offered only where the model publishes the "
+        "matching supported_sizes / supported_aspect_ratios list, and are reported rather "
+        "than offered without it"
+    ),
     "creativity": "per-model control, drawn from the modes the catalogue lists",
     "description": "the capability line of the model's help card",
     "generate_audio": "the audio toggle, drawn when the catalogue does not declare it off",

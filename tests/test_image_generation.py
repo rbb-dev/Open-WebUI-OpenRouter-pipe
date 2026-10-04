@@ -3101,6 +3101,10 @@ async def test_retirement_touches_only_the_rows_the_previous_design_left():
             return rows
 
         @staticmethod
+        async def get_function_by_id(row_id):
+            return next((row for row in rows if row.id == row_id), None)
+
+        @staticmethod
         async def update_function_by_id(row_id, payload):
             if payload.get("is_active") is False:
                 deactivated.append(row_id)
@@ -3438,6 +3442,10 @@ async def test_the_refresh_retires_superseded_filters_whether_or_not_it_installs
         @staticmethod
         async def get_functions_by_type(kind, active_only=True):
             return rows
+
+        @staticmethod
+        async def get_function_by_id(row_id):
+            return next((row for row in rows if row.id == row_id), None)
 
         @staticmethod
         async def update_function_by_id(row_id, payload):

@@ -1405,6 +1405,7 @@ def render_intent_disclosure_block(
     intent: VideoIntentResult,
     *,
     thumb_urls: list[str],
+    standing_sent: bool = False,
 ) -> str:
     """Render the markdown intent-disclosure block.
 
@@ -1449,6 +1450,9 @@ def render_intent_disclosure_block(
         if intent.prompt:
             lines.append("> ")
             lines.append(f"> Prompt: *\"{_flatten_to_one_line(intent.prompt)}\"*")
+            if standing_sent:
+                lines.append("> ")
+                lines.append("> The model's own instructions were sent too, ahead of this prompt.")
         if intent.downgrades:
             for note in intent.downgrades:
                 lines.append("> ")

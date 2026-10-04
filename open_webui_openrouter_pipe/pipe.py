@@ -1062,6 +1062,7 @@ class Pipe:
                 with contextlib.suppress(Exception):
                     stale_worker.cancel()
             self._log_worker_task = None
+            self._abandon_log_queue(self._log_queue)
             self._log_queue = asyncio.Queue(maxsize=1000)
             self._log_queue_loop = loop
             SessionLogger.set_log_queue(self._log_queue)
@@ -2941,7 +2942,7 @@ class Pipe:
     def _abandon_log_queue(
         self, owned_queue: asyncio.Queue[logging.LogRecord] | None
     ) -> None:
-        if owned_queue is None:
+        if not isinstance(owned_queue, asyncio.Queue):
             return
         drained = 0
         while True:
@@ -2994,7 +2995,6 @@ class Pipe:
         owned_queue = self._log_queue
         owned_loop = self._log_queue_loop
         worker = self._log_worker_task
-        drained_by_worker = False
         if worker:
             with contextlib.suppress(RuntimeError):
                 worker.cancel()
@@ -3010,7 +3010,6 @@ class Pipe:
                     if "cannot reuse already awaited coroutine" not in str(exc):
                         raise
                     self.logger.debug("Ignoring log worker shutdown error: %s", exc)
-                drained_by_worker = True
             else:
                 self.logger.debug(
                     "Skipping await for log worker bound to a different event loop during close()."
@@ -3026,8 +3025,7 @@ class Pipe:
                 SessionLogger.set_main_loop(None)
         except Exception:
             self.logger.debug("Releasing global log queue/loop references failed", exc_info=True)
-        if worker is None or not drained_by_worker:
-            self._abandon_log_queue(owned_queue)
+        self._abandon_log_queue(owned_queue)
 
     @timed
     async def _stop_video_tasks(self) -> None:
@@ -4416,6 +4414,7 @@ class Pipe:
         owui_chat_id: str | None = None,
         transient_retry: bool = True,
         files_inlined: bool = False,
+        event_emitter: Any = None,
     ) -> dict[str, Any]:
         return await self._ensure_chat_completions_adapter().send_openai_chat_completions_nonstreaming_request(
             session, responses_request_body, api_key, base_url, valves=valves, breaker_key=breaker_key,
@@ -4423,6 +4422,7 @@ class Pipe:
             owui_chat_id=owui_chat_id,
             transient_retry=transient_retry,
             files_inlined=files_inlined,
+            event_emitter=event_emitter,
         )
 
     async def send_openrouter_nonstreaming_request_as_events(
@@ -4439,6 +4439,7 @@ class Pipe:
         owui_chat_id: str | None = None,
         transient_retry: bool = True,
         task_request: bool = False,
+        event_emitter: Any = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         async for event in self._ensure_nonstreaming_adapter().send_openrouter_nonstreaming_request_as_events(
             session,
@@ -4452,6 +4453,7 @@ class Pipe:
             owui_chat_id=owui_chat_id,
             transient_retry=transient_retry,
             task_request=task_request,
+            event_emitter=event_emitter,
         ):
             yield event
 

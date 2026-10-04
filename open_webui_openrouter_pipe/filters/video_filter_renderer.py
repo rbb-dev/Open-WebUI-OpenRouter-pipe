@@ -35,6 +35,7 @@ _REFERENCE_URLS_JSON_CEILING = (
 logger = logging.getLogger(__name__)
 
 _warned_unrenderable_params: set[str] = set()
+_warned_list_gated_params: set[str] = set()
 
 _LITERAL_VALUE_RE = re.compile(r"^[a-zA-Z0-9:._ -]{1,64}$")
 
@@ -488,6 +489,11 @@ _HANDLED_PASSTHROUGH_PARAMS: frozenset[str] = frozenset({
     "size",
 }) | frozenset(control.param for control in _PASSTHROUGH_CONTROLS)
 
+_LIST_GATED_PASSTHROUGH_PARAMS: dict[str, str] = {
+    "aspectRatio": "aspect_ratios",
+    "size": "size_options",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class VideoFilterSpec:
@@ -781,6 +787,18 @@ def render_video_filter_source(
             "they are not offered. Every other parameter it publishes is.",
             spec.model_id,
             summarise_names(unreachable),
+        )
+    list_gated = _list_gated_params(spec)
+    if list_gated:
+        logger.log(
+            warn_level(
+                _warned_list_gated_params,
+                f"{spec.model_id}:{','.join(list_gated)}",
+            ),
+            "Model %r publishes parameter(s) %s but no supported_sizes / "
+            "supported_aspect_ratios list to draw a control from, so they are not offered.",
+            spec.model_id,
+            summarise_names(list(list_gated)),
         )
     user_valves_fields = _render_user_valves_fields(spec)
     inlet_param_lines = _render_param_lines(spec)
@@ -1082,6 +1100,19 @@ def _unhandled_params(spec: VideoFilterSpec) -> tuple[str, ...]:
     return tuple(accepted)
 
 
+def _list_gated_params(spec: VideoFilterSpec) -> tuple[str, ...]:
+    listed = frozenset(
+        name
+        for name, spec_field in _LIST_GATED_PASSTHROUGH_PARAMS.items()
+        if getattr(spec, spec_field)
+    )
+    return tuple(
+        name
+        for name in _LIST_GATED_PASSTHROUGH_PARAMS
+        if name in spec.allowed_params and name not in listed
+    )
+
+
 def _render_purpose_built_fields_uncached(spec: VideoFilterSpec) -> list[str]:
     fields = [
         _field_block(
@@ -1207,9 +1238,8 @@ def _render_purpose_built_fields_uncached(spec: VideoFilterSpec) -> list[str]:
         )
     if spec.supports_frames:
         modes = ["auto", "none"]
-        if "first_frame" in spec.frame_types:
-            modes.append("first_only")
         if spec.supports_first_last:
+            modes.append("first_only")
             modes.append("first_last")
         literals = _literal_union(tuple(modes))
         described = ", ".join(_FRAME_MODE_MEANINGS[mode] for mode in modes)

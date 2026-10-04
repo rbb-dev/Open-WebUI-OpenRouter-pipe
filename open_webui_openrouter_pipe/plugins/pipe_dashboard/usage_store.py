@@ -28,7 +28,7 @@ from ...storage.owui_files import is_temporary_chat, temporary_chat_prefixes
 from ...storage.persistence import (
     ArtifactStore,
     _db_session,
-    _sanitize_table_fragment,
+    _other_installed_fragments,
     generate_item_id,
     raw_valve_column_decodes,
 )
@@ -811,31 +811,6 @@ class UsageStore:
         self.start_purge_task(retention_days_fn)
         return True
 
-    def _other_installed_fragments(self, store: Any) -> set[str] | None:
-        from sqlalchemy import text
-
-        session_factory = getattr(store, "_session_factory", None)
-        if session_factory is None:
-            return None
-        table = ArtifactStore._quote_identifier("function")
-        item_table = getattr(getattr(store, "_item_model", None), "__table__", None)
-        schema_name = getattr(item_table, "schema", None)
-        if isinstance(schema_name, str) and schema_name.strip():
-            table = f"{ArtifactStore._quote_identifier(schema_name.strip())}.{table}"
-        own_id = str(getattr(store, "id", "") or "")
-        column = ArtifactStore._quote_identifier("id")
-        try:
-            with _db_session(session_factory) as session:
-                rows = session.execute(text(f"SELECT {column} FROM {table}")).all()
-        except Exception:
-            logger.debug("the installed function ids could not be read", exc_info=True)
-            return None
-        return {
-            _sanitize_table_fragment(str(row[0]))
-            for row in rows
-            if row and row[0] is not None and str(row[0]) != own_id
-        }
-
     def _retired_usage_table_names(self, store: Any) -> list[str]:
         from sqlalchemy import inspect as sa_inspect
 
@@ -855,7 +830,7 @@ class UsageStore:
         ]
         if not candidates:
             return []
-        other_fragments = self._other_installed_fragments(store)
+        other_fragments = _other_installed_fragments(store)
         if other_fragments is None:
             for name in candidates:
                 logger.log(

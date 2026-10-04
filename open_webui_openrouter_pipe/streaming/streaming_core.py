@@ -2325,6 +2325,7 @@ class StreamingHandler:
                         event_iter = self._pipe.send_openrouter_nonstreaming_request_as_events(
                             session,
                             request_payload,
+                            event_emitter=event_emitter,
                             api_key=api_key_value,
                             base_url=valves.BASE_URL,
                             valves=valves,
@@ -4541,6 +4542,12 @@ class StreamingHandler:
         finally:
             if unclaimed_token is not None:
                 _UNCLAIMED_LATCH.reset(unclaimed_token)
+            if fusion_batcher is not None and not handed_back_for_retry:
+                try:
+                    for _straggler in fusion_batcher.flush_all():
+                        await _emit_fusion_event(_straggler)
+                except (asyncio.CancelledError, Exception):
+                    self.logger.debug("Flushing the final fusion panel batch failed", exc_info=True)
             if event_iter is not None:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await asyncio.shield(_aclose_quietly(event_iter))
@@ -4742,7 +4749,10 @@ class StreamingHandler:
             ):
                 _terminal_synth = fusion_state.synthesize_missing_analysis()
                 if _terminal_synth is not None:
-                    await _emit_fusion_event(_terminal_synth)
+                    try:
+                        await _emit_fusion_event(_terminal_synth)
+                    except (asyncio.CancelledError, Exception):
+                        self.logger.debug("Emitting the terminal fusion synthesis failed", exc_info=True)
 
             if (
                 fusion_armed and fusion_state is not None and fusion_state.fusion_index is not None
@@ -4777,7 +4787,7 @@ class StreamingHandler:
                             "item": fusion_answer_item,
                         })
                         emitted_response_output_items = True
-                    except Exception:
+                    except (asyncio.CancelledError, Exception):
                         self.logger.debug(
                             "Failed to emit fusion answer output item", exc_info=True
                         )
@@ -4815,9 +4825,7 @@ class StreamingHandler:
                             )
 
                         await asyncio.shield(_persist_fusion_snapshot())
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
+                except (asyncio.CancelledError, Exception):
                     self.logger.warning("Failed to persist terminal fusion snapshot", exc_info=True)
 
             if was_cancelled or handed_back_for_retry:
@@ -4893,7 +4901,10 @@ class StreamingHandler:
                 )
             ):
                 if not error_occurred or emitted_output_items:
-                    await _capture_seeded_output()
+                    try:
+                        await _capture_seeded_output()
+                    except (asyncio.CancelledError, Exception):
+                        self.logger.debug("Capturing the seeded output array failed", exc_info=True)
                 terminal_output = _terminal_output_items(assistant_message)
             if (
                 outcome_sink is not None
@@ -5020,18 +5031,27 @@ class StreamingHandler:
                     await _chats_upsert(
                         chat_id, message_id, payload, user_id or metadata.get("user_id") or ""
                     )
-                except Exception as exc:
+                except (asyncio.CancelledError, Exception) as exc:
+                    if isinstance(exc, asyncio.CancelledError):
+                        _finalise_cancelled = exc
                     self.logger.warning(
                         "Failed to persist %s for chat_id=%s message_id=%s: %s",
                         _joined_labels([log for _f, log, _n, _k in _TURN_METADATA_FIELDS if _f in payload]),
                         chat_id, message_id, exc,
                         exc_info=True,
                     )
-                    await self._pipe._event_emitter_handler._emit_notification(
-                        event_emitter,
-                        f"Unable to save {_joined_labels([n for _f, _l, n, _k in _TURN_METADATA_FIELDS if _f in payload])} for this response. Output was delivered successfully.",
-                        level="warning",
-                    )
+                    try:
+                        await self._pipe._event_emitter_handler._emit_notification(
+                            event_emitter,
+                            f"Unable to save {_joined_labels([n for _f, _l, n, _k in _TURN_METADATA_FIELDS if _f in payload])} for this response. Output was delivered successfully.",
+                            level="warning",
+                        )
+                    except (asyncio.CancelledError, Exception) as notify_exc:
+                        if isinstance(notify_exc, asyncio.CancelledError):
+                            _finalise_cancelled = notify_exc
+                        self.logger.debug(
+                            "Notifying about a failed turn-field write failed", exc_info=True
+                        )
 
         _record_outcome()
         if _finalise_cancelled is not None:

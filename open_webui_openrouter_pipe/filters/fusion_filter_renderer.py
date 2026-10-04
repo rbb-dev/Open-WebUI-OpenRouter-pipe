@@ -168,8 +168,8 @@ __KEEP_WHAT_STILL_FITS__
                 "'anthropic/claude-opus-latest, openai/gpt-latest'. Each model adds a call. "
                 "More than 8 is refused on every route, not shortened: the turn stops with an "
                 "error naming the limit and how many models arrived. Empty = use the preset / "
-                "Fusion default panel. A video-generation model "
-                "named here is not answered from as a video job on a panel, judge or "
+                "Fusion default panel. A video- or image-generation model "
+                "named here is not answered from as a media job on a panel, judge or "
                 "synthesis turn; it answers the question as an ordinary chat call."
             ),
         )

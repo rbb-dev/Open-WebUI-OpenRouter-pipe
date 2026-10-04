@@ -638,7 +638,8 @@ class SessionLogManager:
 
     def _warn_once(self, cause: str, message: str) -> None:
         with self._lock:
-            self.logger.log(warn_level(self._warned, cause), message)
+            level = warn_level(self._warned, cause)
+        self.logger.log(level, message)
 
     def _warn_temporary_chat_skip(
         self, site: str, scope: str, message: str, *args: object
@@ -654,15 +655,12 @@ class SessionLogManager:
                     if now - armed_at >= cooldown_s
                 ]:
                     self._warned_temporary_chat.pop(key, None)
-            self.logger.log(
-                warn_level(
-                    self._warned_temporary_chat,
-                    f"temporary_chat:{site}:{scope}",
-                    cooldown_s=cooldown_s,
-                ),
-                message,
-                *args,
+            level = warn_level(
+                self._warned_temporary_chat,
+                f"temporary_chat:{site}:{scope}",
+                cooldown_s=cooldown_s,
             )
+        self.logger.log(level, message, *args)
 
     async def _caller_may_stage(self, chat_id: str, user_id: str) -> bool:
         memo = SESSION_LOG_OWNERSHIP_MEMO.get()
@@ -1615,6 +1613,13 @@ class SessionLogManager:
         for orphan in [k for k in self._captured_turns if k not in row_ids]:
             self._captured_turns.discard(orphan)
 
+    def _resolve_log_format(self, segments: list[dict[str, Any]]) -> str:
+        for segment in segments:
+            staged = segment.get("log_format")
+            if isinstance(staged, str) and staged.strip():
+                return staged
+        return str(self.valves.SESSION_LOG_FORMAT)
+
     def _capture_unassemblable_turn(
         self,
         chat_id: str,
@@ -1763,7 +1768,7 @@ class SessionLogManager:
                     message_id=fallback_message_id,
                     request_id=request_id,
                     created_at=time.time(),
-                    log_format=self.valves.SESSION_LOG_FORMAT,
+                    log_format=self._resolve_log_format(segments),
                     log_events=events,
                     meta_message_id=meta_message_id,
                     meta_task=meta_task,
@@ -1851,15 +1856,22 @@ class SessionLogManager:
             return
         try:
             with _db_session(session_factory) as session:
-                for item_id in touched_ids:
-                    original = stamps.get(item_id)
-                    if original is None:
-                        continue
-                    session.query(model).filter(model.id == item_id).update(  # type: ignore[attr-defined]
-                        {model.created_at: original},  # type: ignore[attr-defined]
+                pairs = [
+                    (item_id, stamps[item_id])
+                    for item_id in touched_ids
+                    if stamps.get(item_id) is not None
+                ]
+                if pairs:
+                    session.query(model).filter(  # type: ignore[attr-defined]
+                        model.id.in_([item_id for item_id, _ in pairs])
+                    ).update(
+                        {model.created_at: case(  # type: ignore[attr-defined]
+                            *[(model.id == item_id, original) for item_id, original in pairs],
+                            else_=model.created_at,
+                        )},
                         synchronize_session=False,
                     )
-                session.commit()
+                    session.commit()
         except Exception:
             _truncate_latch(self._stale_filter_warnings, _MAX_DRAIN_LATCH_KEYS)
             self.logger.log(
@@ -2275,7 +2287,7 @@ class SessionLogManager:
                     message_id=message_id,
                     request_id=preferred_request_id or "",
                     created_at=time.time(),
-                    log_format=self.valves.SESSION_LOG_FORMAT,
+                    log_format=self._resolve_log_format(group_segments),
                     log_events=merged_events,
                     meta_message_id=meta_message_id,
                     meta_task=meta_task,

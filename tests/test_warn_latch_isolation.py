@@ -186,6 +186,15 @@ EXPECTED_LATCHES = {
     # retried on the next of both, so an unlatched WARNING is a flood for the whole
     # length of a database outage, and a rotated `WEBUI_SECRET_KEY` makes it permanent.
     "_warned_undetermined",
+    # H2905-2. A published `size`/`aspectRatio` with no `supported_sizes` /
+    # `supported_aspect_ratios` list to draw a control from is reported instead of
+    # offered, keyed on the raw name set beside its sibling `_warned_unrenderable_params`
+    # but in its own set: the two records have different key shapes (a hyphenated name
+    # against a list-gated one), so a shared set would let a name collide across them.
+    # Latched for the same reason the sibling is -- the renderer is a maintenance path,
+    # re-entered once per model on every catalogue refresh, and an unchanged published
+    # contract must not be re-reported for the life of the worker.
+    "_warned_list_gated_params",
     "_warned_unrenderable_params",
     "_warned_user_valves",
     "_warned_video_catalog",

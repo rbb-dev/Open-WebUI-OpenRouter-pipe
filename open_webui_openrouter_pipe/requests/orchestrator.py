@@ -212,6 +212,22 @@ def _video_data_url(
     return url
 
 
+def _memoised_video_url(
+    attachment_bytes: dict[Any, Any], file_id: str, user_id: str
+) -> str | None:
+    for key, value in attachment_bytes.items():
+        if (
+            isinstance(key, tuple)
+            and len(key) == 4
+            and key[0] == "video_url"
+            and key[1] == file_id
+            and key[2] == user_id
+            and isinstance(value, str)
+        ):
+            return value
+    return None
+
+
 def _provider_error_response(
     exc: OpenRouterAPIError, *, stream: bool, request: Any
 ) -> StreamingResponse | None:
@@ -1162,50 +1178,53 @@ class RequestOrchestrator:
                 file_id = item.get("id")
                 if not isinstance(file_id, str) or not file_id:
                     continue
-                b64, file_obj = await _read_attachment(
-                    attachment_bytes, "video", file_id, user_id,
-                    gateway=self._pipe._file_gateway, logger=self._pipe.logger,
-                    chunk_size=chunk_size, max_bytes=max_bytes, user_model=user_model,
-                    record=gate_records.get(("video", file_id)),
-                )
-                mime = item.get("content_type")
-                if not isinstance(mime, str) or not mime.strip():
-                    mime = infer_file_mime_type(file_obj)
-                content_type = normalise_mime(mime)
-                if not content_type:
-                    raise ValueError(
-                        f"Native video attachment declared type {mime!r} is not a media "
-                        f"type, so there is no honest way to declare the clip to a provider."
+                data_url = _memoised_video_url(attachment_bytes, file_id, user_id)
+                if data_url is None:
+                    b64, file_obj = await _read_attachment(
+                        attachment_bytes, "video", file_id, user_id,
+                        gateway=self._pipe._file_gateway, logger=self._pipe.logger,
+                        chunk_size=chunk_size, max_bytes=max_bytes, user_model=user_model,
+                        record=gate_records.get(("video", file_id)),
                     )
-                prefix = _decode_base64_prefix(b64)
-                attachment_name = item.get("name")
-                label = (
-                    f"{attachment_name!r} (file {file_id})"
-                    if isinstance(attachment_name, str) and attachment_name.strip()
-                    else f"file {file_id}"
-                )
-                if _prefix_is_text(prefix):
-                    raise ValueError(
-                        f"Native video attachment {label} declares type "
-                        f"{content_type!r} but its leading bytes are text, not a clip, "
-                        f"so nothing was sent. Open WebUI reads those bytes too and "
-                        f"would have relabelled the file text/plain; the declaration is "
-                        f"yours to fix."
+                    mime = item.get("content_type")
+                    if not isinstance(mime, str) or not mime.strip():
+                        mime = infer_file_mime_type(file_obj)
+                    content_type = normalise_mime(mime)
+                    if not content_type:
+                        raise ValueError(
+                            f"Native video attachment declared type {mime!r} is not a media "
+                            f"type, so there is no honest way to declare the clip to a provider."
+                        )
+                    prefix = _decode_base64_prefix(b64)
+                    attachment_name = item.get("name")
+                    label = (
+                        f"{attachment_name!r} (file {file_id})"
+                        if isinstance(attachment_name, str) and attachment_name.strip()
+                        else f"file {file_id}"
                     )
-                evidence = _sniff_evidence(prefix)
-                if (
-                    evidence is not None
-                    and evidence.confidence is Confidence.IDENTIFIED
-                    and not evidence.mime.startswith("video/")
-                ):
-                    raise ValueError(
-                        f"Native video attachment {label} declares type "
-                        f"{content_type!r} but its leading bytes are "
-                        f"{evidence.mime}, not a video, so nothing was sent."
+                    if _prefix_is_text(prefix):
+                        raise ValueError(
+                            f"Native video attachment {label} declares type "
+                            f"{content_type!r} but its leading bytes are text, not a clip, "
+                            f"so nothing was sent. Open WebUI reads those bytes too and "
+                            f"would have relabelled the file text/plain; the declaration is "
+                            f"yours to fix."
+                        )
+                    evidence = _sniff_evidence(prefix)
+                    if (
+                        evidence is not None
+                        and evidence.confidence is Confidence.IDENTIFIED
+                        and not evidence.mime.startswith("video/")
+                    ):
+                        raise ValueError(
+                            f"Native video attachment {label} declares type "
+                            f"{content_type!r} but its leading bytes are "
+                            f"{evidence.mime}, not a video, so nothing was sent."
+                        )
+                    data_url = _video_data_url(
+                        attachment_bytes, file_id, user_id, content_type, b64
                     )
-                data_url = _video_data_url(
-                    attachment_bytes, file_id, user_id, content_type, b64
-                )
+                    attachment_bytes.pop(("video", file_id, user_id), None)
                 _append(
                     ("video", file_id),
                     {
@@ -2073,7 +2092,9 @@ class RequestOrchestrator:
                     outcome_sink["error_occurred"] = False
                 return help_content
 
-            if valves.ENABLE_OPENROUTER_IMAGE_GENERATION and uses_dedicated_image_api(video_spec):
+            if (valves.ENABLE_OPENROUTER_IMAGE_GENERATION
+                    and uses_dedicated_image_api(video_spec)
+                    and not fusion_member_turn):
                 api_model_id = OpenRouterModelRegistry.api_model_id(normalized_model_id) or normalized_model_id
                 return await self._pipe._ensure_image_generation_adapter().generate(
                     body=body,

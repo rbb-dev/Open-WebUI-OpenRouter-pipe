@@ -47,7 +47,14 @@ nothing was lost, so there is nothing to announce. It names no cause — the sto
 database to read from, so it announces the same missing round in the same words, logs a warning saying the store is not
 configured, and does **not** charge the DB breaker — it is a state, not a failure, and charging it would open the
 breaker and tell the next turn its round was skipped "due to repeated errors", which is a cause this deployment does
-not have. The write side has the same split. Sealing a round for storage runs in its own guarded arm ahead of the database write, so a cipher that cannot be built or a payload no serialiser will take drops the round and logs a WARNING naming the seal and the row count, without charging the DB breaker and without a notice that names the database — nothing asked the database to do anything, and a fault the database did not have would send the reader looking in the wrong place. A failure of the write itself keeps every consequence it has today: the rows are dropped, the breaker is charged, the ERROR is logged and the person is told the items could not be written to the database. It is kept apart from the two budget notices on purpose: a budget that trimmed successfully
+not have. All three read-side arms fire **once per degraded episode** rather than once per turn, and re-arm on the
+first read that reaches the success arm: the loader runs once per artifact group per turn, and Open WebUI fires a toast
+per notification frame without deduping or rate-limiting them, so an unlatched notice repeats the same banner on every
+turn of a broken chat for as long as the fault lasts. The fault and breaker arms share one latch, because both say the
+same thing — earlier results did not reach the model — and separate keys would let a flapping database alternate two
+banners forever; the not-configured arm keeps its own, because it is a state that cannot clear while it can still fire.
+A latch is set only when a live turn actually received the notice, so a read with no emitter to report on does not mute
+the next one. The write side has the same split. Sealing a round for storage runs in its own guarded arm ahead of the database write, so a cipher that cannot be built or a payload no serialiser will take drops the round and logs a WARNING naming the seal and the row count, without charging the DB breaker and without a notice that names the database — nothing asked the database to do anything, and a fault the database did not have would send the reader looking in the wrong place. A failure of the write itself keeps every consequence it has today: the rows are dropped, the breaker is charged, the ERROR is logged and the person is told the items could not be written to the database. It is kept apart from the two budget notices on purpose: a budget that trimmed successfully
 and a read that failed are different conditions, and one turn can hit both, so folding the wordings together would have
 each of them announce the other's condition. A marker that simply resolves to nothing stays log-only, because a
 legitimately consumed row is indistinguishable from a lost one at that layer; see
@@ -71,7 +78,8 @@ that names a cause, and it has to: the store knows exactly why, and the repair i
 the person can edit. It is kept apart from both the database-failure notice and the read
 notice above, because all three cost the same thing — a round the model does not get — and
 only one of them is fixed by re-entering a key. It fires once per blocked episode rather
-than once per turn, and re-arms when the key becomes readable again.
+than once per turn, and re-arms when the key becomes readable again. The read-side notices above use the same rule and
+re-arm on the first successful read.
 
 ### Where a card lands: saved chat or channel
 
@@ -226,7 +234,7 @@ The pipe selects the template for the status the failure resolves to, which is t
 | Status | Template valve |
 | --- | --- |
 | `401` | `AUTHENTICATION_ERROR_TEMPLATE` |
-| `402` | `INSUFFICIENT_CREDITS_TEMPLATE` |
+| `402` | `INSUFFICIENT_CREDITS_TEMPLATE`, which adds a **Retry after** row carrying the delay from the rejection's own `Retry-After` header, and only when that rejection carried one |
 | `408` | `SERVER_TIMEOUT_TEMPLATE` |
 | `413` | `PAYLOAD_TOO_LARGE_TEMPLATE` |
 | `429` | `RATE_LIMIT_TEMPLATE` |
@@ -557,7 +565,12 @@ the first time that worker sees that family fail with that exception class, and 
 
 What is *not* throttled on these paths: the person's own notice, which is emitted on
 every refusal without exception, and the session log's fallback line, `Session log DB
-staging returned no staged segment; falling back to a queued zip write`. That one is not
+staging returned no staged segment; falling back to a queued zip write`. The read-side
+notices named above are the one exception on this list: each fires once per degraded
+episode rather than once per refusal, and re-arms on the first read that reaches the
+success arm, because the loader is called once per artifact group per turn and Open
+WebUI neither dedupes nor rate-limits a notification frame. The write-side breaker
+notice is still emitted on every refusal. That one is not
 on a cooldown at all — every staging fault warns at `WARNING` — because a single turn
 stages more than once (a tool loop or a hand-back stages the same turn again) and the
 count of those lines is the only evidence a turn lost more than one segment. Each names

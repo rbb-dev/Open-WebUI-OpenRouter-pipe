@@ -12,7 +12,7 @@ pipe → Valves. That also deactivates every installed per-model video
 filter row on the next `pipes()` call; `AUTO_INSTALL_VIDEO_FILTERS` is the
 install valve for that family. Turning it back on re-activates a filter the
 pipe itself switched off whose family's install valve, `AUTO_INSTALL_VIDEO_FILTERS`, is still on; a
-row that valve has retired stays off until that valve comes back on. The rows are
+row that valve has retired stays off until that valve comes back on. A row the pipe re-arms comes back private rather than shared: Open WebUI puts every filter marked Global at the front of every model's list, so a row an admin made Global is made private again in the same write that re-enables it. The rows are
 identified by their source, so a copy you made by hand of one of these
 filters' source is switched off too.
 
@@ -969,7 +969,7 @@ admin turns `VIDEO_INTENT_ENABLED` off, all four disappear from the filter.
 | Aspect ratio | Literal | 16:9 only | |
 | Resolution | Literal | 1080p only | Native HD. |
 | Size | Literal | 1920×1080 | Single canvas. |
-| Frames | Literal | auto / none / first_only | **No `first_last`** — Hailuo 2.3 dropped last-frame support. |
+| Frames | Literal | auto / none | **No `first_only`, no `first_last`** — Hailuo 2.3 dropped last-frame support, and without a last frame `first_only` would send exactly what `auto` sends. |
 | Provider options JSON | str | raw JSON | |
 | Prompt optimizer | Literal | model_default / on / off | MiniMax server-side prompt rewriter. |
 | Fast pretreatment | Literal | model_default / on / off | Quicker optimiser pass; small loss of quality. |
@@ -1003,7 +1003,7 @@ admin turns `VIDEO_INTENT_ENABLED` off, all four disappear from the filter.
 | Aspect ratio | Literal | 16:9, 9:16 | |
 | Resolution | Literal | 720p, 1080p | |
 | Size | Literal | 4 dimensions | |
-| Frames | Literal | auto / none / first_only | **No `first_last`** — upgrade to Wan 2.7 for that. |
+| Frames | Literal | auto / none | **No `first_only`, no `first_last`** — this model takes no last frame, so `first_only` would send exactly what `auto` sends; upgrade to Wan 2.7 for the pair. |
 | Negative prompt | str | free text | |
 | Audio (`generate_audio`) | Literal | model_default / on / off | Native synchronised audio with multi-speaker dialogue. |
 | Seed | int | 0 / 32-bit int | |
@@ -1203,7 +1203,7 @@ default applies; the second gets no control.
 | `VIDEO_ASPECT_RATIO` | `Literal["", …]` | `""` | top-level `aspect_ratio` | `supported_aspect_ratios` non-empty | 27 (all except FLUX Video Edit, FLUX Video Upscale) |
 | `VIDEO_RESOLUTION` | `Literal["", …]` | `""` | top-level `resolution` | `supported_resolutions` non-empty | 26 (all except FLUX Video Edit, FLUX Video Upscale, Aleph 2.0) |
 | `VIDEO_SIZE` | `Literal["", …]` | `""` | top-level `size` | `supported_sizes` non-empty | 19 of 29 |
-| `VIDEO_FRAME_MODE` | `Literal["auto", "none", "first_only"(, "first_last")]` | `"auto"` | controls which chat-attached images become `frame_images[]` keyframes and which are sent as references instead (the keyframes go first and the references after them, in the order you attached them, up to the 16 a request carries — past that the excess is left out and named in the chat); under `"none"` no picture is sent as a reference either and every picture is left in the request; a clip or a sound file attached alongside is not a picture and is still sent as a reference | `supported_frame_images` non-empty | 24 of 29 |
+| `VIDEO_FRAME_MODE` | `Literal["auto", "none"]("first_only", "first_last")` | `"auto"` | controls which chat-attached images become `frame_images[]` keyframes and which are sent as references instead (the keyframes go first and the references after them, in the order you attached them, up to the 16 a request carries — past that the excess is left out and named in the chat); under `"none"` no picture is sent as a reference either and every picture is left in the request; a clip or a sound file attached alongside is not a picture and is still sent as a reference | `supported_frame_images` non-empty | 24 of 29 |
 | `VIDEO_NEGATIVE_PROMPT` | `str` | `""` | passthrough `negative_prompt` (or `negativePrompt` on Veo) | `"negative_prompt"` or `"negativePrompt"` in `allowed_passthrough_parameters` | 8 of 29 |
 | `VIDEO_GENERATE_AUDIO` | `Literal["model_default", "on", "off"]` | `"model_default"` | top-level `generate_audio` (boolean) | not published as `false` | 22 of 29 |
 | `VIDEO_SEED` | `int` (`ge=0`) | `0` | top-level `seed` | not published as `false` | 19 of 29 |
@@ -1308,10 +1308,9 @@ rules:
 - The `Provider options JSON` knob accepts a raw JSON object keyed by
   provider slug — see [Provider passthrough](#provider-passthrough).
 - The Frames knob draws only the modes that model can honour: 4 when it
-  publishes both a first and a last frame, 3 when it publishes a first
-  frame and no last one, and 2 when it publishes neither — a model that
-  takes only a `last_frame`, or only reference images, is offered `auto`
-  and `none` alone. Meaning:
+  publishes both a first and a last frame, 2 when it publishes a first
+  frame and no last one, and 2 when it takes neither end as a pair — only
+  a `last_frame`, or only reference images. Meaning:
   - `auto`: if you attach images, the first becomes `first_frame` (and if
     the model supports `last_frame` AND you attached more, the last
     becomes `last_frame`).
@@ -1426,7 +1425,9 @@ the start and/or end of the generated clip. To use this:
 
 1. Attach images via the paperclip icon in chat (or drag-drop).
 2. Set the filter's `Frames` knob to `auto`, `first_only`, or
-   `first_last` (depending on intent).
+   `first_last` (depending on intent, and only the modes that model
+   offers — a model that publishes no last frame draws `auto` and
+   `none` alone).
 3. Send your prompt. The pipe encodes each image as a base64 data URL,
    wraps it in OpenRouter's `frame_images[]` schema, and submits.
 
@@ -2333,8 +2334,8 @@ Functions → OpenRouter pipe → Valves; the per-model filter ones live on each
 
 | Valve | Default | Range | Purpose |
 |-------|---------|-------|---------|
-| `ENABLE_VIDEO_GENERATION` | `True` | bool | Master kill switch. A video-generation model is never answered from as a Fusion panel, judge or synthesis member: a Fusion turn that names one takes the ordinary chat path and starts no job. False removes all video models from `pipes()` output and deactivates all installed per-model video filter rows at the next model-list refresh; the rows are identified by their source, so a hand-made copy of one of these filters' source is switched off too. `AUTO_INSTALL_VIDEO_FILTERS` is the install valve for that family. Turning it back on re-activates a filter the pipe itself switched off whose family's install valve, `AUTO_INSTALL_VIDEO_FILTERS`, is still on; a row that valve has retired stays off until that valve comes back on. |
-| `AUTO_INSTALL_VIDEO_FILTERS` | `True` | bool | Install per-model filter rows in OWUI Functions table on `pipes()`. A model whose catalogue entry publishes no video contract is left as it is: any filter it already has is kept, and none is installed for it, and the same holds for a model whose install this pass could not write. With this off, an installed row whose stored source is out of date is logged but never rewritten, so every fix to that filter stays undelivered until it is on. Turning this off retires the rows the pipe installed for it - switched off, not deleted, so their settings survive - and turning it back on brings them back; a copy an admin installed by hand carries no such record and is left alone. A row an earlier install of this pipe wrote — the pipe function was renamed or re-created, so its record names an id Open WebUI no longer loads as a pipe — is retired too. |
+| `ENABLE_VIDEO_GENERATION` | `True` | bool | Master kill switch. A video-generation model is never answered from as a Fusion panel, judge or synthesis member: a Fusion turn that names one takes the ordinary chat path and starts no job. False removes all video models from `pipes()` output and deactivates all installed per-model video filter rows at the next model-list refresh; the rows are identified by their source, so a hand-made copy of one of these filters' source is switched off too. `AUTO_INSTALL_VIDEO_FILTERS` is the install valve for that family. Turning it back on re-activates a filter the pipe itself switched off whose family's install valve, `AUTO_INSTALL_VIDEO_FILTERS`, is still on; a row that valve has retired stays off until that valve comes back on. A row the pipe re-arms comes back private rather than shared: Open WebUI puts every filter marked Global at the front of every model's list, so a row an admin made Global is made private again in the same write that re-enables it. |
+| `AUTO_INSTALL_VIDEO_FILTERS` | `True` | bool | Install per-model filter rows in OWUI Functions table on `pipes()`. A model whose catalogue entry publishes no video contract is left as it is: any filter it already has is kept, and none is installed for it, and the same holds for a model whose install this pass could not write. With this off, an installed row whose stored source is out of date is logged but never rewritten, so every fix to that filter stays undelivered until it is on. Turning this off retires the rows the pipe installed for it - switched off, not deleted, so their settings survive - and turning it back on brings them back; a copy an admin installed by hand carries no such record and is left alone. A row the pipe re-arms comes back private rather than shared: Open WebUI puts every filter marked Global at the front of every model's list, so a row an admin made Global is made private again in the same write that re-enables it. A row an earlier install of this pipe wrote — the pipe function was renamed or re-created, so its record names an id Open WebUI no longer loads as a pipe — is retired too. |
 | `AUTO_ATTACH_VIDEO_FILTERS` | `True` | bool | Attach each filter to its corresponding video model row. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. A `help` reply on a video model lists no controls at all, because the panel that card describes is not on the model. A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next catalog fetch. |
 | `AUTO_DEFAULT_VIDEO_FILTERS` | `True` | bool | Keep per-model filter enabled by default per chat (**re-asserted on every catalog metadata sync** — admins who manually disable a filter will see it re-defaulted on the next sync; set to `False` to opt out). A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next catalog fetch. |
 | `VIDEO_INITIAL_POLL_DELAY_SECONDS` | `5.0` | 0.0–60.0 | Wait before the first poll on a freshly submitted job. |
@@ -2720,7 +2721,8 @@ Key files:
 - [`models/registry.py`](../open_webui_openrouter_pipe/models/registry.py)
   — `register_video_models()` merges video models into the chat catalog. A model
   in both catalogs keeps its chat context length, feature set, pricing, display
-  name and capability flags alongside the video controls — but its tool-calling
+  name and capability flags alongside the video controls, the two picture keys
+  excepted — but its tool-calling
   parameters are the video row's own, so `TOOL_CALLING_FILTER` does not apply to
   it and such a model is invisible to a tool-calling filter. A hybrid takes the
   video row's description when the chat row publishes none of its own, and is
@@ -2735,8 +2737,11 @@ Key files:
   composer refuses a picture at attach time rather than the pipe dropping it at
   send time. `capabilities.image_generation` follows the row's own output
   modalities the same way, so Open WebUI draws no Image Generation row for a
-  model that cannot draw. A model in both catalogs keeps its chat answer on both
-  surfaces. A
+  model that cannot draw. On a model in both catalogs the two picture keys
+  restate that merged feature set rather than keeping the chat row's own answer:
+  a dual row whose video leg takes a frame ticks the box, and one whose chat leg
+  takes pictures keeps it, so the composer never refuses an attach the row's own
+  features accept. The other seven flags keep the chat row's answer. A
   sweep that
   completes with none keeps every model the video catalog itself registered
   and logs, once, that the previous set was kept, so a `200` with an empty

@@ -280,6 +280,7 @@ def _without_tool_result(
 _REUSE_DOWNLOAD_MEMO_MAX_BYTES = 8 * 1024 * 1024
 _BASE64_SCAN_CHUNK = 1 << 12
 _REUSE_WARN_COOLDOWN_S = 30.0
+_NOTICE_LOOKBACK_TURNS = 0
 
 
 class _ReuseDownloadMemo(OrderedDict):
@@ -1402,6 +1403,7 @@ async def transform_messages_to_input(
         openai_input: list[dict] = []
         last_image_blocks: list[dict[str, Any]] = []
         last_image_turn: int | None = None
+        _notice_turn: dict[str, int] = {}
         window_armed_at: set[int] = set()
         lift_candidates: list[tuple[dict[str, Any], list[tuple[str, int, int]]]] = []
         pictures_in_request: set[str] = set()
@@ -2161,7 +2163,7 @@ async def transform_messages_to_input(
                                 return ImageRefusal(
                                     f"larger than the {max_inline_bytes}-byte inline limit",
                                     "oversized_inline",
-                                    subject=owui_file_id,
+                                    subject="image",
                                 )
                             if not inlined:
                                 return ImageRefusal(
@@ -3052,8 +3054,24 @@ async def transform_messages_to_input(
                     is_image_block = block_type in {"image_url", "input_image", "image"}
 
                     if is_image_block:
-                        if not (latest_user_message or tool_images) and _unconverted_block_reason(block) is None:
-                            reusable_image_blocks.append(block)
+                        if (
+                            not (latest_user_message or tool_images)
+                            and _unconverted_block_reason(block) is None
+                        ):
+                            admitted = await _to_input_image(block, mode="reuse")
+                            if isinstance(admitted, ImageRefusal):
+                                pipe.logger.log(
+                                    warn_level(
+                                        _warned_image_reuse,
+                                        admitted.cause,
+                                        cooldown_s=_REUSE_WARN_COOLDOWN_S,
+                                    ),
+                                    "Not reusing an earlier image: %s [cause=%s]",
+                                    admitted.reason,
+                                    admitted.cause,
+                                )
+                            elif admitted is not None:
+                                reusable_image_blocks.append(admitted)
                         if not include_user_images:
                             if latest_user_message and not vision_supported and not vision_warning_sent:
                                 await pipe._event_emitter_handler._emit_status(
@@ -3266,17 +3284,26 @@ async def transform_messages_to_input(
                 notices = ["Images: " + "; ".join(image_notices) + "."] if image_notices else []
                 if status_files:
                     notices.append(f"Files: skipped {len(status_files)} ({'; '.join(status_files)}).")
-                if notices and (
+                _notice_ok = (
                     latest_user_message
                     or (tool_images and idx == last_tool_handoff_index)
-                    or status_files
-                ):
+                    or (
+                        status_files
+                        and msg_turn_index is not None
+                        and msg_turn_index >= (total_turns - 1) - _NOTICE_LOOKBACK_TURNS
+                        and all(_notice_turn.get(_n) != msg_turn_index for _n in notices)
+                    )
+                )
+                if notices and _notice_ok:
                     await pipe._event_emitter_handler._emit_status(
                         event_emitter,
                         " ".join(notices),
                         done=False,
                     )
-                if attachment_notices is not None and notices:
+                    if msg_turn_index is not None:
+                        for _notice in notices:
+                            _notice_turn[_notice] = msg_turn_index
+                if attachment_notices is not None and notices and _notice_ok:
                     attachment_notices.append(" ".join(notices))
 
                 if carried_blocks and not any(_block_is_usable(b) for b in converted_blocks):

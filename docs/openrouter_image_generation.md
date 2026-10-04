@@ -106,6 +106,15 @@ On a Fusion panel turn whose text is exactly `help`, an image-model member
 prompt and the synthesis material like any other. It is not a failed
 member.
 
+On any other Fusion panel, judge or synthesis turn, an image-model member is
+**not diverted into this adapter** either: it answers the question as an
+ordinary chat call, so a picture-only model quoted in a panel cannot start a
+billed image job, hand the panel a job card in place of an opinion, or record
+a cost against the person. `_inject_image_modalities` still runs, so such a
+member's chat call carries `modalities:["image"]` and it can still return a
+picture in its answer. A **top-level** turn on the same model still generates
+normally.
+
 ### For administrators
 
 Out-of-the-box defaults are sensible for most deployments:
@@ -1187,7 +1196,10 @@ for any model, and a contract that does describe it decides the shape of the box
 - **Output size** — either a size tier (`512`, `1K`, `2K`, `4K`) or exact pixels
   such as `1024x1024`. Where a model instead publishes `size` as a numeric range,
   this control is a whole number bounded by that range, names no tier and no pixel
-  form, and sends nothing but a number. A tier *is* a resolution and still
+  form, and sends nothing but a number. A contract may also declare a parameter's
+  domain as whole numbers in its own words — a numeric range, or an `integer`
+  with or without bounds — and each is a number box with exactly the bounds the
+  model published. A tier *is* a resolution and still
   takes its shape from **Aspect ratio**; what it is measured against depends on
   the model. Where a tier and a **Resolution** disagree, this pipe sends the tier
   and names the one it left off. Nineteen of the fifty-two publish a tier list of their own, and on those
@@ -1277,6 +1289,11 @@ model's settings icon in the Integrations menu. A parameter the model
 publishes gets a plain-English label — `n` appears as **Number of images**.
 An option specific to the provider keeps the name OpenRouter publishes for
 it, because only that provider's own documentation defines what it means.
+
+A parameter whose published domain is whole numbers is drawn as a number box,
+bounded by exactly the bounds the model published, and unbounded where the
+model declares the parameter without them. A value outside those bounds is
+brought back inside them, or withheld and named, on every path that writes it.
 
 The fields follow the model's current contract, which can change after you
 have filled them in. When a model stops publishing a choice you picked — a

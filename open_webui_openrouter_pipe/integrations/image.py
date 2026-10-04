@@ -297,6 +297,19 @@ class ImageGenerationAdapter:
             if isinstance(low, (int, float)) and not isinstance(low, bool) and value < low:
                 return low, f"raised to {low}"
             return value, ""
+        if kind == "integer":
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return None, "expects a number"
+            if not json_encodable(value):
+                return None, "expects a number JSON can represent"
+            if value != int(value):
+                return None, "expects a whole number"
+            low, high = descriptor.get("min"), descriptor.get("max")
+            if isinstance(high, (int, float)) and not isinstance(high, bool) and value > high:
+                return high, f"capped at {high}"
+            if isinstance(low, (int, float)) and not isinstance(low, bool) and value < low:
+                return low, f"raised to {low}"
+            return value, ""
         if kind == "boolean":
             # OpenRouter uses this to say the model *supports* the parameter, not that
             # its value is true or false -- their own model schema words it "whether the
