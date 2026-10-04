@@ -840,7 +840,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "expressiveness takes high, medium or low and defaults to low, so if the delivery looks flat it is probably doing exactly what it was told.",
             "motion_prompt is free text describing body motion and gestures, and applies to photo avatars — it is the closest thing here to a scene prompt.",
             "remove_background and background are separate: the first strips what was behind the person, the second supplies a flat colour or an image to replace it.",
-            "Your photograph only reaches the model if your administrator has turned on sending media to a file host — with that off there is nothing to animate and the chat says so.",
+            "Your photograph travels inside the request and never leaves this server, so there is nothing to turn on first: it reaches the model whatever your administrator has set. A clip or a sound file is sent only when a file host is in use, and when one is left out the chat names it. What does hold a photograph back is its size — an oversize one is left out of the request and the chat says which.",
             f"Trim the script rather than the resolution when you need a shorter result. {OPENROUTER_PRICING}",
         ],
         "knob_descriptions": {
@@ -922,8 +922,6 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
 VIDEO_HELP_BY_MODEL = _PER_MODEL_HELP_DATA
 
 
-_INTENT_ADMIN_GATE = "intent_classifier_admin"
-
 _INTENT_KNOB_DESCRIPTIONS: dict[str, str] = {
     "Reuse previous videos": (
         "Whether a follow-up such as \"make it black\" edits the video you just got, or "
@@ -952,71 +950,6 @@ _INTENT_KNOB_DESCRIPTIONS: dict[str, str] = {
         "At the administrator's never, that wins over this setting and nothing is shown."
     ),
 }
-
-
-_KNOB_GATE: dict[str, str | None] = {
-    "Duration": None,
-    "Aspect ratio": None,
-    "Resolution": None,
-    "Size": None,
-    "Frames": None,
-    "Negative prompt": "negative_prompt_or_camelcase",
-    "Audio": "generate_audio_top_level",
-    "Seed": "seed_top_level",
-    "Provider options JSON": None,
-    "Audio reference URL": "audio",
-    "Last image URL": "last_image",
-    "Reference video URL": "video",
-    "Reference videos JSON": "videos",
-    "Reference images JSON": "images",
-    "Person generation": "personGeneration",
-    "Conditioning scale": "conditioningScale",
-    "CFG scale": "cfg_scale",
-    "Enhance prompt": "enhancePrompt",
-    "Prompt optimizer": "prompt_optimizer",
-    "Fast pretreatment": "fast_pretreatment",
-    "Prompt extend": "prompt_extend",
-    "Ratio": "ratio",
-    "Enable prompt expansion": "enable_prompt_expansion",
-    "Shot type": "shot_type",
-    "Watermark": "watermark",
-    "Request key": "req_key",
-    "Quality": "quality",
-    "Style": "style",
-    "Reuse previous videos": _INTENT_ADMIN_GATE,
-    "Clarifying question limit": _INTENT_ADMIN_GATE,
-    "Which frame to use from previous video": _INTENT_ADMIN_GATE,
-    "Show what was reused": _INTENT_ADMIN_GATE,
-}
-
-
-_SPEC_GATE_ATTRS: dict[str, str] = {
-    "Duration": "durations",
-    "Aspect ratio": "aspect_ratios",
-    "Resolution": "resolutions",
-    "Size": "size_options",
-    "Frames": "supports_frames",
-}
-
-
-def _knob_is_active(knob: str, spec: VideoFilterSpec, admin_valves: Any = None) -> bool:
-    attr = _SPEC_GATE_ATTRS.get(knob)
-    if attr is not None:
-        return bool(getattr(spec, attr))
-    gate = _KNOB_GATE.get(knob)
-    if gate is None:
-        return True
-    if gate == "negative_prompt_or_camelcase":
-        return spec.supports_negative_prompt
-    if gate == "generate_audio_top_level":
-        return spec.supports_generate_audio_toggle
-    if gate == "seed_top_level":
-        return spec.supports_seed
-    if gate == _INTENT_ADMIN_GATE:
-        return spec.intent_classifier_admin_enabled and bool(
-            getattr(admin_valves, "AUTO_ATTACH_VIDEO_FILTERS", True)
-        )
-    return gate in spec.allowed_params
 
 
 def _video_panel_is_attached(admin_valves: Any) -> bool:
@@ -1095,17 +1028,32 @@ def _panel_knob_descriptions(curated: Any) -> dict[str, str]:
     return merged
 
 
+def _render_knob_section(curated: Any, spec: VideoFilterSpec) -> str:
+    from ..filters.video_filter_renderer import _panel_field_descriptions
+
+    panel = _panel_field_descriptions(spec)
+    described = dict(curated) if isinstance(curated, dict) else {}
+    drawn = {title for title, _ in panel}
+    lines = [
+        f"- `{title}`: {description}"
+        for title, description in described.items()
+        if title in drawn
+    ]
+    lines += [
+        f"- `{title}`: {description}"
+        for title, description in panel
+        if title not in described
+    ]
+    return "\n\n**Controls**\n" + "\n".join(lines) if lines else ""
+
+
 def _render_template(
     model_id: str,
     model: dict[str, Any],
     data: dict[str, Any],
     admin_valves: Any = None,
 ) -> str:
-    from ..filters.video_filter_renderer import (
-        _unhandled_params,
-        build_video_filter_spec,
-    )
-    from .image_types import PASSTHROUGH_DESCRIPTION
+    from ..filters.video_filter_renderer import build_video_filter_spec
 
     spec = build_video_filter_spec(model_id, model, admin_valves=admin_valves)
     display_name = str(model.get("name") or "").strip() or data.get("display_name") or model_id
@@ -1117,25 +1065,14 @@ def _render_template(
     audio = _declared_capability(model.get("generate_audio"), spec.supports_generate_audio_toggle)
     seed = _declared_capability(model.get("seed"), spec.supports_seed)
 
-    knob_lines: list[str] = []
-    for knob, description in _panel_knob_descriptions(data.get("knob_descriptions")).items():
-        if not _knob_is_active(knob, spec, admin_valves):
-            continue
-        knob_lines.append(f"- `{knob}`: {description}")
-
-    # Settings the model publishes that have no purpose-built control are still drawn,
-    # as free text. Reading them from the same place the renderer does means help cannot
-    # omit a control the chat UI shows -- which is the failure the curated table above
-    # can produce on its own.
-    for name in _unhandled_params(spec):
-        knob_lines.append(f"- `{name}`: {PASSTHROUGH_DESCRIPTION}")
+    knobs_section = ""
+    if _video_panel_is_attached(admin_valves):
+        knobs_section = _render_knob_section(
+            _panel_knob_descriptions(data.get("knob_descriptions")), spec
+        )
 
     tips = data.get("tips_and_pitfalls") or []
     tip_lines = "\n".join(f"- {bullet}" for bullet in tips)
-
-    knobs_section = ""
-    if knob_lines and _video_panel_is_attached(admin_valves):
-        knobs_section = "\n\n**Controls**\n" + "\n".join(knob_lines)
 
     tips_section = ""
     if tip_lines:
@@ -1172,7 +1109,7 @@ def render_video_help(
     data = _PER_MODEL_HELP_DATA.get(canonical_id)
     if data:
         return _render_template(canonical_id, model, data, admin_valves)
-    return _render_catalog_fallback(canonical_id, model)
+    return _render_catalog_fallback(canonical_id, model, admin_valves=admin_valves)
 
 
 def _canonical_model_id(model_id: str, model: dict[str, Any]) -> str:
@@ -1201,7 +1138,11 @@ def _zdr_capability_sentence(model_id: str) -> str:
     return "OpenRouter's ZDR list has not been read, so this is unverified."
 
 
-def _render_catalog_fallback(model_id: str, model: dict[str, Any]) -> str:
+def _render_catalog_fallback(
+    model_id: str, model: dict[str, Any], admin_valves: Any = None
+) -> str:
+    from ..filters.video_filter_renderer import build_video_filter_spec
+
     raw_name = model.get("name")
     display = raw_name if isinstance(raw_name, str) else model_id
     raw_description = model.get("description")
@@ -1217,6 +1158,10 @@ def _render_catalog_fallback(model_id: str, model: dict[str, Any]) -> str:
     ratios = _format_csv(model.get("supported_aspect_ratios")) or "model default"
     durations = _format_csv(model.get("supported_durations")) or "model default"
     resolutions = _format_csv(model.get("supported_resolutions")) or "model default"
+    controls = ""
+    if _video_panel_is_attached(admin_valves):
+        spec = build_video_filter_spec(model_id, model, admin_valves=admin_valves)
+        controls = _render_knob_section({}, spec)
     return (
         f"### {display}\n\n"
         f"Capability: {description.strip() or 'OpenRouter video generation model.'}\n\n"
@@ -1227,4 +1172,5 @@ def _render_catalog_fallback(model_id: str, model: dict[str, Any]) -> str:
         f"Known limitations: {zdr} Exact continuity can vary by generation.\n\n"
         f"Supported knobs: durations {durations}; aspect ratios {ratios}; "
         f"resolutions {resolutions}; provider parameters {params}."
+        f"{controls}"
     )

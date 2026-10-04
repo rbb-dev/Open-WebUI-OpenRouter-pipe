@@ -219,9 +219,14 @@ class ModelFamily:
     def catalog_norm_id(cls, model_id: str) -> str:
         norm = cls.base_model(model_id)
         base, _, tag = norm.rpartition(":")
-        if not base or tag.startswith("preset/") or norm in cls._DYNAMIC_SPECS:
+        if norm in cls._DYNAMIC_SPECS:
             return norm
-        return base
+        if base and not tag.startswith("preset/"):
+            return base
+        undated = cls.undated(norm)
+        if not base and undated != norm and undated in cls._DYNAMIC_SPECS:
+            return undated
+        return norm
 
     @classmethod
     def catalog_spec(cls, model_id: str) -> dict[str, Any]:
@@ -906,6 +911,8 @@ class OpenRouterModelRegistry:
             if cls._trim_zdr_history(cls._zdr_rosters, fp, time.time()):
                 cls._zdr_model_ids = None
         cls._zdr_model_ids = cls._zdr_roster_for(api_key)
+        cls._zdr_stamp_roster = cls._zdr_model_ids
+        cls._zdr_stamped_specs = cls._specs
         cls._chat_catalog_norms = chat_catalog_norms
         cls._chat_content_digest = _content_digest(chat_catalog_norms, specs)
         ModelFamily.set_dynamic_specs(specs)
@@ -1086,11 +1093,13 @@ class OpenRouterModelRegistry:
 
     @classmethod
     def _enriched_models(cls) -> list[dict[str, Any]]:
+        roster = cls._roster_in_force()
         cached = cls._enriched_cache
         if (
             cached is not None
             and cached[0] is cls._models
             and cached[1] is cls._specs
+            and cached[3] is roster
         ):
             return cached[2]
         enriched: list[dict[str, Any]] = []
@@ -1099,10 +1108,13 @@ class OpenRouterModelRegistry:
             spec = cls._specs.get(model["norm_id"])
             if spec and spec.get("capabilities"):
                 item["capabilities"] = dict(spec["capabilities"])
-            if spec and "zdr_capable" in spec:
-                item["zdr_capable"] = spec["zdr_capable"]
+            if roster is not None:
+                item["zdr_capable"] = any(
+                    key in roster
+                    for key in cls._zdr_candidate_keys(model["norm_id"], cls._specs)
+                )
             enriched.append(item)
-        cls._enriched_cache = (cls._models, cls._specs, enriched)
+        cls._enriched_cache = (cls._models, cls._specs, enriched, roster)
         return enriched
 
     @classmethod

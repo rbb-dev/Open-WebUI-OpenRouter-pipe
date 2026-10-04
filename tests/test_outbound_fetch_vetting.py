@@ -172,9 +172,6 @@ NOT_A_SESSION: dict[str, str] = {
         "is pushed once per worker and `context.queue.join()` follows",
     "open_webui_openrouter_pipe/tools/tool_executor.py::ToolExecutor::_execute_function_calls::context.queue.put":
         "the same ToolContext.queue, carrying a queued tool call to a worker",
-    "open_webui_openrouter_pipe/plugins/pipe_dashboard/dashboard_publisher.py::run_dashboard_publisher::client.delete":
-        "the redis client from get_redis(); `worker_key` is this worker's own presence "
-        "key and `delete` here is DEL, not an HTTP verb",
     "open_webui_openrouter_pipe/tools/tool_executor.py::ToolExecutor::_tool_worker_loop::context.queue.get":
         "the same ToolContext.queue as the `put` entries above, read by a worker; bound "
         "to `get_coro` first so it can be awaited bare or under `asyncio.wait_for`",

@@ -410,15 +410,6 @@ def collect_slow_stats(pipe: Pipe) -> dict[str, Any]:
                         _record(exc)
 
                     payload_col = getattr(model, "payload", None)
-                    if payload_col is not None:
-                        try:
-                            total_size = session.query(
-                                func.sum(func.length(cast(payload_col, String)))
-                            ).scalar() or 0
-                            storage["total_size"] = format_bytes(total_size)
-                        except SQLAlchemyError as exc:
-                            _record(exc)
-
                     enc_col = getattr(model, "is_encrypted", None)
                     if enc_col is not None:
                         try:
@@ -446,16 +437,21 @@ def collect_slow_stats(pipe: Pipe) -> dict[str, Any]:
                                 .order_by(func.count(model.id).desc())
                                 .all()
                             )
-                            storage["by_type"] = [
-                                {
-                                    "type": humanize_type(str(r[0] or "unknown")),
-                                    "count": format_number(int(r[1])),
-                                    "size": format_bytes(int(r[2] or 0)),
-                                    "oldest": format_datetime(r[3]),
-                                    "newest": format_datetime(r[4]),
-                                }
-                                for r in type_rows
-                            ]
+                            total_bytes = 0
+                            type_rows_out = []
+                            for r in type_rows:
+                                total_bytes += int(r[2] or 0)
+                                type_rows_out.append(
+                                    {
+                                        "type": humanize_type(str(r[0] or "unknown")),
+                                        "count": format_number(int(r[1])),
+                                        "size": format_bytes(int(r[2] or 0)),
+                                        "oldest": format_datetime(r[3]),
+                                        "newest": format_datetime(r[4]),
+                                    }
+                                )
+                            storage["by_type"] = type_rows_out
+                            storage["total_size"] = format_bytes(total_bytes)
                         except SQLAlchemyError as exc:
                             _record(exc)
 

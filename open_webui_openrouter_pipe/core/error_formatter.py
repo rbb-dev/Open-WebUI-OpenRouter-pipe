@@ -147,19 +147,32 @@ def _admission_error_response(
     )
 
 
+def _transported_failure_envelope(
+    message: str, *, code: int, retry_after_seconds: float | None = None
+) -> dict[str, Any]:
+    error: dict[str, Any] = {"message": message, "code": code}
+    if retry_after_seconds is not None:
+        error["retry_after_seconds"] = retry_after_seconds
+    return {"error": error}
+
+
 def _transported_failure_response(
     message: str, *, code: int, stream: bool, path: str, retry_after_seconds: float | None = None
 ) -> StreamingResponse | None:
     if stream or _is_anthropic_endpoint(path):
         return None
-    error: dict[str, Any] = {"message": message, "code": code}
     headers: dict[str, str] = {}
     if retry_after_seconds is not None:
-        error["retry_after_seconds"] = retry_after_seconds
         headers["Retry-After"] = str(int(retry_after_seconds))
     status = code if isinstance(code, int) and not isinstance(code, bool) and 400 <= code <= 599 else 400
     return StreamingResponse(
-        iter([json.dumps({"error": error}).encode("utf-8")]),
+        iter([
+            json.dumps(
+                _transported_failure_envelope(
+                    message, code=code, retry_after_seconds=retry_after_seconds
+                )
+            ).encode("utf-8")
+        ]),
         status_code=status,
         media_type="application/json",
         headers=headers,

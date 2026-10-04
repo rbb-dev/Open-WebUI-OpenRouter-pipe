@@ -698,6 +698,12 @@ def _chat_tools_to_responses_tools(tools: Any) -> list[dict[str, Any]]:
             out.append(dict(tool))
             continue
         if tool_type != "function":
+            if (
+                isinstance(tool_type, str)
+                and tool_type.strip()
+                and not isinstance(tool.get("function"), dict)
+            ):
+                out.append(dict(tool))
             continue
 
         fn = tool.get("function")
@@ -901,6 +907,9 @@ def _replay_payload_is_present(value: Any) -> bool:
 _FETCHABLE_MEDIA_SCHEMES = frozenset({"data", "http", "https"})
 _MEDIA_LINK_KEYS = ("image_url", "video_url", "url")
 
+_RESPONSES_ONLY_BLOCK_TYPES = frozenset({"refusal", "summary_text", "reasoning_text"})
+_RESPONSES_ONLY_BLOCK_REFUSAL = "a message part the chat endpoint does not read"
+
 
 def _block_media_link(block: Any) -> str | None:
     if not isinstance(block, dict):
@@ -1094,13 +1103,16 @@ def _replay_block_is_usable(
     if btype in {"image_url", "input_image"}:
         return _replay_payload_is_present(block.get("image_url")) or _image_file_payload(block) is not None
     if btype == "input_audio":
-        return _replay_payload_is_present(block.get("input_audio"))
+        audio = block.get("input_audio")
+        if isinstance(audio, dict):
+            return _replay_payload_is_present(audio)
+        return isinstance(audio, str) and _input_audio_from_string(audio) is not None
     if btype in {"video_url", "input_video"}:
         video = block.get("video_url")
         return _replay_payload_is_present(
             video if video is not None else block.get("url")
         )
-    return True
+    return btype not in _RESPONSES_ONLY_BLOCK_TYPES
 
 
 def _replay_block_refusal(block: Any, refused: dict[int, str] | None = None) -> str | None:
@@ -1120,6 +1132,8 @@ def _replay_block_refusal(block: Any, refused: dict[int, str] | None = None) -> 
         return "a video clip carried no video data"
     if btype in {"file", "input_file"}:
         return "a file carried no contents"
+    if btype in _RESPONSES_ONLY_BLOCK_TYPES:
+        return _RESPONSES_ONLY_BLOCK_REFUSAL
     return None
 
 
@@ -1483,11 +1497,20 @@ async def _responses_input_to_chat_messages(
                                 if refusal is not None:
                                     media_refusals[id(block)] = refusal
                                     continue
-                                blocks_out.append({"type": "input_audio", "input_audio": dict(audio)})
                             elif isinstance(audio, str):
                                 converted = _input_audio_from_string(audio)
-                                if converted is not None:
-                                    blocks_out.append(converted)
+                                if converted is None:
+                                    continue
+                                audio = converted["input_audio"]
+                            else:
+                                continue
+                            data = audio.get("data")
+                            if isinstance(data, str) and inline_payload_bytes(data) > max_inline_bytes:
+                                media_refusals[id(block)] = (
+                                    f"larger than the {max_inline_bytes}-byte inline limit"
+                                )
+                                continue
+                            blocks_out.append({"type": "input_audio", "input_audio": dict(audio)})
                             continue
                         if btype == "video_url":
                             video_url = block.get("video_url")
@@ -1677,6 +1700,12 @@ async def _responses_input_to_chat_messages(
                             refusal = _chat_audio_url_refusal(block, "input_audio")
                             if refusal is not None:
                                 media_refusals[id(block)] = refusal
+                                continue
+                            data = audio.get("data")
+                            if isinstance(data, str) and inline_payload_bytes(data) > max_inline_bytes:
+                                media_refusals[id(block)] = (
+                                    f"larger than the {max_inline_bytes}-byte inline limit"
+                                )
                                 continue
                             transformed["input_audio"] = dict(audio)
                             blocks_out.append(transformed)

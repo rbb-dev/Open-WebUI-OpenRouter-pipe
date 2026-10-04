@@ -249,6 +249,18 @@ def is_picture_output(output: Any) -> bool:
     )
 
 
+def is_media_part_output(output: Any) -> bool:
+    return (
+        isinstance(output, list)
+        and bool(output)
+        and all(
+            isinstance(part, dict)
+            and part.get("type") in ("input_text", "input_image", "input_file")
+            for part in output
+        )
+    )
+
+
 def is_text_part_output(output: Any) -> bool:
     return (
         isinstance(output, list)

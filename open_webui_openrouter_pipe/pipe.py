@@ -3098,6 +3098,9 @@ class Pipe:
                 catalog._model_metadata_sync_task = None
                 catalog._model_metadata_sync_key = None
                 catalog._model_metadata_sync_retry_after = 0.0
+                catalog._last_sync_gate_inputs = None
+                catalog._gate_released_since_last_pass = False
+                catalog._model_param_digest = None
         repair = getattr(self, "_web_tools_repair_task", None)
         if repair is not None and not repair.done():
             repair.cancel()

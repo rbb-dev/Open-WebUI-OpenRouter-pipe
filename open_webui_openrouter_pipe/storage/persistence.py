@@ -2529,6 +2529,7 @@ class ArtifactStore:
                         "id": item_id,
                         "chat_id": chat_id,
                         "message_id": message_id,
+                        "model_id": producers.get(item_id),
                         "item_type": (payload or {}).get("type", "unknown") if isinstance(payload, dict) else "unknown",
                         "payload": payload,
                         "is_encrypted": item_id in sealed,

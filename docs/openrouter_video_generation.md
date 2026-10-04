@@ -81,7 +81,8 @@ video model returns a research-grounded model-specific help blurb covering:
 - 3–4 tips and pitfalls
 
 A model OpenRouter has listed since the curated help was written has no entry of its
-own, and gets the fallback card instead. That card carries one retention line, and it
+own, and gets the fallback card instead. That card carries the same **Controls** section
+the curated cards do, read off that model's own filter, and a retention line, and it
 reports the pipe's own answer in whichever of its three states applies: the model is
 ZDR-capable, it is not, or OpenRouter's ZDR list has not been read yet, so the pipe has
 not established this either way. The curated cards make no ZDR claim at all.
@@ -1393,16 +1394,20 @@ generation job and returns the model's help blurb directly:
   four reuse-of-previous-video controls, which read the same on every
   model because they are pipe behaviour. With `AUTO_ATTACH_VIDEO_FILTERS`
   off there is no panel carrying those controls on the model, so the card
-  lists no controls at all.
+  lists no controls at all. On the fallback card the descriptions are each
+  control's own rather than a curated sentence, and the reuse controls come
+  off that model's filter with everything else.
 - **Tips & pitfalls**: 3–4 practical bullets — what works, what fails,
   prompt patterns.
 
 A model the pipe has no curated blurb for gets the fallback card, which
-reads its capabilities from the catalog instead. That card also carries a
-retention line, and it is a fallback-only statement: it reports the same
-three-state answer the ZDR filter itself uses — ZDR-capable, not
-ZDR-capable, or not established, because OpenRouter's ZDR list has not been
-read yet. The curated cards say nothing about retention.
+reads its capabilities from the catalog instead. That card carries the same
+**Controls** section the curated cards do, read from that model's own filter,
+so a model with no written blurb still names every control the chat panel
+installs for it. It also carries a retention line, and it is a fallback-only
+statement: it reports the same three-state answer the ZDR filter itself uses —
+ZDR-capable, not ZDR-capable, or not established, because OpenRouter's ZDR list
+has not been read yet. The curated cards say nothing about retention.
 
 The blurb quotes no rates. What a model charges is on OpenRouter's pricing
 page, which is the only copy of it that cannot go stale. What a particular
@@ -2239,7 +2244,12 @@ What does NOT survive:
   separate file. The second consequence is that on those three
   shapes the in-process handles — the active-task entry and the message
   lock — are the *only* duplicate-bill protection there is, which is why
-  they are held until the owner's answer has been emitted.
+  they are held until the owner's answer has been emitted, and why the
+  entry is held even longer when the owner was stopped rather than
+  finished. Holding the entry to the lifecycle's end is also what lets
+  `pipe.close()` reach an orphan: `_stop_video_tasks` cancels exactly what
+  `_video_active_tasks` holds, so a claim dropped by the request that
+  started it is a job no shutdown can reach.
 - **OpenRouter job expiry**: OpenRouter videos expire after a
   provider-specific window (typically days). Resuming a too-old job
   returns an `expired` terminal status which the adapter renders as a
@@ -2306,7 +2316,13 @@ until the owner's answer has been **emitted**, not merely computed: the
 active-task entry and the message lock are both released from the owner's
 own `finally`, after its `chat:completion`, so a second request arriving
 in the window between "the job is done" and "the answer is out" waits and
-is served the same result rather than starting a second job.
+is served the same result rather than starting a second job. On the
+cancel path — Open WebUI's **Stop**, which cancels the request and leaves
+the shielded lifecycle polling a job OpenRouter still bills — the message
+lock is still released when the request returns, but the active-task entry
+is not: the lifecycle that owns it drops it when it finishes, so the entry
+is released once the lifecycle has finished *and* the owner has emitted,
+whichever is later.
 
 A request that arrives with no usable `chat_id`/`message_id` metadata —
 the plain API route — is keyed on `(f"api:{request_id}", "")` instead,
@@ -2343,8 +2359,8 @@ Functions → OpenRouter pipe → Valves; the per-model filter ones live on each
 |-------|---------|-------|---------|
 | `ENABLE_VIDEO_GENERATION` | `True` | bool | Master kill switch. A video-generation model is never answered from as a Fusion panel, judge or synthesis member: a Fusion turn that names one takes the ordinary chat path and starts no job. False removes all video models from `pipes()` output and deactivates all installed per-model video filter rows at the next model-list refresh; the rows are identified by their source, so a hand-made copy of one of these filters' source is switched off too. `AUTO_INSTALL_VIDEO_FILTERS` is the install valve for that family. Turning it back on re-activates a filter the pipe itself switched off whose family's install valve, `AUTO_INSTALL_VIDEO_FILTERS`, is still on; a row that valve has retired stays off until that valve comes back on. A row the pipe re-arms comes back private rather than shared: Open WebUI puts every filter marked Global at the front of every model's list, so a row an admin made Global is made private again in the same write that re-enables it. |
 | `AUTO_INSTALL_VIDEO_FILTERS` | `True` | bool | Install per-model filter rows in OWUI Functions table on `pipes()`. A model whose catalogue entry publishes no video contract is left as it is: any filter it already has is kept, and none is installed for it, and the same holds for a model whose install this pass could not write. With this off, an installed row whose stored source is out of date is logged but never rewritten, so every fix to that filter stays undelivered until it is on. Turning this off retires the rows the pipe installed for it - switched off, not deleted, so their settings survive - and turning it back on brings them back; a copy an admin installed by hand carries no such record and is left alone. A row the pipe re-arms comes back private rather than shared: Open WebUI puts every filter marked Global at the front of every model's list, so a row an admin made Global is made private again in the same write that re-enables it. A row an earlier install of this pipe wrote — the pipe function was renamed or re-created, so its record names an id Open WebUI no longer loads as a pipe — is retired too. |
-| `AUTO_ATTACH_VIDEO_FILTERS` | `True` | bool | Attach each filter to its corresponding video model row. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. A `help` reply on a video model lists no controls at all, because the panel that card describes is not on the model. A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next catalog fetch. |
-| `AUTO_DEFAULT_VIDEO_FILTERS` | `True` | bool | Keep per-model filter enabled by default per chat (**re-asserted on every catalog metadata sync** — admins who manually disable a filter will see it re-defaulted on the next sync; set to `False` to opt out). A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next catalog fetch. |
+| `AUTO_ATTACH_VIDEO_FILTERS` | `True` | bool | Attach each filter to its corresponding video model row. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. A `help` reply on a video model lists no controls at all, because the panel that card describes is not on the model. A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next pass. |
+| `AUTO_DEFAULT_VIDEO_FILTERS` | `True` | bool | Keep per-model filter enabled by default per chat (**re-asserted on every catalog metadata sync** — admins who manually disable a filter will see it re-defaulted on the next sync; set to `False` to opt out). A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next pass. |
 | `VIDEO_INITIAL_POLL_DELAY_SECONDS` | `5.0` | 0.0–60.0 | Wait before the first poll on a freshly submitted job. |
 | `VIDEO_POLL_INTERVAL_SECONDS` | `5.0` | 1.0–60.0 | Base polling interval. |
 | `VIDEO_POLL_BACKOFF_FACTOR` | `1.2` | 1.0–4.0 | Multiplier applied to the interval after each non-terminal poll. |
@@ -2434,7 +2450,7 @@ The catalog manager couldn't ensure per-model filter installs. Causes:
 - The pipe's API key is invalid — `pipes()` exited early before installing.
 - Open WebUI's `Functions` table is read-only or has a permission issue
   for the pipe's user context. Each affected model keeps the panel it already
-  carries, and the pipe retries on the next catalog fetch; once the write lands
+  carries, and the pipe retries on the next pass; once the write lands
   the panel is installed and attached as usual.
 
 ### Filter is in Filters list but not toggled on
@@ -2575,7 +2591,8 @@ pipe()
         ├─ outer emits status line + chat:completion (the SOLE emit)
         ├─ outer finally releases the active-task entry + message lock
         │  (AFTER the emit, so a second request in the emit window is served
-        │   the same job rather than starting one)
+        │   the same job rather than starting one; on the cancel path the entry
+        │   is released by the lifecycle instead, when that job finishes)
         └─ outer returns content string
               └─ functions.py wraps as SSE chunk, OWUI middleware accumulates,
                  stream finalizer upserts to message DB (one write).
@@ -2600,9 +2617,12 @@ Key invariant: **exactly one `_emit_completion` per dedupe key** — the
 The bg task does the work and returns the result;
 the outer (or waiter for de-duped re-entries) is the sole emitter. This
 prevents the duplicate-content / leaked-marker bug class. The dedupe
-handles are released immediately after that emit, so the interval the job
-is running is covered and the residual window is only Open WebUI's own
-write of the final row — the pipe has no write path for it.
+handles are released once both conjuncts hold — the owner's answer is out
+**and** the lifecycle is finished — so the interval the job is running is
+covered and the residual window is only Open WebUI's own write of the
+final row, the pipe has no write path for it. When the owner was stopped
+instead of finishing, the second conjunct is the lifecycle's own, and it
+is the lifecycle that releases the entry.
 
 Second invariant, on the way in: **a clip or a sound file is only ever
 sent as a link**. OpenRouter takes those references as https URLs, so

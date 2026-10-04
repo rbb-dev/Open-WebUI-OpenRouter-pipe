@@ -188,9 +188,6 @@ class PluginBase:
     ) -> None:
         """Observe a resolved tool call (pre-normalization status).
 
-        ``status`` is the executor's real outcome: ``completed``, ``failed``,
-        ``skipped``, or ``cancelled`` — before it is flattened for emission.
-
         Extra kwargs: ``request_id`` — the pipe's per-request id,
         ``metadata`` — the request's OWUI metadata dict.
         """

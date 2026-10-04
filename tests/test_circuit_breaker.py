@@ -731,3 +731,16 @@ async def test_process_transformed_request_accepts_string_task() -> None:
         finally:
             await session.close()
             await pipe.close()
+
+
+class _CountingDict(dict):
+    """A map that reports how often the read path walks every entry.
+
+    `__iter__` is not seen -- the code called `list(...items())` -- so the counter
+    is on `items()`."""
+
+    items_calls = 0
+
+    def items(self):
+        type(self).items_calls += 1
+        return super().items()

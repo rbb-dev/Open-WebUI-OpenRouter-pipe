@@ -649,6 +649,16 @@ _VIDEO_CAN_BE_PICKED_BACK_UP = (
     "starts a fresh job under a new message instead."
 )
 
+_VIDEO_USER_LIMIT_REFUSAL = (
+    "Video generation was refused by the pipe's MAX_CONCURRENT_VIDEO_GENS_PER_USER "
+    "setting before the request was sent; ask your admin to raise it"
+)
+
+_VIDEO_NO_PROMPT_REFUSAL = (
+    "Video generation was refused by the pipe before the request was sent, because "
+    "the message carried no prompt to generate from"
+)
+
 _VIDEO_POLL_ERRORS_SPENT = (
     "OpenRouter's status endpoint did not answer this video's job {errors} times in "
     "a row, so this message stopped waiting for it. The job was not cancelled and is "
@@ -674,6 +684,10 @@ _POLL_TRANSPORT_ERRORS = (aiohttp.ClientError, TimeoutError, OSError, OpenRouter
 _VIDEO_IS_STILL_RUNNING_STATUS = "Video generation is still running at OpenRouter."
 
 _VIDEO_GENERATION_FAILED_STATUS = "No video was produced."
+
+
+def _writable_sink(outcome_sink: dict[str, Any] | None) -> dict[str, Any]:
+    return outcome_sink if outcome_sink is not None else {}
 
 
 def _spoken_duration(seconds: float) -> str:
@@ -922,6 +936,20 @@ class VideoGenerationAdapter:
         self._intent_breaker_swept_at: float = 0.0
         self._intent_failure_notified_chats: OrderedDict[str, None] = OrderedDict()
 
+    def _request_key(self, metadata: dict[str, Any]) -> tuple[str, str, tuple[str, str]]:
+        chat_id = _clean_str(metadata.get("chat_id"))
+        message_id = _clean_str(metadata.get("message_id"))
+        if chat_id and message_id:
+            return chat_id, message_id, (chat_id, message_id)
+        from ..core.logging_system import SessionLogger
+
+        request_id = SessionLogger.request_id.get() or secrets.token_hex(8)
+        self.logger.warning(
+            "Video generation keyed to a request-scoped id: no chat_id/message_id metadata (request_id=%s).",
+            request_id,
+        )
+        return chat_id, message_id, (f"api:{request_id}", "")
+
     async def generate(
         self,
         *,
@@ -939,6 +967,7 @@ class VideoGenerationAdapter:
         outcome_sink: dict[str, Any] | None = None,
         breaker_key: str | None = None,
     ) -> str | StreamingResponse:
+        sink: dict[str, Any] = _writable_sink(outcome_sink)
         prompt = self._extract_prompt(body)
         video_spec = OpenRouterModelRegistry.spec(normalized_model_id)
         video_model = video_spec.get("video_model") if isinstance(video_spec, dict) else {}
@@ -953,19 +982,7 @@ class VideoGenerationAdapter:
                 outcome_sink["error_occurred"] = False
             return content
 
-        chat_id = _clean_str(metadata.get("chat_id"))
-        message_id = _clean_str(metadata.get("message_id"))
-        if not (chat_id and message_id):
-            from ..core.logging_system import SessionLogger
-
-            request_id = SessionLogger.request_id.get() or secrets.token_hex(8)
-            key = (f"api:{request_id}", "")
-            self.logger.warning(
-                "Video generation keyed to a request-scoped id: no chat_id/message_id metadata (request_id=%s).",
-                request_id,
-            )
-        else:
-            key = (chat_id, message_id)
+        chat_id, message_id, key = self._request_key(metadata)
         user_id = _clean_str(user.get("id")) or _clean_str(metadata.get("user_id")) or "anonymous"
         existing = await self._get_active_task(key)
         if existing is not None:
@@ -1010,6 +1027,7 @@ class VideoGenerationAdapter:
 
             persisted = await self._persistence.load_message_content(chat_id=chat_id, message_id=message_id, user=user_obj)
             if self._looks_like_final_video_content(persisted):
+                sink["error_occurred"] = "<video>" not in persisted
                 await self._emit_completion(event_emitter, persisted)
                 return persisted
             resume_job_id = self._extract_video_job_marker(persisted)
@@ -1028,6 +1046,7 @@ class VideoGenerationAdapter:
                     )
                     await self._emit_status(event_emitter, "Video generation limit reached.", done=True)
                     await self._emit_completion(event_emitter, content)
+                    sink["member_refusal_reason"] = _VIDEO_USER_LIMIT_REFUSAL
                     return content
                 global_semaphore = self._ensure_global_semaphore(valves)
                 await global_semaphore.acquire()
@@ -1175,6 +1194,7 @@ class VideoGenerationAdapter:
                         )
                         await self._emit_completion(event_emitter, clar_content)
                         self._emit_intent_telemetry(intent_result, valves=valves, chat_id=chat_id)
+                        sink["error_occurred"] = False
                         return clar_content
                     reused_frame_pref_raw = resolve_intent_user_setting(
                         metadata, "frame_extraction_index",
@@ -1194,6 +1214,7 @@ class VideoGenerationAdapter:
                         self._emit_intent_telemetry(
                             intent_result, valves=valves, chat_id=chat_id
                         )
+                        sink["member_refusal_reason"] = _VIDEO_USER_LIMIT_REFUSAL
                         return await self._refuse_for_user_limit(
                             event_emitter, api_model_id, valves
                         )
@@ -1284,6 +1305,7 @@ class VideoGenerationAdapter:
                     global_slot_acquired,
                 ) = await self._admit_video_request(user_id, valves)
             if not user_slot_acquired:
+                sink["member_refusal_reason"] = _VIDEO_USER_LIMIT_REFUSAL
                 return await self._refuse_for_user_limit(event_emitter, api_model_id, valves)
 
             video_meta = self._extract_video_metadata(metadata)
@@ -1320,6 +1342,7 @@ class VideoGenerationAdapter:
                 await self._emit_status(event_emitter, "Video generation could not start.", done=True)
                 await self._emit_completion(event_emitter, content)
                 await self._report_generation(None, "failed", metadata)
+                sink["member_refusal_reason"] = _VIDEO_NO_PROMPT_REFUSAL
                 return content
             payload = await self._build_payload(
                 api_model_id=api_model_id,
@@ -2043,11 +2066,18 @@ class VideoGenerationAdapter:
     ) -> None:
         _step = functools.partial(self._cleanup_step, "request", key)
 
-        async def _drop_active_task() -> None:
+        claimed = owner or asyncio.current_task()
+
+        async def _evict_later() -> None:
             async with self._pipe._video_active_tasks_dict_lock:
-                current = self._pipe._video_active_tasks.get(key)
-                if current is (owner or asyncio.current_task()):
+                if self._pipe._video_active_tasks.get(key) is claimed:
                     self._pipe._video_active_tasks.pop(key, None)
+
+        async def _drop_active_task() -> None:
+            if claimed is not None and not claimed.done():
+                claimed.add_done_callback(lambda _t: asyncio.ensure_future(_evict_later()))
+                return
+            await _evict_later()
 
         await _step("active-task entry", _drop_active_task())
         if message_lock is not None:

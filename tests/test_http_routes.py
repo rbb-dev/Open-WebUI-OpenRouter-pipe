@@ -10,12 +10,14 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.testclient import TestClient
 
 pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
 
 from open_webui_openrouter_pipe.core.config import Valves
 from open_webui_openrouter_pipe.plugins.pipe_dashboard import http_routes
+from tests._owui_auth_stub import install_open_webui_auth, token_for
 
 
 #: The one object `_on_valves` hands out. A getter is a closure over the pipe the plugin
@@ -86,76 +88,98 @@ def _persisted_master_switch_on(monkeypatch):
     monkeypatch.setattr(functions_mod, "Functions", _PersistedSwitchOn())
 
 
-def _install_auth_stub(monkeypatch, *, decode=lambda t: {"id": "u1"}, valid=True,
-                       user=SimpleNamespace(id="u1", role="user")):
-    auth: Any = types.ModuleType("open_webui.utils.auth")
-    auth.decode_token = decode
+@pytest.fixture(autouse=True)
+def _owui_auth_available(monkeypatch):
+    """`register_action_route` resolves Open WebUI's own dependencies at registration.
 
-    async def is_valid_token(data, redis):
-        return valid
-
-    auth.is_valid_token = is_valid_token
-    users_mod: Any = types.ModuleType("open_webui.models.users")
-    users = Mock()
-    users.get_user_by_id = AsyncMock(return_value=user)
-    users.update_last_active_by_id = AsyncMock(return_value=True)
-    users_mod.Users = users
-    monkeypatch.setitem(sys.modules, "open_webui.utils.auth", auth)
-    monkeypatch.setitem(sys.modules, "open_webui.models.users", users_mod)
+    A test that wants a different principal, a revoked token or a different Open WebUI
+    answer installs its own over this one, which is why it is the default rather than
+    a fixture every test must ask for.
+    """
+    install_open_webui_auth(monkeypatch)
 
 
-def _req(headers=None, app_redis=None):
+def _as(monkeypatch, user_id="u1", role="user", **kwargs):
+    """Authenticate as `user_id` and return the header that carries that credential."""
+    install_open_webui_auth(
+        monkeypatch,
+        user=SimpleNamespace(id=user_id, role=role, email=f"{user_id}@example.com"),
+        **kwargs,
+    )
+    return {"Authorization": f"Bearer {token_for(user_id)}"}
+
+
+def _auth_probe(monkeypatch, *, user_id="u1", role="user", **kwargs):
+    """A real FastAPI bound to the route's OWN two dependencies.
+
+    Every header-parse and refusal row below runs against it, so a hand-written scheme
+    check or a swapped Open WebUI arm moves the verdict these rows assert rather than
+    leaving them green over a re-implementation.
+    """
+    install_open_webui_auth(
+        monkeypatch,
+        user=SimpleNamespace(id=user_id, role=role, email=f"{user_id}@example.com"),
+        **kwargs,
+    )
+    header_guard, owui_user = http_routes._action_dependencies()
+    app = FastAPI()
+
+    @app.get("/probe", dependencies=[header_guard, owui_user])
+    def _probe(request: Request) -> dict:
+        return {"id": request.state.user.id}
+
+    client = TestClient(app, raise_server_exceptions=False)
+    return client, {"Authorization": f"Bearer {token_for(user_id)}"}
+
+
+def _req(headers=None, app_redis=None, user=None):
     r = Mock()
     r.headers = headers or {}
+    r.cookies = {}
     r.app = SimpleNamespace(state=SimpleNamespace(redis=app_redis))
     r.client = SimpleNamespace(host="1.2.3.4")
+    r.state = SimpleNamespace(
+        user=user if user is not None else SimpleNamespace(id="u1", role="user", email="u1@example.com")
+    )
     return r
 
 
-@pytest.mark.asyncio
-async def test_bearer_missing_header_401(monkeypatch):
-    _install_auth_stub(monkeypatch)
-    with pytest.raises(HTTPException) as e:
-        await http_routes.bearer_user(_req(headers={}))
-    assert e.value.status_code == 401
+def test_bearer_missing_header_401(monkeypatch):
+    client, _ = _auth_probe(monkeypatch)
+    resp = client.get("/probe")
+    assert resp.status_code == 401, resp.text
 
 
-@pytest.mark.asyncio
-async def test_bearer_cookie_ignored_401(monkeypatch):
-    _install_auth_stub(monkeypatch)
-    with pytest.raises(HTTPException):
-        await http_routes.bearer_user(_req(headers={"Cookie": "token=abc"}))
+def test_bearer_cookie_ignored_401(monkeypatch):
+    """The header guard is the whole of the header-only property, now."""
+    client, _ = _auth_probe(monkeypatch)
+    resp = client.get("/probe", cookies={"token": "abc"})
+    assert resp.status_code == 401, resp.text
 
 
-@pytest.mark.asyncio
-async def test_bearer_valid_header(monkeypatch):
-    _install_auth_stub(monkeypatch)
-    user = await http_routes.bearer_user(_req(headers={"Authorization": "Bearer good"}))
-    assert user.id == "u1"
+def test_bearer_valid_header(monkeypatch):
+    client, header = _auth_probe(monkeypatch)
+    resp = client.get("/probe", headers=header)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"id": "u1"}
 
 
-@pytest.mark.asyncio
-async def test_bearer_revoked_401(monkeypatch):
-    _install_auth_stub(monkeypatch, valid=False)
-    with pytest.raises(HTTPException):
-        await http_routes.bearer_user(_req(headers={"Authorization": "Bearer x"}))
+def test_bearer_revoked_401(monkeypatch):
+    client, header = _auth_probe(monkeypatch, valid=False)
+    resp = client.get("/probe", headers=header)
+    assert resp.status_code == 401, resp.text
 
 
-@pytest.mark.asyncio
-async def test_bearer_bad_token_401_not_500(monkeypatch):
-    def boom(t):
-        raise ValueError("bad")
-
-    _install_auth_stub(monkeypatch, decode=boom)
-    with pytest.raises(HTTPException):
-        await http_routes.bearer_user(_req(headers={"Authorization": "Bearer x"}))
+def test_bearer_bad_token_401_not_500(monkeypatch):
+    client, _ = _auth_probe(monkeypatch)
+    resp = client.get("/probe", headers={"Authorization": "Bearer x"})
+    assert resp.status_code == 401, resp.text
 
 
-@pytest.mark.asyncio
-async def test_bearer_pending_role_401(monkeypatch):
-    _install_auth_stub(monkeypatch, user=SimpleNamespace(id="u1", role="pending"))
-    with pytest.raises(HTTPException):
-        await http_routes.bearer_user(_req(headers={"Authorization": "Bearer x"}))
+def test_bearer_pending_role_401(monkeypatch):
+    client, header = _auth_probe(monkeypatch, role="pending")
+    resp = client.get("/probe", headers=header)
+    assert resp.status_code == 401, resp.text
 
 
 #: A JWT-shaped token: base64url segments carrying upper and lower case, digits, `-`
@@ -185,14 +209,17 @@ def test_route_binds_body_200_not_422(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    monkeypatch.setattr(http_routes, "bearer_user", AsyncMock(return_value=SimpleNamespace(id="u1", role="user")))
+    _auth = _as(monkeypatch, "u1", "user")
     monkeypatch.setattr(http_routes, "_live_dispatch", lambda: AsyncMock(return_value=(200, {"ok": True, "result": {"x": 1}})))
     _route_pid = _serve(lambda: SimpleNamespace(id="p", valves=Valves(ENABLE_PLUGIN_SYSTEM=True)))
     http_routes._coarse_state.clear()
 
     app = FastAPI()
-    app.add_api_route(http_routes._ACTION_PATH, http_routes._action_route, methods=["POST"])
-    client = TestClient(app)
+    app.add_api_route(
+        http_routes._ACTION_PATH, http_routes._action_route, methods=["POST"],
+        dependencies=http_routes._action_dependencies(),
+    )
+    client = TestClient(app, headers=_auth)
     _carry_pipe_id(client, _route_pid)
 
     ok = client.post(http_routes._ACTION_PATH, json={"action": "whoami", "args": {}, "pipe": _pipe_id_of(client)})
@@ -210,14 +237,17 @@ def test_route_forbidden_flows_through(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    monkeypatch.setattr(http_routes, "bearer_user", AsyncMock(return_value=SimpleNamespace(id="u2", role="user")))
+    _auth = _as(monkeypatch, "u2", "user")
     monkeypatch.setattr(http_routes, "_live_dispatch", lambda: AsyncMock(return_value=(403, {"error": "forbidden"})))
     _route_pid = _serve(lambda: SimpleNamespace(id="p", valves=Valves(ENABLE_PLUGIN_SYSTEM=True)))
     http_routes._coarse_state.clear()
 
     app = FastAPI()
-    app.add_api_route(http_routes._ACTION_PATH, http_routes._action_route, methods=["POST"])
-    client = TestClient(app)
+    app.add_api_route(
+        http_routes._ACTION_PATH, http_routes._action_route, methods=["POST"],
+        dependencies=http_routes._action_dependencies(),
+    )
+    client = TestClient(app, headers=_auth)
     r = client.post(http_routes._ACTION_PATH, json={"action": "echo", "args": {"message": "x"}, "pipe": _route_pid})
     assert r.status_code == 403
 
@@ -237,8 +267,7 @@ def test_registered_route_resolves_real_config_get(monkeypatch):
 
     app = FastAPI()
     monkeypatch.setattr(http_routes, "get_owui_app", lambda: app)
-    monkeypatch.setattr(http_routes, "bearer_user",
-                        AsyncMock(return_value=SimpleNamespace(id="u1", role="admin")))
+    _auth = _as(monkeypatch, "u1", "admin")
     monkeypatch.setattr(actions, "can_view", AsyncMock(return_value=True))
     monkeypatch.setattr(http_routes, "can_view", AsyncMock(return_value=True))
     monkeypatch.setattr(http_routes, "_resolve_fresh", AsyncMock(return_value=None))
@@ -250,7 +279,7 @@ def test_registered_route_resolves_real_config_get(monkeypatch):
     actions._rate_state.clear()
 
     assert http_routes.register_action_route() is True
-    client = TestClient(app)
+    client = TestClient(app, headers=_auth)
 
     http_routes._coarse_state.clear()
     ok = client.post(http_routes._ACTION_PATH, json={"action": "config_get", "args": {}, "pipe": _route_pid})
@@ -283,8 +312,7 @@ def test_route_self_heals_unknown_action(monkeypatch):
     # a shape the seam never produces.
     app = FastAPI()
     monkeypatch.setattr(http_routes, "get_owui_app", lambda: app)
-    monkeypatch.setattr(http_routes, "bearer_user",
-                        AsyncMock(return_value=SimpleNamespace(id="u1", role="user")))
+    _auth = _as(monkeypatch, "u1", "user")
     monkeypatch.setattr(http_routes, "can_view", AsyncMock(return_value=True))
     monkeypatch.setattr(http_routes, "_resolve_fresh", AsyncMock(return_value=(_fresh, serving_pipe)))
     monkeypatch.setattr(http_routes, "_fresh_dispatch", None)
@@ -293,7 +321,7 @@ def test_route_self_heals_unknown_action(monkeypatch):
     http_routes._registered_paths.clear()
 
     assert http_routes.register_action_route() is True
-    client = TestClient(app)
+    client = TestClient(app, headers=_auth)
     http_routes._coarse_state.clear()
     r = client.post(http_routes._ACTION_PATH, json={"action": "config_get_v99", "args": {}, "pipe": _route_pid})
     assert r.status_code == 200
@@ -314,8 +342,7 @@ def test_route_reconcile_requires_can_view(monkeypatch):
     app = FastAPI()
     resolve = AsyncMock(return_value=None)
     monkeypatch.setattr(http_routes, "get_owui_app", lambda: app)
-    monkeypatch.setattr(http_routes, "bearer_user",
-                        AsyncMock(return_value=SimpleNamespace(id="u1", role="user")))
+    _auth = _as(monkeypatch, "u1", "user")
     monkeypatch.setattr(http_routes, "can_view", AsyncMock(return_value=False))
     monkeypatch.setattr(actions, "can_view", AsyncMock(return_value=False))
     monkeypatch.setattr(http_routes, "_resolve_fresh", resolve)
@@ -326,7 +353,7 @@ def test_route_reconcile_requires_can_view(monkeypatch):
     actions._rate_state.clear()
 
     assert http_routes.register_action_route() is True
-    client = TestClient(app)
+    client = TestClient(app, headers=_auth)
     http_routes._coarse_state.clear()
     r = client.post(http_routes._ACTION_PATH, json={"action": "unknown_x", "args": {}, "pipe": _route_pid})
     assert r.status_code == 403

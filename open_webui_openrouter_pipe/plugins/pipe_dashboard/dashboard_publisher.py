@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextlib
 import hashlib
 import hmac
 import inspect
@@ -115,6 +116,7 @@ def _fold_task_costs(rows: list[dict[str, Any]], task_costs: dict[str, float]) -
 
 _PD_POLL_INTERVAL = 5.0
 _PD_PUBLISH_INTERVAL = 2.0
+_PD_REDIS_OP_TIMEOUT = 1.0
 _PD_KEY_TTL = 10
 _PD_ACTIVE_FLAG_TTL = 30
 _PD_SESSIONS_CAP = 300
@@ -410,6 +412,34 @@ def aggregate_worker_payloads(payloads: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+async def _redis_op(awaitable: Any, timeout: float = _PD_REDIS_OP_TIMEOUT) -> Any:
+    return await asyncio.wait_for(awaitable, timeout=timeout)
+
+
+async def _scan_worker_slices(client: Any, namespace: str) -> list[dict[str, Any]]:
+    pattern = f"{namespace}:dashboard:worker:*"
+    seen: set[Any] = set()
+    keys: list[Any] = []
+    async with contextlib.aclosing(client.scan_iter(match=pattern, count=50)) as scan:
+        async for key in scan:
+            if key not in seen:
+                seen.add(key)
+                keys.append(key)
+    if not keys:
+        return []
+    values = await _redis_op(client.mget(*keys))
+    payloads = []
+    for raw in values:
+        if raw is None:
+            continue
+        try:
+            compact = json.loads(raw)
+            payloads.append(expand_worker_payload(compact))
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return payloads
+
+
 async def _read_redis_workers(client: Any, namespace: str) -> list[dict[str, Any]] | None:
     """Read and expand all live worker slices from Redis.
 
@@ -417,25 +447,8 @@ async def _read_redis_workers(client: Any, namespace: str) -> list[dict[str, Any
     known worker set instead of collapsing to single-worker), and ``[]`` only
     when the scan legitimately finds no slices.
     """
-    pattern = f"{namespace}:dashboard:worker:*"
     try:
-        keys: list[Any] = []
-        async for key in client.scan_iter(match=pattern, count=50):
-            if key not in keys:
-                keys.append(key)
-        if not keys:
-            return []
-        values = await client.mget(*keys)
-        payloads = []
-        for raw in values:
-            if raw is None:
-                continue
-            try:
-                compact = json.loads(raw)
-                payloads.append(expand_worker_payload(compact))
-            except (json.JSONDecodeError, TypeError):
-                continue
-        return payloads
+        return await _redis_op(_scan_worker_slices(client, namespace))
     except Exception:
         logger.debug("Redis worker read failed", exc_info=True)
         return None
@@ -443,12 +456,14 @@ async def _read_redis_workers(client: Any, namespace: str) -> list[dict[str, Any
 
 async def _set_active_flag(client: Any, namespace: str, *, wake: bool) -> None:
     try:
-        await client.set(f"{namespace}:dashboard:active", "1", ex=_PD_ACTIVE_FLAG_TTL)
+        await _redis_op(
+            client.set(f"{namespace}:dashboard:active", "1", ex=_PD_ACTIVE_FLAG_TTL)
+        )
     except Exception:
         logger.debug("Failed to set stats active flag", exc_info=True)
     if wake:
         try:
-            await client.publish(f"{namespace}:dashboard:wake", "wake")
+            await _redis_op(client.publish(f"{namespace}:dashboard:wake", "wake"))
         except Exception:
             logger.debug("Failed to publish dashboard wake", exc_info=True)
 
@@ -462,10 +477,12 @@ async def _write_own_slice(
         logger.debug("Dashboard collect failed (pid=%d)", os.getpid(), exc_info=True)
         return None, False
     try:
-        await client.set(
-            worker_key,
-            json.dumps(payload, separators=(",", ":")),
-            ex=_PD_KEY_TTL,
+        await _redis_op(
+            client.set(
+                worker_key,
+                json.dumps(payload, separators=(",", ":")),
+                ex=_PD_KEY_TTL,
+            )
         )
     except Exception:
         logger.debug("Dashboard publish failed (pid=%d)", os.getpid(), exc_info=True)
@@ -489,13 +506,13 @@ def _is_superseded(pipe: Any) -> bool:
     return current is not None and current is not pipe
 
 
-async def _redis_alive(pipe: Any) -> bool:
+async def _redis_alive(pipe: Any, client: Any = None) -> bool:
     """Liveness probe: a bounded real ping, not client-object existence."""
-    client = getattr(pipe, "_redis_client", None)
-    if client is None:
+    target = client if client is not None else getattr(pipe, "_redis_client", None)
+    if target is None:
         return False
     try:
-        result = client.ping()
+        result = target.ping()
         if inspect.isawaitable(result):
             result = await asyncio.wait_for(result, timeout=0.25)
         return bool(result)
@@ -527,9 +544,17 @@ async def _build_emit_payload(
     worker_count = 1
     agg_state = agg_state if agg_state is not None else {}
 
+    alive = await _redis_alive(pipe, client)
+    redis_live = alive
+
     if client is not None:
-        own_payload, wrote = await _write_own_slice(client, worker_key, pipe)
-        worker_payloads = await _read_redis_workers(client, namespace)
+        if not alive:
+            own_payload, wrote = None, False
+            worker_payloads = None
+        else:
+            own_payload, wrote = await _write_own_slice(client, worker_key, pipe)
+            worker_payloads = await _read_redis_workers(client, namespace)
+        redis_live = bool(wrote) and worker_payloads is not None
         degraded = False
         read_ok = False
         if worker_payloads is None:
@@ -597,12 +622,14 @@ async def _build_emit_payload(
         except Exception:
             logger.debug("Identity collect error", exc_info=True)
         try:
-            payload.update(collect_medium_stats(pipe))
+            payload.update(
+                await asyncio.get_running_loop().run_in_executor(None, collect_medium_stats, pipe)
+            )
         except Exception:
             logger.debug("Medium stats collect error", exc_info=True)
         health = payload.get("health")
         if isinstance(health, dict):
-            health["redis_connected"] = await _redis_alive(pipe)
+            health["redis_connected"] = redis_live
         cfg_rev, cfg_state = await read_config_rev(getattr(pipe, "id", ""))
         slow_state["cfg_rev"] = cfg_rev
         slow_state["cfg_state"] = cfg_state
@@ -656,6 +683,9 @@ async def _build_emit_payload(
 
     payload["cfgRev"] = slow_state.get("cfg_rev")
     payload["cfgState"] = slow_state.get("cfg_state")
+    health = payload.get("health")
+    if isinstance(health, dict):
+        health["redis_connected"] = redis_live
     return payload
 
 
@@ -709,7 +739,7 @@ async def run_dashboard_publisher(
             if redis_ok and client is not None and pubsub is None:
                 try:
                     pubsub = client.pubsub()
-                    await pubsub.subscribe(wake_channel)
+                    await _redis_op(pubsub.subscribe(wake_channel))
                 except Exception:
                     logger.debug("Pub/sub subscribe failed", exc_info=True)
                     pubsub = None
@@ -730,9 +760,10 @@ async def run_dashboard_publisher(
                         await asyncio.sleep(_PD_SETTLE_DELAY)
                 emitting = True
                 try:
-                    await reauthorize_local_viewers(pipe_id)
+                    enabled_now = await reauthorize_local_viewers(pipe_id)
                 except Exception:
                     logger.debug("viewer re-auth failed", exc_info=True)
+                    enabled_now = None
                 try:
                     payload = await _build_emit_payload(
                         pipe,
@@ -743,7 +774,7 @@ async def run_dashboard_publisher(
                         slow_state,
                         agg_state,
                     )
-                    await emit_dashboard(payload, pipe_id)
+                    await emit_dashboard(payload, pipe_id, enabled_now)
                 except Exception:
                     logger.debug("Dashboard emit iteration failed", exc_info=True)
                 tick += 1
@@ -757,7 +788,7 @@ async def run_dashboard_publisher(
                 continue
 
             try:
-                is_active = await client.exists(active_key)
+                is_active = await _redis_op(client.exists(active_key))
             except Exception:
                 logger.debug("Dashboard active-flag probe failed", exc_info=True)
                 await asyncio.sleep(_PD_POLL_INTERVAL)
@@ -788,13 +819,13 @@ async def run_dashboard_publisher(
     finally:
         if pubsub is not None:
             try:
-                await pubsub.unsubscribe(wake_channel)
+                await _redis_op(pubsub.unsubscribe(wake_channel))
                 await pubsub.close()
             except Exception:
                 logger.debug("Dashboard wake listener teardown failed", exc_info=True)
         try:
             client, enabled = get_redis()
             if enabled and client is not None and not stood_down:
-                await client.delete(worker_key)
+                await _redis_op(client.delete(worker_key))
         except Exception:
             logger.debug("Dashboard worker-key cleanup failed (pid=%d)", pid, exc_info=True)

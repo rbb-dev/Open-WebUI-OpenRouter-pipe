@@ -29,6 +29,7 @@ from ...storage.persistence import (
     ArtifactStore,
     _db_session,
     _other_installed_fragments,
+    _temporary_chat_chat_id_conditions,
     generate_item_id,
     raw_valve_column_decodes,
 )
@@ -875,9 +876,9 @@ class UsageStore:
             if model is not None:
                 session.query(model).filter(model.ts < cutoff).delete(synchronize_session=False)
                 for prefix in temporary_chat_prefixes():
-                    session.query(model).filter(model.chat_id.startswith(prefix)).update(
-                        {"chat_id": "", "session_id": ""}, synchronize_session=False
-                    )
+                    session.query(model).filter(
+                        *_temporary_chat_chat_id_conditions(model.chat_id, prefix)
+                    ).update({"chat_id": "", "session_id": ""}, synchronize_session=False)
             else:
                 quoted = ArtifactStore._quote_identifier(name)
                 session.execute(

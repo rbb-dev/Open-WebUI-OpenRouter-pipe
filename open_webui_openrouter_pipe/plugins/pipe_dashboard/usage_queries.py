@@ -242,10 +242,44 @@ def _newest_user_names(model: Any, session: Any, lo: Any, counted: Any) -> dict[
     return {user_id: name for user_id, name in session.execute(stmt)}
 
 
-def _window_users(model: Any, session: Any, lo: Any, counted: Any) -> list[dict[str, Any]]:
+_BY_USER_CAP = 10
+
+
+def _window_user_sums(model: Any, session: Any, lo: Any, counted: Any) -> dict[str, float]:
+    from sqlalchemy import case, func, select
+
+    stmt = select(
+        func.sum(case((_is_chat_row(model), 1), else_=0)),
+        func.sum(func.coalesce(model.tokens_in, 0)),
+        func.sum(func.coalesce(model.tokens_cached, 0)),
+        func.sum(func.coalesce(model.tokens_out, 0)),
+        func.sum(_tools_sum(model)),
+        func.sum(func.coalesce(model.tools_failed, 0)),
+        func.sum(func.coalesce(model.tools_skipped, 0)),
+        func.sum(func.coalesce(model.cost, 0.0)),
+        func.sum(case((model.kind == "task", func.coalesce(model.cost, 0.0)), else_=0.0)),
+    ).where(model.ts >= lo, counted)
+    row = session.execute(stmt).one()
+    return {
+        "sessions": _int(row[0]),
+        "tokens_in": _int(row[1]),
+        "tokens_cached": _int(row[2]),
+        "tokens_out": _int(row[3]),
+        "tools": _int(row[4]),
+        "tools_failed": _int(row[5]),
+        "tools_skipped": _int(row[6]),
+        "cost": _float(row[7]),
+        "task_cost": _float(row[8]),
+    }
+
+
+def _window_users(
+    model: Any, session: Any, lo: Any, counted: Any
+) -> tuple[list[dict[str, Any]], int]:
     from sqlalchemy import case, func, select
 
     uid = _grouped_key(model.user_id)
+    cost_sum = func.sum(func.coalesce(model.cost, 0.0))
     stmt = (
         select(
             uid.label("user_id"),
@@ -256,16 +290,22 @@ def _window_users(model: Any, session: Any, lo: Any, counted: Any) -> list[dict[
             func.sum(_tools_sum(model)),
             func.sum(func.coalesce(model.tools_failed, 0)),
             func.sum(func.coalesce(model.tools_skipped, 0)),
-            func.sum(func.coalesce(model.cost, 0.0)),
+            cost_sum,
             func.sum(case((model.kind == "task", func.coalesce(model.cost, 0.0)), else_=0.0)),
             func.max(model.ts),
+            func.count().over().label("user_total"),
         )
         .where(model.ts >= lo, counted)
         .group_by(uid)
+        .order_by(cost_sum.desc(), uid)
+        .limit(_BY_USER_CAP)
     )
     names = _newest_user_names(model, session, lo, counted)
     out: list[dict[str, Any]] = []
+    user_total = 0
     for row in session.execute(stmt):
+        if not out:
+            user_total = _int(row[11])
         out.append(
             {
                 "user_id": row[0],
@@ -282,7 +322,7 @@ def _window_users(model: Any, session: Any, lo: Any, counted: Any) -> list[dict[
                 "last_active": _epoch_or_zero(row[10]),
             }
         )
-    return out
+    return out, user_total
 
 
 def _cards(acc: dict[str, float]) -> dict[str, Any]:
@@ -357,7 +397,8 @@ def query_usage_stats(
             model, session, lo, _bucket_edges(start, now, bucket_s, off), bucket_s, counted
         )
         grouped_models = _window_models(model, session, lo, counted)
-        grouped_users = _window_users(model, session, lo, counted)
+        grouped_users, user_total = _window_users(model, session, lo, counted)
+        user_sums = _window_user_sums(model, session, lo, counted)
 
     total_cost_window = cur["cost"] or 0.0
     model_rows = []
@@ -394,7 +435,7 @@ def query_usage_stats(
         "cost": round(u["cost"], 6),
         "task_cost": round(u["task_cost"], 6),
         "last_active": int(u["last_active"]) or None,
-    } for u in sorted(grouped_users, key=lambda u: -u["cost"])]
+    } for u in grouped_users]
 
     bucket_rows = [
         {"t": t, "tokens": int(v["tokens"]), "cost": round(v["cost"], 6),
@@ -434,6 +475,8 @@ def query_usage_stats(
         "meta": {
             "range": range_key,
             "bucket_s": bucket_s,
+            "user_count": int(user_total),
+            "by_user_sums": user_sums,
             "start": int(start),
             "now": int(now),
             "since": since,

@@ -206,6 +206,18 @@ def copy_to_private_temp(contained_path: Path, *, suffix: str = "") -> Path:
     return temp_path
 
 
+async def _reclaim_copied_temp(copy_task: asyncio.Future[Any]) -> None:
+    while not copy_task.done():
+        try:
+            await asyncio.shield(copy_task)
+        except asyncio.CancelledError:
+            continue
+        except Exception:  # noqa: BLE001 - any copy failure ends the wait; the caller's is re-raised
+            break
+    if copy_task.done() and not copy_task.cancelled() and copy_task.exception() is None:
+        copy_task.result().unlink(missing_ok=True)
+
+
 async def _linked_ok(result: Any, chat_id: str, message_id: str, file_id: str) -> bool:
     """Decide whether a file is linked, given insert_chat_files' ambiguous return.
 
@@ -603,7 +615,14 @@ async def materialize_owui_file_to_temp(
     if allowed_suffixes is not None and contained.suffix.lower() not in allowed_suffixes:
         raise RequiredInternalFileError("A referenced file has an unsupported type.")
 
-    temp_path = await asyncio.to_thread(copy_to_private_temp, contained, suffix=suffix or contained.suffix)
+    copy_task = asyncio.ensure_future(
+        asyncio.to_thread(copy_to_private_temp, contained, suffix=suffix or contained.suffix)
+    )
+    try:
+        temp_path = await asyncio.shield(copy_task)
+    except BaseException:
+        await _reclaim_copied_temp(copy_task)
+        raise
     try:
         if max_bytes > 0 and temp_path.stat().st_size > max_bytes:
             raise RequiredInternalFileError(
@@ -1234,6 +1253,58 @@ class OwuiFileGateway:
                 part["image_url"] = inlined.data_url
             return True
 
+        async def _inline_file_block(block: dict[str, Any]) -> bool:
+            block_type = block.get("type")
+            if block_type in ("input_image", "image_url"):
+                return await _inline_picture(block)
+            if block_type != "input_file":
+                return True
+
+            file_url = block.get("file_url")
+            file_data = block.get("file_data")
+            file_id = block.get("file_id")
+
+            internal_file_id: str | None = None
+            named_reference: str | None = None
+
+            if isinstance(file_id, str) and file_id.strip() and not file_id.strip().startswith("file-"):
+                internal_file_id = file_id.strip()
+            else:
+                own_reference = _own_internal_reference(file_data, file_url)
+                if own_reference is not None:
+                    named_reference = own_reference
+                    internal_file_id = extract_internal_file_id(own_reference)
+
+            if not internal_file_id:
+                if named_reference is not None:
+                    raise FileUnavailableError(
+                        "A referenced file is no longer available in Open WebUI storage.",
+                    )
+                return True
+
+            result = await self.inline_owui_file_id(
+                internal_file_id,
+                chunk_size=chunk_size,
+                max_bytes=max_bytes,
+                user=user,
+            )
+            if not result:
+                raise FileUnavailableError(
+                    "A referenced file is no longer available in Open WebUI storage.",
+                )
+
+            block["file_data"] = result.data_url
+            if result.filename and "filename" not in block:
+                block["filename"] = result.filename
+            block.pop("file_id", None)
+            if (
+                isinstance(file_url, str)
+                and file_url.strip()
+                and names_an_owui_file_path(file_url.strip())
+            ):
+                block.pop("file_url", None)
+            return True
+
         if not _names_an_internal_reference(input_items):
             return {**request_body, "input": list(input_items)}
         working = copy.deepcopy(input_items)
@@ -1242,85 +1313,22 @@ class OwuiFileGateway:
             if not isinstance(item, dict):
                 kept_items.append(item)
                 continue
-            if item.get("type") == "function_call_output" and isinstance(item.get("output"), list):
-                output = item["output"]
-                output_dropped: list[int] = []
-                for position, part in enumerate(output):
-                    if (
-                        isinstance(part, dict)
-                        and part.get("type") in ("input_image", "image_url")
-                        and not await _inline_picture(part)
-                    ):
-                        output_dropped.append(position)
-                for position in reversed(output_dropped):
-                    del output[position]
-                kept_items.append(item)
-                continue
             if item.get("type") in ("input_image", "image_url"):
-                if await _inline_picture(item):
+                if await _inline_file_block(item):
                     kept_items.append(item)
                 continue
-            content = item.get("content")
-            if not isinstance(content, list) or not content:
+            parts = item.get("output") if item.get("type") == "function_call_output" else item.get("content")
+            if not isinstance(parts, list) or not parts:
                 kept_items.append(item)
                 continue
             dropped: list[int] = []
-            for position, block in enumerate(content):
+            for position, block in enumerate(parts):
                 if not isinstance(block, dict):
                     continue
-                if block.get("type") in ("input_image", "image_url"):
-                    if not await _inline_picture(block):
-                        dropped.append(position)
-                    continue
-                if block.get("type") != "input_file":
-                    continue
-
-                file_url = block.get("file_url")
-                file_data = block.get("file_data")
-                file_id = block.get("file_id")
-
-                internal_file_id: str | None = None
-                named_reference: str | None = None
-
-                if isinstance(file_id, str) and file_id.strip() and not file_id.strip().startswith("file-"):
-                    internal_file_id = file_id.strip()
-                else:
-                    own_reference = _own_internal_reference(file_data, file_url)
-                    if own_reference is not None:
-                        named_reference = own_reference
-                        internal_file_id = extract_internal_file_id(own_reference)
-
-                if not internal_file_id:
-                    if named_reference is not None:
-                        raise FileUnavailableError(
-                            "A referenced file is no longer available in Open WebUI storage.",
-                        )
-                    continue
-
-                result = await self.inline_owui_file_id(
-                    internal_file_id,
-                    chunk_size=chunk_size,
-                    max_bytes=max_bytes,
-                    user=user,
-                )
-                if not result:
-                    raise FileUnavailableError(
-                        "A referenced file is no longer available in Open WebUI storage.",
-                    )
-
-                block["file_data"] = result.data_url
-                if result.filename and "filename" not in block:
-                    block["filename"] = result.filename
-                block.pop("file_id", None)
-                if (
-                    isinstance(file_url, str)
-                    and file_url.strip()
-                    and names_an_owui_file_path(file_url.strip())
-                ):
-                    block.pop("file_url", None)
-
+                if not await _inline_file_block(block):
+                    dropped.append(position)
             for position in reversed(dropped):
-                del content[position]
+                del parts[position]
             kept_items.append(item)
 
         return {**request_body, "input": kept_items}

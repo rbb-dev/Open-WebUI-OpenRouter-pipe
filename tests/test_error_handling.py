@@ -801,6 +801,12 @@ _STATUS_HEADINGS = [
     (404, "could not process your request"),
 ]
 
+#: A turn in a chat. Both ids, because that pair is what makes one: a request carrying only a
+#: ``chat_id`` is a task route, and a request carrying neither is a caller with no chat to write a
+#: card into, and that caller is answered with an envelope rather than one. The nodes below are
+#: about which card a status selects, so they have to be driving the leg that gets a card at all.
+_CHAT_METADATA = {"chat_id": "c1", "message_id": "m1", "user_id": "user1"}
+
 
 async def _chat_path_error_card(pipe, status: int) -> str:
     """Drive a rejection through the real orchestrator and return the emitted markdown.
@@ -854,7 +860,7 @@ async def _chat_path_error_card(pipe, status: int) -> str:
             __request__=None,
             __event_emitter__=emitter,
             __event_call__=None,
-            __metadata__={},
+            __metadata__=_CHAT_METADATA,
             __tools__=None,
             __task__=None,
             __task_body__=None,
@@ -1823,7 +1829,7 @@ async def _t384_card(monkeypatch, pipe_instance_async, status: int, error: dict[
             __request__=None,
             __event_emitter__=None,
             __event_call__=None,
-            __metadata__={"model": {"id": "openai/gpt-4o"}},
+            __metadata__={**_CHAT_METADATA, "model": {"id": "openai/gpt-4o"}},
             __tools__=None,
             __task__=None,
             __task_body__=None,

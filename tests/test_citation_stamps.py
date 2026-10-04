@@ -167,20 +167,31 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # a `None` default: a refusal that cannot find the socket to refuse on would return in
 # silence, and a panel waiting on the `denied` handler would sit on a live socket behind
 # a running heartbeat with nothing to act on.
-# Measured on this merged tree: 25 module-scope and 104 lazy. The count is what the scan
+# Measured on this merged tree: 25 module-scope and 102 lazy. The count is what the scan
 # finds after the change, not a floor and not either side's arithmetic -- the 99 above is
 # B918's and B550's imports on this tree, and B550's earlier port recorded (25, 98)
 # against a tree that did not yet carry T494's or B918's lazy import. This tree is HEAD's
-# (25, 103) plus B1125's one new guarded `open_webui.socket.main` import, so 104 is the
-# count the scan measures rather than either side's arithmetic. The module-scope arm is
+# (25, 103) plus B1125's one new guarded `open_webui.socket.main` import (104) and then
+# B1300/T1169's three lazy imports out and one in (102), so 102 is the count the scan
+# measures rather than either side's arithmetic. The module-scope arm is
 # unchanged: the hoisted `channel_id_for_chat` comes from the pipe's own
 # `.owui_files`, not from Open WebUI.
+# 104 -> 102 (B1300/T1169): the dashboard action route's lazy imports of
+# `open_webui.env` (`WEBUI_AUTH_TRUSTED_EMAIL_HEADER`) and of `open_webui.utils.auth`
+# (`decode_token`, `is_valid_token`) go with the hand-maintained `bearer_user` they
+# served: the route now resolves identity through Open WebUI's own `get_verified_user`
+# dependency, so it has no token handling of its own to guard. One lazy import arrives
+# in their place -- `bearer_security` (and, in the same statement,
+# `get_verified_user`), read inside the dependency factory, which `register_action_route`
+# calls inside its own `try`, so a host that cannot supply them refuses the registration
+# exactly as it refuses any other failure rather than admitting the route unauthenticated.
+# Three out, one in, and the module-scope arm is untouched at 25.
 # finds after the change, not a floor and not either side's arithmetic -- the 99 above is
 # B918's and B550's imports on this tree, and B550's earlier port recorded (25, 98)
 # against a tree that did not yet carry T494's or B918's lazy import. The module-scope
 # arm is unchanged: the hoisted `channel_id_for_chat` comes from the pipe's own
 # `.owui_files`, not from Open WebUI.
-_EXPECTED_OWUI_IMPORTS = (25, 104)
+_EXPECTED_OWUI_IMPORTS = (25, 102)
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),

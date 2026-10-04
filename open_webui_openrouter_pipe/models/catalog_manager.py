@@ -410,6 +410,18 @@ def _record_needs_repair(previous, offered, *, attaching: bool) -> bool:
     return _dedupe_preserve_order(list(previous)) != _dedupe_preserve_order(list(offered))
 
 
+def _recorded_ids(meta_dict: dict, *, record_key: str) -> list[str]:
+    pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
+    if not isinstance(pipe_meta, dict):
+        return []
+    prev = pipe_meta.get(record_key)
+    if isinstance(prev, str) and prev:
+        return [prev]
+    if isinstance(prev, list):
+        return [p for p in prev if isinstance(p, str) and p]
+    return []
+
+
 def _apply_list_filter_ids(
     meta_dict: dict,
     *,
@@ -424,14 +436,7 @@ def _apply_list_filter_ids(
         return False
     filter_function_ids = filter_function_ids or []
     normalized = _normalize_id_list(meta_dict, "filterIds")
-    pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
-    previous_ids: list[str] = []
-    if isinstance(pipe_meta, dict):
-        prev = pipe_meta.get(prune_key)
-        if isinstance(prev, str) and prev:
-            previous_ids = [prev]
-        elif isinstance(prev, list):
-            previous_ids = [p for p in prev if isinstance(p, str) and p]
+    previous_ids = _recorded_ids(meta_dict, record_key=prune_key)
     current_set = set(filter_function_ids)
     had = set(normalized)
     wanted = set(had)
@@ -469,6 +474,18 @@ def _apply_list_filter_ids(
 
 
 _LEGACY_RECORD_KEYS = {"web_tools_attached_id": "web_tools_filter_id"}
+
+_DISABLE_PARAM_KEYS: tuple[str, ...] = (
+    "disable_model_metadata_sync",
+    "disable_capability_updates",
+    "disable_image_updates",
+    "disable_web_tools_auto_attach",
+    "disable_web_tools_default_on",
+    "disable_direct_uploads_auto_attach",
+    "disable_video_gen_auto_attach",
+    "disable_image_filter_auto_attach",
+    "disable_description_updates",
+)
 
 _SYNC_RETRY_FLOOR_SECONDS = 60.0
 
@@ -607,15 +624,9 @@ def _detached_by_this_pass(
     Read before the attach pass, which rewrites the ownership record with the current
     ids -- so afterwards there is nothing left to compare against.
     """
-    pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
-    previous: list[str] = []
-    if isinstance(pipe_meta, dict):
-        recorded = pipe_meta.get(prune_key)
-        if isinstance(recorded, str) and recorded:
-            previous = [recorded]
-        elif isinstance(recorded, list):
-            previous = [p for p in recorded if isinstance(p, str) and p]
-    return set(previous) - set(filter_function_ids or [])
+    return set(_recorded_ids(meta_dict, record_key=prune_key)) - set(
+        filter_function_ids or []
+    )
 
 
 def _recorded_filter_id(meta_dict: dict, record_key: str) -> str:
@@ -648,15 +659,7 @@ def _apply_single_id_default_filter_ids(
 
 
 def _recorded_ids_any_shape(meta_dict: dict, *, prune_key: str) -> set[str]:
-    pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
-    recorded: list[str] = []
-    if isinstance(pipe_meta, dict):
-        prev = pipe_meta.get(prune_key)
-        if isinstance(prev, str) and prev:
-            recorded = [prev]
-        elif isinstance(prev, list):
-            recorded = [p for p in prev if isinstance(p, str) and p]
-    return set(recorded)
+    return set(_recorded_ids(meta_dict, record_key=prune_key))
 
 
 def _detached_with_default_off(
@@ -911,6 +914,27 @@ def _frontend_catalogue_unusable(
     )
 
 
+_SYNC_GATE_TERMS: tuple[str, ...] = (
+    "UPDATE_MODEL_CAPABILITIES",
+    "UPDATE_MODEL_IMAGES",
+    "UPDATE_MODEL_DESCRIPTIONS",
+    "AUTO_ATTACH_WEB_TOOLS_FILTER",
+    "AUTO_INSTALL_WEB_TOOLS_FILTER",
+    "AUTO_DEFAULT_WEB_TOOLS_FILTER",
+    "AUTO_ATTACH_DIRECT_UPLOADS_FILTER",
+    "AUTO_INSTALL_DIRECT_UPLOADS_FILTER",
+    "AUTO_INSTALL_IMAGE_GEN_FILTER",
+    "AUTO_ATTACH_IMAGE_GEN_FILTER",
+    "AUTO_INSTALL_VIDEO_FILTERS",
+    "AUTO_ATTACH_VIDEO_FILTERS",
+    "AUTO_INSTALL_IMAGE_FILTERS",
+    "AUTO_ATTACH_IMAGE_FILTERS",
+    "AUTO_INSTALL_FUSION_FILTER",
+    "AUTO_ATTACH_FUSION_FILTER",
+    "AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS",
+)
+
+
 def syncs_owui_models(valves: Any, provider_routing_enabled: bool) -> bool:
     return bool(
         valves.UPDATE_MODEL_CAPABILITIES
@@ -972,6 +996,9 @@ class ModelCatalogManager:
         self._model_metadata_sync_task: asyncio.Task | None = None
         self._model_metadata_sync_key: tuple[Any, ...] | None = None
         self._model_metadata_sync_retry_after: float = 0.0
+        self._last_sync_gate_inputs: tuple[bool, ...] | None = None
+        self._gate_released_since_last_pass = False
+        self._model_param_digest: frozenset[tuple[str, str]] | None = None
 
         self._cached_provider_map: dict[str, dict[str, Any]] = {}
         self._provider_overlay_failed_slugs: frozenset[str] = frozenset()
@@ -1200,7 +1227,13 @@ class ModelCatalogManager:
         user_routing_models = valves.USER_PROVIDER_ROUTING_MODELS
         provider_routing_enabled = bool(admin_routing_models or user_routing_models)
 
-        if not schedules_owui_model_sync(valves, provider_routing_enabled):
+        gate_inputs = self._sync_gate_inputs(valves, provider_routing_enabled)
+        recorded_gate_inputs = self._last_sync_gate_inputs
+        gate_transitioned = recorded_gate_inputs != gate_inputs and (
+            recorded_gate_inputs is not None
+            or self._model_metadata_sync_retry_after != 0.0
+        )
+        if not schedules_owui_model_sync(valves, provider_routing_enabled) and not gate_transitioned:
             return
         if not selected_models:
             return
@@ -1251,6 +1284,7 @@ class ModelCatalogManager:
             admin_routing_models,
             user_routing_models,
             valves.AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS,
+            self._model_param_digest or frozenset(),
         )
         if sync_key == self._model_metadata_sync_key:
             return
@@ -1261,6 +1295,10 @@ class ModelCatalogManager:
 
         models_copy = [dict(model) for model in selected_models]
         self._model_metadata_sync_key = sync_key
+        self._last_sync_gate_inputs = gate_inputs
+        self._gate_released_since_last_pass = (
+            gate_transitioned and not syncs_owui_models(valves, provider_routing_enabled)
+        )
         self._model_metadata_sync_task = asyncio.create_task(
             self._sync_model_metadata_to_owui(
                 models_copy,
@@ -1276,7 +1314,7 @@ class ModelCatalogManager:
         if self._model_metadata_sync_task is not task and self._model_metadata_sync_task is not None:
             return
         if task.cancelled():
-            self._model_metadata_sync_key = None
+            self._release_sync_key()
             return
         exc = task.exception()
         if exc is None:
@@ -1294,8 +1332,20 @@ class ModelCatalogManager:
             )
         except Exception:
             self.logger.exception("Model metadata sync failed and could not be logged")
-        self._model_metadata_sync_key = None
+        self._release_sync_key()
         self._model_metadata_sync_retry_after = time.monotonic() + _SYNC_RETRY_FLOOR_SECONDS
+
+    def _release_sync_key(self) -> None:
+        self._model_metadata_sync_key = None
+        self._last_sync_gate_inputs = None
+        self._gate_released_since_last_pass = False
+        self._model_param_digest = None
+
+    def _sync_gate_inputs(self, valves: Any, provider_routing_enabled: bool) -> tuple[bool, ...]:
+        return tuple(
+            [bool(getattr(valves, name)) for name in _SYNC_GATE_TERMS]
+            + [bool(provider_routing_enabled)]
+        )
 
     def _model_metadata_sync_floor_cleared(self, task: asyncio.Task) -> None:
         if task.cancelled() or self._model_metadata_sync_task is not task:
@@ -1789,7 +1839,9 @@ class ModelCatalogManager:
         user_routing_models = valves.USER_PROVIDER_ROUTING_MODELS
         provider_routing_enabled = bool(admin_routing_models or user_routing_models)
 
-        if not syncs_owui_models(valves, provider_routing_enabled):
+        gate_released = getattr(self, "_gate_released_since_last_pass", False)
+        self._gate_released_since_last_pass = False
+        if not syncs_owui_models(valves, provider_routing_enabled) and not gate_released:
             return
         if not models:
             return
@@ -2321,6 +2373,7 @@ class ModelCatalogManager:
                 )
                 else []
             )
+            param_digest: set[tuple[str, str]] = set()
 
             async def _apply(model: dict[str, Any]) -> None:
                 openrouter_id = model.get("id")
@@ -2590,6 +2643,7 @@ class ModelCatalogManager:
                             description=description,
                             update_descriptions=valves.UPDATE_MODEL_DESCRIPTIONS,
                             new_model_access_control=valves.NEW_MODEL_ACCESS_CONTROL,
+                            param_digest=param_digest,
                             existing=(
                                 _ROWS_UNREADABLE
                                 if model_rows is _ROWS_UNREADABLE
@@ -2621,6 +2675,7 @@ class ModelCatalogManager:
                         model_ref,
                         exc_info=outcome,
                     )
+            self._model_param_digest = frozenset(param_digest)
             if sync_failures:
                 self.logger.warning(
                     "Model metadata sync did not complete for %d/%d model(s); whatever the "
@@ -2777,6 +2832,7 @@ class ModelCatalogManager:
         update_descriptions: bool = False,
         new_model_access_control: str,
         existing: Any = _ROW_NOT_FETCHED,
+        param_digest: set[tuple[str, str]] | None = None,
     ):
         """Safely update existing model or insert new overlay with metadata, never touching owner."""
         from open_webui.models.models import ModelForm, ModelMeta, ModelParams, Models
@@ -2818,6 +2874,11 @@ class ModelCatalogManager:
             disable_video_gen_auto_attach = _get_disable_param(params, "disable_video_gen_auto_attach")
             disable_image_filter_auto_attach = _get_disable_param(params, "disable_image_filter_auto_attach")
             disable_description_updates = _get_disable_param(params, "disable_description_updates")
+
+            if param_digest is not None:
+                for key in _DISABLE_PARAM_KEYS:
+                    if _get_disable_param(params, key):
+                        param_digest.add((openwebui_model_id, key))
 
         if disable_model_metadata_sync:
             return

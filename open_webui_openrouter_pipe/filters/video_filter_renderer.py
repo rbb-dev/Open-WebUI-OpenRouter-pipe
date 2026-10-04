@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import logging
@@ -1440,6 +1441,23 @@ def _render_user_valves_fields(spec: VideoFilterSpec) -> str:
             )
         )
     return "\n".join(fields)
+
+
+@lru_cache(maxsize=256)
+def _panel_field_descriptions(spec: VideoFilterSpec) -> tuple[tuple[str, str], ...]:
+    tree = ast.parse("class _V:\n" + _render_user_valves_fields(spec))
+    out: list[tuple[str, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AnnAssign) or not isinstance(node.value, ast.Call):
+            continue
+        call = node.value
+        if not (isinstance(call.func, ast.Name) and call.func.id == "Field"):
+            continue
+        words = {kw.arg: kw.value for kw in call.keywords if kw.arg in ("title", "description")}
+        title, description = words.get("title"), words.get("description")
+        if isinstance(title, ast.Constant) and isinstance(description, ast.Constant):
+            out.append((str(title.value), str(description.value)))
+    return tuple(out)
 
 
 def _render_intent_inlet_block() -> str:

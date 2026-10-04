@@ -93,7 +93,7 @@ With collection on, the tab presents:
 - **Resource cards** — live CPU, Memory, and Disk.
 - **Usage trend** — a chart with two lines per bucket: tokens (left axis) and cost (right axis), with a hover tooltip and a timezone-aware range caption.
 - **By model** — cost share per model. Each task-model appears as its own `model (tasks)` row with its own cost.
-- **By user** — sorted by cost, showing the top 10 with an "N others" roll-up. Search and column-sort reach every user, including those inside the roll-up. A row's cost covers chat sessions and task models together, so a user with task spend shows a second line under the figure naming the task-model portion of it (`incl. $X task models`); the Sessions column counts chat sessions only, so cost less that named portion is what the user's chat sessions alone cost. A pinned **Totals** row at the bottom sums the visible rows (sessions, tokens, tools, cost), tools including the skipped calls the per-user rows each show, and carries the same task-model disclosure when any visible row has one.
+- **By user** — sorted by cost, showing the top 10 **by cost** with an "N others" roll-up that names every user not shown and carries what they spent between them. Search and column-sort cover those ten; a user inside the roll-up is reached by neither, because only the ten cross the wire. A row's cost covers chat sessions and task models together, so a user with task spend shows a second line under the figure naming the task-model portion of it (`incl. $X task models`); the Sessions column counts chat sessions only, so cost less that named portion is what the user's chat sessions alone cost. A pinned **Totals** row at the bottom sums the visible rows (sessions, tokens, tools, cost), tools including the skipped calls the per-user rows each show, and carries the same task-model disclosure when any visible row has one.
 
 Select a range: 1h, 6h, 24h, 7d, or 30d. Ranges longer than the retention window are disabled. A footnote shows the oldest retained record's date, the retention window, and the record count.
 
@@ -130,9 +130,11 @@ The Storage tab summarizes the artifact store:
 
 A field reads `-` when the pipe could not read it, and the tab then shows a *Storage queries degraded*
 banner naming the exception's class. A query that failed is isolated: the fields the other queries did
-read stay filled in, and only the encrypted-items count drops its percentage, because a share of a
-total that was never read is not a measurement — the count itself is still shown. An empty store reads
-`0` with no percentage rather than `0 (0%)`.
+read stay filled in, and two figures drop rather than answer from the rows that did come back: the total
+size and the encrypted-items count. The total is one `SUM(length(payload))` grouped by artifact type, so a
+type grouping that failed leaves nothing to total and the size reads `-` too; the count's percentage goes
+with it, because a share of a total that was never read is not a measurement — the count itself is still
+shown. An empty store reads `0` with no percentage rather than `0 (0%)`.
 
 ### Config
 
@@ -320,6 +322,14 @@ dashboard inside the chat message, so reopening an old conversation re-runs it. 
 every past panel quietly resume streaming live statistics, a panel this browser first saw more than a
 few minutes ago opens in the DISCONNECTED state and says so; press **Connect** for live data. The
 panel you have just opened with the command is unaffected.
+
+**An API-key caller is governed by Open WebUI's own API-key settings.** The action route behind
+every dashboard tab stands behind Open WebUI's `get_verified_user`, so an `sk-` API key is
+accepted exactly where Open WebUI accepts one — subject to **Settings → Authentication → API keys**
+(`auth.enable_api_keys`), the `features.api_keys` permission for a non-admin key holder, and
+`auth.api_key.endpoint_restrictions`, whose allow-list names `/api/pipe/dashboard/action`. A key
+Open WebUI refuses is refused here with Open WebUI's own message; a key it admits can drive the
+dashboard, still bounded by the same read/write grant and admin-role checks as a session.
 
 **Content Security Policy.** If a restrictive `IFRAME_CSP` is configured, allow `script-src 'unsafe-inline'` and `connect-src 'self'` — the same policy the [OpenRouter Fusion panel](openrouter_fusion.md) uses.
 

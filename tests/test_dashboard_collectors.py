@@ -585,7 +585,7 @@ class TestCollectSlowStats:
     # raised -- not on a field that reads `-`, because a model that simply lacks an optional column
     # also leaves a `-` and is not a failure (`test_storage_partial_columns_isolate_failures`).
 
-    def _storage_fixture(self, rows, *, columns="full"):
+    def _storage_fixture(self, rows, *, columns="full", y_lengths=None):
         """The real-SQLite shape the two rows above use, with the number of rows under test."""
         import datetime
 
@@ -612,7 +612,8 @@ class TestCollectSlowStats:
         now = datetime.datetime.now()
         with sf() as session:
             for index in range(rows):
-                extra = {"payload": {"x": "y" * (index + 1)}, "is_encrypted": index == 0} if columns == "full" else {}
+                n = y_lengths[index] if y_lengths is not None else index + 1
+                extra = {"payload": {"x": "y" * n}, "is_encrypted": index == 0} if columns == "full" else {}
                 session.add(
                     Item(
                         id=f"i{index}",
@@ -640,11 +641,13 @@ class TestCollectSlowStats:
         return pipe, sf
 
     def _with_failing_query(self, pipe, sf, failing):
-        """`collect_slow_stats` with `nth` of its five `query()` calls raising `SQLAlchemyError`.
+        """`collect_slow_stats` with `nth` of its four `query()` calls raising `SQLAlchemyError`.
 
-        `failing` is 1-based and names the query by what the tab shows it as: 1 count, 2 size,
-        3 encrypted count, 4 by-type, 5 by-model. Every other call reaches the real session, so
-        this stubs one call and not the store.
+        `failing` is 1-based and names the query by what the tab shows it as: 1 count,
+        2 encrypted count, 3 by-type, 4 by-model. There is no size query of its own: the total
+        is accumulated from the by-type rows, so a store whose by-type read fails leaves the
+        total at its dash rather than answering it a second time. Every other call reaches the
+        real session, so this stubs one call and not the store.
         """
         import contextlib
 

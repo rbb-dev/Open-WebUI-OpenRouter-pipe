@@ -370,9 +370,21 @@ def test_every_declared_absence_is_actually_imported_under_a_guard() -> None:
 # and turned the guard into a silent "yes" on a host that cannot supply the models it
 # exists to ask -- the direction this count cannot see. The hoisted `channel_id_for_chat`
 # comes from the pipe's own `.owui_files`, so it adds no entry.
-# Measured on this merged tree (`len(_IMPORTS)` after the change), not carried over: the 79
-# above is B918's and B550's entries on this tree.
-_EXPECTED_SEAM_IMPORTS = 81
+# 81 -> 79 (B1300/T1169): the dashboard action route stands behind Open WebUI's own
+# `get_verified_user` instead of re-implementing `get_current_user`, so `bearer_user` --
+# and with it the named imports of `WEBUI_AUTH_TRUSTED_EMAIL_HEADER` (from
+# `open_webui.env`), `decode_token` and `is_valid_token` (from `open_webui.utils.auth`)
+# -- are gone from `http_routes.py`. One import arrives in their place: `bearer_security`,
+# the `HTTPBearer(auto_error=False)` the header guard depends on and the very object
+# `get_current_user` itself depends on (`utils/auth.py:397`), read lazily inside the
+# dependency factory so a host that cannot supply it never makes the pipe fail to import.
+# Three out, one in, and the count is the scan's own on this tree.
+# `get_verified_user` is not an addition: `authz.py:40` already imports it, and the
+# checklist keys on the `(module, symbol, is_optional)` triple, so an unguarded
+# `get_verified_user` matches the row that is already there.
+# Measured on this merged tree (`len(_IMPORTS)` after the change), not carried over: the 81
+# above is B918's, B550's and H3588-1's entries on this tree.
+_EXPECTED_SEAM_IMPORTS = 79
 
 
 def test_seam_checklist_covers_every_open_webui_import() -> None:

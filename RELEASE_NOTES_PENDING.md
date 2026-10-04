@@ -16,6 +16,12 @@
   before, and a caller-supplied `enabled: false` Fusion entry is still the per-request opt-out
   it was. The same guard governs the streaming and the non-streaming leg.
 
+- **A per-model advanced parameter now schedules the pass that honours it** — the nine `disable_*` flags Open WebUI's model editor writes are read only by the background metadata pass, and nothing in the pass's schedule observed them: an operator who ticked `disable_web_tools_default_on` on one model changed what the pipe *would* write and nothing told it to write it, so the row kept its old state until a catalogue fetch happened to move the content stamp or an admin moved some unrelated setting. A completed pass now records a digest of the flags it read, per model row, and the next model-list build schedules when that digest differs — so saving the model takes effect within one model-list build instead of waiting for something unrelated to change. With nothing changed the digest settles, so the pass still runs once per real change and not once per refresh, and the scheduler still reads no model rows of its own.
+
+- **Switching the last sync valve off now detaches on the pass after the switch** — the gate that decides whether a metadata pass runs is a disjunction over the sync valves and the routing lists, so it can answer "on" but never "this one just went off": with the last term on, an admin switched something off and the pipe attached no pass, so the panels it had attached stayed attached until some unrelated tracked setting happened to move, which for a valve edit reads to the operator as never. The scheduler now also schedules on an on→off transition of any of those terms, and the pass that runs admits itself through the body gate so it actually detaches. Nothing changes for a deployment with a valve on: turning one on still schedules one pass and then settles, and with every term off the gate still declines on every refresh rather than syncing the whole catalogue each time.
+
+- **Video, Continue Response after a Stop** — after Stop on a video turn, a Continue now picks the job already running and waits for it, rather than submitting a second one. Previously the Stop cancelled the request and that request's cleanup also dropped the in-process claim the still-polling job held, so the Continue started a second poller on the same `job_id`: the clip was downloaded and stored twice and the same generation was billed twice. The wait is the point — it is what makes the job bill once — so a Continue issued minutes after a Stop now waits for the render it already paid for instead of starting a fresh one. Shutdown reaches an abandoned job too, which it could not while its claim was gone.
+- **Video turns and the circuit breaker / session log** — a video turn that renders a complete answer now resets the user's circuit breaker, and a video turn the pipe refuses before sending is archived as `error` with the control that refused it, rather than `complete` with no cause. Six of the video adapter's early returns handed back a card and recorded nothing: a stored clip or failure block already on the message, a clarification, the per-user video job cap on both the new-generation and the resume arm, and a message with no prompt. So a turn that succeeded left an open breaker open, and a chat holding nothing but a refusal card was filed as a clean turn. The refusal names the valve — `MAX_CONCURRENT_VIDEO_GENS_PER_USER` — or the missing prompt. A turn the person stopped still archives as `cancelled`, unchanged.
 - **The `/responses` leg now gates the media it forwards** — the outbound filter that runs immediately before a
   `/responses` body is POSTed read no media at all: it dropped undocumented top-level keys and copied `input` through
   byte for byte, so every media value the conversion leg already refused for `/chat/completions` was forwarded
@@ -117,6 +123,8 @@
   queue with no free worker for the whole batch ceiling — which is exactly why the shortfall it
   closes survived on the rows an operator is chasing.
 
+- **Pipe dashboard, API-key callers** — the action route behind every dashboard tab now stands behind Open WebUI's own `get_verified_user` rather than a hand-maintained copy of `get_current_user`, so an `sk-` API key is admitted where it was previously decoded as a JWT and refused. Everything else about the route's identity decision is unchanged in substance and delegated wholesale: a request with no usable `Authorization: Bearer` credential is refused before Open WebUI sees it at all, so the session cookie and the `x-api-key` middleware fallback stay unreachable and the route remains CSRF-safe. What changes for an operator is the surface: a key holder Open WebUI permits can now drive the dashboard, bounded by the same read/write grant and admin-role checks as a session, and governed by Open WebUI's own API-key settings — `auth.enable_api_keys`, the `features.api_keys` permission for a non-admin key holder, and `auth.api_key.endpoint_restrictions`, which names `/api/pipe/dashboard/action` in its allow-list. Set that restriction if a deployment wants the old surface. A `401` now carries Open WebUI's own message rather than a bare `{"detail": null}`, so an admin on an expired session is told why instead of being shown "Could not load configuration".
+
 - **Admin's Max Upload Size, no longer gated on the RAG bypass flag** — an install that turned
   `rag.bypass_embedding_and_retrieval` on stopped being held to the cap its admin last saved under
   **Admin → Settings → Documents → Max Upload Size**: the pipe read the bypass flag beside the stored
@@ -214,6 +222,21 @@
   `Images: skipped 1 (larger than the 1048576-byte inline limit).` status the person sees, and the
   answer. A file that is genuinely gone is untouched — that refusal still names the id, because
   there the sentence goes to the person, not to the log.
+
+- **A file a tool returned is inlined, not forwarded** — a `function_call_output` whose `output` is a list of
+  `input_text` / `input_image` / `input_file` parts is now resolved instead of being flattened to a JSON string
+  before the request is dispatched, so an `input_file` part naming `/api/v1/files/<id>/content` no longer reaches
+  OpenRouter with an Open WebUI path, a host, a userinfo and a `?token=` on it. Two passes were involved and both
+  are fixed: the sanitizer decided on part type whether a list was media, and the inliner's `output` arm dispatched
+  pictures only. A part type nothing recognises is still flattened, and a caller who writes an Open WebUI path as
+  plain prose is quoting it, not handing it over — the claim here is about structured parts.
+
+- **A cancelled attachment read reclaims its copy** — `materialize_owui_file_to_temp` now settles the copy it
+  shielded and unlinks the private temp it produced when the call is cancelled, including when it is cancelled
+  repeatedly. A Stop used to land the turn while a worker kept writing a full private copy of somebody's attachment
+  whose name nothing held, so the file outlived the call and the pipe paid for a copy nobody would ever read. A
+  returned path is untouched and an `OSError` out of the copy still reaches the caller unchanged (TODO T637 is
+  unchanged and still open: the temp a failed copy wrote is still left behind).
 
 - **Session log assembler, one offer per pass** — a turn the assembler already offered, or already failed, inside a
   pass is not offered again by that pass, and a turn whose assembly lock another pass holds is offered once per pass
@@ -731,6 +754,15 @@
   This changes what the next turn is **replayed**: Open WebUI rebuilds the stored answer from the output array and hands that string to the model, so a turn that grew a box mid-answer now replays without the break that the flush used to add.
 
 - **reasoning summaries** — a provider that fragments one `reasoning.summary` now keeps every fragment. The chat adapter kept a single scalar per summary key, so on a model that sends disjoint fragments under one `index` all but the last were overwritten before anything downstream saw them, and a cumulative snapshot was added on top of what had already been delivered. Every fragment now reaches the thinking box, the closing record and the replayed `reasoning_details`, exactly once and in arrival order.
+
+- **API callers, streamed** — a 502 that used to reach a streamed API caller as assistant text now reaches it
+  as an in-band error frame. An API caller with no chat to write a card into used to receive the error card as
+  the model's own answer on a streamed call: an HTTP 200 whose body was Markdown, indistinguishable from a
+  reply, with no status to branch on. A streamed turn cannot carry an HTTP status at all — Open WebUI hands a
+  pipe's non-2xx back inside a response with no `status_code`, so it would arrive as a bodyless 200 — so the
+  failure is now delivered as a terminal `{"error": {"message": …, "code": …}}` frame carrying the upstream
+  status, byte-for-byte the envelope the non-streamed leg already sent. Chats, temporary chats, internal Fusion
+  members and both Anthropic Messages endpoints keep their card exactly as before.
 
 - **address checking** — a request's `ADDRESS_CHECK_BUDGET_SECONDS` is now spent by address checks and by nothing else.
   A remote picture's **transfer** used to come off that budget, so a turn carrying a few slow pictures could leave a public

@@ -39,6 +39,8 @@ from ..core.context_budget import (
 )
 from ..core.error_formatter import (
     _api_caller_error_response,
+    _is_anthropic_endpoint,
+    _transported_failure_envelope,
     _transported_failure_response,
     _unreadable_body_failure_response,
 )
@@ -298,6 +300,8 @@ _SERVER_TOOL_SWITCHES = {
 }
 
 _PLUGIN_ID_FOR_SERVER_TOOL_TYPE = {"openrouter:web_search": "web"}
+
+_NATIVE_SPELLING_OF_SERVER_TOOL = {"web_search": "openrouter:web_search"}
 
 
 def _server_tool_type(tool_key: str) -> str:
@@ -595,8 +599,18 @@ def _reconcile_tool_fields(responses_body: ResponsesBody) -> None:
         responses_body.stop_server_tools_when = None
 
 
-def _strip_switched_off_server_tools(responses_body: ResponsesBody, valves: Any) -> None:
+def _switched_off_server_tool_types(valves: Any) -> set[str]:
     switched_off = {t for t, switch in _SERVER_TOOL_SWITCHES.items() if not getattr(valves, switch)}
+    switched_off |= {
+        native
+        for native, prefixed in _NATIVE_SPELLING_OF_SERVER_TOOL.items()
+        if prefixed in switched_off
+    }
+    return switched_off
+
+
+def _strip_switched_off_server_tools(responses_body: ResponsesBody, valves: Any) -> None:
+    switched_off = _switched_off_server_tool_types(valves)
     if not switched_off:
         return
     existing = list(responses_body.tools or [])
@@ -630,7 +644,7 @@ def _apply_server_tools_metadata(
     model_resolver: Any = None,
 ) -> list[tuple[str, Any]]:
     _strip_switched_off_server_tools(responses_body, valves)
-    switched_off = {t for t, switch in _SERVER_TOOL_SWITCHES.items() if not getattr(valves, switch)}
+    switched_off = _switched_off_server_tool_types(valves)
     pipe_meta = (metadata or {}).get(_PIPE_METADATA_KEY, {})
     if not isinstance(pipe_meta, dict):
         return []
@@ -2366,6 +2380,33 @@ class RequestOrchestrator:
                     await self._note_provider_failure(exc, fusion_inner=fusion_inner)
                     return escape
 
+            if (
+                _is_chatless_caller(__metadata__)
+                and responses_body.stream
+                and not _is_anthropic_endpoint(
+                    getattr(getattr(__request__, "url", None), "path", "") or ""
+                )
+            ):
+                await self._note_provider_failure(exc, fusion_inner=fusion_inner)
+                if isinstance(exc, OpenRouterAPIError):
+                    envelope = _transported_failure_envelope(
+                        exc.openrouter_message or exc.reason,
+                        code=exc.status,
+                        retry_after_seconds=_resolve_retry_after_seconds(exc.metadata),
+                    )
+                else:
+                    envelope = _transported_failure_envelope(
+                        message, code=code, retry_after_seconds=retry_after
+                    )
+                if __event_emitter__:
+                    await __event_emitter__(
+                        {
+                            "type": "chat:completion",
+                            "data": {"done": True, "error": envelope["error"]},
+                        }
+                    )
+                return ""
+
             if (__metadata__ or {}).get("message_id") and is_temporary_chat(
                 (__metadata__ or {}).get("chat_id")
             ):
@@ -2657,6 +2698,24 @@ class RequestOrchestrator:
                         exc.endpoint, exc.content_type, exc.body_excerpt[:200],
                     )
                     return escape
+
+            if (
+                _is_chatless_caller(__metadata__)
+                and responses_body.stream
+                and not _is_anthropic_endpoint(
+                    getattr(getattr(__request__, "url", None), "path", "") or ""
+                )
+            ):
+                await self._note_provider_failure(exc, fusion_inner=fusion_inner)
+                envelope = _transported_failure_envelope(exc.summary(), code=code)
+                if __event_emitter__:
+                    await __event_emitter__(
+                        {
+                            "type": "chat:completion",
+                            "data": {"done": True, "error": envelope["error"]},
+                        }
+                    )
+                return ""
 
             if (__metadata__ or {}).get("message_id") and is_temporary_chat(
                 (__metadata__ or {}).get("chat_id")

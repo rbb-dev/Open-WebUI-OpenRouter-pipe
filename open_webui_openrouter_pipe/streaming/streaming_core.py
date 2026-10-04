@@ -3571,7 +3571,11 @@ class StreamingHandler:
                     if not isinstance(item, dict):
                         continue
                     item_type = item.get("type")
-                    if item_type == "reasoning" and (item.get("encrypted_content") or item.get("signature")):
+                    if (
+                        item_type == "reasoning"
+                        and (item.get("encrypted_content") or item.get("signature"))
+                        and valves.PERSIST_REASONING_TOKENS in {"next_reply", "conversation"}
+                    ):
                         continuation_input_items.append(item)
                         reasoning_count += 1
                     elif item_type == "message":
@@ -4546,11 +4550,17 @@ class StreamingHandler:
                 try:
                     for _straggler in fusion_batcher.flush_all():
                         await _emit_fusion_event(_straggler)
-                except (asyncio.CancelledError, Exception):
+                except (asyncio.CancelledError, Exception) as _exc:
+                    if isinstance(_exc, asyncio.CancelledError):
+                        _finalise_cancelled = _finalise_cancelled or _exc
                     self.logger.debug("Flushing the final fusion panel batch failed", exc_info=True)
             if event_iter is not None:
-                with contextlib.suppress(asyncio.CancelledError, Exception):
+                try:
                     await asyncio.shield(_aclose_quietly(event_iter))
+                except (asyncio.CancelledError, Exception) as _exc:
+                    if isinstance(_exc, asyncio.CancelledError):
+                        _finalise_cancelled = _finalise_cancelled or _exc
+                    self.logger.debug("Closing the turn's event stream failed", exc_info=True)
             cancel_thinking()
             for t in thinking_tasks:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -4608,7 +4618,9 @@ class StreamingHandler:
                     if outcome_sink is not None:
                         outcome_sink["generation_complete_dispatch"] = dispatch
                     await asyncio.shield(dispatch)
-                except (asyncio.CancelledError, Exception):
+                except (asyncio.CancelledError, Exception) as _exc:
+                    if isinstance(_exc, asyncio.CancelledError):
+                        _finalise_cancelled = _finalise_cancelled or _exc
                     self.logger.debug("generation-complete dispatch failed", exc_info=True)
 
             if (not error_occurred) and (not was_cancelled) and (not handed_back):
@@ -4707,18 +4719,23 @@ class StreamingHandler:
                     )
 
             if fusion_embed_task is not None:
-                if was_cancelled or handed_back_for_retry:
+                cancelled_by_the_turn = was_cancelled or handed_back_for_retry
+                if cancelled_by_the_turn:
                     fusion_embed_task.cancel()
                 try:
                     await fusion_embed_task
-                except asyncio.CancelledError:
-                    pass
+                except asyncio.CancelledError as _exc:
+                    if not cancelled_by_the_turn:
+                        _finalise_cancelled = _finalise_cancelled or _exc
                 except Exception:
                     self.logger.warning(
                         "The Fusion panel card could not be built (model=%s); the turn continues without it",
                         body.model,
                         exc_info=True,
                     )
+                _outer = asyncio.current_task()
+                if _finalise_cancelled is None and _outer is not None and _outer.cancelling():
+                    _finalise_cancelled = asyncio.CancelledError()
 
             if (
                 fusion_armed and fusion_state is not None
@@ -4751,8 +4768,12 @@ class StreamingHandler:
                 if _terminal_synth is not None:
                     try:
                         await _emit_fusion_event(_terminal_synth)
-                    except (asyncio.CancelledError, Exception):
-                        self.logger.debug("Emitting the terminal fusion synthesis failed", exc_info=True)
+                    except (asyncio.CancelledError, Exception) as _exc:
+                        if isinstance(_exc, asyncio.CancelledError):
+                            _finalise_cancelled = _finalise_cancelled or _exc
+                        self.logger.debug(
+                            "Emitting the terminal fusion synthesis failed", exc_info=True
+                        )
 
             if (
                 fusion_armed and fusion_state is not None and fusion_state.fusion_index is not None
@@ -4787,7 +4808,9 @@ class StreamingHandler:
                             "item": fusion_answer_item,
                         })
                         emitted_response_output_items = True
-                    except (asyncio.CancelledError, Exception):
+                    except (asyncio.CancelledError, Exception) as _exc:
+                        if isinstance(_exc, asyncio.CancelledError):
+                            _finalise_cancelled = _finalise_cancelled or _exc
                         self.logger.debug(
                             "Failed to emit fusion answer output item", exc_info=True
                         )
@@ -4825,7 +4848,9 @@ class StreamingHandler:
                             )
 
                         await asyncio.shield(_persist_fusion_snapshot())
-                except (asyncio.CancelledError, Exception):
+                except (asyncio.CancelledError, Exception) as _exc:
+                    if isinstance(_exc, asyncio.CancelledError):
+                        _finalise_cancelled = _finalise_cancelled or _exc
                     self.logger.warning("Failed to persist terminal fusion snapshot", exc_info=True)
 
             if was_cancelled or handed_back_for_retry:
@@ -4903,8 +4928,12 @@ class StreamingHandler:
                 if not error_occurred or emitted_output_items:
                     try:
                         await _capture_seeded_output()
-                    except (asyncio.CancelledError, Exception):
-                        self.logger.debug("Capturing the seeded output array failed", exc_info=True)
+                    except (asyncio.CancelledError, Exception) as _exc:
+                        if isinstance(_exc, asyncio.CancelledError):
+                            _finalise_cancelled = _finalise_cancelled or _exc
+                        self.logger.debug(
+                            "Capturing the seeded output array failed", exc_info=True
+                        )
                 terminal_output = _terminal_output_items(assistant_message)
             if (
                 outcome_sink is not None
@@ -5007,7 +5036,9 @@ class StreamingHandler:
                         if chat_row is not None and isinstance(chat_row.chat, dict)
                         else {}
                     )
-                except Exception:
+                except (asyncio.CancelledError, Exception) as _exc:
+                    if isinstance(_exc, asyncio.CancelledError):
+                        _finalise_cancelled = _finalise_cancelled or _exc
                     self.logger.debug(
                         "Could not read the stored message to merge this turn's fields into "
                         "(chat_id=%s message_id=%s)",

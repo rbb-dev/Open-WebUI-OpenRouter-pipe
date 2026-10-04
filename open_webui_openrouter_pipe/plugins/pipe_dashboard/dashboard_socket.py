@@ -374,8 +374,12 @@ def local_viewer_sids(pipe_id: str) -> list[str]:
         return []
 
 
-async def emit_dashboard(payload: dict[str, Any], pipe_id: str) -> bool:
-    if not await _socket_dashboard_enabled(_current_pipe(pipe_id)):
+async def emit_dashboard(
+    payload: dict[str, Any], pipe_id: str, enabled: bool | None = None
+) -> bool:
+    if enabled is None:
+        enabled = await _socket_dashboard_enabled(_current_pipe(pipe_id))
+    if not enabled:
         return False
     try:
         from open_webui.socket.main import sio
@@ -397,7 +401,7 @@ async def emit_dashboard(payload: dict[str, Any], pipe_id: str) -> bool:
         return False
 
 
-async def reauthorize_local_viewers(pipe_id: str) -> None:
+async def reauthorize_local_viewers(pipe_id: str) -> bool | None:
     pipe = _current_pipe(pipe_id)
     try:
         from open_webui.socket.main import get_session_ids_from_room, sio
@@ -408,16 +412,16 @@ async def reauthorize_local_viewers(pipe_id: str) -> None:
             "pipe_dashboard: OWUI socket unavailable; viewer revocation checks are disabled",
             exc_info=True,
         )
-        return
+        return None
     enabled, read_ok = await _socket_dashboard_state(pipe)
     if not enabled:
         if read_ok:
             for sid in list(get_session_ids_from_room(viewers_room(pipe_id)) or []):
                 await _evict(sio, sid, "dashboard disabled", pipe_id)
-        return
+        return False
     sids = list(get_session_ids_from_room(viewers_room(pipe_id)) or [])
     if not sids:
-        return
+        return enabled
     resolved, model = await resolve_view_model(pipe)
     verdicts: dict[str | None, bool | None] = {}
     for sid in sids:
@@ -428,6 +432,7 @@ async def reauthorize_local_viewers(pipe_id: str) -> None:
             )
         if verdicts[uid] is False:
             await _evict(sio, sid, "authorization no longer holds", pipe_id)
+    return enabled
 
 
 register_socket_handler()

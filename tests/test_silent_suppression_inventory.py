@@ -318,17 +318,13 @@ _EXPECTED: dict[str, int] = {
     # admin's own template already failed to render, and the generic card below it is the answer if the
     # fallback fails too -- letting it out would replace the failure being reported with a template error.
     "streaming/event_emitter.py": 1,
-    # 1st (B916, H2434-2): the done-callback's `suppress(asyncio.CancelledError, Exception)`
-    # around `task.exception()` in `_consume_task_exception`, attached to the detached
-    # last-active refresh `bearer_user` now fires (mirroring OWUI's own `auth.py:483`).
-    # Same shape and the same reason as the 40th in `pipe.py` and the 4th in
-    # `storage/persistence.py`: the callback exists only to retrieve the exception so a
-    # refresh that raised does not log "Task exception was never retrieved" on the way to
-    # being garbage-collected, and it runs after the route has already answered -- a
-    # retrieval failure has nothing left to affect and must not raise out of a done
-    # callback, where asyncio can only log it. `CancelledError` is swallowed with it
-    # because the callback fires for a cancelled refresh too.
-    "plugins/pipe_dashboard/http_routes.py": 1,
+    # `plugins/pipe_dashboard/http_routes.py` used to carry one: the done-callback's
+    # `suppress(asyncio.CancelledError, Exception)` around `task.exception()` in
+    # `_consume_task_exception` (B916, H2434-2), attached to the detached last-active
+    # refresh `bearer_user` fired. The route now resolves identity through Open WebUI's
+    # own `get_verified_user`, so the refresh is OWUI's (`auth.py:483`), fired without a
+    # callback -- exactly as it is on every route Open WebUI has -- and both the callback
+    # and the suppression go with it.
     # 1st: the close of a vetted transport whose connector belongs to a different event
     # loop, in `_retire_vetted_session`. Measured rather than assumed: with one pooled
     # keep-alive connection the cross-loop `session.close()` raises `RuntimeError` ("got
@@ -351,8 +347,7 @@ _EXPECTED: dict[str, int] = {
     # (delegated three generators deep, through the adapter whose `finally` awaits its workers), so it
     # runs shielded. A failure to close costs the release of the producer, its workers and the aiohttp
     # response -- which the garbage collector would eventually do anyway -- and must not replace the
-    # turn's result or mask the exception that ended it. It also swallows `CancelledError` for the same
-    # reason the two beside it do: a turn being torn down must not raise out of its own teardown.
+    # turn's result or mask the exception that ended it.
     # 3 after B518 (H2437-1): the roster task's teardown. It carried two -- the task's own
     # cancellation on the way down, and the await of that task after the hand-back had
     # cancelled it. The second one existed to finalise a task nobody ever awaited, because
@@ -371,7 +366,21 @@ _EXPECTED: dict[str, int] = {
     # two warnings beside it, so nothing the suppression costs is silent, and
     # `test_a_cancelled_flush_returns_the_rows_it_had_popped.py` is what says a flush
     # cancelled mid-flight hands its batch back rather than dropping it.
-    "streaming/streaming_core.py": 4,
+    # 3 after B1224: the aclose's suppression is gone, and the count is what that left.
+    # The site still absorbs -- it is a teardown, and a close that fails must not replace
+    # the turn's result -- but it no longer swallows *only*: `await asyncio.shield(...)`
+    # is now a `try`/`except (asyncio.CancelledError, Exception)` that remembers a
+    # `CancelledError` in `_finalise_cancelled` and re-raises it once the tail has run.
+    # The rationale above said the opposite, that swallowing is what the site is for,
+    # which is why it is rewritten here rather than merely renumbered: the site still
+    # absorbs, so the turn keeps publishing, and it also remembers, so the turn still
+    # ends cancelled. Both halves are load-bearing -- the shield is what keeps the Stop
+    # from leaving the teardown half-done, and the recording is what stops the absorbed
+    # Stop from being reported to `pipe()` as a turn that finished.
+    # What is left is the thinking-task drain (`:4562`), the abandoned flush (`:4854`),
+    # and the loop-limit note's row write (`:4412`), which is in the loop body and not
+    # in the tail at all.
+    "streaming/streaming_core.py": 3,
     # 5th: the tool card emitted as each call's result is collected, the twin of the one in the loop that
     # follows. The card is what the person sees; a failure emitting it must not lose the tool result the
     # loop is in the middle of collecting, which is the model's answer.

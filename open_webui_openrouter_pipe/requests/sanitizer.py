@@ -24,6 +24,7 @@ from ..core.url_scheme import loggable_link
 from ..core.utils import (
     TOOL_CALL_STATUSES,
     _clean_str,
+    is_media_part_output,
     is_picture_output,
     is_text_part_output,
     opens_a_turn,
@@ -273,7 +274,7 @@ def _sanitize_request_input(
             elif is_text_part_output(output):
                 output = tool_output_text_and_pictures(output)[0]
                 changed = True
-            elif not isinstance(output, str) and not is_picture_output(output):
+            elif not isinstance(output, str) and not is_media_part_output(output):
                 output = json.dumps(output, ensure_ascii=False)
                 changed = True
             cleaned = _without_hidden_marker_lines(output)

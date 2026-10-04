@@ -393,3 +393,21 @@ async def test_plugin_on_shutdown_combines_publisher_and_purge():
     await returned
     assert publisher.cancelled()
     assert plugin._usage_store.join_writer.called
+
+
+class _CountingDict(dict):
+    """The active-session map, reporting every entry read back out of it.
+
+    This is the collection the fold set costs: `chain(self._active.values(),
+    self._recent)` walks it in full to learn which chats this worker already folded a task
+    into. `_recent` cannot see that walk -- `list(...) + self._recent` copies the ring
+    through the C-level list concat and never calls its `__iter__` -- so the counter has to
+    sit on the active map, which is walked by name.
+    """
+
+    yields = 0
+
+    def values(self) -> Any:
+        for item in super().values():
+            type(self).yields += 1
+            yield item

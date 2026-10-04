@@ -108,10 +108,17 @@ def _overlay_update_form(
 def _registry_pricing(model_id: str) -> dict[str, Any] | None:
     """Pricing dict for a model id (accepts dotted pipe-prefixed ids)."""
     try:
-        from ...models.registry import OpenRouterModelRegistry
+        from ...models.registry import OpenRouterModelRegistry, _catalog_norm
 
         norm = model_id.split(".", 1)[-1] if "." in model_id else model_id
-        spec = OpenRouterModelRegistry._specs.get(norm) or OpenRouterModelRegistry._specs.get(model_id) or {}
+        specs = OpenRouterModelRegistry._specs
+        spec = (
+            specs.get(norm)
+            or specs.get(model_id)
+            or specs.get(_catalog_norm(model_id))
+            or specs.get(_catalog_norm(norm))
+            or {}
+        )
         pricing = spec.get("pricing")
         return pricing if isinstance(pricing, dict) else None
     except (ImportError, AttributeError, TypeError):

@@ -175,7 +175,7 @@ This hook fires every time Open WebUI refreshes its model dropdown list. You rec
 - **Annotate** — tag model names (e.g., append "[FREE]" to zero-cost models)
 - **Filter by capability** — remove models that lack specific features (vision, tool calling, etc.)
 
-Each row carries `id`, `name`, `norm_id` and `original_id`. When the catalog has them it also carries `capabilities` — a map of booleans — and `zdr_capable`; read both with `.get`, because a deployment whose ZDR roster failed to load publishes rows with no `zdr_capable` at all and `row["zdr_capable"]` raises there. Pricing, context length, architecture and provider details are not on the row; read them with `OpenRouterModelRegistry.spec(row["norm_id"])`, which is the call the pipe's own filters make.
+Each row carries `id`, `name`, `norm_id` and `original_id`. When the catalog has them it also carries `capabilities` — a map of booleans — and `zdr_capable`; read both with `.get`, because a deployment whose ZDR roster failed to load publishes rows with no `zdr_capable` at all and `row["zdr_capable"]` raises there. `zdr_capable` is the verdict of the credential in hand at the moment the list is published, so a deployment serving two credentials publishes each its own and a filter on it reads that account's retention rather than the other one's. Pricing, context length, architecture and provider details are not on the row; read them with `OpenRouterModelRegistry.spec(row["norm_id"])`, which is the call the pipe's own filters make.
 
 ### on_request — Intercept or Inspect Requests
 
@@ -455,7 +455,7 @@ Plugins see the pipe's own catalog rows, not the raw OpenRouter entries. The ret
 
 **Return:** `None`. This is a void hook. Mutate the `models` list directly (append, remove, reorder, modify dicts in place). Do **not** reassign the parameter (`models = [...]`) -- that rebinds the local variable and the caller never sees the change.
 
-**Model dict format:** Plugins receive the pipe's own catalog row: `id`, `name`, `norm_id`, `original_id`, plus `capabilities` and `zdr_capable` where the catalog has them. There is no pricing, no context length and no provider details in it. Read those with `OpenRouterModelRegistry.spec(row["norm_id"])`. The pipe strips to `{id, name}` **after** plugin dispatch. Plugin-injected models with minimal fields work fine.
+**Model dict format:** Plugins receive the pipe's own catalog row: `id`, `name`, `norm_id`, `original_id`, plus `capabilities` and `zdr_capable` where the catalog has them. `zdr_capable` is the verdict of the credential in hand at publish time, so a deployment serving two credentials publishes each its own; it is absent, not `False`, when that credential has no ZDR list read for it. There is no pricing, no context length and no provider details in it. Read those with `OpenRouterModelRegistry.spec(row["norm_id"])`. The pipe strips to `{id, name}` **after** plugin dispatch. Plugin-injected models with minimal fields work fine.
 
 > **Note:** `on_models` may be either `def` or `async def`. The dispatcher awaits the result when the hook returns an awaitable, so async implementations can call async APIs (e.g. OWUI's Models table) directly.
 

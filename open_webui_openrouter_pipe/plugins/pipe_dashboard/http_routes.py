@@ -8,7 +8,6 @@ validation. Registered as a FastAPI APIRoute before the SPA catch-all.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import importlib
 import inspect
 import logging
@@ -17,7 +16,6 @@ import time
 from typing import Any, cast
 
 from fastapi import Depends, Request
-from fastapi.params import Depends as _DependsMarker
 from pydantic import BaseModel
 
 from .actions import _PD_PRUNE_AT, ACTIONS, _audit, _redacted_args
@@ -201,47 +199,18 @@ async def _bounded_json_body(request: Request) -> None:
         raise HTTPException(status_code=400, detail="args nested too deeply")
 
 
-def _consume_task_exception(task: asyncio.Task) -> None:
-    with contextlib.suppress(asyncio.CancelledError, Exception):
-        task.exception()
+def _action_dependencies() -> tuple[Any, Any]:
+    from open_webui.utils.auth import bearer_security, get_verified_user
 
+    async def _authorization_header_required(
+        _creds: Any = Depends(bearer_security),  # noqa: B008 - FastAPI solves it with the route's dependency list
+    ) -> None:
+        from fastapi import HTTPException
 
-async def bearer_user(request: Request) -> Any:
-    from fastapi import HTTPException
-    from fastapi.security.utils import get_authorization_scheme_param
-
-    scheme, token = get_authorization_scheme_param(request.headers.get("Authorization"))
-    if not token or scheme.lower() != "bearer":
-        raise HTTPException(status_code=401)
-    try:
-        from open_webui.env import WEBUI_AUTH_TRUSTED_EMAIL_HEADER
-        from open_webui.models.users import Users
-        from open_webui.utils.auth import decode_token, is_valid_token
-    except Exception:
-        logger.warning(
-            "pipe_dashboard: Open WebUI auth helpers are unavailable; denying the request",
-            exc_info=True,
-        )
-        raise HTTPException(status_code=401)
-    try:
-        data = decode_token(token)
-    except Exception:
-        logger.debug("pipe_dashboard: bearer token rejected", exc_info=True)
-        data = None
-    if not data or not data.get("id"):
-        raise HTTPException(status_code=401)
-    if not await is_valid_token(data, getattr(request.app.state, "redis", None)):
-        raise HTTPException(status_code=401)
-    user = await Users.get_user_by_id(data["id"])
-    if user is None or user.role not in ("user", "admin"):
-        raise HTTPException(status_code=401)
-    if WEBUI_AUTH_TRUSTED_EMAIL_HEADER:
-        trusted_email = request.headers.get(WEBUI_AUTH_TRUSTED_EMAIL_HEADER, "").lower()
-        if trusted_email and user.email != trusted_email:
+        if _creds is None:
             raise HTTPException(status_code=401)
-    task = asyncio.create_task(Users.update_last_active_by_id(user.id))
-    task.add_done_callback(_consume_task_exception)
-    return user
+
+    return Depends(_authorization_header_required), Depends(get_verified_user)
 
 
 def _client_ip(request: Any) -> Any:
@@ -324,21 +293,15 @@ async def _current_dispatch(request: Any, user: Any, pipe: Any, fid: Any, action
     return _preferred_dispatch(action, str(getattr(pipe, "id", "") or "")), pipe
 
 
-async def _bearer_user_dep(request: Request) -> Any:
-    return await bearer_user(request)
-
-
 async def _action_route(
     request: Request,
     body: ActionBody,
-    user: Any = Depends(_bearer_user_dep),  # noqa: B008 - late-bound, and declared first so auth runs before the body guard
     _depth: Any = Depends(_bounded_json_body),  # noqa: B008 - the guard must be declared here to run before the dispatcher; FastAPI parses the body before it solves dependencies, so this runs after json.loads; a pre-parse bound needs ASGI middleware, which a live app cannot take
 ):
     from fastapi import HTTPException
     from fastapi.responses import JSONResponse
 
-    if isinstance(user, _DependsMarker):
-        user = await bearer_user(request)
+    user = request.state.user
     pipe_id = str(body.pipe or "")
     pipe = _live_routes_get_pipe(pipe_id)
     if not pipe_id or pipe is None:
@@ -390,6 +353,7 @@ def register_action_route() -> bool:
         if app is None:
             return False
         try:
+            _header_guard, _owui_user = _action_dependencies()
             for index, route in enumerate(list(getattr(app, "routes", []) or [])):
                 if getattr(route, "path", None) != _ACTION_PATH:
                     continue
@@ -400,13 +364,19 @@ def register_action_route() -> bool:
                     _registered_paths.add(_ACTION_PATH)
                     ensure_route_before_spa(app)
                     return True
-                app.add_api_route(_ACTION_PATH, _action_route, methods=["POST"])
+                app.add_api_route(
+                    _ACTION_PATH, _action_route, methods=["POST"],
+                    dependencies=[_header_guard, _owui_user],
+                )
                 app.routes.insert(index, app.routes.pop())
                 del app.routes[index + 1]
                 ensure_route_before_spa(app)
                 _registered_paths.add(_ACTION_PATH)
                 return True
-            app.add_api_route(_ACTION_PATH, _action_route, methods=["POST"])
+            app.add_api_route(
+                _ACTION_PATH, _action_route, methods=["POST"],
+                dependencies=[_header_guard, _owui_user],
+            )
             ensure_route_before_spa(app)
         except Exception:
             logger.debug("action route registration failed", exc_info=True)

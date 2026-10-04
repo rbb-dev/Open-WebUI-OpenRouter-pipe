@@ -2624,7 +2624,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     )
     AUTO_ATTACH_WEB_TOOLS_FILTER: bool = Field(
         default=True,
-        description="Automatically attach the OpenRouter Web Tools per-chat switch to every pipe model that is not a picture-only model, a video-generation or a Fusion model (a model that answers with text as well as pictures is a chat model that can draw, and it keeps the switch, so the toggle appears in the Integrations menu). Turning this off detaches the filters the pipe attached, and also releases the default the pipe seeded for them, as long as `AUTO_INSTALL_WEB_TOOLS_FILTER` is off as well; a filter id an admin attached by hand is left alone, and so is a Default Filter ticked by hand in the model editor, which this valve never seeds (seeding a default is the separate AUTO_DEFAULT_WEB_TOOLS_FILTER setting). A pass that cannot install the filter, because Open WebUI refused the write, is not a decision to detach while this valve is on: the switch and the default it already carried stay exactly where they are, and the install is tried again at the next catalog fetch. With this valve off, a pass that ends up with no filter id detaches the switch and releases the default as it does on any other pass. This relies on the ownership record the pipe writes, which it keeps up to date on every pass where the pipe attaches it, so a record that has drifted is repaired on the next sync. A model carrying the panel with no record -- one attached before this build wrote records -- is not given one: detach the panel by hand once and the next sync records the current one.",
+        description="Automatically attach the OpenRouter Web Tools per-chat switch to every pipe model that is not a picture-only model, a video-generation or a Fusion model (a model that answers with text as well as pictures is a chat model that can draw, and it keeps the switch, so the toggle appears in the Integrations menu). Turning this off detaches the filters the pipe attached, and also releases the default the pipe seeded for them, as long as `AUTO_INSTALL_WEB_TOOLS_FILTER` is off as well; a filter id an admin attached by hand is left alone, and so is a Default Filter ticked by hand in the model editor, which this valve never seeds (seeding a default is the separate AUTO_DEFAULT_WEB_TOOLS_FILTER setting). A pass that cannot install the filter, because Open WebUI refused the write, is not a decision to detach while this valve is on: the switch and the default it already carried stay exactly where they are, and the install is tried again at the next pass. With this valve off, a pass that ends up with no filter id detaches the switch and releases the default as it does on any other pass. This relies on the ownership record the pipe writes, which it keeps up to date on every pass where the pipe attaches it, so a record that has drifted is repaired on the next sync. A model carrying the panel with no record -- one attached before this build wrote records -- is not given one: detach the panel by hand once and the next sync records the current one.",
     )
     AUTO_DEFAULT_WEB_TOOLS_FILTER: bool = Field(
         default=False,
@@ -2648,7 +2648,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     )
     AUTO_ATTACH_IMAGE_GEN_FILTER: bool = Field(
         default=True,
-        description="Automatically attach the OpenRouter Image Generation filter to every pipe model that can send the tool: not a model whose catalogue entry rules tool use out, not a picture-only model, not a video model, not the hosted Fusion model. A model that stops qualifying loses the switch at the next refresh, and the id the pipe had recorded for it is released from `filterIds` on that same refresh. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. A pass that cannot install the filter, because Open WebUI refused the write, is not a decision to detach: the switch stays exactly where it was and the install is tried again at the next catalog fetch. On its own, with the per-model image filter pair off, this valve also buys the published-contract sweep the tool's six controls are drawn from and checked against, so the choices on them are the drawing model's own.",
+        description="Automatically attach the OpenRouter Image Generation filter to every pipe model that can send the tool: not a model whose catalogue entry rules tool use out, not a picture-only model, not a video model, not the hosted Fusion model. A model that stops qualifying loses the switch at the next refresh, and the id the pipe had recorded for it is released from `filterIds` on that same refresh. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. A pass that cannot install the filter, because Open WebUI refused the write, is not a decision to detach: the switch stays exactly where it was and the install is tried again at the next pass. On its own, with the per-model image filter pair off, this valve also buys the published-contract sweep the tool's six controls are drawn from and checked against, so the choices on them are the drawing model's own.",
     )
     ENABLE_OPENROUTER_IMAGE_GENERATION: bool = Field(
         default=True,
@@ -2681,7 +2681,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "last successful read; a model never read gets no panel at all rather than a "
             "guessed set. If a whole refresh cannot install the panels or the Fusion "
             "panel at all, every model keeps the panels it already had and the pass is "
-            "tried again at the next catalog fetch. This is not the only valve that reads "
+            "tried again at the next pass. This is not the only valve that reads "
             "those settings: the Image Generation tool's own panel is built from the same "
             "sweep, so either half of AUTO_INSTALL_IMAGE_GEN_FILTER / "
             "AUTO_ATTACH_IMAGE_GEN_FILTER reads them too, and with all four filter valves "
@@ -2702,7 +2702,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "and takes them off at the next refresh that installs it, or at the next one "
             "that finds it no longer offers images. A pass that cannot find the panel it "
             "was told to attach leaves the existing one in place and tries again at the "
-            "next catalog fetch. With this off, an image model's `help` reply omits its "
+            "next pass. With this off, an image model's `help` reply omits its "
             "`## Controls` section, because the panel that section describes is not on "
             "the model."
         ),
@@ -2714,7 +2714,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "image-output models. Reapplied on every catalogue or settings change; turning it off "
             "clears the default the pipe seeded, leaving the filter attached. A pass that "
             "cannot find the panel it was told to attach leaves the existing one in place "
-            "and tries again at the next catalog fetch."
+            "and tries again at the next pass."
         ),
     )
 
@@ -2734,11 +2734,11 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     )
     AUTO_ATTACH_VIDEO_FILTERS: bool = Field(
         default=True,
-        description="Automatically attach the OpenRouter Video Generation filter to OpenRouter video-generation models. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. A `help` reply on a video model lists no controls at all, because the panel that card describes is not on the model. A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next catalog fetch.",
+        description="Automatically attach the OpenRouter Video Generation filter to OpenRouter video-generation models. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. A `help` reply on a video model lists no controls at all, because the panel that card describes is not on the model. A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next pass.",
     )
     AUTO_DEFAULT_VIDEO_FILTERS: bool = Field(
         default=True,
-        description="Keep the per-model video filter enabled by default on its video model. Reapplied on every catalogue or settings change; turning it off clears the default the pipe seeded, leaving the filter attached. A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next catalog fetch. Models that require a per-model parameter (e.g. Veo's personGeneration) cannot be driven without it; parameter-free models still generate.",
+        description="Keep the per-model video filter enabled by default on its video model. Reapplied on every catalogue or settings change; turning it off clears the default the pipe seeded, leaving the filter attached. A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next pass. Models that require a per-model parameter (e.g. Veo's personGeneration) cannot be driven without it; parameter-free models still generate.",
     )
     ENABLE_OPENROUTER_FUSION: bool = Field(
         default=True,
@@ -2771,11 +2771,11 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     )
     AUTO_ATTACH_FUSION_FILTER: bool = Field(
         default=True,
-        description="Automatically attach the OpenRouter Fusion filter to the fusion models only — `openrouter/fusion`, `openrouter/fusion-flash`, and their `:tag` variant and `:preset/…` rows (so their panel/judge options appear in the Integrations menu). Never attaches to any other model. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. Auto-install off with this on — the install-by-hand mode — no longer detaches on a pass that finds no panel: the attached filter stays and the next catalog fetch tries again. Neither does a pass that could not install the panel because Open WebUI refused the write: the attached filter and the default it carried stay, and the install is tried again at the next catalog fetch.",
+        description="Automatically attach the OpenRouter Fusion filter to the fusion models only — `openrouter/fusion`, `openrouter/fusion-flash`, and their `:tag` variant and `:preset/…` rows (so their panel/judge options appear in the Integrations menu). Never attaches to any other model. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. Auto-install off with this on — the install-by-hand mode — no longer detaches on a pass that finds no panel: the attached filter stays and the next pass tries again. Neither does a pass that could not install the panel because Open WebUI refused the write: the attached filter and the default it carried stay, and the install is tried again at the next pass.",
     )
     AUTO_DEFAULT_FUSION_FILTER: bool = Field(
         default=True,
-        description="Mark the OpenRouter Fusion filter as a Default Filter on the fusion models (pre-enabled per chat) — including their `:tag` variant and `:preset/…` rows. Does NOT force Fusion to run — the per-user 'Always run Fusion' toggle is off by default. Reapplied on every catalogue or settings change; turning it off clears the default the pipe seeded, leaving the filter attached. A pass that cannot find the filter it was told to attach leaves the existing one in place and tries again at the next catalog fetch.",
+        description="Mark the OpenRouter Fusion filter as a Default Filter on the fusion models (pre-enabled per chat) — including their `:tag` variant and `:preset/…` rows. Does NOT force Fusion to run — the per-user 'Always run Fusion' toggle is off by default. Reapplied on every catalogue or settings change; turning it off clears the default the pipe seeded, leaving the filter attached. A pass that cannot find the filter it was told to attach leaves the existing one in place and tries again at the next pass.",
     )
     FUSION_BACKEND: Literal["openrouter", "internal"] = Field(
         default="internal",
@@ -3243,7 +3243,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=True,
         description=(
             "When enabled, automatically attaches the OpenRouter Direct Uploads toggleable filter to models that support "
-            "at least one of OpenRouter direct file/audio/video inputs (so the switch appears in the Integrations menu only where it can work). Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. A pass that cannot install the filter, because Open WebUI refused the write, is not a decision to detach: the switch stays exactly where it was and the install is tried again at the next catalog fetch."
+            "at least one of OpenRouter direct file/audio/video inputs (so the switch appears in the Integrations menu only where it can work). Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. A pass that cannot install the filter, because Open WebUI refused the write, is not a decision to detach: the switch stays exactly where it was and the install is tried again at the next pass."
         ),
     )
     AUTO_INSTALL_DIRECT_UPLOADS_FILTER: bool = Field(
@@ -3314,7 +3314,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "Disable to make users opt in per chat; on the next sync this also clears the default "
             "the pipe seeded, leaving the filters attached. A pass that could not read the filter "
             "table, or could not write a new routing filter, leaves the filters it already found "
-            "in place and tries again at the next catalog fetch."
+            "in place and tries again at the next pass."
         ),
     )
 
@@ -3381,7 +3381,7 @@ class UserValves(BaseModel):
     PERSIST_REASONING_TOKENS: Literal["disabled", "next_reply", "conversation"] = Field(
         default="conversation",
         title="How long to keep reasoning",
-        description="Choose whether reasoning is kept for the entire conversation (the default), just for the next reply, or not at all: 'disabled' writes nothing, withholds rows already stored from every later turn and deletes them on the same terms as 'next_reply', and does not save each reply's reasoning_details onto the stored chat message. A delete the database refuses is reported as a warning and the rows are left in place; the following turn of that chat retries it, and the turn that hit the failure keeps its reply. The copy of the reasoning written onto the Open WebUI assistant message follows the same choice, and at 'next_reply' that copy is not removed when the following reply finishes; only the rows are. The default is the whole conversation because OpenAI's GPT-5.6 models use reasoning from all earlier turns by default when the full history is replayed, which is what 'conversation' does, while 'next_reply' keeps only the previous turn's. A user who never sets this field gets the administrator's site-wide value; a user who sets it gets their own. A setting the pipe cannot read (an undecodable stored row, after a rotation of `WEBUI_SECRET_KEY`, or the deprecated `WEBUI_JWT_SECRET_KEY` it falls back to (a default, so an empty primary is not a fallback)) falls back to this valve's own per-user default rather than to the administrator's site-wide value.",
+        description="Choose whether reasoning is kept for the entire conversation (the default), just for the next reply, or not at all: 'disabled' writes nothing, withholds rows already stored from every later turn and deletes them on the same terms as 'next_reply', and does not save each reply's reasoning_details onto the stored chat message. On the native `/responses` endpoint it also withholds the thinking block a tool round produced earlier in the same reply, so the round the pipe runs itself is sent with its own tool call and result and no signed reasoning; the round's own tool markers are never withheld with it. A delete the database refuses is reported as a warning and the rows are left in place; the following turn of that chat retries it, and the turn that hit the failure keeps its reply. The copy of the reasoning written onto the Open WebUI assistant message follows the same choice, and at 'next_reply' that copy is not removed when the following reply finishes; only the rows are. The default is the whole conversation because OpenAI's GPT-5.6 models use reasoning from all earlier turns by default when the full history is replayed, which is what 'conversation' does, while 'next_reply' keeps only the previous turn's. A user who never sets this field gets the administrator's site-wide value; a user who sets it gets their own. A setting the pipe cannot read (an undecodable stored row, after a rotation of `WEBUI_SECRET_KEY`, or the deprecated `WEBUI_JWT_SECRET_KEY` it falls back to (a default, so an empty primary is not a fallback)) falls back to this valve's own per-user default rather than to the administrator's site-wide value.",
     )
     PERSIST_TOOL_RESULTS: bool = Field(
         default=False,

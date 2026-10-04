@@ -17,6 +17,7 @@ import os
 import threading
 import time
 from collections.abc import Callable
+from itertools import chain
 from typing import Any
 
 from ...core.warn_latch import warn_level
@@ -41,6 +42,7 @@ _ST_TOOL_COUNT_FIELD = {
     "failed": "tools_failed",
     "skipped": "tools_skipped",
     "cancelled": "tools_skipped",
+    "incomplete": "tools_skipped",
 }
 
 
@@ -433,9 +435,12 @@ class SessionTracker:
         return rows, active_total
 
     def _task_costs_locked(self) -> dict[str, float]:
+        task_rows = [e for e in self._recent if e.get("kind") == "task" and e.get("chat_id")]
+        if not task_rows:
+            return {}
         folded_here = {
             _task_cost_key(e.get("chat_id"), e.get("user_id"))
-            for e in list(self._active.values()) + self._recent
+            for e in chain(self._active.values(), self._recent)
             if e.get("kind") == "chat" and e.get("chat_id")
         }
         out: dict[str, float] = {}

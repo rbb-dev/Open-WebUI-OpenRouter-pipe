@@ -695,9 +695,10 @@ def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
             return (va < vb ? -1 : va > vb ? 1 : 0) * st.dir;
           }});
         }}
-        if (!q && opts.cap && opts.aggregate && view.length > opts.cap) {{
+        if (!q && opts.cap && opts.aggregate &&
+            (opts.total ? opts.total() > view.length : view.length > opts.cap)) {{
           var capped = view.slice(0, opts.cap);
-          capped.push(opts.aggregate(view.slice(opts.cap)));
+          capped.push(opts.aggregate.call({{ totals: opts, rows: lastRows }}, capped));
           view = capped;
         }}
         return view;
@@ -817,14 +818,37 @@ def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
       empty: 'No user activity in range.', row: userRowHtml,
       match: function(r, q) {{ return String(r.user_name || '').toLowerCase().indexOf(q) >= 0; }},
       cap: 10,
+      total: function() {{ return Number((userMeta && userMeta.user_count) || 0); }},
+      totalSums: function() {{ return (userMeta && userMeta.by_user_sums) || null; }},
       aggregate: function(rest) {{
-        var o = {{ user_name: rest.length + ' others', sessions: 0, tokens_in: 0, tokens_cached: 0, tokens_out: 0, tools: 0, tools_failed: 0, cost: 0, task_cost: 0, last_active: 0 }};
+        var table = (this && this.totals) ? this.totals : {{}};
+        var sums = table.totalSums ? (table.totalSums() || null) : null;
+        var total = table.total ? Number(table.total()) : 0;
+        if (!table.totalSums) {{
+          var all = (this && this.rows) || rest;
+          sums = {{}};
+          for (var s = 0; s < all.length; s++) {{
+            for (var f in all[s]) {{
+              if (typeof all[s][f] === 'number') sums[f] = (sums[f] || 0) + all[s][f];
+            }}
+          }}
+          total = all.length;
+        }}
+        var shown = {{ sessions: 0, tokens_in: 0, tokens_cached: 0, tokens_out: 0, tools: 0, tools_failed: 0, tools_skipped: 0, cost: 0, task_cost: 0 }};
         for (var i = 0; i < rest.length; i++) {{
           var r = rest[i];
-          o.sessions += r.sessions || 0; o.tokens_in += r.tokens_in || 0; o.tokens_cached += r.tokens_cached || 0;
-          o.tokens_out += r.tokens_out || 0; o.tools += r.tools || 0; o.tools_failed += r.tools_failed || 0; o.cost += r.cost || 0;
-          o.task_cost += r.task_cost || 0;
+          shown.sessions += r.sessions || 0; shown.tokens_in += r.tokens_in || 0; shown.tokens_cached += r.tokens_cached || 0;
+          shown.tokens_out += r.tokens_out || 0; shown.tools += r.tools || 0; shown.tools_failed += r.tools_failed || 0;
+          shown.tools_skipped += r.tools_skipped || 0; shown.cost += r.cost || 0; shown.task_cost += r.task_cost || 0;
         }}
+        var o = {{ user_name: (total - rest.length) + ' others', sessions: 0, tokens_in: 0, tokens_cached: 0, tokens_out: 0, tools: 0, tools_failed: 0, tools_skipped: 0, cost: 0, task_cost: 0, last_active: 0 }};
+        var keys = ['sessions', 'tokens_in', 'tokens_cached', 'tokens_out', 'tools', 'tools_failed', 'tools_skipped', 'cost'];
+        for (var j = 0; j < keys.length; j++) {{
+          var k = keys[j];
+          o[k] = sums ? ((sums[k] || 0) - shown[k]) : shown[k];
+        }}
+        o.task_cost = sums && sums.task_cost !== undefined
+          ? sums.task_cost - shown.task_cost : shown.task_cost;
         return o;
       }},
       footerRow: function(rows) {{
@@ -976,7 +1000,7 @@ def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
         usSpark(buckets, 'cost', '#f59e0b'));
       h += usCard('Tools', usDelta(cards.tools.count, p.tools && p.tools.count),
         cards.tools.count,
-        cards.tools.failed + ' failed' + (cards.tools.count ? ' (' + Math.round(cards.tools.failed / cards.tools.count * 100) + '%)' : ''),
+        cards.tools.failed + ' failed' + (cards.tools.count ? ' (' + Math.round(cards.tools.failed / cards.tools.count * 100) + '%)' : '') + ' \u00b7 ' + cards.tools.skipped + ' skipped',
         usSpark(buckets, 'tools', '#8b5cf6'));
       h += '</div>';
       return h;
@@ -1179,6 +1203,8 @@ def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
       unknown_pipe: "this panel was saved before the worker learned to tell installed copies apart, so it names no install — reopen the dashboard" }};
     function usReason(c) {{ return (typeof c === "string" && US_REASONS[c]) || c || 'request failed'; }}
 
+    var userMeta = null;
+
     function usRender(res) {{
       var note = $(ID + '-us-note'), body = $(ID + '-us-body');
       usApplyRetention(res && res.meta);
@@ -1236,6 +1262,7 @@ def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
       $(ID + '-us-chart').innerHTML = usChart(buckets);
       usBindHover();
       modelsTable.update(res.by_model);
+      userMeta = res.meta || null;
       usersTable.update(res.by_user);
       $(ID + '-us-totals').innerHTML = usTotals(res.meta);
       $(ID + '-us-meta').textContent = usMetaLine(res.meta);
