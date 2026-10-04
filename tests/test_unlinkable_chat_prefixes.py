@@ -25,6 +25,15 @@ otherwise still be the answer the next one sees. The reset seam is conftest's au
 `_reset_package_caches`, which clears every package cache at both ends of every test;
 `_CACHED_RESOLVERS` below records this module's whole set for
 `test_every_cached_resolver_in_the_module_is_cleared_between_tests`.
+
+Each resolver is now a plain function over a cached `_resolved_*` body, because a memo
+that holds the answer a FAILED import produced is what pinned the floor for the life of
+the process. `lru_cache` never memoises an exception, so the cached body raises
+`_PublishedChatIdsUnavailable` and the plain function above it answers the floor; the
+names a caller uses are therefore no longer the cached ones, and the two lists below
+(`_CACHED_RESOLVERS` here, `KNOWN_PACKAGE_CACHES` in the isolation file) name the
+`_resolved_*` bodies.
+`tests/test_a_transient_failed_import_is_not_memoised.py` is what pins the recovery.
 """
 
 from __future__ import annotations
@@ -50,10 +59,10 @@ from open_webui_openrouter_pipe.storage.owui_files import (
 from tests.test_a_temporary_chats_cost_snapshot_names_no_chat import USAGE, _FakeRedis, _through_the_pipe
 
 _CACHED_RESOLVERS = (
-    "_channel_chat_prefix",
-    "_published_chat_id_values",
-    "_unlinkable_chat_prefixes",
-    "temporary_chat_prefixes",
+    "_resolved_channel_chat_prefix",
+    "_resolved_published_chat_id_values",
+    "_resolved_temporary_chat_prefixes",
+    "_resolved_unlinkable_chat_prefixes",
 )
 
 

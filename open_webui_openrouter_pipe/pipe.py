@@ -1838,6 +1838,7 @@ class Pipe:
                     {"is_active": False, "meta": switched_off_meta(ff)},
                     "disabling the OpenRouter Fusion filter ENABLE_OPENROUTER_FUSION switched off",
                     self.logger,
+                    settle=True,
                 ):
                     self.logger.info("Disabled OpenRouter Fusion filter (ENABLE_OPENROUTER_FUSION=False)")
             except Exception:
@@ -1893,6 +1894,7 @@ class Pipe:
                     {"is_active": False, "meta": switched_off_meta(ig)},
                     "disabling the OpenRouter Image Generation filter ENABLE_IMAGE_GENERATION switched off",
                     self.logger,
+                    settle=True,
                 ):
                     self.logger.info("Disabled OpenRouter Image Generation filter (ENABLE_IMAGE_GENERATION=False)")
             except Exception:

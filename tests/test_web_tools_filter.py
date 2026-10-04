@@ -617,6 +617,24 @@ def _atlas_row(valve: str) -> str:
     return rows[0]
 
 
+def _config_constants() -> dict:
+    tree = ast.parse(
+        (
+            Path(__file__).resolve().parents[1]
+            / "open_webui_openrouter_pipe"
+            / "core"
+            / "config.py"
+        ).read_text()
+    )
+    return {
+        node.targets[0].id: node.value.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and isinstance(node.targets[0], ast.Name)
+        and isinstance(node.value, ast.Constant)
+    }
+
+
 def _valve_descriptions() -> dict[str, str]:
     """Every ``Field(description=...)`` in config.py, read without importing the module.
 
@@ -634,13 +652,7 @@ def _valve_descriptions() -> dict[str, str]:
             / "config.py"
         ).read_text()
     )
-    constants = {
-        node.targets[0].id: node.value.value
-        for node in tree.body
-        if isinstance(node, ast.Assign)
-        and isinstance(node.targets[0], ast.Name)
-        and isinstance(node.value, ast.Constant)
-    }
+    constants = _config_constants()
 
     def evaluate(node):
         if isinstance(node, ast.Constant):

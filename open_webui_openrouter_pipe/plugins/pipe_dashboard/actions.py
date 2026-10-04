@@ -39,7 +39,7 @@ from .dashboard_socket import (
     publish_valves_changed,
     read_config_rev,
 )
-from .update_service import UpdateError, _distributed_lock
+from .update_service import UpdateError, _distributed_lock, _lock_acquire
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ async def _acquire_config_lease() -> _ConfigLease | None:
             "save on this worker is guarded by the in-process lock and the revision alone"
         )
         return None
-    acquire = getattr(lock, "acquire_lock", None) or getattr(lock, "aquire_lock", None)
+    acquire = _lock_acquire(lock)
     if acquire is None:
         logger.warning(
             "pipe_dashboard: the configuration lease exposes no way to take it, so a save "

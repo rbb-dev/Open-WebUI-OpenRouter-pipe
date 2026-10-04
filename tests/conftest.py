@@ -886,7 +886,7 @@ def _reset_warn_latches():
 #: module OBJECT through `_package_modules()`, never by dotted name: a flat bundle aliases
 #: 107 submodule names onto two module objects, and a name import does not resolve in a
 #: bundle at all -- the same reasoning `_warn_latches` records.
-_ACCUMULATOR_NAMES = ("_PIPE_OFF_LANDED_AT", "_REFUSED_FILTER_WRITES")
+_ACCUMULATOR_NAMES = ("_PIPE_OFF_LANDED_AT", "_REFUSED_FILTER_WRITES", "_PIPE_OFF_SETTLING")
 
 
 def _package_accumulators() -> list:
@@ -1080,6 +1080,7 @@ _MODULE_STATE_CONTAINERS = (
     ("open_webui_openrouter_pipe.core.valve_salvage", "_VALVE_SCHEMA_CACHE"),
     ("open_webui_openrouter_pipe.filters.filter_manager", "_PIPE_OFF_LANDED_AT"),
     ("open_webui_openrouter_pipe.filters.filter_manager", "_REFUSED_FILTER_WRITES"),
+    ("open_webui_openrouter_pipe.filters.filter_manager", "_PIPE_OFF_SETTLING"),
     ("open_webui_openrouter_pipe.plugins.pipe_dashboard.actions", "_rate_state"),
     ("open_webui_openrouter_pipe.plugins.pipe_dashboard.actions", "_config_write_locks"),
     ("open_webui_openrouter_pipe.plugins.pipe_dashboard.http_routes", "_coarse_state"),

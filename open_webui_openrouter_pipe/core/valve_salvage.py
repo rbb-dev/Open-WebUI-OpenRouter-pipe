@@ -19,6 +19,18 @@ _RENAMED_VALVES = {
     "VIDEO_INTENT_MAX_CALLS_PER_USER_DAY": "VIDEO_INTENT_MAX_TURNS_PER_USER_DAY",
 }
 _REFUSED_VALUES = {"VIDEO_FRAME_IMAGE_MIME_ALLOWLIST": ""}
+_MOVED = "its value was carried over"
+_MOVED_INTO_BLANK = "it held nothing, so the old value was carried over to it"
+_NOT_MOVED = {
+    False: "it was not set, so nothing needed carrying over",
+    True: "its value was left where it was, because the new setting is already set",
+}
+
+
+def _rename_note(value: Any, new_is_set: bool, new_is_null: bool = False) -> str:
+    if value is not None and (not new_is_set or new_is_null):
+        return _MOVED_INTO_BLANK if new_is_null else _MOVED
+    return _NOT_MOVED[new_is_set]
 
 
 def carry_renamed_valves(cls: type, values: Any) -> Any:
@@ -28,13 +40,15 @@ def carry_renamed_valves(cls: type, values: Any) -> Any:
         if new not in cls.model_fields or old not in values:
             continue
         value = values[old]
+        new_is_set = new in values
+        new_is_null = new_is_set and values[new] is None
         carried = {k: v for k, v in values.items() if k != old}
-        if value is not None and new not in values:
+        if value is not None and (not new_is_set or new_is_null):
             carried[new] = value
         logger.log(
             warn_level(_warned_stale_valves, old, cooldown_s=_STALE_VALVES_WARN_EVERY_S),
-            "pipe: stored setting %s has been renamed to %s; its value was carried over.",
-            old, new,
+            "pipe: stored setting %s has been renamed to %s; %s.",
+            old, new, _rename_note(value, new_is_set, new_is_null),
         )
         values = carried
     return values
@@ -182,16 +196,23 @@ def repair_unvalidatable(cls: type, values: Any, handler: Callable[[Any], Any]) 
     blanked: set[str] = set()
     substituted: set[str] = set()
     for _ in range(len(kept) + 2):
+        before = dict(kept)
         try:
             result = handler(kept)
             break
         except ValidationError as exc:
             names = {str(err["loc"][0]) for err in exc.errors() if err.get("loc")}
             for name in names:
-                if not is_secret_field(cls, name) or isinstance(kept.get(name), str):
+                if not is_secret_field(cls, name):
                     continue
                 value = kept.get(name)
-                if value is None:
+                if isinstance(value, str):
+                    kept.pop(name, None)
+                    note = (
+                        "was text this release cannot read and has been dropped; re-enter it "
+                        "where you configure the pipe"
+                    )
+                elif value is None:
                     kept.pop(name, None)
                     note = "was not set and has been cleared"
                 elif (
@@ -211,7 +232,10 @@ def repair_unvalidatable(cls: type, values: Any, handler: Callable[[Any], Any]) 
                     unread.append((name, note))
             bad = {name for name in names if not is_secret_field(cls, name)}
             if not bad:
-                continue
+                if kept != before:
+                    continue
+                result = _valve_schema(cls)(**kept)
+                break
             for name in bad:
                 blank = _admits_none(cls, name) and isinstance(kept.get(name), str) and not kept[name].strip()
                 if blank:
@@ -222,7 +246,7 @@ def repair_unvalidatable(cls: type, values: Any, handler: Callable[[Any], Any]) 
                 else:
                     kept.pop(name, None)
     else:
-        result = handler(kept)
+        result = _valve_schema(cls)(**kept)
     for name, note in unread:
         logger.log(
             warn_level(_warned_stale_valves, name, cooldown_s=_STALE_VALVES_WARN_EVERY_S),

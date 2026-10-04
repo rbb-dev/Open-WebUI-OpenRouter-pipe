@@ -171,16 +171,22 @@ def _scrub_optional(value: Any) -> Any:
     return scrub_surrogates(value) if isinstance(value, str) else value
 
 
-def _scrub_structure(value: Any) -> Any:
+_SCRUB_MAX_DEPTH = 64
+_SCRUB_DEPTH_CUT = f"...(nesting deeper than {_SCRUB_MAX_DEPTH} levels omitted)..."
+
+
+def _scrub_structure(value: Any, _depth: int = 0) -> Any:
+    if _depth >= _SCRUB_MAX_DEPTH:
+        return _SCRUB_DEPTH_CUT
     if isinstance(value, dict):
         return {
-            _scrub_optional(key): _scrub_structure(item)
+            _scrub_optional(key): _scrub_structure(item, _depth + 1)
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [_scrub_structure(item) for item in value]
+        return [_scrub_structure(item, _depth + 1) for item in value]
     if isinstance(value, tuple):
-        return tuple(_scrub_structure(item) for item in value)
+        return tuple(_scrub_structure(item, _depth + 1) for item in value)
     return _scrub_optional(value)
 
 
@@ -636,17 +642,20 @@ def _bounded_card_value(text: str) -> str:
 
 
 _PROVIDER_LOG_EXCERPT_MAX_CHARS = 8_192
+_PROVIDER_LOG_SCAN_MAX_CHARS = _PROVIDER_LOG_EXCERPT_MAX_CHARS + 4_096
+
+
+def _bounded_log_subject(raw: str) -> str:
+    if len(raw) <= _PROVIDER_LOG_EXCERPT_MAX_CHARS:
+        return _data_url_log_subject(raw)
+    subject = _data_url_log_subject(raw[:_PROVIDER_LOG_SCAN_MAX_CHARS])
+    kept = subject[:_PROVIDER_LOG_EXCERPT_MAX_CHARS]
+    omitted = len(raw) - len(kept)
+    return f"{kept}\n...(truncated: {omitted:,} characters omitted)..."
 
 
 def _provider_log_subject(exc: object) -> str:
-    subject = _data_url_log_subject(str(exc))
-    if len(subject) <= _PROVIDER_LOG_EXCERPT_MAX_CHARS:
-        return subject
-    omitted = len(subject) - _PROVIDER_LOG_EXCERPT_MAX_CHARS
-    return (
-        f"{subject[:_PROVIDER_LOG_EXCERPT_MAX_CHARS]}\n"
-        f"...(truncated: {omitted:,} characters omitted)..."
-    )
+    return _bounded_log_subject(str(exc))
 
 
 def _bounded_card_span(text: str) -> str:

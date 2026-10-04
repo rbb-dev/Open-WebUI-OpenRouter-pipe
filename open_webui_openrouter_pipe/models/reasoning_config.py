@@ -26,10 +26,20 @@ _MAX_VERBOSITY = "max"
 _EFFORT_REASONING_OFF = frozenset({"none", ""})
 _NO_EFFORT = "none"
 _ANSWER_RESERVE_TOKENS = 64
+_GATEWAY_EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max")
 
 
 def _normalised_effort(cfg: dict[str, Any]) -> str:
     return str(cfg.get("effort") or "").strip().lower()
+
+
+def _listed_efforts(row: dict[str, Any]) -> list[str] | None:
+    if "supported_efforts" not in row:
+        return None
+    listed = row["supported_efforts"]
+    if listed is None:
+        return list(_GATEWAY_EFFORTS)
+    return [e for e in listed if e != _NO_EFFORT]
 
 
 class ReasoningConfigManager:
@@ -109,7 +119,7 @@ class ReasoningConfigManager:
             return repaired, True
         lowest = _select_best_effort_fallback(
             _NO_EFFORT,
-            [e for e in ModelFamily.reasoning_contract(model_id).get("supported_efforts") or [] if e != _NO_EFFORT],
+            [e for e in (_listed_efforts(ModelFamily.reasoning_contract(model_id)) or []) if e != _NO_EFFORT],
         )
         if lowest:
             repaired["effort"] = lowest
@@ -142,7 +152,9 @@ class ReasoningConfigManager:
             cfg: dict[str, Any] = {}
             if isinstance(responses_body.reasoning, dict):
                 cfg = dict(responses_body.reasoning)
-            if target_effort in _EFFORT_REASONING_OFF or (target_effort and "effort" not in cfg):
+            if target_effort in _EFFORT_REASONING_OFF or (
+                target_effort and "effort" not in cfg and not isinstance(cfg.get("max_tokens"), int)
+            ):
                 cfg["effort"] = target_effort
             if summary_mode == "disabled":
                 cfg.pop("summary", None)
@@ -226,6 +238,7 @@ class ReasoningConfigManager:
         # Lazy import to avoid circular dependency
         from .registry import (
             _classify_gemini_thinking_family,
+            _is_gemini_thinking_model,
             _map_effort_to_gemini_budget,
         )
 
@@ -233,7 +246,7 @@ class ReasoningConfigManager:
         if self._refusal_left_no_level:
             self._refusal_left_no_level = False
             return None
-        if not _classify_gemini_thinking_family(ModelFamily.base_model(responses_body.model)):
+        if not _is_gemini_thinking_model(ModelFamily.base_model(responses_body.model)):
             return None
         if "reasoning" not in ModelFamily.catalog_supported_parameters(responses_body.model):
             return None
@@ -253,6 +266,9 @@ class ReasoningConfigManager:
             responses_body.reasoning = off
             self._set_include_reasoning(responses_body, None)
             return responses_body.model if refused else None
+
+        if not _classify_gemini_thinking_family(ModelFamily.base_model(responses_body.model)):
+            return None
 
         requested_budget = cfg.get("max_tokens")
         brought = (
@@ -302,7 +318,7 @@ class ReasoningConfigManager:
         row = ModelFamily.reasoning_contract(responses_body.model)
         if row.get("mandatory") is True:
             fitted = {key: value for key, value in cfg.items() if key != "effort"}
-            lowest = _select_best_effort_fallback("none", [e for e in row.get("supported_efforts") or [] if e != "none"])
+            lowest = _select_best_effort_fallback("none", [e for e in (_listed_efforts(row) or []) if e != "none"])
             if lowest:
                 fitted["effort"] = lowest
             responses_body.reasoning = fitted or None

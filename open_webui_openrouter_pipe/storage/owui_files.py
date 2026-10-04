@@ -254,28 +254,39 @@ _CHANNEL_CHAT_PREFIX = "channel:"
 _UNLINKABLE_CHAT_PREFIXES = ("temporary:", "local:", _CHANNEL_CHAT_PREFIX)
 
 
+class _PublishedChatIdsUnavailable(RuntimeError):
+    pass
+
+
 @lru_cache(maxsize=1)
-def _published_chat_id_values() -> tuple[tuple[str, ...], tuple[str, ...], str] | None:
+def _resolved_published_chat_id_values() -> tuple[tuple[str, ...], tuple[str, ...], str]:
     try:
         from open_webui.utils.chat_id import (  # pyright: ignore[reportMissingImports]
             CHANNEL_CHAT_ID_PREFIX,
             NON_SAVED_CHAT_ID_PREFIXES,
             TEMPORARY_CHAT_ID_PREFIXES,
         )
-    except ImportError:
-        return None
-    except Exception:
+    except ImportError as exc:
+        raise _PublishedChatIdsUnavailable from exc
+    except Exception as exc:
         logging.getLogger(__name__).warning(
             "open_webui.utils.chat_id failed to import for a reason other than absence; "
             "the features that depend on it are now disabled",
             exc_info=True,
         )
-        return None
+        raise _PublishedChatIdsUnavailable from exc
     return (NON_SAVED_CHAT_ID_PREFIXES, TEMPORARY_CHAT_ID_PREFIXES, CHANNEL_CHAT_ID_PREFIX)
 
 
+def _published_chat_id_values() -> tuple[tuple[str, ...], tuple[str, ...], str] | None:
+    try:
+        return _resolved_published_chat_id_values()
+    except _PublishedChatIdsUnavailable:
+        return None
+
+
 @lru_cache(maxsize=1)
-def _unlinkable_chat_prefixes() -> tuple[str, ...]:
+def _resolved_unlinkable_chat_prefixes() -> tuple[str, ...]:
     """Open WebUI's own list where it publishes one, the literal above otherwise.
 
     Upstream owns this set (`utils.chat_id.NON_SAVED_CHAT_ID_PREFIXES`), and the copy
@@ -295,7 +306,7 @@ def _unlinkable_chat_prefixes() -> tuple[str, ...]:
     """
     published = _published_chat_id_values()
     if published is None:
-        return _UNLINKABLE_CHAT_PREFIXES
+        raise _PublishedChatIdsUnavailable
     non_saved = published[0]
     if isinstance(non_saved, str) or not isinstance(non_saved, Iterable):
         return _UNLINKABLE_CHAT_PREFIXES
@@ -308,6 +319,13 @@ def _unlinkable_chat_prefixes() -> tuple[str, ...]:
     return _UNLINKABLE_CHAT_PREFIXES + tuple(
         p for p in upstream if p not in _UNLINKABLE_CHAT_PREFIXES
     )
+
+
+def _unlinkable_chat_prefixes() -> tuple[str, ...]:
+    try:
+        return _resolved_unlinkable_chat_prefixes()
+    except _PublishedChatIdsUnavailable:
+        return _UNLINKABLE_CHAT_PREFIXES
 
 
 def is_linkable_chat(chat_id: Any) -> bool:
@@ -336,10 +354,10 @@ def is_unheld_chat(chat_id: Any) -> bool:
 
 
 @lru_cache(maxsize=1)
-def temporary_chat_prefixes() -> tuple[str, ...]:
+def _resolved_temporary_chat_prefixes() -> tuple[str, ...]:
     published = _published_chat_id_values()
     if published is None:
-        return tuple(p for p in _UNLINKABLE_CHAT_PREFIXES if p != _CHANNEL_CHAT_PREFIX)
+        raise _PublishedChatIdsUnavailable
     _non_saved, temporary, channel = published
     channel = channel.strip() if isinstance(channel, str) and channel.strip() else _CHANNEL_CHAT_PREFIX
     usable = (
@@ -353,26 +371,40 @@ def temporary_chat_prefixes() -> tuple[str, ...]:
     return local + tuple(p for p in usable if p not in local)
 
 
+def temporary_chat_prefixes() -> tuple[str, ...]:
+    try:
+        return _resolved_temporary_chat_prefixes()
+    except _PublishedChatIdsUnavailable:
+        return tuple(p for p in _UNLINKABLE_CHAT_PREFIXES if p != _CHANNEL_CHAT_PREFIX)
+
+
 @lru_cache(maxsize=1)
-def _channel_chat_prefix() -> str:
+def _resolved_channel_chat_prefix() -> str:
     try:
         from open_webui.utils.chat_id import (  # pyright: ignore[reportMissingImports]
             CHANNEL_CHAT_ID_PREFIX,
         )
 
         published = CHANNEL_CHAT_ID_PREFIX
-    except (ImportError, AttributeError):
-        return _CHANNEL_CHAT_PREFIX
-    except Exception:
+    except (ImportError, AttributeError) as exc:
+        raise _PublishedChatIdsUnavailable from exc
+    except Exception as exc:
         logging.getLogger(__name__).warning(
             "open_webui.utils.chat_id failed to import for a reason other than absence; "
             "the features that depend on it are now disabled",
             exc_info=True,
         )
-        return _CHANNEL_CHAT_PREFIX
+        raise _PublishedChatIdsUnavailable from exc
     if not isinstance(published, str) or not published.strip():
         return _CHANNEL_CHAT_PREFIX
     return published
+
+
+def _channel_chat_prefix() -> str:
+    try:
+        return _resolved_channel_chat_prefix()
+    except _PublishedChatIdsUnavailable:
+        return _CHANNEL_CHAT_PREFIX
 
 
 def is_channel_chat(chat_id: Any) -> bool:

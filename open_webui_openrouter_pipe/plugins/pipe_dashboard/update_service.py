@@ -43,6 +43,7 @@ _PD_UPDATE_CHECK_MEMO_S = 60.0
 _PD_UPDATE_STALE_RELEASE_S = 24 * 3600.0
 _PD_UPDATE_SNAPSHOT_SLOTS = 10
 _PD_UPDATE_XLOCK_TIMEOUT_S = 300
+_PD_UPDATE_XLOCK_RENEW_S = _PD_UPDATE_XLOCK_TIMEOUT_S / 3.0
 _PD_UPDATE_LEADER_TTL_S = 30 * 60
 _PD_UPDATE_LEADER_RENEW_S = 10 * 60
 _PD_UPDATE_FOLLOWER_POLL_S = 60 * 60.0
@@ -201,6 +202,16 @@ def _distributed_lock(
     except Exception:
         logger.warning("update: cross-worker lock unavailable", exc_info=True)
         return None
+
+
+def _lock_acquire(lock: Any) -> Any:
+    return getattr(lock, "acquire_lock", None) or getattr(lock, "aquire_lock", None)
+
+
+_LOCK_UNTAKABLE = (
+    "this worker cannot take the cross-worker update lock, so no update was applied "
+    "and nothing was changed"
+)
 
 
 def _snapshot_storage() -> Any:
@@ -499,7 +510,8 @@ class UpdateService:
         pipe = self._pipe()
         row = await self._row()
         content = getattr(row, "content", "") or ""
-        key = (getattr(row, "updated_at", None), len(content))
+        token = self._content_token(row)
+        key = token
         installed_memo = self._installed_memo
         if content and installed_memo is not None and installed_memo[0] == key:
             mode, installed_version = installed_memo[1], installed_memo[2]
@@ -634,7 +646,7 @@ class UpdateService:
                 "this_worker": this_worker,
                 "role": self._auto_role,
             },
-            "rev": self._content_token(row),
+            "rev": token,
             "pipe_id": pipe.id,
         }
 
@@ -1062,10 +1074,54 @@ class UpdateService:
         lock = _distributed_lock()
         if lock is None:
             return None
-        acquired = await asyncio.to_thread(lock.aquire_lock)
+        acquire = _lock_acquire(lock)
+        if acquire is None:
+            raise UpdateError("internal", _LOCK_UNTAKABLE)
+        acquired = await asyncio.to_thread(acquire)
         if not acquired:
             raise UpdateError("update_in_progress", "another worker is applying an update")
         return lock
+
+    @staticmethod
+    async def _lock_watchdog(lock: Any, commit: Any, lost: asyncio.Event) -> None:
+        renew = getattr(lock, "renew_lock", None)
+        if renew is None:
+            return
+        try:
+            while True:
+                await asyncio.sleep(_PD_UPDATE_XLOCK_RENEW_S)
+                if commit.done():
+                    return
+                try:
+                    renewed = await asyncio.to_thread(renew)
+                except Exception:
+                    logger.warning(
+                        "update: cross-worker lock renewal raised; abandoning this update",
+                        exc_info=True,
+                    )
+                    renewed = False
+                if not renewed:
+                    logger.warning(
+                        "update: cross-worker lock lost mid-section; abandoning this update "
+                        "before the irreversible step"
+                    )
+                    lost.set()
+                    commit.cancel()
+                    return
+        except asyncio.CancelledError:
+            return
+
+    @staticmethod
+    async def _stop_lock_watchdog(watchdog: Any) -> None:
+        if watchdog is None:
+            return
+        watchdog.cancel()
+        try:
+            await watchdog
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.debug("update: lock watchdog stopped on a failure", exc_info=True)
 
     @staticmethod
     async def _release_cross_worker(lock: Any | None) -> None:
@@ -1075,6 +1131,11 @@ class UpdateService:
             await asyncio.to_thread(lock.release_lock)
         except Exception:
             logger.warning("update: cross-worker lock release failed", exc_info=True)
+
+    @staticmethod
+    async def _release_held(lock: Any | None, watchdog: Any) -> None:
+        await UpdateService._stop_lock_watchdog(watchdog)
+        await UpdateService._release_cross_worker(lock)
 
     async def _commit(
         self,
@@ -1094,27 +1155,14 @@ class UpdateService:
             functions = self._functions()
             written = await functions.update_function_by_id(pipe_id, {"content": final})
             if written is None:
-                await self._refused_write_repair(request, pipe_id, restore)
-                raise UpdateError(
-                    "write_failed",
-                    "the database rejected the function-row write; the previous version remains active",
-                )
-            merged = await functions.update_function_metadata_by_id(pipe_id, {"manifest": frontmatter})
-            if merged is None:
-                logger.warning(
-                    "update: manifest merge was refused (cosmetic); content is persisted"
-                )
-            await publish_function_updated(
-                pipe_id,
-                actor_user,
-                request,
-                {"type": getattr(written, "type", None), "name": getattr(written, "name", None)},
-            )
-            if request is not None:
-                import open_webui.utils.plugin as owp
-
-                owp.get_functions_cache(request)[pipe_id] = instance
-                owp.get_function_contents_cache(request)[pipe_id] = final
+                confirmed = await self._confirm_write_landed(pipe_id, final)
+                if confirmed is None:
+                    await self._refused_write_repair(request, pipe_id, restore)
+                    raise UpdateError(
+                        "write_failed",
+                        "the database rejected the function-row write; the previous version remains active",
+                    )
+                written = confirmed
         except BaseException as exc:
             restore()
             logger.warning(
@@ -1122,6 +1170,42 @@ class UpdateService:
                 getattr(exc, "code", type(exc).__name__),
             )
             raise
+        try:
+            merged = await functions.update_function_metadata_by_id(pipe_id, {"manifest": frontmatter})
+            if merged is None:
+                logger.warning(
+                    "update: manifest merge was refused (cosmetic); content is persisted"
+                )
+        except Exception:
+            logger.warning(
+                "update: manifest merge failed (cosmetic); content is persisted",
+                exc_info=True,
+            )
+        try:
+            await publish_function_updated(
+                pipe_id,
+                actor_user,
+                request,
+                {"type": getattr(written, "type", None), "name": getattr(written, "name", None)},
+            )
+        except Exception:
+            logger.warning(
+                "update: the function.updated publish failed after the committed write; "
+                "content is persisted and Open WebUI reconciles on its next load",
+                exc_info=True,
+            )
+        if request is not None:
+            try:
+                import open_webui.utils.plugin as owp
+
+                owp.get_functions_cache(request)[pipe_id] = instance
+                owp.get_function_contents_cache(request)[pipe_id] = final
+            except Exception:
+                logger.warning(
+                    "update: the app-state cache writes failed after the committed "
+                    "write; Open WebUI reconciles them against the row on its next load",
+                    exc_info=True,
+                )
         to_version = str(frontmatter.get("version", "") or "")
         logger.info(
             "update: applied actor=%s from=%s to=%s sha256=%s",
@@ -1131,6 +1215,27 @@ class UpdateService:
             hashlib.sha256(final.encode("utf-8")).hexdigest()[:12],
         )
         return {"ok": True, "from_version": from_version, "to_version": to_version}
+
+    async def _confirm_write_landed(self, pipe_id: str, final: str) -> Any:
+        try:
+            row = await self._row()
+        except UpdateError:
+            logger.warning(
+                "update: the store did not confirm the function-row write and the row "
+                "could not be read back, so the write is unconfirmed rather than "
+                "refused; Open WebUI's own update_function_by_id commits at "
+                "models/functions.py:411 and reads the row back at :412 under one "
+                "except Exception at :414-415, so None answers for both"
+            )
+            return None
+        if (getattr(row, "content", "") or "") != final:
+            return None
+        logger.warning(
+            "update: the store did not confirm the function-row write, but the row "
+            "holds the committed content, so the write landed and only its "
+            "confirmation failed"
+        )
+        return row
 
     async def _refused_write_repair(
         self, request: Any, pipe_id: str, restore: Callable[[], None]
@@ -1221,12 +1326,18 @@ class UpdateService:
         commit = asyncio.ensure_future(
             self._commit(content, rev, request, actor, from_version, actor_user)
         )
+        lost = asyncio.Event()
+        watchdog = (
+            asyncio.ensure_future(self._lock_watchdog(xlock, commit, lost))
+            if xlock is not None
+            else None
+        )
 
         def _settle(fut: Any) -> None:
             self._commit_inflight = False
             if xlock is not None:
                 try:
-                    loop.create_task(self._release_cross_worker(xlock))
+                    loop.create_task(self._release_held(xlock, watchdog))
                 except RuntimeError:
                     logger.warning(
                         "update: cross-worker lock release scheduling failed", exc_info=True
@@ -1246,7 +1357,16 @@ class UpdateService:
                 logger.warning("update: commit failed: %s", exc)
 
         commit.add_done_callback(_settle)
-        return await asyncio.shield(commit)
+        try:
+            return await asyncio.shield(commit)
+        except asyncio.CancelledError:
+            if xlock is None or not lost.is_set():
+                raise
+            raise UpdateError(
+                "update_in_progress",
+                "the cross-worker update lock was lost while this update was being applied, "
+                "so it was abandoned before the function row was written",
+            ) from None
 
 
     async def apply(
@@ -1353,26 +1473,45 @@ class UpdateService:
         self._require_idle()
         async with self._lock:
             xlock = await self._acquire_cross_worker()
+            watchdog: Any = None
+            lost = asyncio.Event()
             try:
-                file_id = str(args.get("file_id") or "")
+                work = asyncio.ensure_future(self._snapshot_delete_held(args))
+                if xlock is not None:
+                    watchdog = asyncio.ensure_future(self._lock_watchdog(xlock, work, lost))
                 try:
-                    records = await self._snapshot_records()
-                except Exception as exc:
-                    raise _storage_unavailable_from(exc, "snapshot storage is unavailable") from exc
-                entry = next((r for r in records if r["file_id"] == file_id), None)
-                if entry is None:
-                    raise UpdateError("not_found", f"{file_id} is not a known snapshot")
-                if entry["sha256"] != str(args.get("sha256") or ""):
+                    return await asyncio.shield(work)
+                except asyncio.CancelledError:
+                    if xlock is None or not lost.is_set():
+                        raise
                     raise UpdateError(
-                        "stale_snapshot",
-                        "snapshot changed since the list was loaded; refresh and retry",
-                    )
-                if not await self._delete_record(entry, _snapshot_storage()):
-                    raise _storage_unavailable("snapshot delete failed; refresh and try again")
-                remaining = [r for r in records if r["file_id"] != file_id]
-                return {"ok": True, "snapshots": await self._payload_from(remaining)}
+                        "update_in_progress",
+                        "the cross-worker update lock was lost while the snapshot was being "
+                        "deleted, so it was abandoned",
+                    ) from None
+                finally:
+                    await self._stop_lock_watchdog(watchdog)
             finally:
                 await self._release_cross_worker(xlock)
+
+    async def _snapshot_delete_held(self, args: dict) -> dict[str, Any]:
+        file_id = str(args.get("file_id") or "")
+        try:
+            records = await self._snapshot_records()
+        except Exception as exc:
+            raise _storage_unavailable_from(exc, "snapshot storage is unavailable") from exc
+        entry = next((r for r in records if r["file_id"] == file_id), None)
+        if entry is None:
+            raise UpdateError("not_found", f"{file_id} is not a known snapshot")
+        if entry["sha256"] != str(args.get("sha256") or ""):
+            raise UpdateError(
+                "stale_snapshot",
+                "snapshot changed since the list was loaded; refresh and retry",
+            )
+        if not await self._delete_record(entry, _snapshot_storage()):
+            raise _storage_unavailable("snapshot delete failed; refresh and try again")
+        remaining = [r for r in records if r["file_id"] != file_id]
+        return {"ok": True, "snapshots": await self._payload_from(remaining)}
 
 
     _UPDATE_VALVE_KEYS = (
@@ -1630,7 +1769,23 @@ class UpdateService:
 
     async def _lead(self, lease: Any | None) -> None:
         while True:
-            delay = await self._auto_tick()
+            tick = asyncio.ensure_future(self._auto_tick())
+            lost = asyncio.Event()
+            watchdog = (
+                asyncio.ensure_future(self._lock_watchdog(lease, tick, lost))
+                if lease is not None
+                else None
+            )
+            try:
+                delay = await asyncio.shield(tick)
+            except asyncio.CancelledError:
+                if lease is None or not lost.is_set():
+                    raise
+                self._auto_role = "follower"
+                logger.warning("update: leader lease lost — abandoning this tick")
+                return
+            finally:
+                await self._stop_lock_watchdog(watchdog)
             remaining = float(delay)
             while remaining > 0:
                 step = min(remaining, float(_PD_UPDATE_LEADER_RENEW_S))
@@ -1655,7 +1810,10 @@ class UpdateService:
                     await self._lead(None)
                     continue
                 try:
-                    acquired = await asyncio.to_thread(lease.aquire_lock)
+                    acquire = _lock_acquire(lease)
+                    if acquire is None:
+                        raise UpdateError("internal", _LOCK_UNTAKABLE)
+                    acquired = await asyncio.to_thread(acquire)
                 except Exception as exc:
                     lease = None
                     self._auto_last = {"code": "lease_unavailable", "ts": _now(), "message": str(exc)}

@@ -426,7 +426,9 @@ request.
 A stored `reasoning` row is also withheld **whole** when the store records that another model produced it:
 never per detail block, never with its summary kept and only its signature removed. A partly filtered reasoning
 sequence is exactly what a provider rejects, so the row either replays intact or not at all. The producer is
-the row's own `model_id` column, carried out of the store's read beside the payload and never inside it, and the
+the row's own `model_id` column, carried out of the store's read beside the payload and never inside it — and
+that is true of the replay cache read as much as of the table read, on a sealed entry and a clear one alike, so
+a cached row is attributed exactly as the table attributes it — and the
 predicate is the message-level one from §6.1: a non-blank producer that differs from the model answering this
 request withholds; an absent or blank one replays, because cannot-attribute-then-keep is the safe direction (a
 dropped signature costs one reasoning block, a wrong one costs the turn). A row withheld this way is **not**

@@ -7261,7 +7261,9 @@ class TestFilterAutoInstall:
             mock_Functions = Mock()
             mock_Functions.get_functions_by_type = AsyncMock(return_value=[])
             mock_Functions.get_function_by_id = AsyncMock(return_value=None)
-            mock_Functions.insert_new_function = AsyncMock(return_value=Mock(id="openrouter_direct_uploads"))
+            mock_Functions.insert_new_function = AsyncMock(
+                return_value=Mock(id="openrouter_direct_uploads", is_active=False, updated_at=1)
+            )
             mock_Functions.update_function_by_id = AsyncMock(return_value=None)
             mock_Functions.delete_function_by_id = AsyncMock(return_value=True)
             mock_functions_mod.Functions = mock_Functions

@@ -190,7 +190,6 @@ _PIPE_OWNED_ROW_TYPES = frozenset({
     "session_log_lock",
     "dashboard_purge_lock",
 })
-_STORED_VALVE_UNREADABLE_MEMO_MAX = 32
 
 _RETENTION_CACHE_PURGE_BATCH = 500
 _ARTIFACT_SHARED_FRAGMENT_COOLDOWN_S = 3600.0
@@ -742,7 +741,6 @@ class ArtifactStore:
         self._read_fault_notified = False
         self._artifact_key_unreadable = False
         self._table_key = ""
-        self._stored_valve_unreadable_memo: dict[tuple[str, str, str], bool] = {}
         self._apply_artifact_encryption_key(
             EncryptedStr.read(self.valves.ARTIFACT_ENCRYPTION_KEY),
             self.valves.ARTIFACT_ENCRYPTION_KEY,
@@ -757,16 +755,26 @@ class ArtifactStore:
         self._lz4_warning_emitted = False
         self._lz4_faulted: bool = False
 
+    def _valve_column_table(self, session_factory: sessionmaker) -> Table:
+        bind = session_factory.kw["bind"]
+        cache_key = (id(bind), self._owui_schema)
+        cached = self._valve_column_table_cache
+        if cached is not None and cached[0] == cache_key:
+            return cached[1]
+        schema = self._owui_schema
+        metadata = MetaData(schema=schema) if schema else MetaData()
+        table = Table("function", metadata, autoload_with=bind)
+        valves_column = _owui_valve_column_type()
+        if valves_column is not None:
+            table.c.valves.type = valves_column
+        self._valve_column_table_cache = (cache_key, table)
+        return table
+
     def _raw_valve_column(self) -> tuple[Any, bool]:
         session_factory = self._session_factory
         if session_factory is None:
             return None, False
-        schema = self._owui_schema
-        metadata = MetaData(schema=schema) if schema else MetaData()
-        table = Table("function", metadata, autoload_with=session_factory.kw["bind"])
-        valves_column = _owui_valve_column_type()
-        if valves_column is not None:
-            table.c.valves.type = valves_column
+        table = self._valve_column_table(session_factory)
         with _db_session(session_factory) as session:
             try:
                 return session.query(table.c.valves).filter(table.c.id == self.id).scalar(), True
@@ -774,15 +782,10 @@ class ArtifactStore:
                 raise _SealedValveRow(str(exc)) from exc
 
     def _stored_valve_row_is_unreadable(self, stored: Any) -> bool:
-        secret = _webui_secret_key()
-        memo_key = (str(self.id or ""), secret, str(stored or ""))
-        memo = self._stored_valve_unreadable_memo
-        if memo_key in memo:
-            return memo[memo_key]
         try:
             raw, reached = self._raw_valve_column()
         except _SealedValveRow:
-            unreadable = True
+            return True
         except Exception:
             self.logger.debug(
                 "Raw valve column could not be read while arming the artifact guard (pipe_id=%s)",
@@ -790,14 +793,9 @@ class ArtifactStore:
                 exc_info=True,
             )
             return False
-        else:
-            if not reached or raw is None:
-                return False
-            unreadable = not raw_valve_column_decodes(raw)
-        if len(memo) >= _STORED_VALVE_UNREADABLE_MEMO_MAX:
-            memo.clear()
-        memo[memo_key] = unreadable
-        return unreadable
+        if not reached or raw is None:
+            return False
+        return not raw_valve_column_decodes(raw)
 
     def _stored_key_is_unreadable(self, stored: Any) -> bool:
         if self._encryption_key:
@@ -960,6 +958,7 @@ class ArtifactStore:
         self._db_executor: ThreadPoolExecutor | None = None
         self._artifact_store_signature: tuple[str, str] | None = None
         self._owui_schema: str | None = None
+        self._valve_column_table_cache: tuple[tuple[int, str | None], Table] | None = None
         self._closed: bool = False
         self._store_lock = threading.Lock()
 
@@ -1201,6 +1200,7 @@ class ArtifactStore:
             self._artifact_table_name = None
             self._artifact_table_fragment = None
             self._artifact_store_signature = None
+            self._valve_column_table_cache = None
             return None, None
 
         if self._engine is not engine or self._session_factory is None:
@@ -1211,6 +1211,7 @@ class ArtifactStore:
                 bind=engine,
                 expire_on_commit=False,
             )
+            self._valve_column_table_cache = None
         self._owui_schema = schema.strip() or None if isinstance(schema, str) else None
         return engine, schema
 
@@ -1284,6 +1285,7 @@ class ArtifactStore:
 
         schema_name = item_model.__table__.schema
         self._owui_schema = schema_name.strip() or None if isinstance(schema_name, str) else None
+        self._valve_column_table_cache = None
         table_exists = True
         try:
             table_exists = sa_inspect(engine).has_table(table_name, schema=schema_name)
@@ -1300,6 +1302,7 @@ class ArtifactStore:
             self._artifact_table_name = None
             self._artifact_table_fragment = None
             self._artifact_store_signature = None
+            self._valve_column_table_cache = None
             return
 
         if table_exists and not self._reconcile_artifact_schema(
@@ -1311,6 +1314,7 @@ class ArtifactStore:
             self._artifact_table_name = None
             self._artifact_table_fragment = None
             self._artifact_store_signature = None
+            self._valve_column_table_cache = None
             return
 
         self._item_model = item_model
@@ -2716,14 +2720,39 @@ class ArtifactStore:
             return False
 
         loop = asyncio.get_running_loop()
+        if self._redis_enabled and self._redis_client:
+            kept_cache = {
+                row_id for row_id, owner in owners.items() if owner == keep_message_id
+            }
+            keys = [
+                key
+                for key in (
+                    self._redis_cache_key(chat_id, artifact_id)
+                    for chat_id, artifact_id in refs
+                    if artifact_id not in kept_cache
+                )
+                if key
+            ]
+            if keys:
+                try:
+                    await _await_if_needed(self._redis_client.delete(*keys))
+                except Exception as exc:
+                    self.logger.warning(
+                        "Redis cache invalidation did not finish: %d stored row(s) stay "
+                        "replayable from the cache and are offered again on a later turn: %s",
+                        len(keys),
+                        exc,
+                        exc_info=True,
+                    )
+                    return False
+
         delete_call = functools.partial(
             self._delete_artifacts_sync, ids, keep_message_id, purge_cache=False
         )
-        kept: set[str] = set()
         try:
             async for attempt in _db_retryer():
                 with attempt:
-                    kept = await loop.run_in_executor(self._db_executor, delete_call)
+                    await loop.run_in_executor(self._db_executor, delete_call)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -2750,20 +2779,6 @@ class ArtifactStore:
                         "Artifact delete fault notice could not be delivered", exc_info=True
                     )
             return False
-        if keep_message_id:
-            kept = kept | {row_id for row_id, owner in owners.items() if owner == keep_message_id}
-        if self._redis_enabled and self._redis_client:
-            keys = [
-                self._redis_cache_key(chat_id, artifact_id)
-                for chat_id, artifact_id in refs
-                if artifact_id not in kept
-            ]
-            keys = [key for key in keys if key]
-            if keys:
-                try:
-                    await _await_if_needed(self._redis_client.delete(*keys))
-                except Exception as exc:
-                    self.logger.warning("Redis cache invalidation failed (best-effort): %s", exc, exc_info=True)
         return True
 
 
@@ -3401,6 +3416,9 @@ class ArtifactStore:
             if isinstance(row_data, dict):
                 recorded = row_data.get("is_encrypted")
                 is_encrypted = bool(recorded)
+                model_id = row_data.get("model_id")
+                if producers is not None and isinstance(model_id, str):
+                    producers[item_id] = model_id
             if recorded is None and isinstance(payload, dict) and "enc_v" in payload:
                 is_encrypted = "ciphertext" in payload
             if is_encrypted:
@@ -3416,9 +3434,6 @@ class ArtifactStore:
                 payload = None
             if isinstance(payload, dict):
                 cached[item_id] = payload
-                model_id = row_data.get("model_id") if isinstance(row_data, dict) else None
-                if producers is not None and isinstance(model_id, str):
-                    producers[item_id] = model_id
         return cached, encrypted_rows
 
     def _decrypt_many(

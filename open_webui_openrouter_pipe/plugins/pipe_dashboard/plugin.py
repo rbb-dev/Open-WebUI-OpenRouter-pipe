@@ -210,7 +210,10 @@ class PipeDashboardPlugin(PluginBase):
                 "request path, on every worker including ones that have served no request, with no "
                 "restart; the setting is read again when the row is written, so a request already in flight when you switch it off records nothing. "
                 "A stored row this server cannot decrypt counts as off, and the refusal is reported in the "
-                "log naming the read."
+                "log naming the read. The Usage tab reports that same outcome beside the value, so it says "
+                "the setting could not be read rather than showing you an off switch your unreadable row "
+                "cannot speak for; the numbers on that tab are real either way, and only these two "
+                "setting-derived values fall back to their defaults."
             ),
         )),
         "PIPE_DASHBOARD_USAGE_RETENTION_DAYS": (int, Field(
@@ -218,7 +221,7 @@ class PipeDashboardPlugin(PluginBase):
             ge=1,
             le=365,
             title="Usage record retention (days)",
-            description="How long collected usage records are kept before the purge task deletes them. Read from this saved setting on every pass, at the declared default when it cannot be read.",
+            description="How long collected usage records are kept before the purge task deletes them. Read from this saved setting on every pass, at the declared default when it cannot be read. When it cannot be read the Usage tab says the setting was unreadable and leaves its range buttons alone, rather than disabling them against a window you never chose.",
         )),
         "PIPE_DASHBOARD_UPDATE_ENABLE": (bool, Field(
             default=True,

@@ -100,6 +100,8 @@ _PIPE_OFF_STAMP_META_KEY = "openrouter_pipe:switched_off_at"
 _PIPE_INSTALLED_META_KEY = "openrouter_pipe:installed_by"
 _DISPLAY_NAME_MAX_CHARS = 80
 _PIPE_OFF_LANDED_AT: dict[str, int] = {}
+_PIPE_OFF_SETTLING: OrderedDict[str, None] = OrderedDict()
+_PIPE_OFF_SETTLING_ROWS = 64
 _OFF_STAMP_SETTLE_ATTEMPTS = 2
 
 
@@ -183,6 +185,8 @@ def _pipe_owns_the_off(row: Any) -> bool:
     stored = _stored_meta(row)
     if not stored.get(_PIPE_OFF_META_KEY):
         return False
+    if str(getattr(row, "id", "") or "") in _PIPE_OFF_SETTLING:
+        return False
     stamp = stored.get(_PIPE_OFF_STAMP_META_KEY)
     if not isinstance(stamp, int) or isinstance(stamp, bool):
         return True
@@ -190,6 +194,17 @@ def _pipe_owns_the_off(row: Any) -> bool:
     if updated_at <= stamp:
         return True
     return updated_at == _PIPE_OFF_LANDED_AT.get(str(getattr(row, "id", "") or ""))
+
+
+def _off_settle_begins(row_id: str) -> None:
+    _PIPE_OFF_SETTLING[row_id] = None
+    _PIPE_OFF_SETTLING.move_to_end(row_id)
+    while len(_PIPE_OFF_SETTLING) > _PIPE_OFF_SETTLING_ROWS:
+        _PIPE_OFF_SETTLING.popitem(last=False)
+
+
+def _off_settle_ends(row_id: str) -> None:
+    _PIPE_OFF_SETTLING.pop(row_id, None)
 
 
 def _switch_on(row: Any) -> bool:
@@ -206,6 +221,15 @@ def _operator_re_enabled_the_pipe_off(row: Any) -> bool:
 
 def switched_off_meta(row: Any) -> dict[str, Any]:
     return _merged_meta(row, {}, off_by_pipe=True)
+
+
+async def _live_row_or_skip(Functions, row: Any) -> Any | None:
+    live = await Functions.get_function_by_id(str(getattr(row, "id", "") or ""))
+    if live is None or not getattr(live, "is_active", False):
+        return None
+    if _operator_re_enabled_the_pipe_off(live):
+        return None
+    return live
 
 
 def _stored_source(row: Any) -> str:
@@ -225,7 +249,7 @@ class _WriteOutcome:
         self.refused = False
 
 
-async def _write_function(Functions, function_id, updates, what, logger, raised=None, *, settle: bool = True, landed_out: list | None = None, refused_out: set[str] | None = None) -> bool:
+async def _write_function(Functions, function_id, updates, what, logger, raised=None, *, settle: bool = False, landed_out: list | None = None, refused_out: set[str] | None = None) -> bool:
     try:
         landed = await Functions.update_function_by_id(function_id, updates)
         if landed_out is not None:
@@ -260,33 +284,42 @@ async def _settle_the_off_stamp(Functions, function_id, updates, landed, logger,
     if not isinstance(stamp, int) or isinstance(stamp, bool):
         return
     landed_at = int(getattr(landed, "updated_at", 0) or 0)
-    _PIPE_OFF_LANDED_AT[str(function_id)] = landed_at
+    row_id = str(function_id)
+    _PIPE_OFF_LANDED_AT[row_id] = landed_at
     row = landed
     for _ in range(_OFF_STAMP_SETTLE_ATTEMPTS):
         if landed_at <= int(stamp):
             return
+        live = await Functions.get_function_by_id(function_id)
+        if live is None or not _switched_off_by_pipe(live) or _operator_re_enabled_the_pipe_off(live):
+            return
+        row = live
         settled: list = []
-        await _write_function(
-            Functions,
-            function_id,
-            {
-                "meta": {
-                    **_stored_meta(row),
-                    _PIPE_OFF_STAMP_META_KEY: landed_at,
+        _off_settle_begins(row_id)
+        try:
+            await _write_function(
+                Functions,
+                function_id,
+                {
+                    "meta": {
+                        **_stored_meta(row),
+                        _PIPE_OFF_STAMP_META_KEY: landed_at,
+                    },
                 },
-            },
-            f"settling the switch-off stamp on {function_id} to the second the write landed",
-            logger,
-            settle=False,
-            landed_out=settled,
-            refused_out=refused_out,
-        )
+                f"settling the switch-off stamp on {function_id} to the second the write landed",
+                logger,
+                settle=False,
+                landed_out=settled,
+                refused_out=refused_out,
+            )
+        finally:
+            _off_settle_ends(row_id)
         if not settled or settled[0] is None:
             return
         row = settled[0]
         stamp = landed_at
         landed_at = int(getattr(row, "updated_at", 0) or 0)
-        _PIPE_OFF_LANDED_AT[str(function_id)] = landed_at
+        _PIPE_OFF_LANDED_AT[row_id] = landed_at
     if landed_at > int(stamp):
         logger.log(
             bounded_warn_level(
@@ -1063,8 +1096,12 @@ class FilterManager:
                 if matches_candidate(_stored_source(existing)) and _claimable_by(existing, owner):
                     if getattr(existing, "is_active", False):
                         return str(getattr(existing, "id", "") or ""), outcome
-                    if not (_pipe_owns_the_off(existing) or not _switched_off_by_pipe(existing)):
+                    if not _pipe_owns_the_off(existing):
                         chosen = existing
+                        desired_meta = {
+                            key: value for key, value in desired_meta.items()
+                            if key not in (_PIPE_OFF_META_KEY, _PIPE_OFF_STAMP_META_KEY)
+                        }
                         break
                     if await _write_function(
                         Functions,
@@ -1144,6 +1181,7 @@ class FilterManager:
                 if not created:
                     outcome.refused = True
                     return None, outcome
+                _PIPE_OFF_LANDED_AT[str(candidate_id)] = int(getattr(created, "updated_at", 0) or 0)
                 if not await _write_function(
                     Functions,
                     candidate_id,
@@ -1831,6 +1869,7 @@ class FilterManager:
                         "every OpenRouter Web Tools tool being disabled",
                         self.logger,
                         raised,
+                        settle=True,
                     )
                     if raised:
                         self.logger.log(
@@ -1964,6 +2003,7 @@ class FilterManager:
                 {"is_active": False, "meta": switched_off_meta(live)},
                 "disabling a Video Generation filter ENABLE_VIDEO_GENERATION switched off",
                 self.logger,
+                settle=True,
             ):
                 self.logger.info("Disabled OpenRouter Video Generation filter %r (ENABLE_VIDEO_GENERATION=False)", row.id)
 
@@ -2568,13 +2608,17 @@ class FilterManager:
                     )
                 if not function_id:
                     continue
-                live = await _live_row(Functions, row)
+                live = await _live_row_or_skip(Functions, row)
+                if live is None:
+                    continue
+                row = live
                 if await _write_function(
                     Functions,
                     function_id,
-                    {"is_active": False, "meta": switched_off_meta(live)},
+                    {"is_active": False, "meta": switched_off_meta(row)},
                     f"retiring a {valve} filter whose install valve is off",
                     self.logger,
+                    settle=True,
                 ):
                     self.logger.info("Switched off %s filter %r (%s is off)", valve, function_id, valve)
 
@@ -2802,13 +2846,17 @@ class FilterManager:
                 continue
             if not await self._ours_or_a_past_install_that_is_gone(row, Functions):
                 continue
-            live = await _live_row(Functions, row)
+            live = await _live_row_or_skip(Functions, row)
+            if live is None:
+                continue
+            row = live
             if not await _write_function(
                 Functions,
                 row_id,
-                {"is_active": False, "meta": switched_off_meta(live)},
+                {"is_active": False, "meta": switched_off_meta(row)},
                 "retiring a superseded image filter",
                 self.logger,
+                settle=True,
                 refused_out=refused_out,
             ):
                 continue
@@ -2844,13 +2892,17 @@ class FilterManager:
                 continue
             if getattr(row, "is_active", True) is False:
                 continue
-            live = await _live_row(Functions, row)
+            live = await _live_row_or_skip(Functions, row)
+            if live is None:
+                continue
+            row = live
             if not await _write_function(
                 Functions,
                 row_id,
-                {"is_active": False, "meta": switched_off_meta(live)},
+                {"is_active": False, "meta": switched_off_meta(row)},
                 "retiring a superseded per-model video filter",
                 self.logger,
+                settle=True,
                 refused_out=refused_out,
             ):
                 continue
@@ -4449,6 +4501,9 @@ class Filter:
                     if not created_func:
                         created_func = await Functions.get_function_by_id(candidate_id)
                     if created_func:
+                        _PIPE_OFF_LANDED_AT[str(candidate_id)] = int(
+                            getattr(created_func, "updated_at", 0) or 0
+                        )
                         if await _write_function(
                             Functions,
                             candidate_id,
@@ -4494,6 +4549,7 @@ class Filter:
                     {"is_active": False, "meta": switched_off_meta(live)},
                     "disabling a duplicate provider routing filter",
                     self.logger,
+                    settle=True,
                 ):
                     disabled += 1
                     self.logger.warning("Disabled duplicate provider routing filter: %s", orphan_id)
@@ -4519,6 +4575,7 @@ class Filter:
                         deactivation,
                         "disabling a provider routing filter the routing valves no longer publish",
                         self.logger,
+                        settle=True,
                     ):
                         disabled += 1
                         self.logger.info("Disabled provider routing filter: %s", existing_id)

@@ -1177,8 +1177,16 @@ def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
       return '<div style="font-size:11px;color:var(--text-faint);margin-top:6px;">Figures cover the records still retained (oldest ' + esc(sinceText) + '); older activity is past the retention window. Task models served outside this pipe are not counted.</div>';
     }}
 
+    var US_UNREADABLE = 'the collection setting could not be read from the stored row — either the database is unreachable or the stored set will not decrypt under the current WEBUI_SECRET_KEY; the server log has the warning';
+
     function usMetaLine(meta) {{
       var parts = [];
+      if (meta.valves_read_ok === false) {{
+        if (meta.records !== undefined && meta.records !== null) parts.push(meta.records + ' records');
+        if (meta.approx_bytes) parts.push('\\u2248 ' + fmtBytes(meta.approx_bytes));
+        parts.push('times in your timezone');
+        return 'collection setting unreadable \\u00b7 ' + parts.join(' \\u00b7 ') + ' \\u00b7 ' + US_UNREADABLE;
+      }}
       parts.push('retention ' + (meta.retention_days || '?') + 'd');
       if (meta.records !== undefined && meta.records !== null) parts.push(meta.records + ' records');
       if (meta.approx_bytes) parts.push('\\u2248 ' + fmtBytes(meta.approx_bytes));
@@ -1188,6 +1196,7 @@ def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
 
     function usApplyRetention(meta) {{
       if (!meta || !meta.retention_days) return;
+      if (meta.valves_read_ok === false) return;
       var btns = $(ID + '-us-range').querySelectorAll('button');
       for (var i = 0; i < btns.length; i++) {{
         var rk = btns[i].getAttribute('data-range');
@@ -1218,7 +1227,10 @@ def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
         }}
         body.style.display = 'none';
         note.style.display = '';
-        if (res && res.meta && res.meta.collect_on === null) {{
+        if (res && res.meta && res.meta.valves_read_ok === false) {{
+          note.textContent = 'Usage collection could not be read from the stored settings — '
+            + US_UNREADABLE + (res.reason ? ' (' + res.reason + ')' : '') + '.';
+        }} else if (res && res.meta && res.meta.collect_on === null) {{
           note.textContent = 'Usage collection could not be read from the stored settings'
             + (res.reason ? ' (' + res.reason + ')' : '')
             + '; the pipe logged the read — try again in a moment.';
@@ -1227,6 +1239,14 @@ def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
         }} else {{
           note.textContent = 'Usage data unavailable: ' + reason;
         }}
+        reportHeight();
+        return;
+      }}
+      if (res.meta && res.meta.valves_read_ok === false && (!res.totals || !res.totals.sessions)) {{
+        body.style.display = 'none';
+        note.style.display = '';
+        note.textContent = 'Usage collection could not be read from the stored settings — '
+          + US_UNREADABLE + '.';
         reportHeight();
         return;
       }}

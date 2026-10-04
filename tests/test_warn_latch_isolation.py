@@ -96,6 +96,12 @@ EXPECTED_LATCHES = {
     "_warned_image_filter_installs",
     "_warned_image_provider_keys",
     "_warned_image_reuse",
+    # The image reference host allowlist's linter and its refusals, keyed by entry for
+    # the first and by family (`input_references` / `provider_options`) for the second.
+    # Keyed on the family rather than on the address so a hostile URL cannot widen the
+    # latch or flood the log, and keyed on the entry so one typo in a list of several is
+    # named once.
+    "_warned_image_scope",
     "_warned_no_task_model",
     # A dashboard action taken while the plugin system is committed off is audited by
     # `<uid>|plugin_system_off` with a five-minute cooldown, so a retry storm reports
@@ -244,6 +250,10 @@ EXPECTED_LATCHES = {
     # one test wrote is read by the next.
     "_PIPE_OFF_LANDED_AT",
     "_REFUSED_FILTER_WRITES",
+    # The rows a settle is mid-write on. `_pipe_owns_the_off` consults it, so an entry
+    # left behind answers "the pipe did this switch-off" wrongly for a row it no longer
+    # holds; cleared by name like the two above.
+    "_PIPE_OFF_SETTLING",
 }
 
 # The records `_LATCH_RE` cannot see, and the reason the source census below is not asked
@@ -253,6 +263,7 @@ EXPECTED_LATCHES = {
 _NON_LATCH_RECORDS = {
     "_PIPE_OFF_LANDED_AT",
     "_REFUSED_FILTER_WRITES",
+    "_PIPE_OFF_SETTLING",
 }
 
 # `OrderedDict()` is a fourth admitted shape, not a fourth kind of latch: the

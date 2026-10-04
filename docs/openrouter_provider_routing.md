@@ -345,9 +345,16 @@ valves and the pipe retires the row again on the next model-list refresh, exactl
 would have done without the re-enable.
 
 A row left switched off by a pass that was cancelled between its insert and its activation
-is not one of those. The insert stamps the row as the pipe's own switch-off, so it is
-re-armed by the next catalog refresh that can write and does not need the Functions screen;
-only a row whose off the pipe does not own is yours to switch back on by hand.
+is not one of those. The insert stamps the row as the pipe's own switch-off and records the
+second that row actually landed on, so it is re-armed by the next catalog refresh that can
+write and does not need the Functions screen.
+
+A row you switched off by hand is yours whichever way the pipe finds it. You write
+`is_active` and no record at all, so an inert row this copy installed that carries no record
+is left off: it is the same shape as the cancelled insert above -- inert, naming this copy,
+no record to read -- and the pipe will not claim a switch-off it cannot see, because a
+filter an administrator switched off must not be switched back on by the next pass. Switch
+it on in Workspace > Functions to bring it back.
 
 Note that the entry may still be visible in the model's filter list while it is inactive.
 Open WebUI applies only the active entries, so a listed-but-inactive provider routing entry

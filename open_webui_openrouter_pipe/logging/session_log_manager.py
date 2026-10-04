@@ -467,7 +467,7 @@ def resolve_message_id(metadata: Any) -> str:
         resolved = _inherited_message_id(metadata)
         task = metadata.get("task")
         if not task:
-            return resolved
+            return _bounded_head(resolved, _MAX_KEY_CHARS)
         if not resolved:
             return ""
         qualifier = str(task)

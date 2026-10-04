@@ -27,8 +27,8 @@ Three admin valves control the feature. They appear in Open WebUI's Settings onc
 | Valve | Type | Default | What it does |
 |-------|------|---------|--------------|
 | `PIPE_DASHBOARD_ENABLE` | bool | `False` | Shows or hides the Pipe Dashboard model in the model selector, and closes the console behind it: with it off the action route answers 404, new dashboard subscriptions are refused, and viewers already watching **that copy** are dropped so its live feed stops -- the switch governs this install only, so a second installed copy on the same worker keeps its own panel. The dashboard's own row in Open WebUI's Models table is switched off and on with this valve as well, and claims the off in its metadata, so Settings -> Models and Settings -> Interface never list it as enabled while every gate behind it answers 404. Read from the stored row at the model list, the route, the subscription and the emit, so a toggle takes effect on the very next request on every worker, with no restart -- including on workers that never served a chat; a row the store will not hand back refuses rather than serving the worker's in-memory copy. A row that omits the key is the off state: the Config-tab writer drops any field equal to its declared default, and that default is `False`. A row the store will not hand back refuses new work the same way — no action runs, no new subscription is admitted, no payload is emitted — but it is **not** a switch anyone turned, and it does not evict a viewer already watching. A *committed* off does evict them, from the dashboard's own Config tab as well as from Open WebUI's function editor; an unreadable one leaves every viewer connected with a frozen panel: no `denied` event, no reconnect, and one latched warning in the server log naming the row that could not be read. That is deliberate — a database hiccup must not tell an administrator their access was revoked, and waiting is the right remedy for a frozen panel — but it means a fault here is a silent stall in the browser and a line in the log, not an error on screen. |
-| `PIPE_DASHBOARD_USAGE_COLLECT` | bool | `False` | Records one usage entry per completed request (user, model, tokens, tool success/failure/skip counts, cost) to power the Usage tab. Read from the stored settings at write time: turning it on starts recording without a restart, and so does turning it off -- on every worker, for the background sweep's rows as well as the request path's, and on a worker that has served no request as soon as it builds its model list. A stored configuration that cannot be read at all counts as off, as does one that does not carry the key; a row this server cannot decrypt writes nothing and says so in the log. |
-| `PIPE_DASHBOARD_USAGE_RETENTION_DAYS` | int | `30` | How long usage records are kept. A background purge removes older records, and it runs whether or not `Collect usage records` is on, because the window is a promise about rows already stored. The window covers every table this pipe's usage has lived in, including one a rotation of `ARTIFACT_ENCRYPTION_KEY` left behind: a rotation moves the table by changing only the hash, so the same purge pass holds the table it abandoned to the same window and clears its temporary-chat rows too. The pass runs whether or not collection is on - it is about rows already stored - and it never drops a table, only empties one. Read live, from the stored valve row rather than the worker's in-memory copy, so the purge and the Usage tab always report the same window, falling back to this default when they cannot be read at all. The *window* is the one setting a failed read is still allowed to answer, because a number the pipe is purging by is a fact and not a claim about your setting; the collect switch next door is not answered from its default, and the tab reports the failed read instead of displaying a default as the setting you chose. |
+| `PIPE_DASHBOARD_USAGE_COLLECT` | bool | `False` | Records one usage entry per completed request (user, model, tokens, tool success/failure/skip counts, cost) to power the Usage tab. Read from the stored settings at write time: turning it on starts recording without a restart, and so does turning it off -- on every worker, for the background sweep's rows as well as the request path's, and on a worker that has served no request as soon as it builds its model list. A stored configuration that cannot be read at all counts as off, as does one that does not carry the key; a row this server cannot decrypt writes nothing and says so in the log. That is what the *writer* does with it. What the Usage tab *reports* has three states rather than two: on, off, and unreadable. |
+| `PIPE_DASHBOARD_USAGE_RETENTION_DAYS` | int | `30` | How long usage records are kept. A background purge removes older records, and it runs whether or not `Collect usage records` is on, because the window is a promise about rows already stored. The window covers every table this pipe's usage has lived in, including one a rotation of `ARTIFACT_ENCRYPTION_KEY` left behind: a rotation moves the table by changing only the hash, so the same purge pass holds the table it abandoned to the same window and clears its temporary-chat rows too. The pass runs whether or not collection is on - it is about rows already stored - and it never drops a table, only empties one. Read live, from the stored valve row rather than the worker's in-memory copy, so the purge and the Usage tab always report the same window, falling back to this default when they cannot be read at all. The *window* is the one setting a failed read is still allowed to answer, because a number the pipe is purging by is a fact and not a claim about your setting; the collect switch next door is not answered from its default, and the tab reports the failed read instead of displaying a default as the setting you chose. While the row is unreadable the tab says the retention setting is unreadable too, rather than printing this default as a window you chose. |
 
 ---
 
@@ -85,7 +85,7 @@ The table sorts on any column and has a filter box.
 
 ### Usage
 
-The Usage tab needs `PIPE_DASHBOARD_USAGE_COLLECT` on. Without it, the tab shows a hint to enable collection. If the stored settings cannot be read at all, the tab says the read failed instead of showing that hint, so a valve that is very likely already on is not sent to an operator as one they still have to turn on.
+The Usage tab needs `PIPE_DASHBOARD_USAGE_COLLECT` on. Without it, the tab shows a hint to enable collection. If the stored settings cannot be read at all, the tab says the read failed instead of showing that hint, so a valve that is very likely already on is not sent to an operator as one they still have to turn on. That sentence names the two things that cause it -- the database being unreachable, or the stored set not decrypting under the server's current `WEBUI_SECRET_KEY` -- and points at the server log, which says which of the two it was. The usage figures on that tab are real either way; only the collect switch and the retention window beside it fall back to their defaults while the row is unreadable.
 
 With collection on, the tab presents:
 
@@ -95,7 +95,7 @@ With collection on, the tab presents:
 - **By model** — cost share per model. Each task-model appears as its own `model (tasks)` row with its own cost.
 - **By user** — sorted by cost, showing the top 10 **by cost** with an "N others" roll-up that names every user not shown and carries what they spent between them. Search and column-sort cover those ten; a user inside the roll-up is reached by neither, because only the ten cross the wire. A row's cost covers chat sessions and task models together, so a user with task spend shows a second line under the figure naming the task-model portion of it (`incl. $X task models`); the Sessions column counts chat sessions only, so cost less that named portion is what the user's chat sessions alone cost. A pinned **Totals** row at the bottom sums the visible rows (sessions, tokens, tools, cost), tools including the skipped calls the per-user rows each show, and carries the same task-model disclosure when any visible row has one.
 
-Select a range: 1h, 6h, 24h, 7d, or 30d. Ranges longer than the retention window are disabled. A footnote shows the oldest retained record's date, the retention window, and the record count.
+Select a range: 1h, 6h, 24h, 7d, or 30d. Ranges longer than the retention window are disabled -- except while the stored settings cannot be read, when no button is disabled, because the window on screen is a default and not one you chose. A footnote shows the oldest retained record's date, the retention window, and the record count.
 
 **Invoice note.** Task models configured outside this pipe never reach it, so they are absent from these totals. Expect a small gap against the OpenRouter invoice when such task models are in use.
 
@@ -173,10 +173,13 @@ builds — forks inherit the release workflow, so assets, digests, and the chang
   version), exec-validates the new bundle through Open WebUI's own loader, checks that neither half of
   the function's revision token has moved while it was loading — the whole-second stamp Open WebUI
   stores, and the digest of the code this tab was drawn from, which is what catches a hand-paste in
-  Workspace ▸ Functions made inside that same second, snapshots the current code, and only then writes
-  the function row — and verifies the database accepted the write,
-  failing the update loudly instead of reporting a success that did not persist. A load failure
-  surfaces the real error in the tab and the pipe keeps serving the old code, and it leaves the pipe's
+  Workspace ▸ Functions made inside that same second, and the installed version the tab shows comes
+  from the same token, so the offer and the guard cannot disagree about the row. It then snapshots
+  the current code and only then writes the function row — and verifies the database accepted the
+  write, failing the update loudly instead of reporting a success that did not persist. That
+  verification resolves the store's own ambiguity by reading the row once, so a write the store
+  committed but could not confirm is reported as the success it is. A load failure surfaces the real error in
+  the tab and the pipe keeps serving the old code, and it leaves the pipe's
   on/off switch exactly as you had it — so a pipe you had already switched off in Workspace > Functions
   stays off rather than being switched back on by an update that failed. It is only when the database
   also refuses the write that puts a *live* row back that the tab reports `exec_failed_inactive` and tells
@@ -218,9 +221,13 @@ builds — forks inherit the release workflow, so assets, digests, and the chang
   "delete all files" maintenance action, destroys rollback points.
 - **Auto-update** — opt-in via `PIPE_DASHBOARD_UPDATE_AUTO`. In multi-worker deployments the
   workers elect a single update leader through Open WebUI's own Redis lock: only the leader checks
-  GitHub (roughly every six hours, renewing its lease as it goes), while the other workers make no
+  GitHub (roughly every six hours, renewing its lease at a third of its lifetime for as long as it is
+  doing work — so a cycle longer than the lease keeps it rather than losing it part-way), while the
+  other workers make no
   GitHub calls at all — they probe the lease hourly and take over if the leader dies or restarts
-  (a gracefully stopped leader releases the lease immediately). Worker count therefore never
+  (a gracefully stopped leader releases the lease immediately). A leader that loses its lease while
+  its own cycle is running abandons that cycle rather than finishing an update it no longer holds
+  the lease for, and the function row is left untouched. Worker count therefore never
   multiplies update traffic. Single-worker installs (no Redis) skip the election and check directly.
   The leader applies a release once it is older than `PIPE_DASHBOARD_UPDATE_AUTO_DELAY_HOURS`
   (default 7 days — a bad release yanked within the window never reaches auto-updaters, and a fixed

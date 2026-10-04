@@ -21,7 +21,9 @@ USAGE_RANGES: dict[str, tuple[int, int]] = {
     "30d": (2592000, 14400),
 }
 
-_UQ_MEMO: dict[tuple[str | None, str, bool, int, bool | None, int], tuple[float, dict[str, Any]]] = {}
+_UQ_MEMO: dict[
+    tuple[str | None, str, bool, int, bool, bool, int], tuple[float, dict[str, Any]]
+] = {}
 _UQ_MEMO_TTL = 30.0
 _UQ_MEMO_MAX = 256
 
@@ -507,10 +509,17 @@ async def run_usage_query(plugin: Any, pipe: Any, args: dict[str, Any]) -> dict[
     from .actions import _update_service_of
 
     svc = _update_service_of(pipe)
+    stored_read_ok = False
+    row: dict[str, Any] = {}
     if svc is None:
         valves = plugin.ctx.valves
         collect_on = bool(getattr(valves, "PIPE_DASHBOARD_USAGE_COLLECT", False))
         retention_days = int(getattr(valves, "PIPE_DASHBOARD_USAGE_RETENTION_DAYS", 30) or 30)
+        logger.warning(
+            "pipe_dashboard: no update service is registered, so the persisted usage "
+            "valves were never consulted; the Usage tab reports the in-memory copy and "
+            "says the read did not happen rather than claiming one that did not"
+        )
     else:
         try:
             row, stored_read_ok = await svc._row_valves_checked()
@@ -528,9 +537,14 @@ async def run_usage_query(plugin: Any, pipe: Any, args: dict[str, Any]) -> dict[
                 exc_info=True,
             )
             row, stored_read_ok = {}, False
-        collect_on = bool(row.get("PIPE_DASHBOARD_USAGE_COLLECT", False)) if stored_read_ok else None
+        collect_on = bool(row.get("PIPE_DASHBOARD_USAGE_COLLECT", False)) if stored_read_ok else False
         retention_days = int(row.get("PIPE_DASHBOARD_USAGE_RETENTION_DAYS", 30) or 30) if stored_read_ok else 30
-    base_meta = {"collect_on": collect_on, "retention_days": retention_days, "range": range_key}
+    base_meta = {
+        "collect_on": collect_on,
+        "valves_read_ok": bool(stored_read_ok),
+        "retention_days": retention_days,
+        "range": range_key,
+    }
 
     if range_key not in USAGE_RANGES:
         return {"available": False, "reason": "unknown range", "meta": base_meta}
@@ -554,7 +568,7 @@ async def run_usage_query(plugin: Any, pipe: Any, args: dict[str, Any]) -> dict[
         return {"available": False, "reason": reason, "meta": base_meta}
 
     memo_key = (usage_store._table_name, range_key, include_tasks, tz_offset_min,
-                collect_on, retention_days)
+                bool(stored_read_ok), collect_on, retention_days)
     now = time.time()
     hit = _UQ_MEMO.get(memo_key)
     if hit is not None and now - hit[0] < _UQ_MEMO_TTL:

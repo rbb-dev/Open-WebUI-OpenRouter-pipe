@@ -59,6 +59,8 @@ from .media_relay import megabytes
 from .provider_options import (
     IMAGE_PROVIDER_KEYS,
     UnvettableRequest,
+    _host_entries,
+    _host_in_scope,
     bare_pins,
     carrier_slug,
     fan_provider_options,
@@ -93,6 +95,10 @@ def _clamp(text: Any, limit: int = _NOTE_NAME_LIMIT) -> str:
 def _labelled(name: Any) -> str:
     title = IMAGE_KNOB_TITLES.get(name, ("", ""))[0] if isinstance(name, str) else ""
     return f"{title} ({name})" if title and title != name else str(name)
+
+
+def _image_family(where: str) -> str:
+    return "provider_options" if where.startswith("provider") else "input_references"
 
 
 def _label_for_generated_image(shown: int, total: int) -> str:
@@ -143,6 +149,11 @@ _MAX_PAYLOAD_ADDRESSES = 16
 
 _BILLING_MULTIPLIERS = frozenset({"n"})
 
+_SCOPE_REFUSAL = (
+    "its host is outside the hosts this deployment allows. Add it to "
+    "IMAGE_REFERENCE_ALLOWED_DOMAINS (Image reference host allowlist), or clear that valve."
+)
+
 _LEGACY_PARAM_NAMES = {
     "image_size": "resolution",
 }
@@ -158,6 +169,8 @@ _warned_dropped_image_param: set[str] = set()
 _warned_image_cost_snapshot: set[str] = set()
 
 _warned_image_provider_keys: set[str] = set()
+
+_warned_image_scope: set[str] = set()
 
 _NO_CONTRACT = (
     "provider passthrough parameters will be dropped and top-level values sent unvalidated."
@@ -925,14 +938,30 @@ class ImageGenerationAdapter:
             seen[url] = verdict
         return verdict
 
+    def _warn_inert_scope_entry(self, entry: str, any_usable: bool) -> None:
+        self._logger.log(
+            warn_level(_warned_image_scope, f"image_reference_scope_entry:{entry}"),
+            "IMAGE_REFERENCE_ALLOWED_DOMAINS entry %r cannot match a host this "
+            "deployment can reach, so %s. Write a bare host such as media.example.com, "
+            "or host:port for one service: a ! block entry, a whole URL and a CIDR "
+            "range are not accepted here.",
+            entry,
+            "every reference image is refused" if not any_usable else "it is not applied and "
+            "the rest of the list still governs",
+        )
+
     async def _vet_payload_addresses(
         self, payload: dict[str, Any], seen: dict[str, bool | None],
         deadline: float | None = None,
+        *, image_reference_allowed_domains: str | None = None,
     ) -> None:
         try:
             addresses = list(payload_addresses(payload))
         except UnvettableRequest as exc:
             raise ImageGenerationError(str(exc)) from exc
+        entries, usable, unusable = _host_entries(image_reference_allowed_domains)
+        for entry in sorted(unusable):
+            self._warn_inert_scope_entry(entry, bool(usable))
         budget = _MAX_PAYLOAD_ADDRESSES
         for url, where in addresses:
             if url not in seen:
@@ -950,6 +979,17 @@ class ImageGenerationAdapter:
             )
             if refusal is not None:
                 raise ImageGenerationError(refusal)
+            if entries and not _host_in_scope(url, entries, usable):
+                self._logger.log(
+                    warn_level(
+                        _warned_image_scope,
+                        f"image_reference_scope:{_image_family(where)}",
+                    ),
+                    "Refusing to send '%s': %s",
+                    where,
+                    _SCOPE_REFUSAL,
+                )
+                raise ImageGenerationError(f"Refusing to send '{where}': {_SCOPE_REFUSAL}")
 
     async def _vetted_reference_urls(
         self, urls: list[str], seen: dict[str, bool | None] | None = None,
@@ -1469,7 +1509,12 @@ class ImageGenerationAdapter:
         if self._should_ask_for_a_stream(payload, stream_candidates):
             payload["stream"] = True
 
-        await self._vet_payload_addresses(payload, vetted, address_deadline)
+        await self._vet_payload_addresses(
+            payload, vetted, address_deadline,
+            image_reference_allowed_domains=getattr(
+                valves, "IMAGE_REFERENCE_ALLOWED_DOMAINS", ""
+            ),
+        )
 
         await self._report_notes(
             notes, api_model_id=api_model_id, event_emitter=event_emitter

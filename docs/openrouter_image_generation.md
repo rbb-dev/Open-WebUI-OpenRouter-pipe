@@ -1229,7 +1229,8 @@ three are not drawn for it:
 - **Reference image links** — a JSON list of `https` links or `data:` URLs to
   use as well as, or instead of, the attached pictures. These go first, so they
   survive on models that take only one reference, and **Reference images** set to
-  none suppresses them as well as the attached ones.
+  none suppresses them as well as the attached ones. A link whose host is outside
+  `IMAGE_REFERENCE_ALLOWED_DOMAINS` fails the request, naming that setting.
 
 A request carries at most 16 references. Where a model publishes a lower limit
 the lower one applies, and anything over the limit is dropped with a note saying
@@ -1249,6 +1250,27 @@ typed link the deployment will not fetch fails the request outright rather than
 generating a picture that quietly ignored it; a picture already in the chat is
 dropped instead, with a note saying how many and why, because a single unreachable
 address in an old turn would otherwise fail every later request in that chat.
+
+A deployment that also wants to say *which* host a reference may name sets
+`IMAGE_REFERENCE_ALLOWED_DOMAINS` (Config tab: **Image reference host
+allowlist**). It is empty by default, so nothing changes until it is set. An entry
+matches exactly or as a parent domain, case-insensitively — `example.com` covers
+`cdn.example.com` and does not cover `notexample.com` — and a bare host matches on
+any port, where a `host:port` entry names that host on that port only. It covers
+all three routes alike: the links box, the pictures already in the chat, and every
+address under the free-text `provider.options` box at any depth, because the check
+runs over the whole built request rather than over a named field. It is an
+*additional* restriction: the address check above still runs, still answers first,
+and an entry here never widens the scheme policy. There is no media relay on this
+path, so nothing is exempt — a host address a user typed is refused with the list in
+force.
+
+With that valve set, the asymmetry above changes for one route. A typed link
+outside the list fails the request, and so does a picture already in the chat that
+the pipe could not download and passes on as a link: it is refused rather than
+dropped with a note, because the refusal has to name the setting an administrator
+has to change. A picture the pipe did download travels as inline `data:` bytes,
+which the list does not reach, so a turn whose pictures are all local is unaffected.
 
 Other consequences worth knowing:
 

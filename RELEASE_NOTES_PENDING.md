@@ -2,6 +2,7 @@
 
 ## Behaviour changes
 
+- **Gemini thinking budget, `0` is now a real off switch for the whole Gemini family** — setting `GEMINI_THINKING_BUDGET` to `0` used to switch thinking off on Gemini 2.5 only. On Gemini 3 it reached nothing at all: the request went out at the chat valve's effort with reasoning and the summary flag still on it, so thinking was on and nothing said so, while the Config tab promised the `0` switched thinking off. The `0` now reaches every Gemini model, Gemini 3 included; a mandatory-reasoning Gemini row (Gemini 3 Pro, like 2.5 Pro) still cannot stop thinking, so the refusal stands, the row's own floor is substituted and the notice goes out in a chat as before. Nothing else moves: the token budget is still Gemini 2.5's alone, because Gemini 3 is governed by Google's thinking-level API and a budget there buys no precise control, so any other value of the valve is ignored on Gemini 3 exactly as before.
 - **A preset Fusion turn is no longer repaired by the chat fallback** — a Fusion turn served
   under its `@preset/` spelling (`openrouter/fusion@preset/<slug>`) whose `/responses` call
   fails used to be re-sent to `/chat/completions` by `AUTO_FALLBACK_CHAT_COMPLETIONS`. That
@@ -913,6 +914,16 @@
   turn under the digest name. Only when the older file's `meta.json` names that turn's exact `ids`, so an archive
   belonging to another turn that used to share the bare stem is left alone, and the file that was read is left
   where it is for the retention sweep to reap.
+- **session log storage, an over-budget id with no task name** — a caller-supplied message id longer than
+  the 64 characters the archive key is written to is now reduced on the **answer** archive too, not only on a
+  task archive. The answer arm used to return the id verbatim, so on PostgreSQL — where that column is
+  `String(64)` and the row is refused outright — the turn's staging write failed and fell through to the
+  queued-zip fallback, which composes a still longer name, so the condition persisted for that turn. The
+  reduction is the same one a task key already got: the stem the budget allows plus a short digest of the
+  exact id, never a cut, so two ids that differ anywhere still reach two files. Every id Open WebUI mints is
+  a `str(uuid4())` at 36 characters, so no browser-path archive changes; a caller-supplied id past the budget
+  changes its key and its filename (and, until the exact id is carried in `meta.json`, its `ids.message_id`
+  too), and an archive already written under the raw id is found and merged into the digest-named one.
 - **pipe dashboard** — the usage retention window now covers every `dashboard_*` table this pipe published and a key
   rotation left behind, de-identifying its temporary-chat rows as it does the current table's, and the purge runs
   whether or not `Collect usage records` is on. A table whose fragment another installed function id also sanitizes

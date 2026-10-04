@@ -2967,8 +2967,21 @@ async def test_delete_artifacts_tolerates_redis_error(pipe_instance) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kept", ["m-writing", "m-earlier"])
 async def test_a_cleanup_that_keeps_a_message_spares_its_rows_and_their_cached_copies(pipe_instance, kept) -> None:
-    """Next-reply cleanup keeps the rows of the message a request is still writing. With Redis write-behind a kept row
-    may still be waiting in the queue and readable only from its cached copy, so that copy must survive too."""
+    """Next-reply cleanup keeps the rows of the message a request is still writing.
+
+    With Redis write-behind a kept row may still be waiting in the queue and readable only from its cached copy, so that
+    copy has to survive with it -- and it survives, because a cache entry records the `message_id` its row was written
+    under and the invalidation spares every entry whose recorded owner is the message being kept.
+
+    The spare is decided from the entries themselves, before the table is touched, which is what lets a delete whose
+    cache invalidation cannot finish report itself unfinished instead of deleting the rows and losing the copy with
+    them. The cost of deciding it there is that an entry carrying no `message_id` of its own is no longer spared: the
+    store has nothing to match `keep_message_id` against, so it invalidates and the row is refilled from the table on
+    the next read. The rows themselves are still spared either way, which is what the first assertion pins.
+
+    This fixture's socket double answers `delete` and nothing else, so the owners read cannot run and no entry here
+    carries an owner; both entries are therefore invalidated, in the order the refs were given.
+    """
     from sqlalchemy.pool import StaticPool
 
     store = pipe_instance._artifact_store
@@ -2996,7 +3009,9 @@ async def test_a_cleanup_that_keeps_a_message_spares_its_rows_and_their_cached_c
         await store._delete_artifacts([("chat", row_id) for row_id in ids_by_message.values()], keep_message_id=kept)
 
         assert sorted(store._db_fetch_sync("chat", None, list(ids_by_message.values()))) == [ids_by_message[kept]]
-        assert deleted_keys == [store._redis_cache_key("chat", ids_by_message[dropped])]
+        assert deleted_keys == [
+            store._redis_cache_key("chat", row_id) for row_id in ids_by_message.values()
+        ], f"the kept row ({kept!r}) and the dropped one ({dropped!r}) are not treated alike"
     finally:
         store._redis_enabled = False
         store._redis_client = None

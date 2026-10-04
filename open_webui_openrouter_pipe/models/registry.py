@@ -2015,6 +2015,7 @@ def _supports_verbosity(normalized_model_id: str) -> bool:
 # Gemini Reasoning Helpers
 
 _GEMINI_25_RE = re.compile(r"~?google[./]gemini-2\.5(-|\Z)")
+_GEMINI_FAMILY_RE = re.compile(r"~?google[./]gemini-[\d.]")
 
 
 def _classify_gemini_thinking_family(normalized_model_id: str) -> str | None:
@@ -2022,6 +2023,10 @@ def _classify_gemini_thinking_family(normalized_model_id: str) -> str | None:
     if _GEMINI_25_RE.match((normalized_model_id or "").lower()):
         return "gemini-2.5"
     return None
+
+
+def _is_gemini_thinking_model(normalized_model_id: str) -> bool:
+    return bool(_GEMINI_FAMILY_RE.match((normalized_model_id or "").lower()))
 
 
 def _map_effort_to_gemini_budget(effort: str, base_budget: int) -> int | None:

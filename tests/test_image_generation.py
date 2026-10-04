@@ -3087,11 +3087,17 @@ async def test_retirement_touches_only_the_rows_the_previous_design_left():
             dedicated_image_api=True,
         )
     )
+    # `is_active` is a column on Open WebUI's own FunctionModel and every row this fake
+    # hands back stands in for an `active_only=True` read, so the row carries it -- the
+    # retire pass re-reads each row immediately before writing it and skips one that reads
+    # as off.
     rows = [
-        SimpleNamespace(id="old_variant", content=f'MARKER = "{_OPENROUTER_IMAGE_FILTER_MARKER}"'),
-        SimpleNamespace(id="current_per_model", content=current),
-        SimpleNamespace(id="another_pipe_filter", content='MARKER = "openrouter_pipe:image_gen_filter:v1"'),
-        SimpleNamespace(id="someone_elses", content="class Filter:\n    pass\n"),
+        SimpleNamespace(id="old_variant", content=f'MARKER = "{_OPENROUTER_IMAGE_FILTER_MARKER}"',
+                        is_active=True),
+        SimpleNamespace(id="current_per_model", content=current, is_active=True),
+        SimpleNamespace(id="another_pipe_filter", content='MARKER = "openrouter_pipe:image_gen_filter:v1"',
+                        is_active=True),
+        SimpleNamespace(id="someone_elses", content="class Filter:\n    pass\n", is_active=True),
     ]
     deactivated: list[str] = []
 
@@ -3102,6 +3108,8 @@ async def test_retirement_touches_only_the_rows_the_previous_design_left():
 
         @staticmethod
         async def get_function_by_id(row_id):
+            # The re-read the retire pass makes immediately before it writes, so a row
+            # the operator switched off in that window is skipped rather than stamped.
             return next((row for row in rows if row.id == row_id), None)
 
         @staticmethod
@@ -3445,6 +3453,8 @@ async def test_the_refresh_retires_superseded_filters_whether_or_not_it_installs
 
         @staticmethod
         async def get_function_by_id(row_id):
+            # The re-read the retire pass makes immediately before it writes, so a row
+            # the operator switched off in that window is skipped rather than stamped.
             return next((row for row in rows if row.id == row_id), None)
 
         @staticmethod

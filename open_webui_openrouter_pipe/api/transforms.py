@@ -78,6 +78,7 @@ from ..core.utils import (
 )
 from ..core.warn_latch import warn_level
 from ..filters.fusion_filter_renderer import _fusion_base_model_id, is_fusion_model
+from ..models.reasoning_config import _listed_efforts
 from ..models.registry import ModelFamily
 from ..storage.owui_files import is_temporary_metadata, names_an_owui_file_path
 from ..tools.tool_schema import _strictify_schema
@@ -2054,7 +2055,7 @@ def _fallback_off_carry(primary: str) -> dict[str, Any]:
     contract = ModelFamily.reasoning_contract(primary)
     if contract.get("mandatory") is not True:
         return {"effort": "none"}
-    supported = [e for e in contract.get("supported_efforts") or [] if e != "none"]
+    supported = [e for e in (_listed_efforts(contract) or []) if e != "none"]
     floor = _select_best_effort_fallback("none", supported)
     return {"effort": floor} if floor else {}
 

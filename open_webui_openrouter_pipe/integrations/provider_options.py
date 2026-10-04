@@ -8,7 +8,8 @@ from collections.abc import Iterator
 from typing import Any
 
 from ..core.config import _PIPE_METADATA_KEY
-from ..core.utils import clamp_text
+from ..core.url_scheme import _split
+from ..core.utils import _csv_set, clamp_text
 
 
 def requested_provider_block(
@@ -250,3 +251,76 @@ def payload_addresses(
         if key in prose_fields:
             continue
         yield from _addresses_in(value, label_segment(key), 1, remaining)
+
+
+_HostEntry = tuple[str, int | None]
+
+
+def _host_entries(
+    raw: Any,
+) -> tuple[frozenset[_HostEntry], frozenset[_HostEntry], frozenset[str]]:
+    entries: set[_HostEntry] = set()
+    usable: set[_HostEntry] = set()
+    unusable: set[str] = set()
+    for entry in _csv_set(raw):
+        host, port, ok = _split_host_port(entry)
+        if not ok:
+            unusable.add(entry)
+            entries.add((entry, None))
+            continue
+        usable.add((host, port))
+        entries.add((host, port))
+    return frozenset(entries), frozenset(usable), frozenset(unusable)
+
+
+def _split_host_port(entry: str) -> tuple[str, int | None, bool]:
+    candidate = entry
+    port: int | None = None
+    if candidate.startswith("[") and "]" in candidate:
+        host = candidate[1 : candidate.index("]")]
+        remainder = candidate[candidate.index("]") + 1 :]
+        if remainder.startswith(":") and remainder[1:]:
+            if not remainder[1:].isdigit():
+                return candidate, None, False
+            port = int(remainder[1:])
+        elif remainder:
+            return candidate, None, False
+    elif candidate.count(":") == 1:
+        host_part, _, port_str = candidate.partition(":")
+        if port_str:
+            if not port_str.isdigit():
+                return candidate, None, False
+            port = int(port_str)
+        host = host_part
+    else:
+        host = candidate
+    host = host.strip().lower().rstrip(".")
+    if not host:
+        return candidate, None, False
+    if any(ch in host for ch in "!/") or "://" in host:
+        return candidate, None, False
+    if port is not None and not 0 < port <= 65535:
+        return candidate, None, False
+    return host, port, True
+
+
+def _host_in_scope(
+    url: str, entries: frozenset[_HostEntry], usable: frozenset[_HostEntry],
+) -> bool:
+    if not entries:
+        return True
+    try:
+        parts = _split(url)
+        host = parts.hostname
+        port = parts.port
+    except ValueError:
+        return False
+    if not host:
+        return False
+    host = host.lower().rstrip(".")
+    if port is None:
+        port = 443 if parts.scheme == "https" else 80
+    return any(
+        (host == entry or host.endswith("." + entry)) and listed in (None, port)
+        for entry, listed in usable
+    )

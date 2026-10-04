@@ -147,10 +147,14 @@ def _admission_error_response(
     )
 
 
+def _envelope_status(code: int) -> int:
+    return code if isinstance(code, int) and not isinstance(code, bool) and 400 <= code <= 599 else 400
+
+
 def _transported_failure_envelope(
     message: str, *, code: int, retry_after_seconds: float | None = None
 ) -> dict[str, Any]:
-    error: dict[str, Any] = {"message": message, "code": code}
+    error: dict[str, Any] = {"message": message, "code": _envelope_status(code)}
     if retry_after_seconds is not None:
         error["retry_after_seconds"] = retry_after_seconds
     return {"error": error}
@@ -164,7 +168,7 @@ def _transported_failure_response(
     headers: dict[str, str] = {}
     if retry_after_seconds is not None:
         headers["Retry-After"] = str(int(retry_after_seconds))
-    status = code if isinstance(code, int) and not isinstance(code, bool) and 400 <= code <= 599 else 400
+    status = _envelope_status(code)
     return StreamingResponse(
         iter([
             json.dumps(
@@ -286,10 +290,16 @@ class ErrorFormatter:
     # Template Selection
     # ======================================================================
 
-    def _select_openrouter_template(self, status: int | None, *, content_decision: bool = False) -> str:
+    def _select_openrouter_template(
+        self,
+        status: int | None,
+        *,
+        content_decision: bool = False,
+        sign_in_failure: bool = False,
+    ) -> str:
         if content_decision:
             return self.valves.OPENROUTER_ERROR_TEMPLATE
-        if status == 401:
+        if sign_in_failure or status == 401:
             return self.valves.AUTHENTICATION_ERROR_TEMPLATE
         if status == 402:
             return self.valves.INSUFFICIENT_CREDITS_TEMPLATE
@@ -459,12 +469,14 @@ class ErrorFormatter:
         terminal: bool = True,
     ) -> str:
         """Emit a user-facing markdown message for OpenRouter 400 responses."""
-        if is_sign_in_failure(exc):
+        sign_in_failure = is_sign_in_failure(exc)
+        if sign_in_failure:
             self._pipe._note_auth_failure()
         error_id, context_defaults = self._build_error_context()
         template_to_use = self._select_openrouter_template(
             exc.status,
-            content_decision=_carries_a_content_decision(exc) and not is_sign_in_failure(exc),
+            content_decision=_carries_a_content_decision(exc) and not sign_in_failure,
+            sign_in_failure=sign_in_failure,
         )
         retry_after_hint = _resolve_retry_after_seconds(exc.metadata)
         if retry_after_hint is not None and context_defaults.get("retry_after_seconds") is None:
