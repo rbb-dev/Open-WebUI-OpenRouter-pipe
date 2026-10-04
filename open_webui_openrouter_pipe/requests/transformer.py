@@ -55,6 +55,7 @@ from ..core.utils import (
     BUILTIN_ASK_USER_ROUND_KEY,
     OPEN_WEBUI_TOOL_IMAGES_TEXT,
     PIPE_ONLY_TOOL_ROUND_KEY,
+    PIPE_TOOL_IMAGES_KEY,
     REASONING_ANCHOR_KEYS,
     REASONING_ANCHOR_SEQ_KEY,
     REASONING_FOLLOWING_ORDINAL_KEY,
@@ -1018,6 +1019,21 @@ def _handoff_back(messages: list[dict[str, Any]], position: int) -> bool:
     return is_tool_image_handoff_for_round(results, messages[position])
 
 
+def _carries_the_tool_images_handoff(message: Any) -> bool:
+    if not (isinstance(message, dict) and message.get("role") == "user"):
+        return False
+    content = message.get("content")
+    if not isinstance(content, list) or not content:
+        return False
+    first, *images = content
+    return bool(
+        isinstance(first, dict) and first.get("type") == "text"
+        and first.get("text") == OPEN_WEBUI_TOOL_IMAGES_TEXT
+        and images
+        and all(isinstance(part, dict) and part.get("type") == "image_url" for part in images)
+    )
+
+
 def _is_tool_image_handoff_at(
     messages: list[dict[str, Any]],
     position: int,
@@ -1223,7 +1239,7 @@ def _tool_images_message(
 ) -> dict[str, Any] | None:
     if not pictures and not lead_in:
         return None
-    return {"type": "message", "role": "user", "content": [
+    return {"type": "message", "role": "user", PIPE_TOOL_IMAGES_KEY: True, "content": [
         {"type": "input_text", "text": OPEN_WEBUI_TOOL_IMAGES_TEXT},
         *({"type": "input_image", "image_url": url, "detail": "auto"} for url in pictures),
     ]}
@@ -1333,6 +1349,16 @@ async def _memo_hit_is_still_permitted(
         _reuse_download_memo.pop(memo_key, None)
         return False
     return True
+
+
+def _strip_markers_from_tool_content(value: Any, clean: Any) -> Any:
+    if isinstance(value, str):
+        return clean(value)
+    if isinstance(value, list):
+        return [_strip_markers_from_tool_content(part, clean) for part in value]
+    if isinstance(value, dict):
+        return {k: _strip_markers_from_tool_content(v, clean) for k, v in value.items()}
+    return value
 
 
 async def transform_messages_to_input(
@@ -1845,7 +1871,7 @@ async def transform_messages_to_input(
                 ):
                     last_image_blocks, last_image_turn = [], None
 
-                tool_content = raw_content
+                tool_content = _strip_markers_from_tool_content(raw_content, _sanitize_free_text)
                 tool_pictures: list[str] = []
                 if tool_content is None:
                     tool_content_text = ""
@@ -2262,6 +2288,18 @@ async def transform_messages_to_input(
                         filename = source.get("filename")
                         file_url = source.get("file_url")
 
+                        if not isinstance(file_url, str):
+                            file_url = None
+                        if not isinstance(file_data, str):
+                            file_data = None
+
+                        def _file_id_names_a_readable_file(value: Any) -> bool:
+                            return (
+                                isinstance(value, str)
+                                and bool(value.strip())
+                                and not value.strip().startswith("file-")
+                            )
+
                         if (
                             isinstance(file_url, str)
                             and file_url.strip()
@@ -2286,7 +2324,7 @@ async def transform_messages_to_input(
                             and file_url.strip()
                             and names_an_owui_file_path(file_url.strip())
                         ):
-                            if not file_id:
+                            if not _file_id_names_a_readable_file(file_id):
                                 raise RequiredInternalFileError(
                                     "A file Open WebUI is serving cannot be read, so it was not sent.",
                                     kind="file",
@@ -2298,7 +2336,7 @@ async def transform_messages_to_input(
                             and names_an_owui_file_path(file_data.strip())
                             and url_scheme(file_data.strip()) != "data"
                         ):
-                            if not file_id:
+                            if not _file_id_names_a_readable_file(file_id):
                                 raise RequiredInternalFileError(
                                     "A file Open WebUI is serving cannot be read, so it was not sent.",
                                     kind="file",
@@ -3325,6 +3363,7 @@ async def transform_messages_to_input(
                 openai_input.append({
                     "type": "message",
                     "role": "user",
+                    **({PIPE_TOOL_IMAGES_KEY: True} if tool_images or _carries_the_tool_images_handoff(msg) else {}),
                     "content": converted_blocks,
                 })
                 continue

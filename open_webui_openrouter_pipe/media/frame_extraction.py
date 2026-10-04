@@ -686,13 +686,22 @@ def _scale_to_max_width(img: Image.Image) -> Image.Image:
     return img.resize((out_w, out_h), Image.Resampling.LANCZOS)
 
 
+def _measured_size(size: tuple[int, int] | None) -> tuple[int, int] | None:
+    if size is None:
+        return None
+    width, height = size
+    if width <= 0 or height <= 0:
+        return None
+    return width, height
+
+
 def _declared_size(path: Path) -> tuple[int, int] | None:
     _refuse_unsafe_input(path)
     try:
         meta = _pinned_probe(path)
         size = meta.get("size")
         if isinstance(size, (list, tuple)) and len(size) >= 2:
-            return int(size[0]), int(size[1])
+            return _measured_size((int(size[0]), int(size[1])))
     except Exception:  # noqa: BLE001 - a header we cannot read is a header we lack
         return None
     return None
@@ -795,7 +804,9 @@ def _extract_frame_imageio_sync(
         raise FrameExtractionError(_ABANDONED)
     input_format = _refuse_unsafe_input(path)
     try:
-        declared = declared_size if declared_size is not None else _declared_size(path)
+        declared = _measured_size(
+            declared_size if declared_size is not None else _declared_size(path)
+        )
         if _cancelled(cancel):
             raise FrameExtractionError(_ABANDONED)
         if declared is not None and _over_pixel_cap(*declared):
@@ -812,7 +823,7 @@ def _extract_frame_imageio_sync(
                 "plugin": "FFMPEG",
                 "input_params": ["-f", input_format, "-protocol_whitelist", "file"],
             }
-            if declared is not None and max(declared) > _MAX_FRAME_LONG_EDGE:
+            if declared is None or max(declared) > _MAX_FRAME_LONG_EDGE:
                 read_kwargs["output_params"] = ["-vf", _LONG_EDGE_SCALE]
             arr = iio.imread(str(path), index=frame_index, **read_kwargs)
         if arr is None or len(arr.shape) < 2:
@@ -1168,21 +1179,6 @@ async def _extract_frame_with_budget(
                     downgrade_note=downgrade_note,
                     resolved_target=resolved_target,
                 )
-
-        display_size: tuple[int, int] | None = None
-        if probed_meta is not None and probed_meta.width > 0 and probed_meta.height > 0:
-            display_size = (probed_meta.width, probed_meta.height)
-        elif not probe_failed:
-            try:
-                display_size = await asyncio.wait_for(
-                    asyncio.to_thread(_declared_size, path), timeout=_PROBE_DEADLINE_S,
-                )
-            except TimeoutError:
-                display_size = None
-        if display_size is not None and display_size[0] > 0 and display_size[1] > 0:
-            out_w, out_h = _scaled_frame_size(*display_size)
-            if _over_pixel_cap(out_w, out_h):
-                raise _ffmpeg_pixel_cap_refusal(out_w, out_h)
 
         direct_saw_damage: list[bool] = []
         direct_hop: list[int] = []

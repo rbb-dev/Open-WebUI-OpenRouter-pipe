@@ -1901,7 +1901,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "An archive written under the pre-digest name — the bare sanitized stem, from before that rule existed — is still found "
             "and merged by the next assembly pass for that turn, which keeps the outcome the older archive recorded and republishes "
             "the merged turn under the digest name; that happens only when the older file's meta.json names this turn's exact ids, "
-            "because the pre-digest name was not unique, and the file that was read is left where it is for the retention sweep to reap."
+            "because the pre-digest name was not unique, and the file that was read is left where it is for the retention sweep to reap. "
+            "A pre-digest candidate that cannot be read is treated as absent: the turn is assembled on its own under the digest name "
+            "and the older file is left exactly where it is, because the pre-digest name was not unique and may name another conversation."
         ),
     )
     SESSION_LOG_ZIP_PASSWORD: EncryptedStr = Field(
@@ -1935,12 +1937,13 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         description=(
             "How often (in seconds) to run the session log cleanup loop when storage is enabled. "
             "A pass never prunes a directory a write is in the middle of, in this process or a peer "
-            "worker's, so an archive is never lost to the sweep: the write publishes a reservation "
-            "file inside the directory it is filling, and a directory holding anything at all is left "
-            "alone. "
+            "worker's, so an archive is never lost to the sweep: the write builds the directory and the "
+            "reservation file in a private staging directory and renames that into place, so the "
+            "directory and its reservation appear together, and a directory holding anything at all is "
+            "left alone. "
             "A write that fails leaves its directory to a later pass, while a process that dies mid-write leaves "
-            "a temporary file and its reservation that no pass reaps. A warning about a lost archive is itself "
-            "filtered by LOG_LEVEL."
+            "a temporary file, its reservation and its staging directory that no pass reaps. A warning "
+            "about a lost archive is itself filtered by LOG_LEVEL."
         ),
     )
     SESSION_LOG_ZIP_COMPRESSION: Literal["stored", "deflated", "bzip2", "lzma"] = Field(
@@ -2025,7 +2028,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "This is a cutoff on the last segment, and it applies only to a turn that is not running: a turn the pipe is still "
             "executing is held off the stale listing entirely, so a slow but live turn is never sealed and its staged rows are never "
             "consumed. A segment a still-running turn stages is picked up by a later pass. That set is per-process, so on an install with "
-            "more than one worker another worker's pass can still seal a turn that is running here. What remains exposed is a turn "
+            "more than one worker another worker's pass can still seal a turn that is running here. A hot reload no longer loses the set, so that peer-worker caveat is now the whole of the remaining exposure. What remains exposed is a turn "
             "whose worker died, and that exposure is why the default is long. "
             "Otherwise the same carve-out applies, unless a segment lands before "
             "the sealing pass has read that turn's segments - a pass that finds a terminal segment among the rows it loaded writes the "
@@ -2043,7 +2046,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     SESSION_LOG_LOCK_STALE_SECONDS: int = Field(
         default=1800,
         ge=60,
-        description="Stale lock timeout (seconds) for DB-backed session log assembly locks; stale locks are reclaimed. Reclaiming a lock this old is what releases a turn held by a worker that died, and a pass that finds its lock gone when it reaches the moment of publish abandons its write rather than publishing over the worker that owns the bundle: the archive on disk stays the one written under the lock, and the abandoned pass keeps its staged segments for the pass that owns them. It is also the write-failure backoff: a bundle whose archive could not be written is skipped for this long before it is retried, so one bundle the pipe cannot write does not hold the window. The one carve-out is the stranded-turn rescue: a turn whose existing archive could not be read is exempt from the backoff only while its own three-strike rescue budget lasts, and once that budget is spent it is set aside for this interval like any other bundle the pipe could not write. A turn whose rows were rescued to a separate archive is exempt on the pass that wrote that archive and set aside from the next one like any other bundle the pipe could not write. The rescue bookkeeping is itself bounded: at most 32 stranded turns are tracked at once, and beyond that the oldest is set aside early. A turn's three-strike counter lives only as long as its staged segments, so it is bounded by the archive retention window rather than by a number of its own. A lock held by another worker is not a write failure and is never backed off.",
+        description="Stale lock timeout (seconds) for DB-backed session log assembly locks; stale locks are reclaimed. Reclaiming a lock this old is what releases a turn held by a worker that died, and a pass that finds its lock gone when it reaches the moment of publish abandons its write rather than publishing over the worker that owns the bundle: the archive on disk stays the one written under the lock, and the abandoned pass keeps its staged segments for the pass that owns them. It is also the write-failure backoff: a bundle whose archive could not be written is skipped for this long before it is retried, so one bundle the pipe cannot write does not hold the window. The one carve-out is the stranded-turn rescue: a turn whose own archive could not be read is exempt from the backoff only while its own three-strike rescue budget lasts, and once that budget is spent it is set aside for this interval like any other bundle the pipe could not write. A turn whose rows were rescued to a separate archive is exempt on the pass that wrote that archive and set aside from the next one like any other bundle the pipe could not write. The rescue bookkeeping is itself bounded: at most 32 stranded turns are tracked at once, and beyond that the oldest is set aside early. A turn's three-strike counter lives only as long as its staged segments, so it is bounded by the archive retention window rather than by a number of its own. A lock held by another worker is not a write failure and is never backed off.",
     )
     ENABLE_TIMING_LOG: bool = Field(
         default=False,
@@ -3120,7 +3123,11 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "and the frame the pixel cap makes the pipe substitute for a refused one: "
             "that substitute is a smaller copy of one of that video's frames, read at "
             "ffmpeg's long-edge bound rather than the size the cap refused, and the "
-            "disclosure footer says so. On a model accepting only a first frame "
+            "disclosure footer says so. That refusal is read off the container header, "
+            "so it fires on a source whose header states a size the budget will not "
+            "carry however small the decoder can make it; a source whose header cannot "
+            "be measured is bounded at the decoder and served. On a model accepting "
+            "only a first frame "
             "the first frame is substituted there whatever this setting says, and the "
             "disclosure names it. "
             "A request that names a first or last frame directly gets that frame - "

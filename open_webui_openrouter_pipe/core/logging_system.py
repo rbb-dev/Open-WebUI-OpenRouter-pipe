@@ -849,15 +849,43 @@ class _Reservation:
         self.out_dir = out_dir
         self.created = False
 
-    def reserve(self) -> None:
-        path = self.out_dir / _ARCHIVE_CLAIM_SUFFIX
-        with contextlib.suppress(OSError):
+    def _publish(self, directory: Path) -> bool:
+        path = directory / _ARCHIVE_CLAIM_SUFFIX
+        try:
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            try:
-                os.write(fd, str(os.getpid()).encode("utf-8"))
-            finally:
-                os.close(fd)
-            self.created = True
+        except OSError:
+            return False
+        try:
+            os.write(fd, str(os.getpid()).encode("utf-8"))
+        finally:
+            os.close(fd)
+        return True
+
+    def reserve(self) -> bool:
+        staging = self.out_dir.parent / (
+            f".{self.out_dir.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.part"
+        )
+        try:
+            self.out_dir.parent.mkdir(parents=True, exist_ok=True)
+            staging.mkdir()
+            if not self._publish(staging):
+                raise OSError("the staging reservation could not be created")
+            os.rename(staging, self.out_dir)
+        except OSError:
+            with contextlib.suppress(OSError):
+                (staging / _ARCHIVE_CLAIM_SUFFIX).unlink()
+                staging.rmdir()
+            return self._reserve_in_place()
+        self.created = True
+        return True
+
+    def _reserve_in_place(self) -> bool:
+        try:
+            self.out_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return False
+        self.created = self._publish(self.out_dir)
+        return self.out_dir.is_dir()
 
     def drop(self) -> None:
         if not self.created:
@@ -941,10 +969,20 @@ def _write_session_log_archive_unclaimed(
     out_path = out_dir / f"{message_id}.zip"
     tmp_path = _archive_temp_path(out_dir, message_id)
 
-    try:
-        out_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        sys.stderr.write(f"session log archive: mkdir {out_dir} failed: {exc}\n")
+    mkdir_error: OSError | None = None
+    reserved = True
+    if reservation is None:
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            reserved, mkdir_error = False, exc
+    else:
+        reserved = reservation.reserve()
+    if not reserved:
+        sys.stderr.write(
+            f"session log archive: mkdir {out_dir} failed: "
+            f"{mkdir_error if mkdir_error is not None else 'the directory could not be reserved'}\n"
+        )
         _report_archive_write_failed(
             f"session_log_archive_mkdir_failed:{out_dir}",
             "Session log archive directory could not be created; the staged events are not "
@@ -954,9 +992,6 @@ def _write_session_log_archive_unclaimed(
             job.message_id,
         )
         return
-
-    if reservation is not None:
-        reservation.reserve()
 
     compression_map = {
         "stored": pyzipper.ZIP_STORED,

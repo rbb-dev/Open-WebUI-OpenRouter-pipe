@@ -19,6 +19,7 @@ import logging
 import os
 import queue
 import random
+import sys
 import threading
 import time
 import weakref
@@ -232,6 +233,19 @@ _MAX_EXCLUDED_TURNS = 1000
 _EXCLUDED_KEY_SEP = "\x1f"
 
 _MAX_DRAIN_LATCH_KEYS = 32
+
+_LIVE_TURNS_HOLDER_KEY = "_openrouter_pipe_live_turns"
+
+_LIVE_TURNS_LOCK = threading.Lock()
+
+
+def _live_turns_holder() -> dict[str, Any]:
+    holder = sys.modules.get(_LIVE_TURNS_HOLDER_KEY)
+    if not isinstance(holder, dict):
+        holder = {"turns": {}, "lock": _LIVE_TURNS_LOCK}
+        sys.modules[_LIVE_TURNS_HOLDER_KEY] = holder  # type: ignore[assignment]
+    return holder
+
 
 SESSION_LOG_OWNERSHIP_MEMO: ContextVar[dict[tuple[str, str], bool] | None] = ContextVar(
     "session_log_ownership_memo", default=None
@@ -549,33 +563,37 @@ class SessionLogManager:
         self._archive_queue_drops: int = 0
         self._temporary_chat_sweep_at: float = 0.0
         self._ownership_skips: dict[str, float] = {}
-        self._live_turns: dict[tuple[str, str], int] = {}
 
     @property
     def _assembly_failures(self) -> dict[tuple[str, str], float]:
         return self._assembler_recent_failures
 
     def _live_turn_keys(self) -> tuple[tuple[str, str], ...]:
-        with self._lock:
-            return tuple(self._live_turns)
+        holder = _live_turns_holder()
+        with holder["lock"]:
+            return tuple(holder["turns"])
 
     def _note_turn_started(self, chat_id: str, message_id: str) -> None:
         key = (str(chat_id or ""), str(message_id or ""))
         if not (key[0] and key[1]):
             return
-        with self._lock:
-            self._live_turns[key] = self._live_turns.get(key, 0) + 1
+        holder = _live_turns_holder()
+        with holder["lock"]:
+            turns: dict[tuple[str, str], int] = holder["turns"]
+            turns[key] = turns.get(key, 0) + 1
 
     def _note_turn_finished(self, chat_id: str, message_id: str) -> None:
         key = (str(chat_id or ""), str(message_id or ""))
         if not (key[0] and key[1]):
             return
-        with self._lock:
-            n = self._live_turns.get(key, 0)
+        holder = _live_turns_holder()
+        with holder["lock"]:
+            turns: dict[tuple[str, str], int] = holder["turns"]
+            n = turns.get(key, 0)
             if n <= 1:
-                self._live_turns.pop(key, None)
+                turns.pop(key, None)
             else:
-                self._live_turns[key] = n - 1
+                turns[key] = n - 1
 
     def set_artifact_store(self, artifact_store: ArtifactStore) -> None:
         """Set the artifact store reference."""
@@ -2223,21 +2241,31 @@ class SessionLogManager:
                                     message_id,
                                 )
                     except Exception:
-                        read_failed = True
-                        _truncate_latch(self._unreadable_archive_warnings, _MAX_DRAIN_LATCH_KEYS)
-                        self.logger.log(
-                            warn_level(
-                                self._unreadable_archive_warnings,
-                                f"session_log_archive_unreadable:{merge_path}",
-                                cooldown_s=3600.0,
-                            ),
-                            "Refusing to assemble over an unreadable session log archive; "
-                            "the existing file and the staged segments are left intact (path=%s chat_id=%s message_id=%s).",
-                            str(merge_path),
-                            chat_id,
-                            message_id,
-                            exc_info=True,
-                        )
+                        if merge_path == out_path:
+                            read_failed = True
+                            _truncate_latch(self._unreadable_archive_warnings, _MAX_DRAIN_LATCH_KEYS)
+                            self.logger.log(
+                                warn_level(
+                                    self._unreadable_archive_warnings,
+                                    f"session_log_archive_unreadable:{merge_path}",
+                                    cooldown_s=3600.0,
+                                ),
+                                "Refusing to assemble over an unreadable session log archive; "
+                                "the existing file and the staged segments are left intact (path=%s chat_id=%s message_id=%s).",
+                                str(merge_path),
+                                chat_id,
+                                message_id,
+                                exc_info=True,
+                            )
+                        else:
+                            self.logger.debug(
+                                "A pre-digest archive at %s could not be read; it is left alone "
+                                "and this turn is assembled on its own (chat_id=%s message_id=%s).",
+                                str(merge_path),
+                                chat_id,
+                                message_id,
+                                exc_info=True,
+                            )
 
                 if not group_terminal and existing_raw and not any(
                     _is_incomplete_marker(evt) for evt in existing_raw

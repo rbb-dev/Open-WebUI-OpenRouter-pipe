@@ -111,6 +111,13 @@ def _make_mock_pipe():
     """Create a minimal mock Pipe for Pipe Dashboard tests."""
     pipe = Mock()
     pipe.id = "test-pipe"
+    # A live, un-retired Pipe. A bare `Mock` answers every attribute with another Mock,
+    # which is truthy, so a starter that guards on `getattr(pipe, "_closed", False)` reads
+    # an auto-created attribute as "retired" and stands down on an instance production
+    # would have started a worker on.
+    pipe._closed = False
+    pipe._draining = False
+    pipe._closing = False
     # A real `Valves` subclass, not a `Mock`: the dashboard gates read the PERSISTED row
     # through `readable_stored`, which validates against this class's pydantic schema,
     # and a `Mock` has no `model_fields` -- the read would raise and the gate would

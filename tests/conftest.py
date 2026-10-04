@@ -796,6 +796,12 @@ def _clear_package_process_state() -> None:
     `__getattr__` (scripts/bundle_v2.py:1140-1152). There is nothing to clear in
     those modes; the guards are what make that a no-op rather than an error.
     """
+    from open_webui_openrouter_pipe.logging.session_log_manager import (
+        _LIVE_TURNS_HOLDER_KEY,
+    )
+
+    sys.modules.pop(_LIVE_TURNS_HOLDER_KEY, None)
+
     for module_name, attr in _package_process_state_containers():
         module = sys.modules.get(module_name)
         container = getattr(module, attr, None) if module is not None else None

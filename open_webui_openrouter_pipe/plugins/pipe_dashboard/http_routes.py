@@ -332,7 +332,7 @@ async def _action_route(
     request: Request,
     body: ActionBody,
     user: Any = Depends(_bearer_user_dep),  # noqa: B008 - late-bound, and declared first so auth runs before the body guard
-    _depth: Any = Depends(_bounded_json_body),  # noqa: B008 - the guard must be declared here to run before the dispatcher
+    _depth: Any = Depends(_bounded_json_body),  # noqa: B008 - the guard must be declared here to run before the dispatcher; FastAPI parses the body before it solves dependencies, so this runs after json.loads; a pre-parse bound needs ASGI middleware, which a live app cannot take
 ):
     from fastapi import HTTPException
     from fastapi.responses import JSONResponse

@@ -156,6 +156,12 @@
   mandatory row the repair consumes only the keys it reads as an off, so a chat that hid the trace is not
   shown it. Every path a chat or a background task takes is covered, Open WebUI's tool-execution mode included.
 
+- **Video intent classifier, a retired Task Model is now named rather than left to guess** -- a Task Model the host no longer publishes is already skipped before it is called, and the operator reading the warning had no way to tell that case from a row nobody filled in: both said `no usable task model under task.model.default / task.model.external`, so an admin who had renamed the model had nothing to match the row against. The drop is now recorded at DEBUG by the resolver, naming the id it dropped, and the warning says which case it is and names the id -- `the host no longer publishes 'ext-4o'` -- while an unset row keeps the wording it always had. No user-facing text changed, the warning's per-chat latch is unchanged, and no valve or configuration change. The documentation follows the code: the sentence that still offered a retired id a branch is amended, and the `VIDEO_INTENT_TASK_MODEL_FALLBACK` row now covers a configured row whose model is gone, as the valve's own dashboard detail already did.
+
+- **A housekeeping task that recovers is heard about again the next time it fails** -- the task-failure toast is latched on `(model, chat and user)` so a long outage warns once rather than on every dispatch, and nothing ever cleared a latch: a title, tag or follow-up that failed at 09:00, answered again at 09:05 and failed at 10:00 was told about once, and the second outage stayed invisible until 300 unrelated keys pushed the first record out of the window. A successful task now removes its own chat's record, so a recovery re-arms the toast and the next failure warns again. The release is one key and not the table, so one chat's recovery never silences another's, and consecutive failures with no recovery between them still toast exactly once. A temporary chat is unchanged: it keeps no record, is toasted on every failing turn, and a successful turn writes nothing for it. The latch's shape, its 300-entry window and the anti-storm property for two overlapping failing tasks are all as they were.
+
+- **`logit_bias`, the text an admin typed, is decoded instead of destroying the request** -- Open WebUI writes `logit_bias` as the free text its Advanced Parameters box holds (`"1234:100, 5678:-50"`), and the pipe's own outbound body types the field as a mapping. The string was refused by that body, so a single `logit_bias` in an admin's Task Model Params row -- or in a chat's own advanced parameters -- raised a validation error before any request left the process: the title, tag or reply silently became `### <U+26A0> Unexpected Error` / `Error type: ValidationError` for as long as the setting stayed. A `logit_bias` that arrives as a string is now converted to the value Open WebUI's own `convert_logit_bias_input_to_json` (`utils/misc.py:1129-1144`) produces, with each bias clamped to `[-100, 100]`; a value that is not a string is carried through unchanged; and one that does not parse is dropped from the request rather than forwarded or re-raised, with a warning naming it so the ignored setting is diagnosable. The conversion is the pipe's own, not an import of Open WebUI's, and it runs before the typed body is built, so it covers the ordinary chat turn, every housekeeping task and the video intent classifier alike. On `/chat/completions` the decoded mapping is forwarded to OpenRouter; `/responses` still drops the field, which is deliberate. No valve and no configuration change.
+
 - **Video intent classifier, retired Task Models** — a Task Model the host no longer publishes is now skipped instead of called. When `request.app.state.MODELS` is a non-empty mapping, an id it does not contain is not a candidate, which is the same membership check Open WebUI applies to a task model itself (`utils/task.py:16-27`, `routers/tasks.py:145-150`, and `generate_chat_completion` raises `Model not found` at `utils/chat.py:191-193`). A retired Task Model therefore no longer costs up to four billed attempts per video turn, every one of them answered `Model not found`, and no longer arms the per-user classifier breaker on a configuration state: the turn lands on the already-built `no_task_model_candidates` path, which logs once per chat and opens no outage. An empty, absent or unreadable model list is not evidence and filters nothing, so a host that has not synced its model list still calls the model its admin configured. No chat-model fallback was added, and no new failure code, log line or latch.
 
 - **Tool breaker's out-of-service notice** — the one line that names a tool as out of service is no longer
@@ -686,12 +692,15 @@
 
 - **frame reuse, memory** — with the long-edge bound in place, the extractor asks no decoder for a frame larger than
   1920 on either axis, whatever the source, so its per-frame footprint is now bounded at about 3.7 Mpx and 10.6 MiB
-  instead of scaling with the source's short side. The pixel-cap gate that used to refuse an over-cap portrait source
-  from its header before decoding is no longer reachable — the bound keeps the geometry inside the cap — so a tall
-  over-cap source such as 1920×20000 is now decoded rather than refused from a header read, and the pipe pays that
-  decode. It already paid it for every wide over-cap source (10000×3000 is the documented rescue), so what is given
-  up is only the tall-and-narrow half of an asymmetry with no principled basis. The gate and the decoded-size check
-  behind it stay in the code for a header that lies about the source.
+  instead of scaling with the source's short side. A geometry the pipe cannot measure at all — a video line carrying no
+  size, a header read that fails, or zeros arriving from the probe rather than from a second read — is now treated as
+  unbounded and bounded at the decoder anyway, instead of turning the scale filter off and decoding the whole frame at
+  native size first; the filter is `min(1920, iw)`, which cannot invent pixels, so applying it to a source of unknown
+  size cannot make that source look smaller than it is. The ffmpeg arm's own pre-child gate is gone: it compared the
+  scaled size the header predicted against the 25-megapixel budget, a comparison that could never fire at the shipped
+  values (the largest product it could reach is 1920×1920, 3.7 Mpx, against a 25 Mpx cap), so what it cost was a
+  container-header read on every extraction whose probe had measured no geometry. The pre-decode refusal and the
+  decoded-size checks behind it stay in the code for a header that lies about the source.
 
 - **Pipe Dashboard, Config tab** — when two administrators save at the same moment on *different* workers, one
   save is now refused with "nothing was saved" instead of being silently lost. Until this, both saves were
@@ -979,3 +988,11 @@
   stock install: Open WebUI 0.11.4's `ModelForm` carries `access_grants`, so the conversion never runs there. Where it
   does run, a wildcard read keeps the rest of its grant set instead of discarding it, and a set the dict can spell
   still round-trips unchanged.
+- **Video intent, disclosure on long chats** — a chat past the classifier's window (24 conversation rows or 9 prior
+  videos) no longer opens the Intent Disclosure Block on its own. Those two window notes change what the classifier
+  *read*, not what was *sent*, and on a turn that lost nothing they were putting a full block on screen for a note
+  about nothing that was dropped. People see fewer disclosure blocks on long chats, and the loss is disclosure: the
+  note about the classifier reading only part of the chat still appears whenever the block shows for another reason —
+  a rewritten prompt, a reused prior-video frame, or any recorded loss — and always under
+  `VIDEO_INTENT_CONFIRM_MODE='always'`. A turn that *did* lose something opens the block exactly as before, and
+  `VIDEO_INTENT_CONFIRM_MODE='never'` still renders nothing at all.

@@ -60,6 +60,13 @@ def _make_mock_pipe():
     """Create a mock pipe with all runtime subsystems for tiered collectors."""
     pipe = Mock()
     pipe.id = "test-pipe"
+    # A live, un-retired Pipe. A bare `Mock` answers every attribute with another Mock,
+    # which is truthy, so a starter that guards on `getattr(pipe, "_closed", False)` reads
+    # an auto-created attribute as "retired" and stands down on an instance production
+    # would have started a worker on.
+    pipe._closed = False
+    pipe._draining = False
+    pipe._closing = False
 
     # Concurrency. Real semaphores, not `Mock()`s: `_waiter_count` reaches the
     # wait queue through `len(sem._waiters)`, and a Mock's auto-created child is

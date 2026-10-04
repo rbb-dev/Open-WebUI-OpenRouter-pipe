@@ -221,6 +221,13 @@ def _install_socket_stub(monkeypatch, **attrs):
 def _make_mock_pipe():
     pipe = Mock()
     pipe.id = "test-pipe"
+    # A live, un-retired Pipe. A bare `Mock` answers every attribute with another Mock,
+    # which is truthy, so a starter that guards on `getattr(pipe, "_closed", False)` reads
+    # an auto-created attribute as "retired" and stands down on an instance production would
+    # have started a worker on.
+    pipe._closed = False
+    pipe._draining = False
+    pipe._closing = False
     set_slot(pipe, "request_semaphore", Mock())
     slot(pipe, "request_semaphore")._value = 45
     set_slot(pipe, "request_limit", 50)

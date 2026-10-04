@@ -60,6 +60,7 @@ from ..core.url_scheme import (
 )
 from ..core.utils import (
     OPEN_WEBUI_TOOL_IMAGES_TEXT,
+    PIPE_TOOL_IMAGES_KEY,
     _coerce_bool,
     _coerced_token_cap,
     _parse_model_fallback_csv,
@@ -87,6 +88,26 @@ logger = logging.getLogger(__name__)
 
 _warned_previous_response_id: set[str] = set()
 _warned_store: set[str] = set()
+_warned_logit_bias: set[str] = set()
+
+
+def _coerced_logit_bias(raw: Any) -> Any:
+    if not isinstance(raw, str):
+        return raw
+    converted: dict[str, float] = {}
+    try:
+        for pair in raw.split(","):
+            token, bias = pair.split(":")
+            value = int(bias.strip())
+            converted[token.strip()] = float(max(-100, min(100, value)))
+    except ValueError:
+        logger.log(
+            warn_level(_warned_logit_bias, raw),
+            "Dropped logit_bias %r: Open WebUI writes it as 'token_id:bias, token_id:bias', "
+            "so the setting was not sent to the provider.",
+        )
+        return None
+    return converted
 
 class CompletionsBody(BaseModel):
     """
@@ -364,6 +385,11 @@ class ResponsesBody(BaseModel):
                 logger.warning("Dropping unsupported parameter: '%s'", key)
             elif key not in carried_fields:
                 sanitized_params[key] = value
+
+        converted_logit_bias = _coerced_logit_bias(sanitized_params.get("logit_bias"))
+        sanitized_params.pop("logit_bias", None)
+        if converted_logit_bias is not None:
+            sanitized_params["logit_bias"] = converted_logit_bias
 
         if "max_tokens" in completions_dict:
             # OpenRouter documents max_tokens as "integer, 1 or above". Open WebUI's
@@ -2516,6 +2542,9 @@ def _gate_responses_input_media(
             gated_items.append(item)
             continue
         gated_item = item
+        if PIPE_TOOL_IMAGES_KEY in item:
+            gated_item = {k: v for k, v in item.items() if k != PIPE_TOOL_IMAGES_KEY}
+            changed = True
         is_tool_output = item.get("type") == "function_call_output"
         for key, tool_output_only in (("content", False), ("output", True)):
             if tool_output_only and not is_tool_output:

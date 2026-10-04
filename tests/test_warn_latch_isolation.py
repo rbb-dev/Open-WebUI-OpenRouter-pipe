@@ -106,6 +106,12 @@ EXPECTED_LATCHES = {
     "_warned_oversized_inline",
     "_warned_forward_headers",
     "_warned_import_sites",
+    # B1062 H3695-1. A `logit_bias` that arrived as a string and did not parse as Open
+    # WebUI's `token_id:bias, ...` is dropped rather than forwarded, and the setting is
+    # the admin's own so nothing else would say it was ignored. Keyed on the raw value,
+    # so one line covers every spelling a typo takes and a repeat of the same typo is
+    # quiet for the life of the worker.
+    "_warned_logit_bias",
     "_warned_pinned_attachment",
     "_warned_pipes_maintenance",
     "_warned_plugin_dispatch",

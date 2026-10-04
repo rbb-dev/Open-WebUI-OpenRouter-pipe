@@ -282,6 +282,14 @@ class TaskModelAdapter:
                         metadata=owui_metadata or {},
                         task=self._task_name(task_context) or "task",
                     )
+                    success_key = _task_failure_latch_key(
+                        self._task_name(task_context) or "task",
+                        str(source_model_id or ""),
+                        str((owui_metadata or {}).get("chat_id") or ""),
+                        identifier_user_id,
+                    )
+                    if success_key:
+                        _task_failure_release(success_key)
                     return message
 
                 raise ValueError(

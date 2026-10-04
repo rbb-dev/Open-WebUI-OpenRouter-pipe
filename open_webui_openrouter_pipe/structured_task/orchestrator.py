@@ -191,7 +191,16 @@ def select_task_model_candidates(
     if fallback == "other_task_model" and other and other not in candidates:
         candidates.append(other)
 
-    return [model_id for model_id in candidates if _host_publishes(request, model_id)]
+    kept: list[str] = []
+    for model_id in candidates:
+        if _host_publishes(request, model_id):
+            kept.append(model_id)
+        else:
+            logger.debug(
+                "structured_task: dropped Task Model candidate %r: the host does not publish it",
+                model_id,
+            )
+    return kept
 
 
 async def resolve_task_model_candidates(

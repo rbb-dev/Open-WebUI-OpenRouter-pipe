@@ -124,6 +124,15 @@ def _dashboard_observability_needed(valves: Any) -> bool:
     )
 
 
+def _update_auto_wanted(ctx: Any) -> bool:
+    valves = getattr(ctx, "valves", None)
+    return bool(getattr(valves, "PIPE_DASHBOARD_UPDATE_AUTO", False))
+
+
+def _retired(ctx: Any) -> bool:
+    return bool(getattr(getattr(ctx, "pipe", None), "_closed", False))
+
+
 def _registry_model_name(model_id: str) -> str:
     try:
         from .formatters import build_model_name_map, resolve_model_name
@@ -326,6 +335,8 @@ class PipeDashboardPlugin(PluginBase):
 
     def _maybe_start_auto_update(self) -> None:
         """Start the auto-update loop task if an event loop is available."""
+        if _retired(getattr(self, "ctx", None)):
+            return
         if self.update_service is None:
             return
         try:
@@ -349,6 +360,8 @@ class PipeDashboardPlugin(PluginBase):
         return on
 
     def _maybe_start_sweep(self) -> None:
+        if _retired(getattr(self, "ctx", None)):
+            return
         valves = getattr(getattr(self, "ctx", None), "valves", None)
         if not _dashboard_observability_needed(valves):
             return
@@ -386,6 +399,8 @@ class PipeDashboardPlugin(PluginBase):
             return
 
         pipe = get_pipe()
+        if getattr(pipe, "_closed", False):
+            return
         namespace = getattr(pipe, "_redis_namespace", "openrouter") if pipe else "openrouter"
 
         if self._publisher_task is None or self._publisher_task.done():
@@ -408,6 +423,8 @@ class PipeDashboardPlugin(PluginBase):
         )
         _dashboard_on, _gate_read_ok = await persisted_dashboard_enabled(self.ctx.pipe)
         self._maybe_start_sweep()
+        if _update_auto_wanted(self.ctx):
+            self._maybe_start_auto_update()
         # Write a clean display name into OWUI's Models table so the UI shows
         # "Pipe Dashboard" instead of the ugly concatenated format.
         await self._ensure_model_overlay(_display_name, _description, _dashboard_on, _gate_read_ok)

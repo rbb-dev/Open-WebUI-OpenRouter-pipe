@@ -112,6 +112,7 @@ _ROW_MODEL_KEY = "_row_model"
 TOOL_ROUND_SKELETON_KEY = "_anchor_tool_round_skeleton"
 PIPE_ONLY_TOOL_ROUND_KEY = "_anchor_pipe_only_tool_round"
 BUILTIN_ASK_USER_ROUND_KEY = "_anchor_builtin_ask_user"
+PIPE_TOOL_IMAGES_KEY = "_anchor_pipe_tool_images_message"
 UNRETAINED_TOOL_RESULT = "[tool result not retained]"
 UNRETAINED_FAILED_TOOL_RESULT = "[tool call failed; result not retained]"
 TOOL_FAILURE_LINE = "Error: the tool call did not complete."
@@ -464,7 +465,10 @@ def opens_a_turn(items: list[Any], index: int) -> bool:
         isinstance(first, dict)
         and first.get("type") == "input_text"
         and first.get("text") == OPEN_WEBUI_TOOL_IMAGES_TEXT
-        and all(isinstance(part, dict) and part.get("type") == "input_image" for part in rest)
+        and (
+            item.get(PIPE_TOOL_IMAGES_KEY) if not rest
+            else all(isinstance(part, dict) and part.get("type") == "input_image" for part in rest)
+        )
     ):
         return True
     before = None

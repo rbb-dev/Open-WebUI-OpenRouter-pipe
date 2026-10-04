@@ -39,6 +39,7 @@ from ..structured_task import (
     task_model_owned_by,
 )
 from ..structured_task.logging import _fault_code
+from ..structured_task.orchestrator import _host_publishes
 from .image_types import system_prompt_text
 from .video_intent_prompts import (
     INTENT_JSON_SCHEMA,
@@ -577,6 +578,18 @@ def _normalize_prior_video_index(
     return None
 
 
+def _coerce_timestamp(raw: Any) -> float | None:
+    if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(value) or value < 0:
+        return None
+    return value
+
+
 def validate_intent_params(
     raw: dict[str, Any],
     *,
@@ -701,15 +714,10 @@ def validate_intent_params(
                     continue
                 source_index = resolved
                 if source == "prior_video_at_timestamp":
-                    if (
-                        not isinstance(timestamp_seconds_raw, (int, float))
-                        or isinstance(timestamp_seconds_raw, bool)
-                        or not math.isfinite(float(timestamp_seconds_raw))
-                        or timestamp_seconds_raw < 0
-                    ):
+                    timestamp_seconds = _coerce_timestamp(timestamp_seconds_raw)
+                    if timestamp_seconds is None:
                         downgrades.append("dropped_invalid_timestamp")
                         continue
-                    timestamp_seconds = float(timestamp_seconds_raw)
                 else:
                     timestamp_seconds = None
             else:
@@ -989,10 +997,25 @@ async def resolve_intent(
             fallback=getattr(valves, "VIDEO_INTENT_TASK_MODEL_FALLBACK", "other_task_model"),
         )
         if not candidates:
+            unpublished = [
+                model_id
+                for model_id in dict.fromkeys(
+                    str(model_id or "").strip() for model_id in (_ids or {}).values()
+                )
+                if model_id and not _host_publishes(request, model_id)
+            ]
+            retired_clause = (
+                "; the host no longer publishes "
+                + ", ".join(repr(model_id) for model_id in unpublished)
+                if unpublished
+                else ""
+            )
             logger.log(
                 _no_task_model_warn_level(chat_id),
                 "video_intent: Open WebUI reported no usable task model under "
-                "task.model.default / task.model.external; the classifier is skipped "
+                "task.model.default / task.model.external"
+                + retired_clause
+                + "; the classifier is skipped "
                 "and this turn degrades open",
             )
             fallback.classifier_failed = True
@@ -1273,7 +1296,9 @@ _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
     "deduped_duplicate_last_frame_target": (
         "You asked for the last frame twice, and it is used once."
     ),
-    "materialise_failed": "A non-critical step was skipped.",
+    "materialise_failed": (
+        "One frame of the previous video could not be prepared and was left out."
+    ),
     "dropped_prior_video_entries_explicit_attachments_present": (
         "The frames asked of the previous video were dropped, and your attachments were "
         "used instead."
@@ -1351,6 +1376,8 @@ _CLARIFICATION_CARD_CODES = (
     "clarification_question_truncated",
 )
 
+_WINDOW_ONLY_DOWNGRADES = frozenset({"conversation_truncated", "prior_videos_truncated"})
+
 
 def _prompt_text_was_rewritten(
     intent_prompt: str, person_prompt_text: str | None
@@ -1386,7 +1413,7 @@ def should_emit_confirmation_footer(
         return True
     if _prompt_text_was_rewritten(intent.prompt, person_prompt_text):
         return True
-    if intent.downgrades:
+    if any(code not in _WINDOW_ONLY_DOWNGRADES for code in intent.downgrades):
         return True
     if not intent.frame_plan:
         return False
