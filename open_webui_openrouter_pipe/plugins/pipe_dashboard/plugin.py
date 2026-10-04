@@ -224,7 +224,8 @@ class PipeDashboardPlugin(PluginBase):
             description=(
                 "How many previous-version snapshots the updater retains in Open WebUI Files. "
                 "Oldest snapshots are pruned (file record first, then blob) when a new one "
-                "exceeds the limit."
+                "exceeds the limit. An unreadable stored row prunes nothing on that pass: the "
+                "snapshot is still taken and the ring stays capped at ten slots regardless."
             ),
         )),
         "PIPE_DASHBOARD_UPDATE_REPO": (str, Field(
@@ -233,7 +234,8 @@ class PipeDashboardPlugin(PluginBase):
             description=(
                 "GitHub repo the updater tracks for tagged releases — point it at a fork to "
                 "self-update from your own builds. owner/repo on github.com only; the browser "
-                "never supplies it."
+                "never supplies it. An unreadable stored row refuses the check rather than "
+                "naming the upstream default."
             ),
         )),
         "PIPE_DASHBOARD_UPDATE_AUTO": (bool, Field(
@@ -245,7 +247,9 @@ class PipeDashboardPlugin(PluginBase):
                 "are all enabled, the background task keeps updating even while the Pipe "
                 "Dashboard model itself is switched off. Turning the master switch off stops "
                 "the next cycle rather than the current one, so an update already in flight "
-                "still finishes."
+                "still finishes. A deterministic failure pauses a release on this worker for "
+                "a day at most, after which it is attempted again - so a database blip does "
+                "not park an upgrade for the life of the process."
             ),
         )),
         "PIPE_DASHBOARD_UPDATE_AUTO_DELAY_HOURS": (int, Field(

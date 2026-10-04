@@ -1,5 +1,7 @@
 """Test audio format allowlist behavior for direct uploads endpoint routing.
 
+
+
 REAL TESTS: These use actual Pipe() instances with HTTP mocked at the boundary.
 Audio files can be routed to /responses or /chat/completions based on format allowlist.
 """
@@ -113,6 +115,7 @@ async def test_direct_uploads_audio_with_allowlisted_format_routes_to_responses(
         # 1. _get_file_by_id returns a file object
         mock_file_obj = MagicMock()
         mock_file_obj.id = "file_audio_1"
+        mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         # 2. _read_file_record_base64 returns the raw base64 data (NOT a data URL)
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_m4a_like_base64())
@@ -252,6 +255,7 @@ async def test_direct_uploads_audio_without_allowlisted_format_forces_chat_compl
         # 1. _get_file_by_id returns a file object
         mock_file_obj = MagicMock()
         mock_file_obj.id = "file_audio_1"
+        mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         # 2. _read_file_record_base64 returns the raw base64 data (NOT a data URL)
         # Using m4a signature even though allowlist is "mp3,wav" - should force chat_completions
@@ -393,6 +397,7 @@ async def test_direct_uploads_audio_injects_audio_blocks(monkeypatch):
         # 1. _get_file_by_id returns a file object
         mock_file_obj = MagicMock()
         mock_file_obj.id = "file_audio_1"
+        mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         # 2. _read_file_record_base64 returns the raw base64 data (NOT a data URL)
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_mp3_like_base64())
@@ -682,6 +687,7 @@ async def test_task_requests_do_not_inject_direct_uploads():
 async def test_moa_requests_inject_direct_uploads_like_chat():
     """Test that MOA requests inherit direct uploads like normal chat requests."""
     pipe = Pipe()
+    _use_sized_file_records()
 
     try:
         pipe.valves.API_KEY = EncryptedStr("test-api-key")
@@ -780,6 +786,7 @@ async def test_task_first_preserves_direct_uploads_for_chat():
     The direct uploads should only be injected into the chat request.
     """
     pipe = Pipe()
+    _use_sized_file_records()
 
     try:
         pipe.valves.API_KEY = EncryptedStr("test-api-key")
@@ -955,6 +962,7 @@ async def test_direct_uploads_injected_into_chat_request_payload():
     file blocks are added to the request payload sent to OpenRouter.
     """
     pipe = Pipe()
+    _use_sized_file_records()
 
     try:
         pipe.valves.API_KEY = EncryptedStr("test-api-key")
@@ -1555,6 +1563,23 @@ def test_direct_uploads_filter_bypasses_owui_file_context_via_metadata_files():
 
 
 from open_webui_openrouter_pipe.filters import FilterManager as _FilterManager
+
+
+
+
+def _use_sized_file_records(size: int = 4096) -> None:
+    """Stand in for the record Open WebUI hands back, carrying the size its upload measured.
+
+    The pipe sizes every direct upload against `declared_file_size(file_obj)`, which reads
+    `meta.size`; a stub without it is a record the pipe cannot size. The autouse
+    `_restore_rebound_file_accessors` fixture puts the real accessor back afterwards.
+    """
+    import open_webui_openrouter_pipe.requests.orchestrator as orch
+
+    async def _get_file_by_id(file_id, *_args, **_kwargs):
+        return MagicMock(id=str(file_id), meta={"size": size})
+
+    orch.get_file_by_id = _get_file_by_id
 
 
 def _webm_like_base64() -> str:

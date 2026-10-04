@@ -649,6 +649,14 @@ def _admission_bound(max_concurrent_requests: int, queue_maxsize: int) -> int:
     return max_concurrent_requests + queue_maxsize + 2
 
 
+def _model_rows(selected_models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {"id": m["id"], "name": m.get("name", m["id"])}
+        for m in selected_models
+        if isinstance(m, dict) and "id" in m
+    ]
+
+
 def _model_id_exclusions(filter_value: str, pipe_id: str | None) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     for entry in _parse_model_patterns(filter_value or ""):
@@ -2003,6 +2011,8 @@ class Pipe:
         self._maybe_start_startup_checks()
         self._maybe_start_redis()
         self._maybe_start_cleanup()
+        if getattr(self, "_closed", False):
+            return self._select_model_rows(OpenRouterModelRegistry.list_models())
         session: aiohttp.ClientSession | None = None
         refresh_error: Exception | None = None
         api_key_value: str | None = None
@@ -2207,11 +2217,12 @@ class Pipe:
             except Exception:
                 level = warn_level(_warned_pipes_maintenance, "on_models")
                 self.logger.log(level, "Plugin on_models dispatch failed", exc_info=True)
-        return [
-            {"id": m["id"], "name": m.get("name", m["id"])}
-            for m in selected_models
-            if isinstance(m, dict) and "id" in m
-        ]
+        return _model_rows(selected_models)
+
+    def _select_model_rows(self, available_models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        rows = self._select_models(self.valves.MODEL_ID, available_models)
+        rows = self._apply_model_filters(rows, self.valves)
+        return _model_rows(self._expand_variant_models(rows, self.valves))
 
     @timed
     async def pipe(

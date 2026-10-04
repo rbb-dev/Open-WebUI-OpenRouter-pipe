@@ -59,7 +59,7 @@ if TYPE_CHECKING:
         _build_openrouter_api_error,
         _classify_retryable_http_error,
         _extract_openrouter_error_details,
-        _read_rag_file_constraints,
+        _read_rag_file_max_size_mb,
         _resolve_error_model_context,
         _retry_after_seconds,
         _unwrap_config_value,
@@ -203,7 +203,7 @@ __all__ = [
     "_normalize_optional_str",
     "_normalize_string_list",
     "_pretty_json",
-    "_read_rag_file_constraints",
+    "_read_rag_file_max_size_mb",
     "_render_error_template",
     "_resolve_error_model_context",
     "_responses_payload_to_chat_completions_payload",
@@ -271,7 +271,7 @@ _LAZY_IMPORTS = {
     "_extract_openrouter_error_details": (".core.errors", "_extract_openrouter_error_details"),
     "_resolve_error_model_context": (".core.errors", "_resolve_error_model_context"),
     "_build_openrouter_api_error": (".core.errors", "_build_openrouter_api_error"),
-    "_read_rag_file_constraints": (".core.errors", "_read_rag_file_constraints"),
+    "_read_rag_file_max_size_mb": (".core.errors", "_read_rag_file_max_size_mb"),
 
     # Core utils
     "_get_open_webui_config_module": (".core.utils", "_get_open_webui_config_module"),

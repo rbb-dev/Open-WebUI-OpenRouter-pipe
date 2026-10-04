@@ -2,6 +2,28 @@
 
 ## Behaviour changes
 
+- **Admin's Max Upload Size, no longer gated on the RAG bypass flag** — an install that turned
+  `rag.bypass_embedding_and_retrieval` on stopped being held to the cap its admin last saved under
+  **Admin → Settings → Documents → Max Upload Size**: the pipe read the bypass flag beside the stored
+  size and treated "bypassed" as "no cap", handing that admin a `REMOTE_FILE_MAX_SIZE_MB`-sized download
+  from an install whose own upload leg was refusing at the stored number. That flag switches off
+  *embedding*, not the admin's ceiling — Open WebUI applies `rag.file.max_size` on its own upload leg
+  with no reference to it — so the stored cap now binds either way, and the pipe asks the store for
+  that one key rather than two. No valve default changed, and the smaller-wins arithmetic, the
+  default-valve carve-out, the 500 MB ceiling and a cleared admin box all behave exactly as before on
+  an install that does not use the flag.
+
+- **Plaintext HTTP allowlist, a bare entry names one port** — an `ALLOW_INSECURE_HTTP_HOSTS` entry with no port now
+  admits port `80` only, exactly as an explicit `host:80` entry does. It used to admit every cleartext port on that
+  host, so an operator who listed an internal service by bare hostname also opened `:22`, `:6379`, `:9200` and the
+  rest of its TCP ports to the pipe, which the valve's own "exact match only" help text does not describe.
+  **Migration:** if a listed service listens on a port other than 80, add a `host:port` entry for it (for example
+  `internal.svc:6379`) — a bare entry does not cover that port and the link is refused until the port is named.
+  `https://` links are unaffected: TLS is the control there and the port is the provider's business. The valve's
+  help text, the dashboard's `Plaintext HTTP host allowlist` detail and the five refusal messages a refused attachment
+  or picture produces all carry the same rule, and the refusal log now names the port instead of blaming a host the
+  operator did allowlist.
+
 - **Session log assembler, one offer per pass** — a turn the assembler already offered, or already failed, inside a
   pass is not offered again by that pass, and a turn whose assembly lock another pass holds is offered once per pass
   instead of once per re-listing round. The pass re-lists itself after meeting a lock-contended turn so the window

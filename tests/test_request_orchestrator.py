@@ -1,5 +1,7 @@
 """Test coverage for RequestOrchestrator in requests/orchestrator.py.
 
+
+
 REAL TESTS: These use actual Pipe() instances with HTTP mocked at the boundary.
 This consolidated file merges test_orchestrator_coverage.py and
 test_orchestrator_additional_coverage.py.
@@ -43,8 +45,25 @@ from open_webui_openrouter_pipe.requests import transformer as transformer_modul
 from open_webui_openrouter_pipe.storage.owui_files import InlinedFile
 from open_webui.constants import TASKS
 from open_webui_openrouter_pipe.tools.tool_registry import (
+
+
     _build_collision_safe_tool_specs_and_registry,
 )
+
+
+def _use_sized_file_records(size: int = 4096) -> None:
+    """Stand in for the record Open WebUI hands back, carrying the size its upload measured.
+
+    The pipe sizes every direct upload against `declared_file_size(file_obj)`, which reads
+    `meta.size`; a stub without it is a record the pipe cannot size. The autouse
+    `_restore_rebound_file_accessors` fixture puts the real accessor back afterwards.
+    """
+    import open_webui_openrouter_pipe.requests.orchestrator as orch
+
+    async def _get_file_by_id(file_id, *_args, **_kwargs):
+        return MagicMock(id=str(file_id), meta={"size": size})
+
+    orch.get_file_by_id = _get_file_by_id
 
 
 # -----------------------------------------------------------------------------
@@ -346,6 +365,7 @@ async def test_extract_direct_uploads_skips_invalid_items():
     non-string, non-blank id can tell this filter from a `str()` around it.
     """
     pipe = Pipe()
+    _use_sized_file_records()
 
     try:
         pipe.valves.API_KEY = EncryptedStr("test-api-key")
@@ -562,6 +582,7 @@ async def test_inject_direct_uploads_handles_list_content():
     Covers lines 128-131: handling content as a list of parts.
     """
     pipe = Pipe()
+    _use_sized_file_records()
 
     try:
         pipe.valves.API_KEY = EncryptedStr("test-api-key")
@@ -641,6 +662,7 @@ async def test_inject_direct_uploads_handles_list_content():
 async def test_direct_uploads_pdf_parser_injects_plugin():
     """Ensure pdf_parser selection injects file-parser plugin with engine."""
     pipe = Pipe()
+    _use_sized_file_records()
 
     try:
         pipe.valves.API_KEY = EncryptedStr("test-api-key")
@@ -720,6 +742,7 @@ async def test_inject_direct_uploads_handles_none_content():
     Covers lines 132-133: handling content as None.
     """
     pipe = Pipe()
+    _use_sized_file_records()
 
     try:
         pipe.valves.API_KEY = EncryptedStr("test-api-key")
@@ -893,6 +916,7 @@ async def test_sniff_audio_format_wav(monkeypatch):
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
+        mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_wav_like_base64())
 
@@ -978,6 +1002,7 @@ async def test_native_audio_read_threads_resolved_user(monkeypatch):
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
+        mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr(
             "open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id",
             AsyncMock(return_value=mock_file_obj),
@@ -1067,6 +1092,7 @@ async def test_native_audio_unauthorized_read_is_surfaced(monkeypatch):
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
+        mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr(
             "open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id",
             AsyncMock(return_value=mock_file_obj),
@@ -1155,6 +1181,7 @@ async def test_sniff_audio_format_mp3_id3(monkeypatch):
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
+        mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_mp3_like_base64())
 
@@ -1235,6 +1262,7 @@ async def test_sniff_audio_format_mp3_sync(monkeypatch):
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
+        mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_mp3_sync_base64())
 
@@ -1316,6 +1344,7 @@ async def test_sniff_audio_format_m4a(monkeypatch):
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
+        mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_m4a_like_base64())
 
@@ -1396,6 +1425,7 @@ async def test_sniff_audio_format_flac(monkeypatch):
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
+        mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_flac_like_base64())
 
@@ -1476,6 +1506,7 @@ async def test_sniff_audio_format_ogg(monkeypatch):
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
+        mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_ogg_like_base64())
 
@@ -1555,6 +1586,7 @@ async def test_sniff_audio_format_webm(monkeypatch):
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
+        mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_webm_like_base64())
 
@@ -1650,6 +1682,7 @@ async def test_audio_with_explicit_format(monkeypatch):
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
+        mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         # Return generic base64 - sniffing won't find format, but declared format used
         pipe._file_gateway.read_file_record_base64 = AsyncMock(
@@ -1730,6 +1763,7 @@ async def test_audio_format_allowlist_from_metadata(monkeypatch):
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
+        mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         pipe._file_gateway.read_file_record_base64 = AsyncMock(
             return_value=base64.b64encode(b"OggS" + b"\x00" * 28).decode("ascii")
@@ -1869,6 +1903,7 @@ async def test_audio_file_encode_error(monkeypatch):
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "bad_audio"
+        mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=None)  # Encoding fails
 
@@ -1933,6 +1968,7 @@ async def test_audio_missing_format_error(monkeypatch):
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "unknown_audio"
+        mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         # Return data that doesn't match any known signature
         pipe._file_gateway.read_file_record_base64 = AsyncMock(
@@ -2009,6 +2045,7 @@ async def test_video_upload_injection(monkeypatch):
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "video_1"
+        mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_mp4_video_base64())
 
@@ -2153,7 +2190,7 @@ async def test_video_infers_mime_type(monkeypatch):
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "video_1"
-        mock_file_obj.meta = {"content_type": "video/webm"}
+        mock_file_obj.meta = {"content_type": "video/webm", "size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_mp4_video_base64())
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.infer_file_mime_type", MagicMock(return_value="video/webm"))
@@ -2233,6 +2270,7 @@ async def test_video_file_encode_error(monkeypatch):
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "bad_video"
+        mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=None)  # Encoding fails
 
@@ -2396,6 +2434,7 @@ async def test_endpoint_override_conflict_with_forced_responses(monkeypatch):
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "video_1"
+        mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_mp4_video_base64())
 
@@ -3405,6 +3444,7 @@ async def test_decode_base64_prefix_empty_data(monkeypatch):
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
+        mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         # Return empty string - triggers line 147: return b""
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value="")
@@ -3470,6 +3510,7 @@ async def test_decode_base64_prefix_invalid_chars(monkeypatch):
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
+        mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         # Return data with invalid characters (Japanese chars have ord > 127)
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value="invalid\u3000base64data")
@@ -3535,6 +3576,7 @@ async def test_decode_base64_prefix_invalid_base64_structure(monkeypatch):
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
+        mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         # Valid base64 chars but structurally wrong (will try fallback decode)
         # Using valid chars but random content that might fail strict decode
@@ -3613,6 +3655,7 @@ async def test_sniff_audio_format_empty_prefix(monkeypatch):
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_empty"
+        mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         # Return None data - this will fail encoding check before sniffing
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=None)
@@ -3697,6 +3740,7 @@ async def test_files_loop_skips_invalid_file_id():
     order, and only those.
     """
     pipe = Pipe()
+    _use_sized_file_records()
 
     try:
         pipe.valves.API_KEY = EncryptedStr("test-api-key")
@@ -3809,6 +3853,7 @@ async def test_audio_loop_skips_invalid_file_id(monkeypatch):
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "valid_audio"
+        mock_file_obj.meta = {"size": 4096}
         asked: list[str] = []
 
         async def recording_get_file_by_id(file_id, *_args, **_kwargs):
@@ -3912,6 +3957,7 @@ async def test_video_loop_skips_invalid_file_id(monkeypatch):
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "valid_video"
+        mock_file_obj.meta = {"size": 4096}
         asked: list[str] = []
 
         async def recording_get_file_by_id(file_id, *_args, **_kwargs):
@@ -4013,6 +4059,7 @@ async def test_csv_set_with_non_string_value(monkeypatch):
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
+        mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_mp3_like_base64())
 

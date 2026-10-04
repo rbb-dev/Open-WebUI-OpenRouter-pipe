@@ -33,10 +33,6 @@ OWUI_OPENROUTER_PIPE_MARKER = "openrouter_pipe:direct_uploads_filter:v1"
 _UNMAPPABLE_AUDIO_FORMATS = frozenset({"webm"})
 
 
-class DirectUploadError(Exception):
-    """Rejects a direct upload; Open WebUI shows the message to the user verbatim."""
-
-
 class Filter:
     # Toggleable filter (shows a switch in the Integrations menu).
     toggle = True
@@ -85,25 +81,25 @@ class Filter:
             default=50,
             ge=1,
             le=500,
-            description="Maximum total size (MB) across all diverted direct uploads in a single request.",
+            description="Maximum total size (MB) across all diverted direct uploads in a single request. The pipe charges this against the size Open WebUI stored for each file, never against the size the request declared, and an attachment that would take the total over this cap stops the request with the `Direct Upload Issue` card naming this valve. A value here the pipe cannot read as a positive number falls back to 50 MB rather than to no limit at all.",
         )
         DIRECT_FILE_MAX_UPLOAD_SIZE_MB: int = Field(
             default=50,
             ge=1,
             le=500,
-            description="Maximum size (MB) for a single diverted direct file upload.",
+            description="Maximum size (MB) for a single diverted direct file upload. The pipe measures the stored Open WebUI record rather than the size the request declares, and refuses before the first byte of the file is read; a record whose stored size cannot be read is refused rather than sent unchecked. A value here the pipe cannot read as a positive number falls back to 50 MB rather than to no limit at all.",
         )
         DIRECT_AUDIO_MAX_UPLOAD_SIZE_MB: int = Field(
             default=25,
             ge=1,
             le=500,
-            description="Maximum size (MB) for a single diverted direct audio upload.",
+            description="Maximum size (MB) for a single diverted direct audio upload. The pipe measures the stored Open WebUI record rather than the size the request declares, and refuses before the first byte of the clip is read; a record whose stored size cannot be read is refused rather than sent unchecked. A value here the pipe cannot read as a positive number falls back to 25 MB rather than to no limit at all.",
         )
         DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB: int = Field(
             default=20,
             ge=1,
             le=500,
-            description="Maximum size (MB) for a single diverted direct video upload.",
+            description="Maximum size (MB) for a single diverted direct video upload. The pipe measures the stored Open WebUI record rather than the size the request declares, and refuses before the first byte of the clip is read; a record whose stored size cannot be read is refused rather than sent unchecked. A value here the pipe cannot read as a positive number falls back to 20 MB rather than to no limit at all.",
         )
         DIRECT_FILE_MIME_ALLOWLIST: str = Field(
             default="application/pdf,text/plain,text/markdown,application/json,text/csv",
@@ -352,16 +348,26 @@ class Filter:
                     retained.append(item)
                     continue
                 if size_bytes < 0:
-                    raise DirectUploadError("Direct uploads: uploaded file missing a valid size.")
+                    warnings.append(
+                        f"Direct file '{name or file_id}' carries no usable size, so it is not sent directly."
+                    )
+                    retained.append(item)
+                    continue
                 if size_bytes > file_limit:
-                    raise DirectUploadError(
-                        f"Direct file '{name or file_id}' is too large ({size_bytes} bytes; max {self.valves.DIRECT_FILE_MAX_UPLOAD_SIZE_MB} MB)."
+                    warnings.append(
+                        f"Direct file '{name or file_id}' is too large ({size_bytes} bytes; max {self.valves.DIRECT_FILE_MAX_UPLOAD_SIZE_MB} MB); it stays on Open WebUI."
                     )
+                    retained.append(item)
+                    continue
+                if total_bytes + size_bytes > total_limit:
+                    warnings.append(
+                        f"Direct file '{name or file_id}' ({size_bytes} bytes) would take the direct "
+                        f"uploads over the total limit ({self.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB} MB); "
+                        f"it stays on Open WebUI."
+                    )
+                    retained.append(item)
+                    continue
                 total_bytes += size_bytes
-                if total_bytes > total_limit:
-                    raise DirectUploadError(
-                        f"Direct uploads exceed total limit ({self.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB} MB)."
-                    )
                 diverted["files"].append(
                     {
                         "id": file_id,
@@ -394,16 +400,26 @@ class Filter:
                     retained.append(item)
                     continue
                 if size_bytes < 0:
-                    raise DirectUploadError("Direct uploads: uploaded file missing a valid size.")
+                    warnings.append(
+                        f"Direct audio '{name or file_id}' carries no usable size, so it is not sent directly."
+                    )
+                    retained.append(item)
+                    continue
                 if size_bytes > audio_limit:
-                    raise DirectUploadError(
-                        f"Direct audio '{name or file_id}' is too large ({size_bytes} bytes; max {self.valves.DIRECT_AUDIO_MAX_UPLOAD_SIZE_MB} MB)."
+                    warnings.append(
+                        f"Direct audio '{name or file_id}' is too large ({size_bytes} bytes; max {self.valves.DIRECT_AUDIO_MAX_UPLOAD_SIZE_MB} MB); it stays on Open WebUI."
                     )
+                    retained.append(item)
+                    continue
+                if total_bytes + size_bytes > total_limit:
+                    warnings.append(
+                        f"Direct audio '{name or file_id}' ({size_bytes} bytes) would take the direct "
+                        f"uploads over the total limit ({self.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB} MB); "
+                        f"it stays on Open WebUI."
+                    )
+                    retained.append(item)
+                    continue
                 total_bytes += size_bytes
-                if total_bytes > total_limit:
-                    raise DirectUploadError(
-                        f"Direct uploads exceed total limit ({self.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB} MB)."
-                    )
                 diverted["audio"].append(
                     {
                         "id": file_id,
@@ -427,16 +443,26 @@ class Filter:
                     retained.append(item)
                     continue
                 if size_bytes < 0:
-                    raise DirectUploadError("Direct uploads: uploaded file missing a valid size.")
+                    warnings.append(
+                        f"Direct video '{name or file_id}' carries no usable size, so it is not sent directly."
+                    )
+                    retained.append(item)
+                    continue
                 if size_bytes > video_limit:
-                    raise DirectUploadError(
-                        f"Direct video '{name or file_id}' is too large ({size_bytes} bytes; max {self.valves.DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB} MB)."
+                    warnings.append(
+                        f"Direct video '{name or file_id}' is too large ({size_bytes} bytes; max {self.valves.DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB} MB); it stays on Open WebUI."
                     )
+                    retained.append(item)
+                    continue
+                if total_bytes + size_bytes > total_limit:
+                    warnings.append(
+                        f"Direct video '{name or file_id}' ({size_bytes} bytes) would take the direct "
+                        f"uploads over the total limit ({self.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB} MB); "
+                        f"it stays on Open WebUI."
+                    )
+                    retained.append(item)
+                    continue
                 total_bytes += size_bytes
-                if total_bytes > total_limit:
-                    raise DirectUploadError(
-                        f"Direct uploads exceed total limit ({self.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB} MB)."
-                    )
                 diverted["video"].append(
                     {
                         "id": file_id,

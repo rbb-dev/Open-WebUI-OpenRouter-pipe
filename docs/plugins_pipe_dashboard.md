@@ -148,9 +148,13 @@ builds — forks inherit the release workflow, so assets, digests, and the chang
   derived; the card shows no dates — the row's timestamps are modification times, not install
   times, and a release date belongs to the release, shown on the Latest card); the latest release with date, size, "Last checked" (the time of the most recent check, whatever its
   outcome; a separate line appears while checks are failing, reporting when the current run
-  of failures began), the tracked repo (with a `fork` badge when it is
+  of failures began). Past a day of continued failure the last-known release is withdrawn rather than
+  left merely unrefreshed: the release row empties and the failure line beneath it is all that is left.
+  The tracked repo (with a `fork` badge when it is
   not the default), and the auto-update status. Every visit to the tab refreshes its data (release
-  data is memoized server-side for a minute, so tab switching never hammers GitHub). **Check now**
+  data is memoized server-side for a minute, so tab switching never hammers GitHub; the fallback that
+  shows the last release GitHub did answer with has its own, longer 24 h bound, so a release older than
+  that is withdrawn rather than presented as current). **Check now**
   bypasses that memo for admins; for read-only viewers it refreshes the installed/snapshot state
   but reuses the memoized release data — force-refreshing the shared GitHub budget is admin-only.
 - **Changelog** — the release page's own generated notes, rendered as escaped text; commit
@@ -183,7 +187,9 @@ builds — forks inherit the release workflow, so assets, digests, and the chang
   instance also re-registers the dashboard's own live-feed and action-route state through its own plugin, so the
   panel follows it and is released with it. This is
   reported as `write_failed`, separately from a validation failure, because the code passed every check
-  and the store refused the row. The installing worker pauses briefly (up to ~90s); other
+  and the store refused the row. A database fault on a read *after* a committed write is not reported
+  as a failure at all: the write is the commit point, so the new code stays live and the update is
+  reported as done. The installing worker pauses briefly (up to ~90s); other
   workers pick the new version up on their next request. After a successful update, reload the
   dashboard to load the matching UI.
 - **Previous versions** — the retained snapshots (`PIPE_DASHBOARD_UPDATE_SNAPSHOT_KEEP`) with
@@ -223,8 +229,10 @@ builds — forks inherit the release workflow, so assets, digests, and the chang
   *next* cycle rather than the current one, and turning the master switch back on resumes on the
   cycle after that with no restart — backs off on GitHub rate limits (honoring the reset header) and network
   failures without ever losing an update, and pauses a release on that worker after a deterministic
-  failure until a restart, a newer release, or a successful manual apply. Those three ways out are
-  offered only where one of them can work: a release the same check would reject again — one whose
+  failure — for a day at most, after which the release is attempted again whether or not anyone noticed —
+  and until a restart, a newer release, or a successful manual apply, whichever comes first. Waiting
+  is therefore the fourth and the binding way out, and it is the one that needs nothing. Those
+  ways out are offered only where one of them can work: a release the same check would reject again — one whose
   bundle declares a version that is not newer than the installed one, say — is cleared by neither a
   manual apply nor a restart, so the tab names the refusal instead of an instruction that cannot
   work, and the pause stands until a newer release arrives. An I/O error reaching the

@@ -987,7 +987,8 @@ def _tool_picture_gate(
         ):
             refused.append((url, ("served over plain HTTP, which is blocked by security policy; "
                                   "set ALLOW_INSECURE_HTTP and list the host in "
-                                  "ALLOW_INSECURE_HTTP_HOSTS to permit it"), "insecure_http"))
+                                  "ALLOW_INSECURE_HTTP_HOSTS to permit it (a bare entry is "
+                                  "port 80; write host:port for any other port)"), "insecure_http"))
             continue
         if not (url_scheme(url) in ("data", "http", "https") or names_a_hostless_owui_file_path(url)):
             refused.append((url, "not a link the pipe can resolve into an image", "unusable_link"))
@@ -1280,6 +1281,7 @@ async def transform_messages_to_input(
     capability_model_id: str | None = None,
     ask_user_names: frozenset[str] = frozenset(),
     attachment_notices: list[str] | None = None,
+    temporary_chat: bool | None = None,
 ) -> list[dict[str, Any]]:
     """
     Build an OpenAI Responses-API `input` array from Open WebUI-style messages.
@@ -1478,7 +1480,7 @@ async def transform_messages_to_input(
         turn_images_used = 0
         turn_images_dropped = 0
         turn_images_index: int | None = None
-        temporary_chat = is_temporary_chat(chat_id)
+        temporary_chat = is_temporary_chat(chat_id) if temporary_chat is None else temporary_chat
         memo_owner = _memo_owner_key(user_obj)
         request_memo: dict[tuple[str, str], tuple[str | None, bytes, str]] = {}
 
@@ -1893,7 +1895,8 @@ async def transform_messages_to_input(
                                 return ImageRefusal(
                                     "served over plain HTTP, which is blocked by security policy; "
                                     "set ALLOW_INSECURE_HTTP and list the host in "
-                                    "ALLOW_INSECURE_HTTP_HOSTS to permit it",
+                                    "ALLOW_INSECURE_HTTP_HOSTS to permit it (a bare entry is "
+                                    "port 80; write host:port for any other port)",
                                     "insecure_http",
                                     subject=loggable_link(url),
                                 )
@@ -2225,7 +2228,8 @@ async def transform_messages_to_input(
                                 return ImageRefusal(
                                     "served over plain HTTP, which is blocked by security policy; "
                                     "set ALLOW_INSECURE_HTTP and list the host in "
-                                    "ALLOW_INSECURE_HTTP_HOSTS to permit it",
+                                    "ALLOW_INSECURE_HTTP_HOSTS to permit it (a bare entry is "
+                                    "port 80; write host:port for any other port)",
                                     "insecure_http_file",
                                     subject="file_data",
                                 )
@@ -2246,7 +2250,8 @@ async def transform_messages_to_input(
                                 return ImageRefusal(
                                     "served over plain HTTP, which is blocked by security policy; "
                                     "set ALLOW_INSECURE_HTTP and list the host in "
-                                    "ALLOW_INSECURE_HTTP_HOSTS to permit it",
+                                    "ALLOW_INSECURE_HTTP_HOSTS to permit it (a bare entry is "
+                                    "port 80; write host:port for any other port)",
                                     "insecure_http_file",
                                     subject="file_url",
                                 )
@@ -2720,7 +2725,8 @@ async def transform_messages_to_input(
                             return ImageRefusal(
                                 "served over plain HTTP, which is blocked by security "
                                 "policy; use an https link, or set ALLOW_INSECURE_HTTP "
-                                "and list the host in ALLOW_INSECURE_HTTP_HOSTS",
+                                "and list the host in ALLOW_INSECURE_HTTP_HOSTS (a bare "
+                                "entry is port 80; write host:port for any other port)",
                                 "insecure_http_video",
                                 severity="error",
                                 subject=loggable_link(url),
@@ -2766,7 +2772,7 @@ async def transform_messages_to_input(
                                             url, seconds=_video_seconds
                                         ),
                                     )
-                            if not _verdict:
+                            if _verdict is not True:
                                 if _video_ceiling:
                                     pipe.logger.warning(
                                         "Refusing video URL %s: %s", loggable_link(url),

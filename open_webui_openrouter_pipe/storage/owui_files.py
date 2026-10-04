@@ -32,7 +32,7 @@ from typing import Any, NamedTuple
 from fastapi import BackgroundTasks, Request, UploadFile
 from starlette.datastructures import Headers
 
-from ..core.config import _INTERNAL_FILE_ID_PATTERN, OWUI_CHAT_ID
+from ..core.config import _INTERNAL_FILE_ID_PATTERN, _PIPE_METADATA_KEY, OWUI_CHAT_ID
 from ..core.errors import FileUnavailableError, RequiredInternalFileError
 from ..core.timing_logger import timed
 from ..core.url_scheme import (
@@ -413,6 +413,14 @@ def chat_latch_key(chat_id: Any) -> str:
 
 def loggable_chat_id(chat_id: Any) -> str:
     return "<not retained>" if is_temporary_chat(chat_id) else str(chat_id or "")
+
+
+def is_temporary_metadata(metadata: Any) -> bool:
+    base = metadata if isinstance(metadata, dict) else {}
+    if is_temporary_chat(base.get("chat_id")):
+        return True
+    pipe_meta = base.get(_PIPE_METADATA_KEY)
+    return isinstance(pipe_meta, dict) and pipe_meta.get("temporary_chat") is True
 
 
 def loggable_session_id(session_id: Any) -> str:

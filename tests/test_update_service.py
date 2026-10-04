@@ -112,7 +112,7 @@ class _FakeFunctions:
         self.row = SimpleNamespace(content=content, meta=dict(meta or {}), updated_at=rev)
         self.updates: list[dict] = []
         self.meta_merges: list[dict] = []
-        self.valves_row: dict | None = None
+        self.valves_row: dict | None = {}
         self.fail_content_write = False
         self.fail_meta_merge = False
 
@@ -2849,6 +2849,22 @@ async def test_an_undecodable_valve_blob_is_not_read_as_no_override(
     )
 
 
+# ── B1019-4: a parked release ages out ─────────────────────────────────────────
+#
+# `_auto_skip[version]` is written by any code outside `_TRANSIENT_CODES`, and the
+# membership test short-circuits before the retry, so the entry parked that version until
+# a restart, a newer release or a successful manual apply -- none of which happens on a
+# worker left alone. `write_failed` and `digest_mismatch` are both outside the transient
+# set, and neither is a classification mistake: `digest_mismatch` is raised both for a
+# missing digest and for bytes that do not hash, and `_http_get_bytes` caps by size rather
+# than by the asset's declared size, so a truncated transfer and a corrupt release are the
+# same fault from here. So the park is bounded rather than reclassified.
+#
+# _AUTO_TICK_BASE is a real epoch a week after the release `_release()` publishes, because
+# `_auto_tick` gates on the published date against the clock: a clock near zero puts the
+# release in the future and the tick never reaches apply, which makes every assertion here
+# pass or fail for the wrong reason.
+_AUTO_TICK_BASE = 1_783_000_000.0
 # ── H656-2: a refused content write leaves the freshly loaded code installed and the
 # ── pipe dead. The restore is what makes the rebuild possible; the rebuild is what
 # ── makes the next chat work. Restoring `sys.modules` alone leaves a dead instance.

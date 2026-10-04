@@ -81,11 +81,13 @@ from ..media.image_conversion import normalise_mime
 from ..models.registry import ModelFamily, OpenRouterModelRegistry
 from ..storage.multimodal import Confidence, _sniff_evidence
 from ..storage.owui_files import (
+    declared_file_size,
     get_file_by_id,
     index_referenced_file_payloads,
     infer_file_mime_type,
     is_linkable_chat,
     is_temporary_chat,
+    is_temporary_metadata,
 )
 from ..storage.users import get_user_by_id
 from ..streaming.constants import _REPLAY_DROPPED_OPENING, DEFERRED_REASONING_FLUSH
@@ -148,12 +150,13 @@ async def _read_attachment(
     chunk_size: int,
     max_bytes: int,
     user_model: Any,
+    record: Any = None,
 ) -> tuple[str, Any]:
     memo_key = (modality, file_id, user_id)
     if memo_key in attachment_bytes:
         return attachment_bytes[memo_key]
     label = f"Native {modality} attachment"
-    file_obj = await get_file_by_id(file_id, logger)
+    file_obj = record if record is not None else await get_file_by_id(file_id, logger)
     if not file_obj:
         raise FileUnavailableError(
             f"{label} could not be loaded."
@@ -384,6 +387,15 @@ _PER_MODEL_WARN_WINDOW = 300
 
 _warned_chat_provider_keys: OrderedDict[str, None] = OrderedDict()
 _warned_ruled_out_tool_use: OrderedDict[str, None] = OrderedDict()
+_warned_direct_upload_caps: OrderedDict[str, None] = OrderedDict()
+
+_DEFAULT_DIRECT_TOTAL_PAYLOAD_MAX_MB = 50
+_DIRECT_UPLOAD_TOTAL_CAP = "DIRECT_TOTAL_PAYLOAD_MAX_MB"
+_DIRECT_UPLOAD_FAMILY_CAPS: tuple[tuple[str, str, int], ...] = (
+    ("files", "DIRECT_FILE_MAX_UPLOAD_SIZE_MB", 50),
+    ("audio", "DIRECT_AUDIO_MAX_UPLOAD_SIZE_MB", 25),
+    ("video", "DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB", 20),
+)
 
 
 _FUSION_CONTINUE_NOTICE = "Continue is not available for Fusion replies. Regenerate the reply to run Fusion again."
@@ -754,13 +766,14 @@ class RequestOrchestrator:
         rejected_user_valves: list[str] | None = None,
         resolved_user_model: Any = _UNSET,
         resolved_user_done: bool = False,
-        attachment_bytes: dict[str, Any] | None = None,
+        attachment_bytes: dict[Any, Any] | None = None,
     ) -> dict[str, Any] | str | StreamingResponse | None:
         user_id = user_id or str(__user__.get("id") or __metadata__.get("user_id") or "")
         user_model, user_model_resolved = await _resolve_user_model(
             user_id, resolved_user_model, self.logger
         )
-        attachment_bytes = attachment_bytes if attachment_bytes is not None else {}
+        empty_attachment_bytes: dict[Any, Any] = {}
+        attachment_bytes = attachment_bytes if attachment_bytes is not None else empty_attachment_bytes
         def _extract_direct_uploads(metadata: dict[str, Any]) -> dict[str, Any]:
             pipe_meta = metadata.get(_PIPE_METADATA_KEY)
             if not isinstance(pipe_meta, dict):
@@ -846,6 +859,143 @@ class RequestOrchestrator:
             max_bytes = valves.BASE64_MAX_SIZE_MB * 1024 * 1024
             chunk_size = valves.IMAGE_UPLOAD_CHUNK_BYTES
 
+            allowlist_key = "responses_audio_format_allowlist"
+            operator_audio_key = "audio_format_allowlist"
+            _gate: list[
+                tuple[tuple[set[str], set[str], str], tuple[int, dict[str, tuple[int, str]]]]
+            ] = []
+
+            def _csv_set(value: Any) -> set[str]:
+                if not isinstance(value, str):
+                    return set()
+                items = []
+                for raw in value.split(","):
+                    item = (raw or "").strip().lower()
+                    if item:
+                        items.append(item)
+                return set(items)
+
+            def _positive_cap(value: Any, fallback: int) -> int:
+                if isinstance(value, bool):
+                    return fallback
+                if isinstance(value, int):
+                    return value if value > 0 else fallback
+                if isinstance(value, float):
+                    return int(value) if value > 0 else fallback
+                if isinstance(value, str) and value.strip():
+                    try:
+                        parsed = int(value.strip())
+                    except ValueError:
+                        return fallback
+                    return parsed if parsed > 0 else fallback
+                return fallback
+
+            def _size_caps(
+                stored: dict[str, Any], read_ok: bool
+            ) -> tuple[int, dict[str, tuple[int, str]]]:
+                if not read_ok:
+                    bound = _positive_cap(
+                        valves.BASE64_MAX_SIZE_MB, _DEFAULT_DIRECT_TOTAL_PAYLOAD_MAX_MB
+                    )
+                    self.logger.log(
+                        bounded_warn_level(
+                            _warned_direct_upload_caps,
+                            "direct_uploads_size_row",
+                            _PER_MODEL_WARN_WINDOW,
+                        ),
+                        "Could not read the stored Direct Uploads filter valves; every "
+                        "direct-upload size cap falls back to BASE64_MAX_SIZE_MB (%d MB) "
+                        "for this turn rather than to no limit at all",
+                        bound,
+                    )
+                    return bound, {
+                        family: (bound, cap_key)
+                        for family, cap_key, _default in _DIRECT_UPLOAD_FAMILY_CAPS
+                    }
+                return (
+                    _positive_cap(
+                        stored.get(_DIRECT_UPLOAD_TOTAL_CAP),
+                        _DEFAULT_DIRECT_TOTAL_PAYLOAD_MAX_MB,
+                    ),
+                    {
+                        family: (
+                            _positive_cap(stored.get(cap_key), default),
+                            cap_key,
+                        )
+                        for family, cap_key, default in _DIRECT_UPLOAD_FAMILY_CAPS
+                    },
+                )
+
+            async def _direct_upload_policy() -> tuple[
+                tuple[set[str], set[str], str], tuple[int, dict[str, tuple[int, str]]]
+            ]:
+                if _gate:
+                    return _gate[0]
+                _key_seen = allowlist_key in attachments
+                _responses = (
+                    _csv_set(attachments.get(allowlist_key, ""))
+                    if _key_seen
+                    else set(_DEFAULT_RESPONSES_AUDIO_FORMATS)
+                )
+                _operator_csv = attachments.get(operator_audio_key, "")
+                _operator = _csv_set(_operator_csv) if isinstance(_operator_csv, str) else set()
+                _source = "metadata"
+                _stored, _read_ok = await self._pipe._stored_direct_uploads_valves()
+                _caps = _size_caps(_stored, _read_ok)
+                if not _read_ok:
+                    _source = "unreadable"
+                    _operator = set()
+                else:
+                    _row_responses = _stored.get("DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST")
+                    if isinstance(_row_responses, str):
+                        _responses = _csv_set(_row_responses)
+                    _row_operator = _stored.get("DIRECT_AUDIO_FORMAT_ALLOWLIST")
+                    if isinstance(_row_operator, str):
+                        _operator = _csv_set(_row_operator)
+                        _source = "row"
+                _resolved = ((_responses, _operator, _source), _caps)
+                _gate.append(_resolved)
+                return _resolved
+
+            async def _direct_upload_allowlists() -> tuple[set[str], set[str], str]:
+                return (await _direct_upload_policy())[0]
+
+            total_limit_mb, family_caps = (await _direct_upload_policy())[1]
+            total_limit_bytes = total_limit_mb * 1024 * 1024
+            gate_records: dict[tuple[str, str], Any] = {}
+            total_bytes = 0
+            for family in ("files", "audio", "video"):
+                limit_mb, cap_key = family_caps[family]
+                for item in attachments.get(family, []):
+                    file_id = item.get("id")
+                    if not isinstance(file_id, str) or not file_id:
+                        continue
+                    memo_key = ("direct_upload_record", family, file_id, user_id)
+                    file_obj = attachment_bytes.get(memo_key)
+                    if file_obj is None:
+                        file_obj = await get_file_by_id(file_id, self.logger)
+                        attachment_bytes[memo_key] = file_obj
+                    gate_records[(family, file_id)] = file_obj
+                    declared = declared_file_size(file_obj)
+                    if declared is None:
+                        raise ValueError(
+                            f"An attachment on this request carries no readable stored size, "
+                            f"so the pipe cannot show the {limit_mb} MB {cap_key} valve "
+                            f"holds for it, and it was not sent."
+                        )
+                    if declared > limit_mb * 1024 * 1024:
+                        raise ValueError(
+                            f"An attachment on this request is stored as {declared} bytes, "
+                            f"over the {limit_mb} MB {cap_key} valve, and was not sent."
+                        )
+                    if total_bytes + declared > total_limit_bytes:
+                        raise ValueError(
+                            f"Direct uploads exceed the total limit ({total_limit_mb} MB, "
+                            f"{_DIRECT_UPLOAD_TOTAL_CAP}) once an attachment stored as "
+                            f"{declared} bytes is added, so it was not sent."
+                        )
+                    total_bytes += declared
+
             def _decode_base64_prefix(data: str, *, byte_count: int = 96) -> bytes:
                 """Decode a small prefix of base64 to allow MIME/container sniffing.
 
@@ -919,48 +1069,6 @@ class RequestOrchestrator:
                     },
                 )
 
-            def _csv_set(value: Any) -> set[str]:
-                if not isinstance(value, str):
-                    return set()
-                items = []
-                for raw in value.split(","):
-                    item = (raw or "").strip().lower()
-                    if item:
-                        items.append(item)
-                return set(items)
-
-            allowlist_key = "responses_audio_format_allowlist"
-            operator_audio_key = "audio_format_allowlist"
-            _gate: list[tuple[set[str], set[str], str]] = []
-
-            async def _direct_upload_allowlists() -> tuple[set[str], set[str], str]:
-                if _gate:
-                    return _gate[0]
-                _key_seen = allowlist_key in attachments
-                _responses = (
-                    _csv_set(attachments.get(allowlist_key, ""))
-                    if _key_seen
-                    else set(_DEFAULT_RESPONSES_AUDIO_FORMATS)
-                )
-                _operator_csv = attachments.get(operator_audio_key, "")
-                _operator = _csv_set(_operator_csv) if isinstance(_operator_csv, str) else set()
-                _source = "metadata"
-                _stored, _read_ok = await self._pipe._stored_direct_uploads_valves()
-                if not _read_ok:
-                    _source = "unreadable"
-                    _operator = set()
-                else:
-                    _row_responses = _stored.get("DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST")
-                    if isinstance(_row_responses, str):
-                        _responses = _csv_set(_row_responses)
-                    _row_operator = _stored.get("DIRECT_AUDIO_FORMAT_ALLOWLIST")
-                    if isinstance(_row_operator, str):
-                        _operator = _csv_set(_row_operator)
-                        _source = "row"
-                _resolved = (_responses, _operator, _source)
-                _gate.append(_resolved)
-                return _resolved
-
             for item in attachments.get("audio", []):
                 file_id = item.get("id")
                 if not isinstance(file_id, str) or not file_id:
@@ -969,6 +1077,7 @@ class RequestOrchestrator:
                     attachment_bytes, "audio", file_id, user_id,
                     gateway=self._pipe._file_gateway, logger=self._pipe.logger,
                     chunk_size=chunk_size, max_bytes=max_bytes, user_model=user_model,
+                    record=gate_records.get(("audio", file_id)),
                 )
                 allowed_for_responses, operator_audio_formats, allowlist_source = (
                     await _direct_upload_allowlists()
@@ -1030,6 +1139,7 @@ class RequestOrchestrator:
                     attachment_bytes, "video", file_id, user_id,
                     gateway=self._pipe._file_gateway, logger=self._pipe.logger,
                     chunk_size=chunk_size, max_bytes=max_bytes, user_model=user_model,
+                    record=gate_records.get(("video", file_id)),
                 )
                 mime = item.get("content_type")
                 if not isinstance(mime, str) or not mime.strip():
@@ -1362,6 +1472,7 @@ class RequestOrchestrator:
             completions_body=completions_body,
 
             **({} if fusion_inner else _chat_id_kwarg(__metadata__)),
+            temporary_chat=is_temporary_metadata(__metadata__),
             **_openwebui_model_id_kwarg(openwebui_model_id),
             artifact_loader=(
                 None

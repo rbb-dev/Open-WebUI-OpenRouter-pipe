@@ -526,6 +526,7 @@ class SessionLogManager:
         self._worker_thread: threading.Thread | None = None
         self._cleanup_thread: threading.Thread | None = None
         self._assembler_thread: threading.Thread | None = None
+        self._retiring_threads: list[threading.Thread] = []
 
         # Thread-safe configuration access
         self._lock = threading.Lock()
@@ -548,7 +549,7 @@ class SessionLogManager:
         self._archive_queue_drops: int = 0
         self._temporary_chat_sweep_at: float = 0.0
         self._ownership_skips: dict[str, float] = {}
-        self._live_turns: dict[tuple[str, str], float] = {}
+        self._live_turns: dict[tuple[str, str], int] = {}
 
     @property
     def _assembly_failures(self) -> dict[tuple[str, str], float]:
@@ -563,16 +564,18 @@ class SessionLogManager:
         if not (key[0] and key[1]):
             return
         with self._lock:
-            self._live_turns[key] = time.monotonic()
-            limit = max(int(getattr(self.valves, "MAX_CONCURRENT_REQUESTS", 0) or 0) + 2, 2)
-            while len(self._live_turns) > limit:
-                oldest = min(self._live_turns, key=lambda item: self._live_turns[item])
-                self._live_turns.pop(oldest, None)
+            self._live_turns[key] = self._live_turns.get(key, 0) + 1
 
     def _note_turn_finished(self, chat_id: str, message_id: str) -> None:
         key = (str(chat_id or ""), str(message_id or ""))
+        if not (key[0] and key[1]):
+            return
         with self._lock:
-            self._live_turns.pop(key, None)
+            n = self._live_turns.get(key, 0)
+            if n <= 1:
+                self._live_turns.pop(key, None)
+            else:
+                self._live_turns[key] = n - 1
 
     def set_artifact_store(self, artifact_store: ArtifactStore) -> None:
         """Set the artifact store reference."""
@@ -791,6 +794,14 @@ class SessionLogManager:
             _thread = getattr(self, _name)
             if _thread is None or not _thread.is_alive():
                 setattr(self, _name, None)
+        with self._lock:
+            retiring = list(self._retiring_threads)
+        for thread in retiring:
+            if thread.is_alive():
+                with contextlib.suppress(Exception):
+                    thread.join(timeout=2.0)
+        with self._lock:
+            self._retiring_threads = [t for t in self._retiring_threads if t.is_alive()]
         if self._stop_event is signalled and not any(
             thread is not None and thread.is_alive() for thread in threads
         ):
@@ -821,6 +832,8 @@ class SessionLogManager:
                 )
                 self._worker_thread.start()
             if not cleanup_live or cleanup_on_a_set_event:
+                if self._cleanup_thread is not None and self._cleanup_thread.is_alive():
+                    self._retiring_threads.append(self._cleanup_thread)
                 self._cleanup_thread = threading.Thread(
                     target=_cleanup_loop,
                     args=(mgr_ref, stop_event),
@@ -840,6 +853,8 @@ class SessionLogManager:
                 self._stop_event = threading.Event()
             stop_event = self._stop_event
 
+            if self._assembler_thread is not None and self._assembler_thread.is_alive():
+                self._retiring_threads.append(self._assembler_thread)
             self._assembler_thread = threading.Thread(
                 target=_assembler_loop,
                 args=(weakref.ref(self), stop_event),
@@ -1326,10 +1341,11 @@ class SessionLogManager:
     ) -> None:
         cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=float(retention_days))
         ids: list[str] = []
+        turn_keys: list[str] = []
         try:
             with _db_session(session_factory) as session:
                 rows = (
-                    session.query(model.id)  # type: ignore[attr-defined]
+                    session.query(model.id, model.chat_id, model.message_id)  # type: ignore[attr-defined]
                     .filter(  # type: ignore[attr-defined]
                         model.item_type.in_(["session_log_segment", "session_log_segment_terminal"])
                     )
@@ -1338,6 +1354,11 @@ class SessionLogManager:
                     .all()
                 )
                 ids = [row[0] for row in rows if row and isinstance(row[0], str)]
+                turn_keys = [
+                    f"{row[1]}:{row[2]}"
+                    for row in rows
+                    if row and isinstance(row[0], str)
+                ]
         except Exception as exc:  # noqa: BLE001
             self._warn_store_fault(
                 "session_log_stale_segment_reap_failed",
@@ -1349,6 +1370,10 @@ class SessionLogManager:
         if ids and self._artifact_store:
             with contextlib.suppress(Exception):
                 self._artifact_store._delete_artifacts_sync(ids)
+        if turn_keys:
+            with self._lock:
+                for turn_key in turn_keys:
+                    self._unreadable_archive_attempts.pop(turn_key, None)
 
     def _cleanup_stale_locks(
         self,

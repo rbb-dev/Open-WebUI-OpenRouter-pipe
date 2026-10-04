@@ -77,7 +77,7 @@ from ..core.utils import (
 from ..core.warn_latch import warn_level
 from ..filters.fusion_filter_renderer import _fusion_base_model_id, is_fusion_model
 from ..models.registry import ModelFamily
-from ..storage.owui_files import is_temporary_chat, names_an_owui_file_path
+from ..storage.owui_files import is_temporary_metadata, names_an_owui_file_path
 from ..tools.tool_schema import _strictify_schema
 
 # Pydantic Body Classes
@@ -332,6 +332,7 @@ class ResponsesBody(BaseModel):
         transformer_valves: Pipe.Valves | None = None,
         capability_model_id: str | None = None,
         ask_user_names: frozenset[str] = frozenset(),
+        temporary_chat: bool | None = None,
         **extra_params,
     ) -> ResponsesBody:
         """
@@ -431,6 +432,7 @@ class ResponsesBody(BaseModel):
                 capability_model_id=capability_model_id,
                 ask_user_names=ask_user_names,
                 attachment_notices=attachment_notices,
+                temporary_chat=temporary_chat,
             )
             if replayed_reasoning_refs:
                 sanitized_params["_replayed_reasoning_refs"] = replayed_reasoning_refs
@@ -2298,10 +2300,7 @@ def _apply_identifier_valves_to_payload(
     else:
         payload.pop("user", None)
 
-    pipe_meta = owui_metadata.get(_PIPE_METADATA_KEY)
-    is_temporary = is_temporary_chat(owui_metadata.get("chat_id")) or (
-        isinstance(pipe_meta, dict) and pipe_meta.get("temporary_chat") is True
-    )
+    is_temporary = is_temporary_metadata(owui_metadata)
 
     payload.pop("session_id", None)
     if valves.SEND_CACHE_SESSION_ID:

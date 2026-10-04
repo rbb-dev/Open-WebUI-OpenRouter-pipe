@@ -2448,8 +2448,8 @@ class TestGetEffectiveRemoteFileLimit:
         pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 100
 
         with patch(
-            "open_webui_openrouter_pipe.storage.multimodal._read_rag_file_constraints",
-            return_value=(False, None)
+            "open_webui_openrouter_pipe.storage.multimodal._read_rag_file_max_size_mb",
+            return_value=None
         ):
             result = await pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb()
             assert result == 100
@@ -2460,8 +2460,8 @@ class TestGetEffectiveRemoteFileLimit:
         pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 100
 
         with patch(
-            "open_webui_openrouter_pipe.storage.multimodal._read_rag_file_constraints",
-            return_value=(True, 50)
+            "open_webui_openrouter_pipe.storage.multimodal._read_rag_file_max_size_mb",
+            return_value=50
         ):
             result = await pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb()
             assert result == 50
@@ -2474,8 +2474,8 @@ class TestGetEffectiveRemoteFileLimit:
         pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = _REMOTE_FILE_MAX_SIZE_DEFAULT_MB
 
         with patch(
-            "open_webui_openrouter_pipe.storage.multimodal._read_rag_file_constraints",
-            return_value=(True, 200)
+            "open_webui_openrouter_pipe.storage.multimodal._read_rag_file_max_size_mb",
+            return_value=200
         ):
             result = await pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb()
             assert result == 200
@@ -2486,8 +2486,8 @@ class TestGetEffectiveRemoteFileLimit:
         pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 30
 
         with patch(
-            "open_webui_openrouter_pipe.storage.multimodal._read_rag_file_constraints",
-            return_value=(True, 100)
+            "open_webui_openrouter_pipe.storage.multimodal._read_rag_file_max_size_mb",
+            return_value=100
         ):
             result = await pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb()
             assert result == 30
@@ -2995,8 +2995,8 @@ class TestRemoteFileLimitResolution:
         `_Config` class in `owui_stubs.py`, with an async `get_many` over
         module-global rows that a conftest sweep clears per test. So
         `_get_open_webui_config_store()` hands back that stub, and `get_many` answers
-        `{}` for the two RAG keys -- a present-but-empty store, which the resolver
-        prefers over the start-up module values (`core/errors.py:689-694`).
+        `{}` for the RAG size key -- a present-but-empty store, which the resolver
+        prefers over the start-up module value.
 
         Patching the accessor to `None` is therefore what makes these four arms reach
         the start-up fallback at all. The patch is load-bearing: neuter it to a bare
@@ -3009,16 +3009,6 @@ class TestRemoteFileLimitResolution:
         monkeypatch.setattr(
             ow_errors, "_get_open_webui_config_store", lambda: None, raising=False
         )
-
-    @pytest.mark.asyncio
-    async def test_uses_valve_when_rag_disabled(self, pipe_instance, monkeypatch):
-        self._no_store(monkeypatch)
-        config = self._prepare_config(monkeypatch)
-        monkeypatch.setattr(config.BYPASS_EMBEDDING_AND_RETRIEVAL, "value", True, raising=False)
-        monkeypatch.setattr(config.RAG_FILE_MAX_SIZE, "value", 200, raising=False)
-        pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 60
-
-        assert await pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb() == 60
 
     @pytest.mark.asyncio
     async def test_caps_to_rag_when_smaller(self, pipe_instance, monkeypatch):

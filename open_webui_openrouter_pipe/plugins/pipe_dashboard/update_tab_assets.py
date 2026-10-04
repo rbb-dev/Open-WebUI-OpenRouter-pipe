@@ -86,7 +86,7 @@ UPDATE_TAB_JS = """
     function updEl(id) { return document.getElementById(id); }
     function updPauseHint(res) {
       if ((res.error || res.code) === 'validation_failed') { return ''; }
-      return ' (apply manually or restart to re-arm)';
+      return ' (apply manually, or wait out the day-long pause, or restart to re-arm)';
     }
     function updErrText(res) {
       var code = res.error || res.code;

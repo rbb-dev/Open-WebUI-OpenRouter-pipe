@@ -1,5 +1,7 @@
 """Integration tests for filter template strings from FilterManager.
 
+
+
 These tests load filters from FilterManager.render_*_filter_source() methods
 to ensure we test the ACTUAL code that gets deployed, not static backup copies.
 """
@@ -13,6 +15,7 @@ import os
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any, cast
+from unittest.mock import MagicMock
 
 import pytest
 from aioresponses import aioresponses
@@ -28,6 +31,21 @@ from open_webui_openrouter_pipe.filters.filter_manager import (
 )
 from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
 from open_webui.models import functions as _owui_functions
+
+def _use_sized_file_records(size: int = 4096) -> None:
+    """Stand in for the record Open WebUI hands back, carrying the size its upload measured.
+
+    The pipe sizes every direct upload against `declared_file_size(file_obj)`, which reads
+    `meta.size`; a stub without it is a record the pipe cannot size. The autouse
+    `_restore_rebound_file_accessors` fixture puts the real accessor back afterwards.
+    """
+    import open_webui_openrouter_pipe.requests.orchestrator as orch
+
+    async def _get_file_by_id(file_id, *_args, **_kwargs):
+        return MagicMock(id=str(file_id), meta={"size": size})
+
+    orch.get_file_by_id = _get_file_by_id
+
 
 def _load_filter_from_source(source: str, module_name: str) -> ModuleType:
     """Load filter source string as a module.
@@ -656,171 +674,6 @@ def test_inlet_retains_video_with_unsupported_mime():
     assert len(result["files"]) == 1
 
 
-# Inlet Tests - Size Limits
-
-
-def test_inlet_raises_on_file_too_large():
-    """Test inlet raises exception when file exceeds size limit."""
-    filt = Filter()
-    filt.valves.DIRECT_FILE_MAX_UPLOAD_SIZE_MB = 1
-
-    files = [
-        {
-            "id": "file_1",
-            "type": "file",
-            "name": "large.pdf",
-            "size": 2 * 1024 * 1024,
-            "content_type": "application/pdf",
-        }
-    ]
-    body = {"files": list(files)}
-    metadata = {}
-    user = {"valves": Filter.UserValves(DIRECT_FILES=True)}
-    model = {
-        "info": {
-            "meta": {
-                "openrouter_pipe": {
-                    "capabilities": {"file_input": True}
-                }
-            }
-        }
-    }
-
-    with pytest.raises(Exception, match="too large"):
-        filt.inlet(body, __metadata__=metadata, __user__=user, __model__=model)
-
-
-def test_inlet_raises_on_audio_too_large():
-    """Test inlet raises exception when audio exceeds size limit."""
-    filt = Filter()
-    filt.valves.DIRECT_AUDIO_MAX_UPLOAD_SIZE_MB = 1
-
-    files = [
-        {
-            "id": "audio_1",
-            "type": "file",
-            "name": "large.mp3",
-            "size": 2 * 1024 * 1024,
-            "content_type": "audio/mp3",
-        }
-    ]
-    body = {"files": list(files)}
-    metadata = {}
-    user = {"valves": Filter.UserValves(DIRECT_AUDIO=True)}
-    model = {
-        "info": {
-            "meta": {
-                "openrouter_pipe": {
-                    "capabilities": {"audio_input": True}
-                }
-            }
-        }
-    }
-
-    with pytest.raises(Exception, match="too large"):
-        filt.inlet(body, __metadata__=metadata, __user__=user, __model__=model)
-
-
-def test_inlet_raises_on_video_too_large():
-    """Test inlet raises exception when video exceeds size limit."""
-    filt = Filter()
-    filt.valves.DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB = 1
-
-    files = [
-        {
-            "id": "video_1",
-            "type": "file",
-            "name": "large.mp4",
-            "size": 2 * 1024 * 1024,
-            "content_type": "video/mp4",
-        }
-    ]
-    body = {"files": list(files)}
-    metadata = {}
-    user = {"valves": Filter.UserValves(DIRECT_VIDEO=True)}
-    model = {
-        "info": {
-            "meta": {
-                "openrouter_pipe": {
-                    "capabilities": {"video_input": True}
-                }
-            }
-        }
-    }
-
-    with pytest.raises(Exception, match="too large"):
-        filt.inlet(body, __metadata__=metadata, __user__=user, __model__=model)
-
-
-def test_inlet_raises_on_total_payload_exceeded():
-    """Test inlet raises when total payload exceeds limit."""
-    filt = Filter()
-    filt.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB = 1
-    filt.valves.DIRECT_FILE_MAX_UPLOAD_SIZE_MB = 10
-
-    files = [
-        {
-            "id": "file_1",
-            "type": "file",
-            "name": "doc1.pdf",
-            "size": 600 * 1024,
-            "content_type": "application/pdf",
-        },
-        {
-            "id": "file_2",
-            "type": "file",
-            "name": "doc2.pdf",
-            "size": 600 * 1024,
-            "content_type": "application/pdf",
-        }
-    ]
-    body = {"files": list(files)}
-    metadata = {}
-    user = {"valves": Filter.UserValves(DIRECT_FILES=True)}
-    model = {
-        "info": {
-            "meta": {
-                "openrouter_pipe": {
-                    "capabilities": {"file_input": True}
-                }
-            }
-        }
-    }
-
-    with pytest.raises(Exception, match="exceed total limit"):
-        filt.inlet(body, __metadata__=metadata, __user__=user, __model__=model)
-
-
-def test_inlet_raises_on_missing_file_size():
-    """Test inlet raises when file is missing size."""
-    filt = Filter()
-
-    files = [
-        {
-            "id": "file_1",
-            "type": "file",
-            "name": "doc.pdf",
-            # No size field
-            "content_type": "application/pdf",
-        }
-    ]
-    body = {"files": list(files)}
-    metadata = {}
-    user = {"valves": Filter.UserValves(DIRECT_FILES=True)}
-    model = {
-        "info": {
-            "meta": {
-                "openrouter_pipe": {
-                    "capabilities": {"file_input": True}
-                }
-            }
-        }
-    }
-
-    with pytest.raises(Exception, match="missing a valid size"):
-        filt.inlet(body, __metadata__=metadata, __user__=user, __model__=model)
-
-
 # Inlet Tests - Edge Cases
 
 
@@ -1264,45 +1117,6 @@ def test_inlet_retains_audio_with_unsupported_mime():
     assert len(result["files"]) == 1
 
 
-def test_inlet_raises_on_audio_total_payload_exceeded():
-    """Test inlet raises when audio total payload exceeds limit (line 314)."""
-    filt = Filter()
-    filt.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB = 1
-    filt.valves.DIRECT_AUDIO_MAX_UPLOAD_SIZE_MB = 10
-
-    files = [
-        {
-            "id": "audio_1",
-            "type": "file",
-            "name": "song1.mp3",
-            "size": 600 * 1024,
-            "content_type": "audio/mp3",
-        },
-        {
-            "id": "audio_2",
-            "type": "file",
-            "name": "song2.mp3",
-            "size": 600 * 1024,
-            "content_type": "audio/mp3",
-        }
-    ]
-    body = {"files": list(files)}
-    metadata = {}
-    user = {"valves": Filter.UserValves(DIRECT_AUDIO=True)}
-    model = {
-        "info": {
-            "meta": {
-                "openrouter_pipe": {
-                    "capabilities": {"audio_input": True}
-                }
-            }
-        }
-    }
-
-    with pytest.raises(Exception, match="exceed total limit"):
-        filt.inlet(body, __metadata__=metadata, __user__=user, __model__=model)
-
-
 def test_inlet_retains_video_when_user_valve_disabled():
     """Test inlet retains video when DIRECT_VIDEO is disabled (lines 329-331)."""
     filt = Filter()
@@ -1370,45 +1184,6 @@ def test_inlet_retains_video_when_model_lacks_capability():
     pipe_meta = metadata.get("openrouter_pipe", {})
     warnings = pipe_meta.get("direct_uploads_warnings", [])
     assert any("video uploads not supported" in str(w).lower() for w in warnings)
-
-
-def test_inlet_raises_on_video_total_payload_exceeded():
-    """Test inlet raises when video total payload exceeds limit (line 345)."""
-    filt = Filter()
-    filt.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB = 1
-    filt.valves.DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB = 10
-
-    files = [
-        {
-            "id": "video_1",
-            "type": "file",
-            "name": "clip1.mp4",
-            "size": 600 * 1024,
-            "content_type": "video/mp4",
-        },
-        {
-            "id": "video_2",
-            "type": "file",
-            "name": "clip2.mp4",
-            "size": 600 * 1024,
-            "content_type": "video/mp4",
-        }
-    ]
-    body = {"files": list(files)}
-    metadata = {}
-    user = {"valves": Filter.UserValves(DIRECT_VIDEO=True)}
-    model = {
-        "info": {
-            "meta": {
-                "openrouter_pipe": {
-                    "capabilities": {"video_input": True}
-                }
-            }
-        }
-    }
-
-    with pytest.raises(Exception, match="exceed total limit"):
-        filt.inlet(body, __metadata__=metadata, __user__=user, __model__=model)
 
 
 def test_inlet_merges_existing_warnings():
@@ -1490,6 +1265,7 @@ def test_inlet_deduplicates_warnings():
 async def test_filter_integration_with_pipe_direct_uploads(pipe_instance_async, monkeypatch):
     """Test filter output integrates correctly with Pipe processing."""
     pipe = pipe_instance_async
+    _use_sized_file_records()
 
     # Prepare filter inputs
     files = [

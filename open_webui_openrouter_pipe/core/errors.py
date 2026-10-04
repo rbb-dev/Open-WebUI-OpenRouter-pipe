@@ -25,7 +25,6 @@ from .config import (
     DEFAULT_OPENROUTER_ERROR_TEMPLATE,
 )
 from .utils import (
-    _coerce_bool,
     _coerce_positive_int,
     _data_url_log_subject,
     _get_open_webui_config_module,
@@ -852,33 +851,25 @@ def _get_open_webui_config_store() -> Any | None:
     return Config
 
 
-async def _read_rag_file_constraints() -> tuple[bool, int | None]:
+async def _read_rag_file_max_size_mb() -> int | None:
     module = _get_open_webui_config_module()
     if module is None:
-        return False, None
+        return None
 
     store = _get_open_webui_config_store()
     live: dict[str, Any] | None = None
     if store is not None:
         try:
-            rows = await store.get_many(
-                "rag.bypass_embedding_and_retrieval", "rag.file.max_size"
-            )
+            rows = await store.get_many("rag.file.max_size")
             if isinstance(rows, dict):
                 live = rows
         except Exception:  # noqa: BLE001
             live = None
 
     source = _LiveRow(live) if live is not None else _ModuleAttrs(module)
-    bypass_bool = _coerce_bool(
-        _unwrap_config_value(source.bypass_embedding_and_retrieval())
-    )
-    rag_enabled = True if bypass_bool is None else not bypass_bool
-
-    limit_mb = _cap_at_ceiling(
+    return _cap_at_ceiling(
         _coerce_positive_int(_unwrap_config_value(source.file_max_size()))
     )
-    return rag_enabled, limit_mb
 
 
 class _LiveRow:
@@ -886,9 +877,6 @@ class _LiveRow:
 
     def __init__(self, row: dict[str, Any]) -> None:
         self._row = row
-
-    def bypass_embedding_and_retrieval(self) -> Any:
-        return self._row.get("rag.bypass_embedding_and_retrieval")
 
     def file_max_size(self) -> Any:
         return self._row.get("rag.file.max_size")
@@ -899,9 +887,6 @@ class _ModuleAttrs:
 
     def __init__(self, module: Any) -> None:
         self._module = module
-
-    def bypass_embedding_and_retrieval(self) -> Any:
-        return getattr(self._module, "BYPASS_EMBEDDING_AND_RETRIEVAL", None)
 
     def file_max_size(self) -> Any:
         return getattr(self._module, "RAG_FILE_MAX_SIZE", None)

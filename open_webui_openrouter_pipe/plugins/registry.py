@@ -120,6 +120,7 @@ class PluginRegistry:
         # Per-instance state (per Pipe instance)
         self._plugins: list[PluginBase] = []
         self._hook_subscribers: dict[str, list[tuple[PluginBase, int]]] = {}
+        self._pipe: Pipe | None = None
 
     def init_plugins(self, pipe: Pipe) -> None:
         """Instantiate all registered plugin classes and call on_init().
@@ -129,6 +130,7 @@ class PluginRegistry:
         """
         if self._plugins:
             return  # Already initialized
+        self._pipe = pipe
         for cls in self._plugin_classes:
             try:
                 plugin_id = getattr(cls, "plugin_id", "") or cls.__name__
@@ -174,6 +176,8 @@ class PluginRegistry:
         Accepts sync (``def``) or async (``async def``) on_models; an awaitable
         result is awaited so plugins can do async work (e.g. OWUI DB writes).
         """
+        if getattr(self._pipe, "_closed", False) is True:
+            return
         for plugin, _priority in self._hook_subscribers.get("on_models", ()):
             try:
                 result = plugin.on_models(models)

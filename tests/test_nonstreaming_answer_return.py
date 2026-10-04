@@ -686,7 +686,7 @@ async def test_a_direct_upload_endpoint_conflict_card_is_returned_as_well_as_sho
     class _FileRecord:
         id = "vid-1"
         filename = "v.mp4"
-        meta = {"content_type": "video/mp4"}
+        meta = {"content_type": "video/mp4", "size": 4096}
 
     async def _get_file(*_args: Any, **_kwargs: Any) -> Any:
         return _FileRecord()

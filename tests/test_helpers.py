@@ -1312,23 +1312,6 @@ def test_classify_retryable_http_error():
     assert retry_after is None
 
 
-@pytest.mark.asyncio
-async def test_read_rag_file_constraints(monkeypatch):
-    # Supplies only RAG_FILE_MAX_SIZE, and patches only the module accessor, so this is
-    # the fallback row -- the guard on the rejected "read the store or nothing" fix.
-    cfg = types.SimpleNamespace(
-        BYPASS_EMBEDDING_AND_RETRIEVAL=types.SimpleNamespace(value=False),
-        RAG_FILE_MAX_SIZE=types.SimpleNamespace(value=70),
-    )
-    # Patch in core.errors where _read_rag_file_constraints imports it from core.utils
-    from open_webui_openrouter_pipe.core import errors as ow_errors
-    monkeypatch.setattr(ow_errors, "_get_open_webui_config_store", lambda: None, raising=False)
-    monkeypatch.setattr(ow_errors, "_get_open_webui_config_module", lambda: cfg)
-    rag_enabled, limit = await ow._read_rag_file_constraints()
-    assert rag_enabled is True
-    assert limit == 70
-
-
 def test_sanitize_model_id():
     assert ow.sanitize_model_id("author/model/v1") == "author.model.v1"
     assert ow.sanitize_model_id("simple") == "simple"

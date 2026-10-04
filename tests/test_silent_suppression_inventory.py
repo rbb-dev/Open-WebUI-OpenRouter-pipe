@@ -134,8 +134,13 @@ _EXPECTED: dict[str, int] = {
     # the segment rows AND the assembly lock behind a "successful" assembly, and the next
     # pass re-acquires the turn, re-writes it and re-fails the same delete. That is the one
     # route on this path to unbounded starvation, so it is now reported on the existing
-    # `_unreadable_archive_warnings` latch rather than swallowed. The count is 19.
-    "logging/session_log_manager.py": 19,
+    # `_unreadable_archive_warnings` latch rather than swallowed.
+    # 20th: the join of a thread displaced from one of the three slots, in `stop_workers`'
+    # second loop over `_retiring_threads`. Same shape and the same reason as the three slot
+    # joins above it: `stop_workers()` is best effort by contract, it runs on the `close()`
+    # path, and a thread that cannot be joined must not raise out of the teardown -- it is a
+    # thread that is already retiring, which is what the join is waiting for.
+    "logging/session_log_manager.py": 20,
     # 3rd: the generic ffmpeg arm, which now stops the child it started before it
     # reports a transport fault. The suppression is load-bearing and is not a test
     # guard: PIL's `UnidentifiedImageError` subclasses `OSError`, so the common

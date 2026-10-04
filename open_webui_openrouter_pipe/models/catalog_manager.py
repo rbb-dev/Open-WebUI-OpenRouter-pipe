@@ -75,6 +75,10 @@ def _params_without_tag_scanning(params_cls: Any, existing: Any) -> Any:
     return params_cls(**data)
 
 
+def _params_unchanged(params_cls: Any, existing: Any) -> Any:
+    return params_cls(**_params_as_mapping(existing))
+
+
 def _dedupe_preserve_order(entries: list[str]) -> list[str]:
     seen: set[str] = set()
     deduped: list[str] = []
@@ -2641,7 +2645,7 @@ class ModelCatalogManager:
                     base_model_id=model.base_model_id,
                     name=model.name,
                     meta=meta_obj,
-                    params=_params_without_tag_scanning(ModelParams, model.params),
+                    params=_params_unchanged(ModelParams, model.params),
                     access_payload=self._resolve_model_access_payload(
                         model_obj=model,
                         supports_access_control=supports_access_control,

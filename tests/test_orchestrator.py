@@ -69,7 +69,23 @@ def _record_named(file_id: str) -> MagicMock:
     """A `get_file_by_id` stand-in whose id is the id that was asked for."""
     record = MagicMock()
     record.id = file_id
+    record.meta = {"size": 4096}
     return record
+
+
+def _use_named_records() -> None:
+    """Stand in for the record Open WebUI hands back, carrying the size its upload measured.
+
+    The pipe sizes every direct upload against `declared_file_size(file_obj)`, which reads
+    `meta.size`; a stub without it is a record the pipe cannot size. The autouse
+    `_restore_rebound_file_accessors` fixture puts the real accessor back afterwards.
+    """
+    import open_webui_openrouter_pipe.requests.orchestrator as orch
+
+    async def _get_file_by_id(file_id, *_args, **_kwargs):
+        return _record_named(str(file_id))
+
+    orch.get_file_by_id = _get_file_by_id
 
 
 # -----------------------------------------------------------------------------
@@ -161,7 +177,7 @@ class TestDecodeBase64PrefixEdgeCases:
         }
 
         # Mock file loading to return empty base64
-        monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=Mock(id="audio123")))
+        monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=Mock(id="audio123", meta={"size": 4096})))
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value="")
         card = "### Upload rejected\n\nempty audio"
         pipe._ensure_error_formatter()._emit_templated_error = AsyncMock(return_value=card)
@@ -206,7 +222,7 @@ class TestDecodeBase64PrefixEdgeCases:
         }
 
         # Mock file loading to return invalid base64 with special chars
-        monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=Mock(id="audio123")))
+        monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=Mock(id="audio123", meta={"size": 4096})))
         # This base64 contains invalid characters like unicode - sniff will return ""
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value="AAAA\u0080BBBB")
         pipe._ensure_error_formatter()._emit_templated_error = AsyncMock()
@@ -292,6 +308,7 @@ class TestDirectUploadSkipPaths:
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
         pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
+        _use_named_records()
 
         result = await orchestrator.process_request(
             body=base_request_body,
@@ -473,7 +490,7 @@ class TestCsvSetNonStringInput:
         }
 
         # Mock file loading
-        mock_file = Mock(id="audio123")
+        mock_file = Mock(id="audio123", meta={"size": 4096})
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file))
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=valid_b64)
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
@@ -1057,7 +1074,7 @@ class TestAudioFormatSniffing:
             uploads["responses_audio_format_allowlist"] = allowlist
         metadata = {"openrouter_pipe": {"direct_uploads": uploads}}
 
-        mock_file = Mock(id="audio123")
+        mock_file = Mock(id="audio123", meta={"size": 4096})
         monkeypatch.setattr(
             "open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id",
             AsyncMock(return_value=mock_file),
@@ -1124,7 +1141,7 @@ class TestAudioFormatSniffing:
             direct_uploads["audio_format_allowlist"] = operator_allowlist
         metadata = {"openrouter_pipe": {"direct_uploads": direct_uploads}}
 
-        mock_file = Mock(id="audio123")
+        mock_file = Mock(id="audio123", meta={"size": 4096})
         monkeypatch.setattr(
             "open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id",
             AsyncMock(return_value=mock_file),
@@ -1318,7 +1335,7 @@ class TestDecodeBase64EdgeCases:
             }
         }
 
-        mock_file = Mock(id="audio123")
+        mock_file = Mock(id="audio123", meta={"size": 4096})
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file))
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value="")  # Empty
         card = "### Upload rejected\n\nunknown audio format"
@@ -1368,7 +1385,7 @@ class TestDecodeBase64EdgeCases:
         test_data = b"some test audio data for testing"
         valid_b64 = base64.b64encode(test_data).decode()
 
-        mock_file = Mock(id="audio123")
+        mock_file = Mock(id="audio123", meta={"size": 4096})
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file))
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=valid_b64)
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
@@ -1437,6 +1454,7 @@ class TestAttachmentSkipContinuePaths:
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
         pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
+        _use_named_records()
 
         result = await orchestrator.process_request(
             body=base_request_body,
@@ -1602,7 +1620,7 @@ class TestAttachmentSkipContinuePaths:
             }
         }
 
-        mock_file = Mock(id="audio123")
+        mock_file = Mock(id="audio123", meta={"size": 4096})
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file))
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=valid_b64)
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)

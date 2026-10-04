@@ -55,7 +55,7 @@ from ..core.config import (
 from ..core.errors import (
     RemoteDownloadRefused,
     _classify_retryable_http_error,
-    _read_rag_file_constraints,
+    _read_rag_file_max_size_mb,
     _RetryableHTTPStatusError,
     _RetryWait,
 )
@@ -1423,10 +1423,11 @@ class MultimodalHandler:
             return False
         port = parsed.explicit_port or 80
         for allowed_host, allowed_port in allowlist:
-            if host == allowed_host and (allowed_port is None or allowed_port == port):
+            if host == allowed_host and (80 if allowed_port is None else allowed_port) == port:
                 return True
         self.logger.warning(
-            "Blocked insecure HTTP URL (host not allowlisted): %s (host=%s, port=%s)",
+            "Blocked insecure HTTP URL (host and port not allowlisted; a bare entry is port 80): "
+            "%s (host=%s, port=%s)",
             loggable_link(url),
             host,
             port,
@@ -1879,8 +1880,8 @@ class MultimodalHandler:
         if memo:
             return memo[0]
         base_limit_mb = self.valves.REMOTE_FILE_MAX_SIZE_MB
-        rag_enabled, rag_limit_mb = await _read_rag_file_constraints()
-        if not rag_enabled or rag_limit_mb is None:
+        rag_limit_mb = await _read_rag_file_max_size_mb()
+        if rag_limit_mb is None:
             return base_limit_mb
 
         if base_limit_mb > rag_limit_mb:

@@ -39,6 +39,7 @@ DEFAULT_REPO = "rbb-dev/Open-WebUI-OpenRouter-pipe"
 MIN_UPDATE_VERSION = "2.7.0"
 
 _PD_UPDATE_CHECK_MEMO_S = 60.0
+_PD_UPDATE_STALE_RELEASE_S = 24 * 3600.0
 _PD_UPDATE_SNAPSHOT_SLOTS = 10
 _PD_UPDATE_XLOCK_TIMEOUT_S = 300
 _PD_UPDATE_LEADER_TTL_S = 30 * 60
@@ -51,6 +52,7 @@ _PD_UPDATE_NOTES_CAP = 20 * 1024
 _PD_UPDATE_AUTO_INTERVAL = 6 * 3600.0
 _PD_UPDATE_AUTO_JITTER = (300.0, 900.0)
 _PD_UPDATE_BACKOFF = (900.0, 1800.0, 3600.0, 7200.0)
+_PD_UPDATE_AUTO_PAUSE_S = 24 * 3600.0
 
 _ASSET_NAMES = {
     False: "open_webui_openrouter_pipe_bundled.py",
@@ -485,7 +487,12 @@ class UpdateService:
         raise UpdateError("offline", f"GitHub returned HTTP {status}")
 
     async def check(self, *, force: bool = False) -> dict[str, Any]:
-        valves = await self._row_valves()
+        valves, valves_read_ok = await self._row_valves_checked()
+        if not valves_read_ok:
+            raise UpdateError(
+                "valve_unreadable",
+                "the persisted update valves could not be read, so no repository is named",
+            )
         pipe = self._pipe()
         row = await self._row()
         content = getattr(row, "content", "") or ""
@@ -528,7 +535,11 @@ class UpdateService:
             }
             self._last_error_repo = repo
             memo = self._last_good
-            if memo is not None and memo.get("repo") == repo:
+            if (
+                memo is not None
+                and memo.get("repo") == repo
+                and now - float(memo.get("at", 0.0)) < _PD_UPDATE_STALE_RELEASE_S
+            ):
                 release = memo.get("release")
 
         latest = self._latest_block(release) if isinstance(release, dict) else None
@@ -939,18 +950,25 @@ class UpdateService:
             await _cleanup_failed_insert()
             raise _storage_unavailable("snapshot record insert was rejected")
 
-        row_valves = await self._row_valves()
-        keep = int(row_valves.get("PIPE_DASHBOARD_UPDATE_SNAPSHOT_KEEP", 3) or 3)
-        survivors = records + [
-            {"file_id": ids[slot], "slot": slot, "path": path, "sha256": sha,
-             "version": from_version, "size": len(data), "ts": entry["ts"], "actor": actor}
-        ]
-        while len(survivors) > max(keep, 1):
-            old = survivors.pop(0)
-            if old["file_id"] == ids[slot]:
-                survivors.insert(0, old)
-                break
-            await self._delete_record(old, storage)
+        row_valves, keep_read_ok = await self._row_valves_checked()
+        if keep_read_ok:
+            keep = int(row_valves.get("PIPE_DASHBOARD_UPDATE_SNAPSHOT_KEEP", 3) or 3)
+            survivors = records + [
+                {"file_id": ids[slot], "slot": slot, "path": path, "sha256": sha,
+                 "version": from_version, "size": len(data), "ts": entry["ts"], "actor": actor}
+            ]
+            while len(survivors) > max(keep, 1):
+                old = survivors.pop(0)
+                if old["file_id"] == ids[slot]:
+                    survivors.insert(0, old)
+                    break
+                await self._delete_record(old, storage)
+        else:
+            logger.warning(
+                "update: the stored snapshot retention bound could not be read; this pass "
+                "prunes nothing and the ring stays capped at %d slots regardless",
+                _PD_UPDATE_SNAPSHOT_SLOTS,
+            )
 
         await self._delete_blob_path(storage, deferred_blob)
         return ids[slot]
@@ -1068,12 +1086,11 @@ class UpdateService:
                 logger.warning(
                     "update: manifest merge was refused (cosmetic); content is persisted"
                 )
-            row = await self._row()
             await publish_function_updated(
                 pipe_id,
                 actor_user,
                 request,
-                {"type": getattr(row, "type", None), "name": getattr(row, "name", None)},
+                {"type": getattr(written, "type", None), "name": getattr(written, "name", None)},
             )
             if request is not None:
                 import open_webui.utils.plugin as owp
@@ -1480,6 +1497,19 @@ class UpdateService:
             return str(getattr(actor_user, "id", "") or "") or await self._super_admin_id()
         return await self._super_admin_id()
 
+    def _parked(self, version: str, now: float) -> bool:
+        entry = self._auto_skip.get(version)
+        if entry is None:
+            return False
+        if now - float(entry.get("ts", 0.0)) < _PD_UPDATE_AUTO_PAUSE_S:
+            return True
+        del self._auto_skip[version]
+        logger.info(
+            "update: the pause on %s has run out after %ss; it is attempted again",
+            version, _PD_UPDATE_AUTO_PAUSE_S,
+        )
+        return False
+
     def _next_backoff(self, exc: UpdateError | None = None) -> float:
         import random
 
@@ -1536,7 +1566,7 @@ class UpdateService:
             if snap.get("no_matching_asset"):
                 return interval
             version = str(latest.get("version") or "")
-            if version in self._auto_skip:
+            if self._parked(version, _now()):
                 return interval
             delay_hours = float(valves.get("PIPE_DASHBOARD_UPDATE_AUTO_DELAY_HOURS") or 0)
             published = self._parse_published(latest.get("published_at"))

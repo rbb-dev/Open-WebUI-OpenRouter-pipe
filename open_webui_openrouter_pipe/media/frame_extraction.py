@@ -215,6 +215,8 @@ def _ensure_extraction_semaphore() -> asyncio.Semaphore:
         loop: Any = asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.Semaphore(_MAX_CONCURRENT_EXTRACTIONS)
+    for dead in [key for key in _extraction_semaphores if key.is_closed()]:
+        _extraction_semaphores.pop(dead, None)
     sem = _extraction_semaphores.get(loop)
     if sem is None:
         sem = asyncio.Semaphore(_MAX_CONCURRENT_EXTRACTIONS)

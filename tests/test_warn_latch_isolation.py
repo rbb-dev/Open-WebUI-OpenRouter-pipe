@@ -110,6 +110,12 @@ EXPECTED_LATCHES = {
     "_warned_proxy_env",
     "_warned_chat_provider_keys",
     "_warned_ruled_out_tool_use",
+    # B1083 H3969-2. The stored Direct Uploads row carries the four size caps, and a row
+    # the pipe cannot read falls back to BASE64_MAX_SIZE_MB for the turn rather than to
+    # no limit. That fallback is announced once, so the inventory has to know the latch:
+    # without the per-test reset, the first test to drive an unreadable row silently
+    # disarms every later assertion that the warning is still emitted.
+    "_warned_direct_upload_caps",
     "_warned_queue_backlog",
     # B437 H1742-2. The rate limit on the DEMOTED backlog repeats, keyed by the same
     # `<queue>:<request_id>` cause and popped by the same `_drop_backlog_latch` teardown,

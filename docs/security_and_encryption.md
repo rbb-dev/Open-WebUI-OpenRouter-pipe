@@ -123,7 +123,7 @@ Remote picture and video URLs are security-sensitive because they can be used fo
 
 The pipe’s remote download subsystem accepts:
 - `https://` (default)
-- `http://` only when explicitly allowlisted via `ALLOW_INSECURE_HTTP` + `ALLOW_INSECURE_HTTP_HOSTS`
+- `http://` only when explicitly allowlisted via `ALLOW_INSECURE_HTTP` + `ALLOW_INSECURE_HTTP_HOSTS`, where an entry names one authority: a bare host is port `80`, and any other port needs its own `host:port` entry
 
 Other schemes are rejected.
 
@@ -289,13 +289,20 @@ whether it is *this deployment's* host, so an operator who needs a tighter rule 
 valves, and they do not work the same way:
 
 - `ALLOW_INSECURE_HTTP_HOSTS` — exact-match, `host:port` entries, gates plaintext `http://`
-  downloads. `example.com` does **not** cover `www.example.com`.
+  downloads. `example.com` does **not** cover `www.example.com`. A bare host is port `80`
+  and nothing else: it admits `http://example.com/` and `http://example.com:80/` and refuses
+  every other cleartext port, so an internal service listening elsewhere needs a
+  `host:port` entry. An existing bare entry that meant "this host on port 8080" needs
+  rewriting as `host:8080`; nothing else in the list changes meaning. `https://` URLs are
+  unaffected by any of this — TLS is the control there, and the port is the provider's
+  business.
 - `VIDEO_REFERENCE_ALLOWED_DOMAINS` — parent-domain match, gates the per-user reference
   links a video filter forwards to OpenRouter. `example.com` **does** cover
   `cdn.example.com`, and does not cover `notexample.com`. A bare host matches on any port; a
   `host:port` entry names that host on that port only, and a URL with no port is read as the
-  port its own scheme implies — so the two valves now agree on what `host:port` means, and
-  differ only in whether a parent covers its subdomains. It covers the filter's own
+  port its own scheme implies — so the two valves agree on what `host:port` means and differ
+  twice over: whether a parent covers its subdomains, and what a portless entry means (this
+  one widens to any port, `ALLOW_INSECURE_HTTP_HOSTS` names port 80). It covers the filter's own
   reference fields and the free-text `provider.options` box alike, because the same check
   runs over every address in the built request rather than over a named field. Empty — the
   default — means unrestricted.
@@ -332,7 +339,7 @@ pipe had published it.
 ### Additional mitigations for downloads
 
 Even when a URL passes SSRF checks, downloads are constrained by:
-- `REMOTE_FILE_MAX_SIZE_MB`, and the cap the Open WebUI admin last saved under Admin → Settings → Documents → Max Upload Size — normally the lower of the two applies, except that a `REMOTE_FILE_MAX_SIZE_MB` left at its 50 MB default gives way to a larger admin cap, clipped to the pipe’s own 500 MB ceiling; clearing the admin’s box lifts Open WebUI’s cap, not this valve’s
+- `REMOTE_FILE_MAX_SIZE_MB`, and the cap the Open WebUI admin last saved under Admin → Settings → Documents → Max Upload Size, which binds whether or not Open WebUI’s RAG bypass is on (that flag switches off embedding, not the admin’s ceiling) — normally the lower of the two applies, except that a `REMOTE_FILE_MAX_SIZE_MB` left at its 50 MB default gives way to a larger admin cap, clipped to the pipe’s own 500 MB ceiling; clearing the admin’s box lifts Open WebUI’s cap, not this valve’s
 - `REMOTE_DOWNLOAD_*` retry/time budget valves
 - `BASE64_MAX_SIZE_MB` and `VIDEO_MAX_SIZE_MB` for certain inline/base64 payloads
 
@@ -347,7 +354,7 @@ enforces the limit.
 Recommended operator action:
 - Keep SSRF protection enabled.
 - Apply outbound egress controls at the network layer (proxy allowlists, egress firewall rules).
-- HTTP is disabled by default; only enable plaintext `http://` with a narrow allowlist (`ALLOW_INSECURE_HTTP_HOSTS`) and compensating egress controls.
+- HTTP is disabled by default; only enable plaintext `http://` with a narrow allowlist (`ALLOW_INSECURE_HTTP_HOSTS`) and compensating egress controls. Write `host:port` for anything but port 80 — a bare entry covers port 80 only, so an internal service on another port is refused until its port is named.
 - To constrain which hosts a per-user video reference link may name, set `VIDEO_REFERENCE_ALLOWED_DOMAINS` (parent-domain match, and it governs the `provider.options` route as well as the filter fields). Write a bare host to cover the host on every port, or `host:port` to name one service: a `host:port` entry no longer covers that host's other ports, so a list written that way for a service on 8443 will refuse a link to the same host on 443. Remember it cannot govern a link the media relay published for the request, by design.
 
 An identifier a provider returns is never used to name a file or folder on the host; the pipe names its own temporary files. It is why a generated clip lands in the per-job directory the lifecycle made for it and nowhere else, whatever the id looked like.
@@ -383,6 +390,7 @@ Security considerations:
 - Archives are encrypted using `SESSION_LOG_ZIP_PASSWORD` (treat as a secret).
 - Archives are written under `SESSION_LOG_DIR` with a predictable hierarchy (use filesystem permissions accordingly).
 - A request that carries no usable `chat_id`/`message_id` — the plain API route — is archived under `api/api-<request_id>.zip` while `SESSION_LOG_ARCHIVE_API_CALLS` is on, so machine traffic is captured on the same terms as chat traffic. The key is the request id, so one file per request and never shared between two calls.
+- A temporary chat is refused before that `api/` archive is written, and on the internal-Fusion inner path the refusal is marker-backed rather than id-backed: the inner call carries `openrouter_pipe["temporary_chat"]` and withholds the chat id, so the marker is what the gate reads.
 - Retention and cleanup are controlled by `SESSION_LOG_RETENTION_DAYS` and the cleanup interval valve. Turning `SESSION_LOG_STORE_ENABLED` off stops the archive sweep, so archives already on disk survive until it is re-enabled and their window passes — but it does not stop the staged-row reap: a staged segment past `SESSION_LOG_RETENTION_DAYS`, and an assembly lock past its stale-lock window, are still deleted on the hourly cleanup pass, because the valve governs capture and publishing, not retention.
 
 See: [Session Log Storage](session_log_storage.md).
