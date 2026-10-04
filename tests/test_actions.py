@@ -38,7 +38,9 @@ def _reset():
 @pytest.mark.asyncio
 async def test_whoami_read(monkeypatch):
     monkeypatch.setattr(actions, "can_view", AsyncMock(return_value=True))
+    monkeypatch.setattr(actions, "can_view_known", AsyncMock(return_value=True))
     monkeypatch.setattr(actions, "can_act", AsyncMock(return_value=False))
+    monkeypatch.setattr(actions, "can_act_known", AsyncMock(return_value=False))
     status, payload = await actions.dispatch_action(SimpleNamespace(id="p"), _user(), "whoami", {})
     assert status == 200
     assert payload["result"]["can_view"] is True
@@ -48,7 +50,9 @@ async def test_whoami_read(monkeypatch):
 @pytest.mark.asyncio
 async def test_forbidden_before_validate(monkeypatch):
     monkeypatch.setattr(actions, "can_view", AsyncMock(return_value=False))
+    monkeypatch.setattr(actions, "can_view_known", AsyncMock(return_value=False))
     monkeypatch.setattr(actions, "can_act", AsyncMock(return_value=False))
+    monkeypatch.setattr(actions, "can_act_known", AsyncMock(return_value=False))
     status, payload = await actions.dispatch_action(SimpleNamespace(id="p"), _user(), "echo", {"bad": 1})
     assert status == 403  # authorize-first: not 400/404
 
@@ -56,6 +60,7 @@ async def test_forbidden_before_validate(monkeypatch):
 @pytest.mark.asyncio
 async def test_unknown_action_after_auth(monkeypatch):
     monkeypatch.setattr(actions, "can_view", AsyncMock(return_value=True))
+    monkeypatch.setattr(actions, "can_view_known", AsyncMock(return_value=True))
     status, payload = await actions.dispatch_action(SimpleNamespace(id="p"), _user(), "nope", {})
     assert status == 404
 
@@ -63,6 +68,7 @@ async def test_unknown_action_after_auth(monkeypatch):
 @pytest.mark.asyncio
 async def test_unknown_action_forbidden_when_unauthorized(monkeypatch):
     monkeypatch.setattr(actions, "can_view", AsyncMock(return_value=False))
+    monkeypatch.setattr(actions, "can_view_known", AsyncMock(return_value=False))
     status, payload = await actions.dispatch_action(SimpleNamespace(id="p"), _user(), "nope", {})
     assert status == 403  # unknown probed by an unauthorized user is 403, not 404
 
@@ -70,6 +76,7 @@ async def test_unknown_action_forbidden_when_unauthorized(monkeypatch):
 @pytest.mark.asyncio
 async def test_echo_write_grant(monkeypatch):
     monkeypatch.setattr(actions, "can_act", AsyncMock(return_value=True))
+    monkeypatch.setattr(actions, "can_act_known", AsyncMock(return_value=True))
     status, payload = await actions.dispatch_action(SimpleNamespace(id="p"), _user(), "echo", {"message": "hi"})
     assert status == 200
     assert payload["result"]["message"] == "hi"
@@ -78,6 +85,7 @@ async def test_echo_write_grant(monkeypatch):
 @pytest.mark.asyncio
 async def test_echo_bad_args(monkeypatch):
     monkeypatch.setattr(actions, "can_act", AsyncMock(return_value=True))
+    monkeypatch.setattr(actions, "can_act_known", AsyncMock(return_value=True))
     status, payload = await actions.dispatch_action(SimpleNamespace(id="p"), _user(), "echo", {})
     assert status == 400
 
@@ -85,6 +93,7 @@ async def test_echo_bad_args(monkeypatch):
 @pytest.mark.asyncio
 async def test_rate_limited(monkeypatch):
     monkeypatch.setattr(actions, "can_act", AsyncMock(return_value=True))
+    monkeypatch.setattr(actions, "can_act_known", AsyncMock(return_value=True))
     monkeypatch.setattr(actions, "_rate_limited", lambda uid, name: True)
     status, _ = await actions.dispatch_action(SimpleNamespace(id="p"), _user(), "echo", {"message": "x"})
     assert status == 429
@@ -93,6 +102,7 @@ async def test_rate_limited(monkeypatch):
 @pytest.mark.asyncio
 async def test_handler_error_500(monkeypatch):
     monkeypatch.setattr(actions, "can_act", AsyncMock(return_value=True))
+    monkeypatch.setattr(actions, "can_act_known", AsyncMock(return_value=True))
 
     @actions.register_action("boom", permission="write")
     async def boom(pipe, user, args):
@@ -105,7 +115,9 @@ async def test_handler_error_500(monkeypatch):
 @pytest.mark.asyncio
 async def test_read_action_uses_can_view(monkeypatch):
     monkeypatch.setattr(actions, "can_view", AsyncMock(return_value=True))
+    monkeypatch.setattr(actions, "can_view_known", AsyncMock(return_value=True))
     monkeypatch.setattr(actions, "can_act", AsyncMock(return_value=False))
+    monkeypatch.setattr(actions, "can_act_known", AsyncMock(return_value=False))
 
     @actions.register_action("peek", permission="read")
     async def peek(pipe, user, args):
@@ -118,7 +130,9 @@ async def test_read_action_uses_can_view(monkeypatch):
 @pytest.mark.asyncio
 async def test_write_args_audited_read_args_omitted(monkeypatch):
     monkeypatch.setattr(actions, "can_view", AsyncMock(return_value=True))
+    monkeypatch.setattr(actions, "can_view_known", AsyncMock(return_value=True))
     monkeypatch.setattr(actions, "can_act", AsyncMock(return_value=True))
+    monkeypatch.setattr(actions, "can_act_known", AsyncMock(return_value=True))
     calls = []
     monkeypatch.setattr(
         actions, "_audit",
@@ -614,7 +628,9 @@ def _req():
 @pytest.fixture()
 def update_env(monkeypatch):
     monkeypatch.setattr(actions, "can_view", AsyncMock(return_value=True))
+    monkeypatch.setattr(actions, "can_view_known", AsyncMock(return_value=True))
     monkeypatch.setattr(actions, "can_act", AsyncMock(return_value=True))
+    monkeypatch.setattr(actions, "can_act_known", AsyncMock(return_value=True))
     svc = _FakeUpdateService()
     return SimpleNamespace(svc=svc, pipe=_update_pipe(svc))
 

@@ -507,9 +507,10 @@ class ResponsesAdapter:
 
                                     accepted = True
                                     chunk_count = 0
+                                    total_bytes = 0
                                     async for chunk in resp.content.iter_chunked(4096):
                                         chunk_count += 1
-                                        timing_mark(f"chunk_{chunk_count}_len_{len(chunk)}")
+                                        total_bytes += len(chunk)
                                         if not first_chunk_received:
                                             first_chunk_received = True
                                             timing_mark("responses_first_chunk")
@@ -549,6 +550,10 @@ class ResponsesAdapter:
                                                 continue
                                         if stream_complete:
                                             break
+
+                                    timing_mark(
+                                        f"responses_body_read_chunks_{chunk_count}_bytes_{total_bytes}"
+                                    )
 
                                 body_complete = True
 

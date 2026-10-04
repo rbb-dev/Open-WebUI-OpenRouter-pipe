@@ -22,6 +22,21 @@
 
 - **Video, Continue Response after a Stop** — after Stop on a video turn, a Continue now picks the job already running and waits for it, rather than submitting a second one. Previously the Stop cancelled the request and that request's cleanup also dropped the in-process claim the still-polling job held, so the Continue started a second poller on the same `job_id`: the clip was downloaded and stored twice and the same generation was billed twice. The wait is the point — it is what makes the job bill once — so a Continue issued minutes after a Stop now waits for the render it already paid for instead of starting a fresh one. Shutdown reaches an abandoned job too, which it could not while its claim was gone.
 - **Video turns and the circuit breaker / session log** — a video turn that renders a complete answer now resets the user's circuit breaker, and a video turn the pipe refuses before sending is archived as `error` with the control that refused it, rather than `complete` with no cause. Six of the video adapter's early returns handed back a card and recorded nothing: a stored clip or failure block already on the message, a clarification, the per-user video job cap on both the new-generation and the resume arm, and a message with no prompt. So a turn that succeeded left an open breaker open, and a chat holding nothing but a refusal card was filed as a clean turn. The refusal names the valve — `MAX_CONCURRENT_VIDEO_GENS_PER_USER` — or the missing prompt. A turn the person stopped still archives as `cancelled`, unchanged.
+- **A turn's address checks now share one budget** — the `ENABLE_SSRF_PROTECTION` help text has always promised a
+  single request-wide `ADDRESS_CHECK_BUDGET_SECONDS` ("that turn's other address checks draw on", "a repeated link is
+  resolved once per request"), and the conversion leg — the one that rewrites a chat into a Responses `input` array —
+  was the single phase that drew on a private budget and a private verdict memo of its own instead of the request's.
+  So a request could spend up to twice the advertised budget (20 s in the transform plus 20 s in the tool round that
+  followed it), and a link the transform had already resolved could be resolved a second time by that tool round,
+  which is precisely what the text says does not happen. The transform now arms the request's own budget and publishes
+  into the request's own verdict memo, as every sibling phase already did. **What a person can notice:** a
+  picture-heavy turn can now starve its own tool round's picture check, where each of the two previously had 20 s to
+  itself, and the person sees the existing `could not be checked in time, so it was not sent` wording rather than a
+  new message. Nothing else about the refusals changes — a check that never answered is still named as unchecked
+  rather than as a private address, a completed refusal still reads `could not be fetched, so it was not sent`, and a
+  turn that runs with no request context installed at all (automation, the live rig) still draws a private budget of
+  its own.
+
 - **The `/responses` leg now gates the media it forwards** — the outbound filter that runs immediately before a
   `/responses` body is POSTed read no media at all: it dropped undocumented top-level keys and copied `input` through
   byte for byte, so every media value the conversion leg already refused for `/chat/completions` was forwarded
@@ -237,6 +252,19 @@
   whose name nothing held, so the file outlived the call and the pipe paid for a copy nobody would ever read. A
   returned path is untouched and an `OSError` out of the copy still reaches the caller unchanged (TODO T637 is
   unchanged and still open: the temp a failed copy wrote is still left behind).
+
+- **Two refusal cards stop appearing for block spellings that carry a real source** — a file block naming its document under `id`/`url` rather than `file_id`/`file_url`, and an `input_image` naming a `file_id` instead of a url, are now sent rather than skipped. Both reached `Files: skipped 1 (has no readable source).` and `Images: skipped 1 (an image carried no picture data).` respectively, so an operator watching refusal counts will see both drop for these spellings even though nothing else was refused. The file block is read through the same address gate, plaintext policy and storage-path rules as any other link (an `id`/`url` naming a private address or a cleartext link is refused exactly as `file_url` is), and the image block's id is forwarded as a file reference to the provider rather than resolved out of Open WebUI storage — it is the provider's own id, and it does not count against the per-request image cap. Open WebUI 0.11.4 itself writes neither spelling into a message, so on a stock deployment these counts do not move; they move where an upstream filter or a direct `/v1/responses` caller sends them.
+- **A remote picture whose download the cap aborted is no longer forwarded as its link** — the downloader returned
+  the same empty answer for every failure, so a transfer that `REMOTE_FILE_MAX_SIZE_MB` (or the admin's stored Max
+  Upload Size, whichever is smaller) aborted on the way in was indistinguishable from a 404, and the inline leg fell
+  through to the same rule as any other failed fetch: the link went out, and OpenRouter pulled down the bytes the pipe
+  had just refused. The downloader now says which failure it was, and both the inline and the reuse legs refuse a
+  cap-aborted transfer in the pipe's own words, `Images: skipped N (could not be fetched, so it was not sent).`
+  Nothing else moves: a transfer that failed for any other reason — a 404, a timeout, a slow host — is still forwarded
+  as its link on both legs, a link the pipe's own address check refused is still never forwarded, and `BASE64_MAX_SIZE_MB`
+  is unchanged, so a picture is still refused for its size once downloaded with its byte count named. The reuse leg's
+  warm half is unchanged too: a picture the pipe already held and now declines to send still reports
+  `N bytes, over the M-byte download limit, so it was not sent`, naming the count it is giving up. (T1283)
 
 - **Session log assembler, one offer per pass** — a turn the assembler already offered, or already failed, inside a
   pass is not offered again by that pass, and a turn whose assembly lock another pass holds is offered once per pass

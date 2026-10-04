@@ -16,7 +16,6 @@ import open_webui_openrouter_pipe.pipe as pipe_module
 from open_webui_openrouter_pipe import Pipe, _PipeJob
 from open_webui_openrouter_pipe.core.config import EncryptedStr
 
-
 class TestRequestQueueLimits:
     """Tests for request queue limits."""
 

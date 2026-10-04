@@ -200,7 +200,7 @@ class NonStreamingAdapter:
                 message = choices[0].get("message")
                 finish_reason = choices[0].get("finish_reason")
             message_obj = message if isinstance(message, dict) else {}
-            refusal_text = message_obj.get("refusal")
+            refusal_text = responses_refusal_text(message_obj)
             if task_request and isinstance(refusal_text, str) and refusal_text.strip():
                 raise TaskProviderRefusal("task_model_refusal")
             unhandled_citations_signalled = False
@@ -212,6 +212,13 @@ class NonStreamingAdapter:
             reasoning_text_parts: list[str] = []
             reasoning_summary_parts: dict[tuple[str, str], str] = {}
             reasoning_summary_order: list[tuple[str, str]] = []
+            summary_pending = False
+
+            def _joined_summary() -> str:
+                return _joined_reasoning_summaries(
+                    reasoning_summary_parts[k] for k in reasoning_summary_order
+                )
+
             reasoning_details = message_obj.get("reasoning_details")
             if isinstance(reasoning_details, list) and reasoning_details:
                 for entry in reasoning_details:
@@ -230,6 +237,13 @@ class NonStreamingAdapter:
                     if rtype == "reasoning.text":
                         text = entry.get("text")
                         if isinstance(text, str) and text:
+                            if summary_pending:
+                                summary_pending = False
+                                yield {
+                                    "type": "response.reasoning_summary_text.done",
+                                    "item_id": reasoning_item_id,
+                                    "text": _joined_summary(),
+                                }
                             reasoning_text_parts.append(text)
                             yield {"type": "response.reasoning_text.delta", "item_id": reasoning_item_id, "delta": text}
                     elif rtype == "reasoning.summary":
@@ -245,13 +259,14 @@ class NonStreamingAdapter:
                             reasoning_summary_parts[detail_key] = _merge_summary_fragment(
                                 reasoning_summary_parts.get(detail_key, ""), summary
                             )
-                            yield {
-                                "type": "response.reasoning_summary_text.done",
-                                "item_id": reasoning_item_id,
-                                "text": _joined_reasoning_summaries(
-                                    reasoning_summary_parts[k] for k in reasoning_summary_order
-                                ),
-                            }
+                            summary_pending = True
+
+            if summary_pending:
+                yield {
+                    "type": "response.reasoning_summary_text.done",
+                    "item_id": reasoning_item_id,
+                    "text": _joined_summary(),
+                }
 
             message_reasoning_text = None
             for key in ("reasoning", "reasoning_content"):

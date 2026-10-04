@@ -76,7 +76,7 @@ def _authz_default_allow(monkeypatch):
         _ppl, "resolve_user",
         AsyncMock(return_value=SimpleNamespace(id="admin1", role="admin")),
     )
-    monkeypatch.setattr(_ppl, "can_view", AsyncMock(return_value=True))
+    monkeypatch.setattr(_ppl, "can_view_known", AsyncMock(return_value=True))
 
 
 def _commit_dashboard_row(monkeypatch, pipe) -> None:
@@ -353,7 +353,7 @@ class TestAuthorization:
         from unittest.mock import AsyncMock
 
         from open_webui_openrouter_pipe.plugins.pipe_dashboard import plugin as _ppl
-        monkeypatch.setattr(_ppl, "can_view", AsyncMock(return_value=False))
+        monkeypatch.setattr(_ppl, "can_view_known", AsyncMock(return_value=False))
         plugin = _make_plugin()
         result = await plugin.on_request(
             _make_body("help"), {"role": "user", "id": "u1"}, {}, None, None,
@@ -367,7 +367,7 @@ class TestAuthorization:
         from unittest.mock import AsyncMock
 
         from open_webui_openrouter_pipe.plugins.pipe_dashboard import plugin as _ppl
-        monkeypatch.setattr(_ppl, "can_view", AsyncMock(return_value=False))
+        monkeypatch.setattr(_ppl, "can_view_known", AsyncMock(return_value=False))
         plugin = _make_plugin()
         result = await plugin.on_request(
             _make_body("help"), {}, {}, None, None,

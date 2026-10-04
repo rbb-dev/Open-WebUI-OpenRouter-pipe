@@ -206,6 +206,8 @@ from .storage.owui_files import (
     FILE_READ_AUTH_MEMO,
     OwuiFileGateway,
     is_channel_chat,
+    is_temporary_chat,
+    loggable_chat_id,
 )
 from .storage.persistence import ArtifactStore
 from .streaming.event_emitter import (
@@ -1780,6 +1782,8 @@ class Pipe:
         from .filters.filter_manager import (
             _OPENROUTER_FUSION_FILTER_MARKER,
             _OPENROUTER_IMAGE_GEN_FILTER_MARKER,
+            _claimable_by,
+            _installed_by,
             _newest_marked_row,
             _write_function,
             switched_off_meta,
@@ -1798,17 +1802,33 @@ class Pipe:
             try:
                 from open_webui.models.functions import Functions as _Funcs
                 _fusion_rows = await _Funcs.get_functions_by_type("filter", active_only=False)
+                _fusion_manager = self._ensure_filter_manager()
+                _fusion_live = (
+                    await _fusion_manager._live_pipe_installs(_Funcs)
+                    if any(
+                        _installed_by(_row) and not _claimable_by(_row, self.id)
+                        for _row in _fusion_rows or []
+                    )
+                    else None
+                )
+                _fusion_ours = [
+                    _row for _row in _fusion_rows or []
+                    if await _fusion_manager._ours_or_a_past_install_that_is_gone(
+                        _row, _Funcs, _fusion_live,
+                    )
+                ]
                 _fusion_picked = _newest_marked_row(
                     _fusion_rows,
                     _OPENROUTER_FUSION_FILTER_MARKER,
                     owner=self.id,
                     tie_break_id=True,
+                    last_resort=_fusion_ours,
                 )
                 _fid = str(getattr(_fusion_picked, "id", "") or "")
                 if not _fid:
                     self.logger.debug(
-                        "No OpenRouter Fusion filter row marked %r and installed by this copy; "
-                        "nothing to switch off.",
+                        "No OpenRouter Fusion filter row marked %r that this pipe owns or "
+                        "whose installing copy is gone; nothing to switch off.",
                         _OPENROUTER_FUSION_FILTER_MARKER,
                     )
                 ff = await _Funcs.get_function_by_id(_fid) if _fid else None
@@ -1837,17 +1857,33 @@ class Pipe:
                 _rows = switch_rows.all_rows if switch_rows is not None else None
                 if _rows is None:
                     _rows = await _Funcs.get_functions_by_type("filter", active_only=False)
+                _img_manager = self._ensure_filter_manager()
+                _img_live = (
+                    await _img_manager._live_pipe_installs(_Funcs)
+                    if any(
+                        _installed_by(_row) and not _claimable_by(_row, self.id)
+                        for _row in _rows or []
+                    )
+                    else None
+                )
+                _img_ours = [
+                    _row for _row in _rows or []
+                    if await _img_manager._ours_or_a_past_install_that_is_gone(
+                        _row, _Funcs, _img_live,
+                    )
+                ]
                 _picked = _newest_marked_row(
                     _rows,
                     _OPENROUTER_IMAGE_GEN_FILTER_MARKER,
                     owner=self.id,
                     tie_break_id=True,
+                    last_resort=_img_ours,
                 )
                 _rid = str(getattr(_picked, "id", "") or "")
                 if not _rid:
                     self.logger.debug(
-                        "No OpenRouter Image Generation filter row marked %r and installed by "
-                        "this copy; nothing to switch off.",
+                        "No OpenRouter Image Generation filter row marked %r that this pipe "
+                        "owns or whose installing copy is gone; nothing to switch off.",
                         _OPENROUTER_IMAGE_GEN_FILTER_MARKER,
                     )
                 ig = await _Funcs.get_function_by_id(_rid) if _rid else None
@@ -3600,8 +3636,9 @@ class Pipe:
                     except Exception:
                         self.logger.debug("Plugin on_emitter_wrap dispatch failed", exc_info=True)
 
+                _live_chat = str(job.metadata.get("chat_id") or "")
                 live_turn = (
-                    str(job.metadata.get("chat_id") or ""),
+                    "" if is_temporary_chat(_live_chat) else _live_chat,
                     resolve_message_id(job.metadata),
                 )
                 self._session_log_manager._note_turn_started(*live_turn)
@@ -3623,7 +3660,6 @@ class Pipe:
                 )
                 tokens.append((CONTINUED_REPLY, CONTINUED_REPLY.set(job.continued_reply)))
                 tokens.append((OWUI_REQUEST, OWUI_REQUEST.set(job.request)))
-                tokens.append((OWUI_CHAT_ID, OWUI_CHAT_ID.set(str(job.metadata.get("chat_id") or ""))))
                 tokens.append((FILE_READ_AUTH_MEMO, FILE_READ_AUTH_MEMO.set({})))
                 tokens.append(
                     (SESSION_LOG_OWNERSHIP_MEMO, SESSION_LOG_OWNERSHIP_MEMO.set({}))
@@ -3778,7 +3814,7 @@ class Pipe:
                         except Exception:
                             self.logger.debug(
                                 "Failed to persist session log segment (chat_id=%s message_id=%s request_id=%s terminal=%s)",
-                                resolved_chat_id,
+                                loggable_chat_id(resolved_chat_id),
                                 resolved_message_id,
                                 rid,
                                 True,
@@ -3875,6 +3911,8 @@ class Pipe:
         tokens.append((SessionLogger.session_id, SessionLogger.session_id.set(session_id)))
         tokens.append((SessionLogger.request_id, SessionLogger.request_id.set(request_id)))
         tokens.append((SessionLogger.user_id, SessionLogger.user_id.set(user_id)))
+        job_metadata = job.metadata if hasattr(job, "metadata") else {}
+        tokens.append((OWUI_CHAT_ID, OWUI_CHAT_ID.set(str(job_metadata.get("chat_id") or ""))))
         tokens.append((SessionLogger.log_level, SessionLogger.log_level.set(log_level)))
         tokens.append(
             (

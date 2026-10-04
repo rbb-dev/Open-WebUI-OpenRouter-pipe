@@ -219,19 +219,12 @@ async def run_fusion_member(
     inner_valves = build_inner_valves(invocation.valves, max_tool_calls=max_tool_calls)
     inner_metadata = _inner_metadata(invocation.metadata)
     pipe_meta = inner_metadata[_PIPE_METADATA_KEY]
-    from .orchestrator import _IMAGE_GENERATION_TOOL_TYPE, _server_tool_type
-
     turn_tools = pipe_meta.get("server_tools")
     turn_stop = pipe_meta.get("stop_server_tools_when")
-    turn_has_web = isinstance(turn_tools, dict) and any(
-        _server_tool_type(k) != _IMAGE_GENERATION_TOOL_TYPE
-        for k in turn_tools
-        if isinstance(k, str)
-    )
     pipe_meta.pop("direct_uploads_warnings", None)
     if server_tools_config is not None:
         tools_cfg, stop_when = server_tools_config
-        if tools_cfg and not turn_has_web:
+        if tools_cfg:
             merged = copy.deepcopy(tools_cfg)
             if isinstance(turn_tools, dict):
                 merged.update(copy.deepcopy(turn_tools))

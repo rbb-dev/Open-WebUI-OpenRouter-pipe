@@ -292,7 +292,7 @@ If the stored configuration cannot be read at all — the database is unreachabl
 
 **A save that lands over a store that then goes quiet.** The write is committed before the saved values are read back, so a save can go through and still come back with no list of what the store now holds — a database blip in that one read is the only cause. The tab keeps the value you typed and reports the save as made, and the settings you changed are the settings in the database. To confirm, restore the database and reload the tab; there is nothing to re-enter.
 
-**Access.** The Config tab is for administrators end to end: reading the configuration and saving it both require the `admin` role, on top of a model grant. A write grant alone opens the tab's button but not its contents — it answers *forbidden* and the tab reports that it could not load the configuration.
+**Access.** The Config tab is for administrators end to end: reading the configuration and saving it both require the `admin` role, on top of a model grant. A write grant alone opens the tab's button but not its contents — it answers *forbidden* and the tab reports that it could not load the configuration. There is a third answer, and it is not a refusal: if the dashboard cannot read the grant at all it says so — the tab reports that permissions could not be read, nothing was changed, and the database should be restored — rather than telling an administrator who holds the access that they do not.
 
 ---
 

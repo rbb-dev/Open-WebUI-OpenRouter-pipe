@@ -967,7 +967,23 @@ async def test_chat_completions_nonstreaming_error_500(pipe_instance_async):
 
 @pytest.mark.asyncio
 async def test_chat_completions_nonstreaming_with_breaker_key_failure(pipe_instance_async):
-    """Test non-streaming with breaker_key and failure recording."""
+    """A rejected non-streamed call charges the breaker once, on the key it was given.
+
+    This row drove the request and asserted nothing at all: no `exc_info`, no assertion
+    after the `pytest.raises`, so any fault this leg can raise satisfied it. The HTTP-status
+    route into the breaker is reached here and nowhere else -- a lost body is the other
+    route, and it is pinned elsewhere -- so this is the only row that shows a 401 charging
+    the ledger. The breaker is what refuses a user and what the dashboard's Requests row
+    reads, so a breaker that stops charging is invisible to an operator.
+
+    The count, not `allows(breaker_key) is False`: `BREAKER_MAX_FAILURES`'s own description
+    says "a request counts once however many attempts it took" (`core/config.py`), and the
+    shipped threshold is 5, so one strike leaves the breaker open and asserting on it would
+    be vacuous. The ledger is read under the key the row handed in, so a charge booked
+    against any other key fails here too.
+    """
+    from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
+
     pipe = pipe_instance_async
     valves = pipe.valves
     session = pipe._create_http_session(valves)
@@ -979,7 +995,7 @@ async def test_chat_completions_nonstreaming_with_breaker_key_failure(pipe_insta
             status=401,
         )
 
-        with pytest.raises(Exception):
+        with pytest.raises(OpenRouterAPIError) as exc_info:
             await pipe.send_openai_chat_completions_nonstreaming_request(
                 session,
                 {"model": "openai/gpt-4o", "input": []},
@@ -990,6 +1006,16 @@ async def test_chat_completions_nonstreaming_with_breaker_key_failure(pipe_insta
             )
 
         await session.close()
+
+    exc = exc_info.value
+    assert getattr(exc, "status", None) == 401, (
+        f"the provider's own status must reach the caller: {getattr(exc, 'status', None)!r}"
+    )
+    records = pipe._circuit_breaker._breaker_records.get("user_456", [])
+    assert len(records) == 1, (
+        f"a rejected non-streamed call charged the breaker {len(records)} times, not once: "
+        f"{list(records)!r}"
+    )
 
 
 @pytest.mark.asyncio

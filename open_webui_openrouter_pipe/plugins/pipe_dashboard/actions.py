@@ -19,7 +19,8 @@ from typing import Any, NamedTuple, cast
 from pydantic import ValidationError
 
 from ...core.config import EncryptedStr, _application_secret
-from .authz import can_act, can_view
+from ...core.warn_latch import warn_level
+from .authz import can_act, can_act_known, can_view, can_view_known
 from .config_service import (
     _ClientInput,
     _ClientMessage,
@@ -45,10 +46,14 @@ logger = logging.getLogger(__name__)
 _PD_ACTION_MIN_INTERVAL = 1.0
 _PD_PRUNE_AT = 256
 _VALUE_ERROR_PREFIX = "Value error, "
+UNDETERMINABLE_STATUS = 500
+UNDETERMINABLE_ERROR = "access_undeterminable"
 _rate_state: dict[tuple[str, str], float] = {}
 _config_write_locks: dict[tuple[str, int], asyncio.Lock] = {}
 _PD_CONFIG_LOCK_SUFFIX = "config_lock"
 _PD_CONFIG_LOCK_TIMEOUT_S = 30
+_PD_UNDETERMINABLE_AUDIT_EVERY_S = 300.0
+_warned_undeterminable_audit: dict[str, float] = {}
 
 
 class _ConfigLease:
@@ -263,13 +268,31 @@ async def _dashboard_enabled(pipe: Any) -> bool:
     return (await persisted_dashboard_enabled(pipe))[0]
 
 
+def _audit_undeterminable(user: Any, name: str, client_ip: Any) -> None:
+    uid = str(getattr(user, "id", None) or "-")
+    logger.log(
+        warn_level(
+            _warned_undeterminable_audit,
+            f"{uid}|{name}",
+            cooldown_s=_PD_UNDETERMINABLE_AUDIT_EVERY_S,
+        ),
+        "pipe_dashboard action user=%s action=%s outcome=undeterminable ip=%s args=-",
+        _scrub(uid),
+        _scrub(name),
+        _scrub(client_ip),
+    )
+
+
 async def dispatch_action(
     pipe: Any, user: Any, name: str, args: Any, *, client_ip: Any = None, request: Any = None
 ) -> tuple[int, dict[str, Any]]:
     entry = ACTIONS.get(name)
     required = entry.permission if entry else "read"
-    allowed = await (can_act if required == "write" else can_view)(user, pipe)
-    if not allowed:
+    verdict = await (can_act_known if required == "write" else can_view_known)(user, pipe)
+    if verdict is None:
+        _audit_undeterminable(user, name, client_ip)
+        return UNDETERMINABLE_STATUS, {"error": UNDETERMINABLE_ERROR}
+    if not verdict:
         _audit(user, name, "forbidden", client_ip)
         return 403, {"error": "forbidden"}
     if entry is not None and entry.admin_only and getattr(user, "role", None) != "admin":

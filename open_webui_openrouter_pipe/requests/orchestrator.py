@@ -2301,13 +2301,14 @@ class RequestOrchestrator:
             records=records,
             model_resolver=_image_model_records,
         )
-        _will_strip_server_tools = _fusion_server_tools_stripped(
+        _stripped_server_tools = _fusion_server_tools_stripped(
             responses_body.model,
             responses_body.plugins,
             responses_body.tools,
             fusion_enabled=bool(valves.ENABLE_OPENROUTER_FUSION) and _fusion_backend_openrouter(valves),
             is_fusion_task_request=fusion_task_request,
-        ) is not None
+        )
+        _will_strip_server_tools = _stripped_server_tools is not None
         if superseded and not tool_use_ruled_out and not _will_strip_server_tools:
             grouped: dict[str, list[Any]] = {}
             for drawn_by, note in superseded:
@@ -2321,15 +2322,8 @@ class RequestOrchestrator:
         pipe_server_tool_ids = frozenset(
             id(t) for t in (responses_body.tools or []) if id(t) not in tools_before_pipe_metadata_ids
         )
-        stripped_tools = _fusion_server_tools_stripped(
-            responses_body.model,
-            responses_body.plugins,
-            responses_body.tools,
-            fusion_enabled=bool(valves.ENABLE_OPENROUTER_FUSION) and _fusion_backend_openrouter(valves),
-            is_fusion_task_request=fusion_task_request,
-        )
-        if stripped_tools is not None:
-            responses_body.tools = stripped_tools or None
+        if _stripped_server_tools is not None:
+            responses_body.tools = _stripped_server_tools or None
             self.logger.debug(
                 "Stripped openrouter server tools from fusion request model=%s",
                 responses_body.model,

@@ -479,7 +479,7 @@ class ErrorFormatter:
             normalized_model_id=normalized_model_id,
             api_model_id=api_model_id,
         )
-        on_channel = is_channel_chat(OWUI_CHAT_ID.get()) if event_emitter else False
+        on_channel = is_channel_chat(OWUI_CHAT_ID.get())
         content = exc.to_markdown(
             model_label=model_display,
             diagnostics=diagnostics or None,

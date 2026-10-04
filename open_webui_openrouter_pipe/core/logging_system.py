@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
+from ..storage.owui_files import loggable_session_id
 from .utils import (
     _data_url_log_subject,
     _sanitize_path_component,
@@ -129,7 +130,7 @@ class _RedactionFilter(logging.Filter):
             sid = SessionLogger.session_id.get()
             rid = SessionLogger.request_id.get()
             uid = SessionLogger.user_id.get()
-            record.session_id = sid
+            record.session_id = loggable_session_id(sid)
             record.request_id = rid
             record.user_id = uid or "-"
             record.max_lines = SessionLogger.max_lines.get()

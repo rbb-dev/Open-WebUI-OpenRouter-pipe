@@ -789,6 +789,11 @@ class UsageStore:
             return False
         if self._table_absent == signature:
             return False
+        if (
+            self._reconcile_failed == signature
+            and time.monotonic() - self._reconcile_failed_at < _US_RECONCILE_RETRY_S
+        ):
+            return False
         try:
             present = bool(sa_inspect(engine).has_table(f"{_USAGE_TABLE_PREFIX}{signature[1]}"))
         except Exception:

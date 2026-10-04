@@ -172,6 +172,14 @@ EXPECTED_LATCHES = {
     # the only one an admin needs and a cooldown would re-warn for a fault that never
     # goes away. It carries the prefix so the per-test reset reaches it -- otherwise the
     # first test to drive a skip silently disarms the arm that asserts the WARNING is
+    # The action route's own audit for an ACL read that could not complete
+    # (`plugins/pipe_dashboard/actions.py`). Keyed on `(user, action)` with a 300 s
+    # cooldown, beside `_warned_off_audit_state` on the same route and for the same
+    # reason: the panel polls about once a second, so an unlatched WARNING is one
+    # line per poll for the length of a database outage. Without it the reset sweep
+    # never clears the latch, and every later test that drives an undeterminable
+    # ACL would read a DEBUG and assert nothing.
+    "_warned_undeterminable_audit",
     # still emitted.
     "_warned_textless_task",
     # A usage table the pipe's database role cannot create is retried on an interval,

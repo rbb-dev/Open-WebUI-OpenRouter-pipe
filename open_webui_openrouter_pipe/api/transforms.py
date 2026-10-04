@@ -1144,6 +1144,8 @@ def responses_refusal_text(item: Any) -> str | None:
     if isinstance(own, str) and own.strip():
         return own.strip()
     content = item.get("content")
+    if isinstance(content, dict):
+        content = [content]
     if not isinstance(content, list):
         return None
     for part in content:

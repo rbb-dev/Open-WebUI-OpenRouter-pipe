@@ -4711,7 +4711,7 @@ class StreamingHandler:
                 except (asyncio.CancelledError, Exception):
                     self.logger.debug(
                         "Failed to persist session log segment (chat_id=%s message_id=%s request_id=%s terminal=%s)",
-                        resolved_chat_id,
+                        loggable_chat_id(resolved_chat_id),
                         resolved_message_id,
                         request_id,
                         terminal,
@@ -4875,7 +4875,7 @@ class StreamingHandler:
                         "(reason=%s chat_id=%s item_types=%s)",
                         len(pending_items),
                         "cancelled" if was_cancelled else "retry_handback",
-                        chat_id,
+                        loggable_chat_id(chat_id),
                         sorted({str(row.get("item_type")) for row in pending_items}),
                     )
             else:

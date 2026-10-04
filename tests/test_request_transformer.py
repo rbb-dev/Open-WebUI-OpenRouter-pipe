@@ -4232,7 +4232,7 @@ class TestImageReuseRegister:
 
     @staticmethod
     async def _run(pipe_instance, messages, *, emitter=None, gateway=None, downloader=None,
-                   chat_id="chat-1"):
+                   chat_id="chat-1", safe_url=True):
         with patch("open_webui_openrouter_pipe.requests.transformer.ModelFamily") as mock_family:
             mock_family.supports.return_value = True
 
@@ -4242,8 +4242,11 @@ class TestImageReuseRegister:
             async def permit(*a, **k):
                 return True
 
+            async def deny(*a, **k):
+                return False
+
             pipe_instance._file_gateway.inline_owui_file_id = gateway or none
-            pipe_instance._multimodal_handler._is_safe_url = permit
+            pipe_instance._multimodal_handler._is_safe_url = permit if safe_url else deny
             pipe_instance._multimodal_handler._download_remote_url = downloader or none
             return await transform_messages_to_input(
                 pipe_instance, messages, chat_id=chat_id, event_emitter=emitter
@@ -4876,6 +4879,14 @@ class TestImageReuseRegister:
         refusals drop the block, so a test that only checked whether a block appeared was
         satisfied by either guard alone -- deleting either one left it green. Telling the
         user which way their image failed is what `eb287e3` was for.
+
+        **The `fails` row is now the pipe's own refusal, not a failed download.** A
+        public link the pipe merely could not fetch is forwarded as its link, on the
+        same terms as the attachment arm has always used, so OpenRouter may fetch it.
+        What this file's worst shape -- "the pipe's own SSRF policy declines to fetch a
+        host, and the block then asks the provider to fetch it" -- is still exactly
+        true, and it is what the row drives: the host is one the pipe will not fetch.
+        The download-cap refusal is the other thing that still drops the block.
         """
         pipe_instance.valves.IMAGE_INPUT_SELECTION = "user_then_assistant"
 
@@ -4894,7 +4905,7 @@ class TestImageReuseRegister:
 
         with caplog.at_level(_logging.DEBUG, logger="open_webui_openrouter_pipe"):
             blocks = self._blocks(
-                await self._run(pipe_instance, messages, downloader=downloader)
+                await self._run(pipe_instance, messages, downloader=downloader, safe_url=False)
             )
         assert bool(blocks) is expect_block, (
             f"fetch {fetch}: got {[b[:60] for b in blocks]}"

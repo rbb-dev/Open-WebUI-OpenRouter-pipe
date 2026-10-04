@@ -1325,7 +1325,9 @@ rules:
     image in between is still sent — as a reference the model can use,
     not dropped. One request carries at most 16 references, so past that
     the remainder is left out and the **Not sent with this video** list
-    names it. The middle images keep
+    names it — as plain text, with any Markdown punctuation in a name you
+    chose removed, so a preference key cannot become a link or an image
+    fetch in the stored transcript. The middle images keep
     the order you attached them in and follow the two keyframes in the
     request, so the first keyframe is never pushed back by however many
     middle images there are. A classifier instruction that collides with
@@ -1512,7 +1514,9 @@ model as a **reference**: material for it to draw on rather than a fixed
 start or end point. One request carries at most 16 references, the
 request format's own ceiling; past that the excess is left out and the
 **Not sent with this video** list says how many and why, and the render
-still goes ahead.
+still goes ahead. A name in that list is shown as plain text with its
+Markdown punctuation removed, so a preference key you chose cannot become
+a link or an image fetch in the stored transcript.
 
 Open WebUI keeps pictures out of the request-level file list — it feeds
 them to a chat as `image_url` parts — so the filter reads the turn's own
@@ -1548,8 +1552,16 @@ notice saying the model does not take it, rather than sent somewhere it
 would be discarded without a word. Each reference is checked against the
 frame limits above; a clip or sound file, which travels by way of a public
 file host, is bounded by `MEDIA_FILE_HOST_MAX_SIZE_MB` instead.
+Where **Fall back to the other host** is on, that second host is not
+offered a refusal the first one made about the file itself — a type the
+pipe cannot declare, a file over the cap, an empty file, or the turn's
+upload budget already spent — because it would refuse the same file for
+the same reason. The refusal is reported once and no second host is
+announced for an attempt that never begins.
 `REMOTE_VIDEO_MAX_SIZE_MB` bounds only the finished video coming back, not
-anything you attach. A request carries at most 16 references, and a
+anything you attach — and the read-back that reuses a frame from a clip
+this pipe generated is bounded by it too, so the valve that admits a clip
+is the one that reads it. A request carries at most 16 references, and a
 reference that fails on kind, format, count or the combined budget is
 left out with a warning notice naming it and why, and the render still
 goes ahead; a clip that fails on pixel size
@@ -2040,11 +2052,17 @@ about billing.
 Both numbers in that sentence are counted from the clips the pipe
 actually tried to fetch, so a job that reported twenty clips but is
 fetched at most sixteen at a time is counted against the sixteen, not
-against the twenty. It never names a clip the pipe did not attempt as
-undelivered, and it says nothing about what the job cost: the charge, when
-the provider reported one, is on the final status line as long as usage
-details are on: that is your own Show usage details setting once you have
-set it.
+against the twenty. Sixteen is the attempt count: the pipe's own bound on
+one request's downloads, and the number of clips it really did try. It
+never names a clip the pipe did not attempt as undelivered. Where the job
+reported more clips than that, the card names the job's own count
+separately and says which is which — *The job produced 20 clips; this pipe
+fetches the first 16.* — so the attempt count is never read as a
+production count, and the sibling shortfall card counts against the same
+sixteen for the same reason. It says nothing about what the job cost: the
+charge, when the provider reported one, is on the final status line as long
+as usage details are on: that is your own Show usage details setting once
+you have set it.
 
 The two `[label]: #` lines are CommonMark **reference-link definitions**.
 They render as nothing — they are invisible markers used internally for
@@ -2367,7 +2385,7 @@ Functions → OpenRouter pipe → Valves; the per-model filter ones live on each
 | `VIDEO_POLL_INTERVAL_MAX_SECONDS` | `20.0` | 1.0–120.0 | Cap on the polling interval after backoff. |
 | `VIDEO_MAX_POLL_TIME_SECONDS` | `1800` | 30–7200 | Max time a job may go silent — reset by every status check that reports the job still running. On expiry the card is persisted as still running, not failed. Floored at `VIDEO_POLL_INTERVAL_MAX_SECONDS` + the HTTP read timeout. |
 | `VIDEO_STATUS_POLL_MAX_ERRORS` | `5` | 1–25 | Tolerable consecutive status-endpoint failures or error answers, and (as a multiple of this value) such failures in total across one watch, before the pipe stops polling; the job is not failed. A fault of the pipe's own code is not counted and is not retried. |
-| `REMOTE_VIDEO_MAX_SIZE_MB` | `500` | 1–2048 | Max downloaded video size; oversized aborts streaming. Bounds the generated video only, never an attachment. |
+| `REMOTE_VIDEO_MAX_SIZE_MB` | `500` | 1–2048 | Max downloaded video size; oversized aborts streaming. Bounds the generated video only, never an attachment — and bounds the read-back that reuses a frame from a stored generated clip. |
 | `VIDEO_DOWNLOAD_CHUNK_SIZE` | `1048576` | 65536–8388608 | Chunk size in bytes for streaming download. |
 | `MAX_CONCURRENT_VIDEO_GENS` | `2` | 1–100 | Global concurrency cap per pipe process. Applies on the next generation, with no restart; a lower value binds from that moment and jobs already running finish first. |
 | `MAX_CONCURRENT_VIDEO_GENS_PER_USER` | `2` | 1–25 | Per-user concurrency cap. |

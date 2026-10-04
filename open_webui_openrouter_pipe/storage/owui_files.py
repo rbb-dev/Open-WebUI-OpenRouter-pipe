@@ -437,7 +437,10 @@ def is_temporary_metadata(metadata: Any) -> bool:
 
 
 def loggable_session_id(session_id: Any) -> str:
-    return "" if is_temporary_chat(OWUI_CHAT_ID.get()) else str(session_id or "")
+    chat_id = OWUI_CHAT_ID.get()
+    if not isinstance(chat_id, str) or not chat_id.strip():
+        return str(session_id or "")
+    return "" if is_temporary_chat(chat_id) else str(session_id or "")
 
 
 def channel_id_for_chat(chat_id: Any) -> str | None:

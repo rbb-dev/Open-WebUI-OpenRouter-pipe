@@ -187,7 +187,7 @@ const STORE_WRITE_REFUSED="the database refused the write";
 const STORE_WRITE_REFUSED_TEXT="Saving settings failed: the database refused the write, so nothing was saved. Your edits are still here and nothing on the stored row changed — fix the database, then save again.";
 function storeUnreadableText(d){if(typeof d!=="string")return "";if(d.indexOf(STORE_UNREADABLE_KEY)===0)return STORE_UNREADABLE_KEY_TEXT;if(d===STORE_UNREADABLE)return STORE_UNREADABLE_TEXT;return "";}
 function storeTextOr(t,d){const s=storeUnreadableText(d);return s||t;}
-const ROUTE_OFF={dashboard_off:"the Pipe Dashboard is switched off (the Enable Pipe Dashboard valve), so this tab is closed with it. Turn that switch back on in Open WebUI\u2019s Workspace > Functions editor.",plugin_system_off:"the plugin system is switched off (the Enable plugin system valve), so no Pipe Dashboard action can run. Turn it back on in Open WebUI\u2019s Workspace > Functions editor."};
+const ROUTE_OFF={dashboard_off:"the Pipe Dashboard is switched off (the Enable Pipe Dashboard valve), so this tab is closed with it. Turn that switch back on in Open WebUI\u2019s Workspace > Functions editor.",plugin_system_off:"the plugin system is switched off (the Enable plugin system valve), so no Pipe Dashboard action can run. Turn it back on in Open WebUI\u2019s Workspace > Functions editor.",access_undeterminable:"the dashboard could not read your permissions, so it did not decide whether you may act and nothing was changed. Restore the database, then try again."};
 function routeOffText(c){if(typeof c!=="string")return "";return ROUTE_OFF[c]||"";}
 function routeTextOr(t,c){return routeOffText(c)||t;}
 const edits={}; const invalid=new Set();

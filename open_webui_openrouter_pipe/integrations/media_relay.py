@@ -53,9 +53,16 @@ _HOST_REPLY_LIMIT = 120
 
 
 class MediaRelayError(Exception):
-    def __init__(self, message: str, *, may_have_stored_it: bool = True) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        may_have_stored_it: bool = True,
+        host_independent: bool = False,
+    ) -> None:
         super().__init__(message)
         self.may_have_stored_it = may_have_stored_it
+        self.host_independent = host_independent
 
 
 _RAN_OUT_OF_TIME = (
@@ -155,15 +162,19 @@ async def relay_to_public_url(
             f"{mime!r} is not a media type, so there is no honest way to declare the "
             "file to a host",
             may_have_stored_it=False,
+            host_independent=True,
         )
     if max_bytes > 0 and len(blob) > max_bytes:
         raise MediaRelayError(
             f"the file is {megabytes(len(blob))} and the limit for sending media to a "
             f"file host is {megabytes(max_bytes)}",
             may_have_stored_it=False,
+            host_independent=True,
         )
     if not blob:
-        raise MediaRelayError("the file is empty", may_have_stored_it=False)
+        raise MediaRelayError(
+            "the file is empty", may_have_stored_it=False, host_independent=True
+        )
 
     fields = {"reqtype": "fileupload"}
     if host == "litterbox":
@@ -172,12 +183,15 @@ async def relay_to_public_url(
     deadline = time.monotonic() + max(0.0, seconds_left)
     last = ""
     stored = False
+    out_of_time = False
     for attempt in range(_UPLOAD_ATTEMPTS):
         if attempt:
             await asyncio.sleep(min(_RETRY_PAUSE_SECONDS * attempt, _time_left(deadline)))
         window = _time_left(deadline)
         if window <= 0:
-            last = last or f"{host} was not reached: {_RAN_OUT_OF_TIME}"
+            if not last:
+                last = f"{host} was not reached: {_RAN_OUT_OF_TIME}"
+                out_of_time = True
             break
         try:
             async with session.post(
@@ -211,7 +225,9 @@ async def relay_to_public_url(
             last = f"{host} did not answer: {_as_the_host_explained(exc, _NEVER_ANSWERED)}"
             break
     raise MediaRelayError(
-        last or f"{host} did not accept the file", may_have_stored_it=stored
+        last or f"{host} did not accept the file",
+        may_have_stored_it=stored,
+        host_independent=out_of_time,
     )
 
 

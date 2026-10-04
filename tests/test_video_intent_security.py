@@ -24,6 +24,7 @@ from open_webui_openrouter_pipe.integrations.video_intent import (
     neutralise_control_tokens,
     render_intent_disclosure_block,
 )
+from open_webui_openrouter_pipe.media.frame_extraction import _INPUT_DEMUXER
 from tests.ffmpeg_child_stubs import FfmpegChildStub
 
 
@@ -201,6 +202,7 @@ class TestResolveOwuiFilePath:
         from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
         pipe = MagicMock()
         pipe.valves.VIDEO_MAX_SIZE_MB = 500
+        pipe.valves.REMOTE_VIDEO_MAX_SIZE_MB = 500
         pipe.valves.ALLOW_UNKNOWN_SIZE_CLOUD_READS = False
         pipe.logger = logging.getLogger("test")
         return VideoGenerationAdapter(pipe=pipe, logger=logging.getLogger("test"))
@@ -231,7 +233,7 @@ class TestResolveOwuiFilePath:
         kwargs = mat.await_args.kwargs
         assert kwargs["user"] == SimpleNamespace(id="user_A")
         assert kwargs["max_bytes"] == 500 * 1024 * 1024
-        assert {".mp4", ".webm", ".mov", ".mkv", ".m4v", ".avi"} == kwargs["allowed_suffixes"]
+        assert set(kwargs["allowed_suffixes"]) == set(_INPUT_DEMUXER)
 
     @pytest.mark.asyncio
     async def test_returns_none_on_required_internal_file_error(self):

@@ -282,52 +282,53 @@ _REUSE_DOWNLOAD_MEMO_MAX_BYTES = 8 * 1024 * 1024
 _BASE64_SCAN_CHUNK = 1 << 12
 _REUSE_WARN_COOLDOWN_S = 30.0
 _NOTICE_LOOKBACK_TURNS = 0
+_REUSE_DOWNLOAD_MEMO_TTL_S = 900.0
 
 
 class _ReuseDownloadMemo(OrderedDict):
-    __slots__ = ("held",)
+    __slots__ = ("fetched_at",)
 
     def __init__(self) -> None:
         super().__init__()
-        self.held: int = 0
+        self.fetched_at: dict[Any, float] = {}
+
+    @property
+    def held(self) -> int:
+        return sum(self._value_bytes(value) for value in self.values())
 
     @staticmethod
     def _value_bytes(value: tuple[str | None, bytes, str]) -> int:
         return len(value[1])
 
     def __setitem__(self, key, value) -> None:
-        old = self.get(key)
-        if old is not None:
-            self.held -= self._value_bytes(old)
         super().__setitem__(key, value)
-        self.held += self._value_bytes(value)
+        self.fetched_at.setdefault(key, time.monotonic())
 
     def __delitem__(self, key) -> None:
-        old = self[key]
         super().__delitem__(key)
-        self.held -= self._value_bytes(old)
+        self.fetched_at.pop(key, None)
 
     _pop_sentinel: Any = object()
 
     def pop(self, key, default=_pop_sentinel):
-        if key in self:
-            self.held -= self._value_bytes(self[key])
+        self.fetched_at.pop(key, None)
         if default is self._pop_sentinel:
             return super().pop(key)
         return super().pop(key, default)
 
     def popitem(self, last: bool = True):
         key, value = super().popitem(last=last)
-        self.held -= self._value_bytes(value)
+        self.fetched_at.pop(key, None)
         return key, value
 
     def clear(self) -> None:
         super().clear()
-        self.held = 0
+        self.fetched_at.clear()
 
-    def update(self, *args, **kwargs) -> None:
-        for key, value in dict(*args, **kwargs).items():
-            self[key] = value
+    def age_of(self, key: Any) -> float:
+        if key not in self:
+            return float("inf")
+        return time.monotonic() - self.fetched_at[key]
 
 
 _reuse_download_memo: _ReuseDownloadMemo = _ReuseDownloadMemo()
@@ -613,6 +614,21 @@ def _block_text(block: dict[str, Any]) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _named_file_reference(block: dict[str, Any]) -> str | None:
+    nested_file = block.get("file")
+    source = nested_file if isinstance(nested_file, dict) else block
+    file_id = source.get("file_id")
+    return file_id if isinstance(file_id, str) and file_id else None
+
+
+def _named_source_value(source: dict[str, Any], key: str, alias: str) -> Any:
+    value = source.get(key)
+    if value:
+        return value
+    aliased = source.get(alias)
+    return aliased if isinstance(aliased, str) and aliased else value
+
+
 def _block_is_usable(block: dict[str, Any]) -> bool:
     btype = block.get("type")
     if btype == "input_text":
@@ -636,9 +652,9 @@ NO_VIDEO_DATA = "a video clip carried no video data"
 def _unconverted_block_reason(block: dict[str, Any]) -> str | None:
     btype = block.get("type")
     if btype in {"input_image", "image_url", "image"}:
-        return "an image carried no picture data" if not _payload_is_present(
-            block.get("image_url", block.get("url"))
-        ) else None
+        if _payload_is_present(block.get("image_url", block.get("url"))):
+            return None
+        return None if _named_file_reference(block) else "an image carried no picture data"
     if btype in {"input_audio", "audio"}:
         return NO_AUDIO_DATA if not _payload_is_present(
             block.get("input_audio", block.get("audio", block.get("data")))
@@ -835,6 +851,8 @@ _TRANSPORT_ONLY_KEYS = (
     TOOL_ROUND_SKELETON_KEY,
 )
 _LIFTED_TEXT_IMAGE_PLACEHOLDER = "image"
+
+_SIZE_REFUSAL_CAUSES = frozenset({"oversized_inline", "oversized_remote"})
 
 _MEDIA_BLOCK_TYPES = frozenset({
     "image_url", "input_image", "image", "input_file", "file",
@@ -1263,14 +1281,11 @@ def _note_memo_use(
     *,
     mode: str,
     temporary_chat: bool,
+    owner: str | None,
 ) -> None:
-    if mode != "reuse" or temporary_chat or memo_key is None:
+    if mode != "reuse" or temporary_chat or memo_key is None or remembered is None:
         return
-    if remembered is not None:
-        if memo_key in _reuse_download_memo:
-            _reuse_download_memo.move_to_end(memo_key)
-        return
-    if memo_key in _reuse_download_memo:
+    if memo_key in _reuse_download_memo and _reuse_download_memo[memo_key][0] == owner:
         _reuse_download_memo.move_to_end(memo_key)
 
 
@@ -1445,7 +1460,6 @@ async def transform_messages_to_input(
             return None
 
         async def _flush_deferred_tool_pictures() -> None:
-            had_pictures = bool(_deferred_tool_pictures)
             if _deferred_tool_pictures:
                 admitted, gated_refusals = await _gate_inline_tool_pictures(
                     _deferred_tool_pictures, max_inline_bytes,
@@ -1453,7 +1467,7 @@ async def transform_messages_to_input(
                 )
                 _deferred_tool_refusals.extend(gated_refusals)
                 _deferred_tool_pictures.clear()
-                message = _tool_images_message(admitted, lead_in=had_pictures)
+                message = _tool_images_message(admitted, lead_in=bool(admitted))
                 if message is not None:
                     openai_input.append(message)
             if _deferred_tool_refusals:
@@ -1598,7 +1612,16 @@ async def transform_messages_to_input(
                 * 1024
             )
 
-        address_verdicts: dict[str, bool | None] = {}
+        from ..tools.tool_executor import _request_address_budget
+
+        _shared_verdicts, _shared_budget = _request_address_budget(pipe._TOOL_CONTEXT.get())
+        address_verdicts: dict[str, bool | None] = (
+            _shared_verdicts if _shared_verdicts is not None else {}
+        )
+        address_budget = (
+            _shared_budget if _shared_budget is not None
+            else _AddressBudget(ADDRESS_CHECK_BUDGET_SECONDS)
+        )
         reuse_limit_seen: list[int | None] = [None]
         tool_name_at, issuer_at = _tool_names_by_position(messages)
 
@@ -1737,12 +1760,6 @@ async def transform_messages_to_input(
                     artifact_groups[group_id] = loaded
                     artifact_producers[group_id] = producers
 
-        _tool_context = pipe._TOOL_CONTEXT.get()
-        _context_budget = _tool_context.address_budget if _tool_context is not None else None
-        address_budget = (
-            _context_budget if _context_budget is not None
-            else _AddressBudget(ADDRESS_CHECK_BUDGET_SECONDS)
-        )
         normalized_rows: dict[int, Any] = {}
 
         def _normalized_row(row: Any) -> Any:
@@ -1994,6 +2011,9 @@ async def transform_messages_to_input(
                             url = block.get("url", "") if isinstance(block.get("url"), str) else ""
 
                         if not url:
+                            named_file = _named_file_reference(block)
+                            if named_file is not None:
+                                return {"type": "input_file", "file_id": named_file}
                             return None
 
                         owui_internal = names_an_owui_file_path(url)
@@ -2048,23 +2068,27 @@ async def transform_messages_to_input(
 
                         elif is_http_or_https_url(url) and not owui_internal:
                             memo_key = (chat_id, url) if chat_id else None
+                            transfer_refused: dict[str, str] = {}
                             remembered = (
                                 request_memo.get(memo_key)
                                 if mode == "reuse" and memo_key is not None
                                 else None
                             )
                             if mode == "reuse" and not temporary_chat and remembered is None:
-                                remembered = (
-                                    _reuse_download_memo.get(memo_key)
-                                    if memo_key is not None
-                                    else None
-                                )
+                                if (
+                                    memo_key is not None
+                                    and _reuse_download_memo.age_of(memo_key)
+                                    > _REUSE_DOWNLOAD_MEMO_TTL_S
+                                ):
+                                    _reuse_download_memo.pop(memo_key, None)
+                                else:
+                                    remembered = (
+                                        _reuse_download_memo.get(memo_key)
+                                        if memo_key is not None
+                                        else None
+                                    )
                             if remembered is not None and remembered[0] != memo_owner:
                                 remembered = None
-                            _note_memo_use(
-                                memo_key, remembered,
-                                mode=mode, temporary_chat=temporary_chat,
-                            )
                             held_len = len(remembered[1]) if remembered is not None else None
                             held_over_cap = (
                                 held_len is not None
@@ -2078,6 +2102,11 @@ async def transform_messages_to_input(
                                 )
                             ):
                                 remembered = None
+                            _note_memo_use(
+                                memo_key, remembered,
+                                mode=mode, temporary_chat=temporary_chat,
+                                owner=memo_owner,
+                            )
                             if remembered is not None:
                                 downloaded = {
                                     "data": remembered[1], "mime_type": remembered[2],
@@ -2088,6 +2117,7 @@ async def transform_messages_to_input(
                                         url,
                                         seconds=address_budget.take(),
                                         charge=address_budget.charge,
+                                        refused=transfer_refused,
                                     )
                                 except Exception:
                                     pipe.logger.exception(
@@ -2102,6 +2132,7 @@ async def transform_messages_to_input(
                                 )
                             if downloaded and not downloaded.get("data"):
                                 downloaded = None
+                            over_cap_transfer = transfer_refused.get(url) == "too_large"
                             if not downloaded:
                                 if url in address_verdicts:
                                     _cold_verdict = address_verdicts[url]
@@ -2120,6 +2151,20 @@ async def transform_messages_to_input(
                                         "remote_unfetched",
                                         subject=loggable_link(url),
                                     )
+                            if not downloaded and held_over_cap:
+                                return _refuse(
+                                    f"{held_len} bytes, over the "
+                                    f"{await _remote_limit_bytes()}-byte download limit, "
+                                    "so it was not sent",
+                                    "oversized_remote",
+                                    subject=loggable_link(url),
+                                )
+                            if not downloaded and over_cap_transfer:
+                                return _refuse(
+                                    "could not be fetched, so it was not sent",
+                                    "oversized_remote",
+                                    subject=loggable_link(url),
+                                )
                             if downloaded:
                                 oversized = len(downloaded["data"]) > max_inline_bytes
                                 if oversized:
@@ -2209,17 +2254,8 @@ async def transform_messages_to_input(
                             mode == "reuse"
                             and not from_gate
                             and not (split[1] if split is not None else "")
+                            and not is_http_or_https_url(url)
                         ):
-                            if is_http_or_https_url(url):
-                                return _refuse(
-                                    f"{held_len} bytes, over the "
-                                    f"{await _remote_limit_bytes()}-byte download limit, "
-                                    "so it was not sent"
-                                    if held_over_cap
-                                    else "could not be fetched, so it was not sent",
-                                    "oversized_remote" if held_over_cap else "remote_unfetched",
-                                    subject=_image_subject(url),
-                                )
                             return ImageRefusal(
                                 "could not be fetched, so its type could not be established",
                                 "reuse_unfetched",
@@ -2283,10 +2319,10 @@ async def transform_messages_to_input(
                         nested_file = block.get("file")
                         source = nested_file if isinstance(nested_file, dict) else block
 
-                        file_id = source.get("file_id")
+                        file_id = _named_source_value(source, "file_id", "id")
                         file_data = source.get("file_data")
                         filename = source.get("filename")
-                        file_url = source.get("file_url")
+                        file_url = _named_source_value(source, "file_url", "url")
 
                         if not isinstance(file_url, str):
                             file_url = None
@@ -3214,7 +3250,11 @@ async def transform_messages_to_input(
                                 result["text"] = cleaned
                                 if _text_block_carries_words(result["text"]):
                                     continue
-                        if is_image_block and result:
+                        if (
+                            is_image_block
+                            and result
+                            and result.get("type") == "input_image"
+                        ):
                             user_images_used += 1
                             turn_images_used += 1
                             encountered_user_images = True
@@ -3265,7 +3305,7 @@ async def transform_messages_to_input(
                                     transformed.cause,
                                 )
                                 refused_images.append(transformed.reason)
-                                if transformed.cause == "oversized_inline":
+                                if transformed.cause in _SIZE_REFUSAL_CAUSES:
                                     pictures_in_request.add(_source_url_of(source_block))
                             elif transformed is not None:
                                 pictures_in_request.add(_source_url_of(source_block))
@@ -3355,7 +3395,7 @@ async def transform_messages_to_input(
                                 "type": "input_text",
                                 "text": f"{OPENAI_ATTACHMENT_NOT_SENT_PREFIX}{reasons}.]",
                             })
-                        else:
+                        elif not reusable_image_blocks:
                             converted_blocks.append({
                                 "type": "input_text",
                                 "text": OPENAI_EMPTY_USER_TURN_FALLBACK,

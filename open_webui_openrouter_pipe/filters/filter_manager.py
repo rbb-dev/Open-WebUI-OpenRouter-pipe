@@ -549,11 +549,17 @@ def _is_install_enumeration_failure(exc: BaseException) -> bool:
     return False
 
 
-def _newest_marked_row(rows, marker, *, prefer_id=None, tie_break_id=False, owner=None):
+def _newest_marked_row(rows, marker, *, prefer_id=None, tie_break_id=False, owner=None,
+                       last_resort=None):
     candidates = [row for row in rows or [] if marker in (getattr(row, "content", "") or "")]
     if owner is not None:
         owned = [row for row in candidates if _owned_by(row, owner)]
         candidates = owned or [row for row in candidates if _claimable_by(row, owner)]
+    if not candidates:
+        candidates = [
+            row for row in last_resort or []
+            if marker in (getattr(row, "content", "") or "")
+        ]
     if not candidates:
         return None
     return max(
@@ -1783,6 +1789,7 @@ class FilterManager:
         switched_off = {toggle for switch, toggle, _ in WEB_TOOL_SWITCHES if not getattr(self.valves, switch)}
         if not switched_off:
             return True
+        enabled = {toggle for switch, toggle, _ in WEB_TOOL_SWITCHES if getattr(self.valves, switch)}
         try:
             from open_webui.models.functions import Functions  # type: ignore
         except ImportError:
@@ -1874,9 +1881,7 @@ class FilterManager:
             dropped = offered & switched_off
             if not dropped:
                 continue
-            source = self.render_openrouter_web_tools_filter_source(
-                **{kwarg: (toggle in offered and toggle not in dropped) for _, toggle, kwarg in WEB_TOOL_SWITCHES}
-            ).strip() + "\n"
+            source = self._desired_web_tools_source()
             raised = []
             landed = await _write_function(
                 Functions,
@@ -1915,13 +1920,14 @@ class FilterManager:
                 continue
             self.logger.warning(
                 "OpenRouter Web Tools filter %r still offered %s, which this pipe has switched off. Its code was "
-                "replaced with the pipe's current version for the tools it still offers (%s); its name, settings "
-                "and on/off state are kept, and any hand edit in its code is gone. While AUTO_INSTALL_WEB_TOOLS_FILTER "
-                "is off, switching the tool back on does not add it back; with it on, the next model-list "
-                "refresh rewrites the row from the current valve set.",
+                "replaced with the pipe's current version for the tools the switches enable (%s); its name, settings "
+                "and on/off state are kept, and any hand edit in its code is gone. The row now declares exactly the "
+                "tools the switches enable, so switching one back on adds it again at the next repair; while every "
+                "web tool is on no repair runs at all, and with AUTO_INSTALL_WEB_TOOLS_FILTER on the next "
+                "model-list refresh rewrites the row from the current valve set anyway.",
                 row_id,
                 ", ".join(sorted(dropped)),
-                ", ".join(sorted(offered - dropped)) or "none",
+                ", ".join(sorted(enabled)) or "none",
             )
         return complete
 
@@ -1947,7 +1953,7 @@ class FilterManager:
         for row in found or []:
             if not _is_video_gen_filter(getattr(row, "content", "")):
                 continue
-            if not _claimable_by(row, self._install_owner()):
+            if not await self._ours_or_a_past_install_that_is_gone(row, Functions):
                 continue
             if not getattr(row, "is_active", False):
                 continue
@@ -2584,6 +2590,22 @@ class FilterManager:
             return None
         return {str(getattr(row, "id", "") or "") for row in live or ()}
 
+    async def _ours_or_a_past_install_that_is_gone(
+        self, row: Any, Functions: Any, live_installs: set[str] | None = None
+    ) -> bool:
+        if _claimable_by(row, self._install_owner()):
+            return True
+        stamped = _installed_by(row)
+        if not stamped:
+            return False
+        if live_installs is None:
+            live_installs = await self._live_pipe_installs(Functions)
+        if live_installs is None:
+            return False
+        if self._install_owner() not in live_installs:
+            return False
+        return stamped not in live_installs
+
     async def _read_filter_rows(self, *, active_only: bool = False) -> list[Any] | None:
         return await self._filter_rows(active_only=active_only)
 
@@ -2778,7 +2800,7 @@ class FilterManager:
                     continue
             if getattr(row, "is_active", True) is False:
                 continue
-            if not _claimable_by(row, self._install_owner()):
+            if not await self._ours_or_a_past_install_that_is_gone(row, Functions):
                 continue
             live = await _live_row(Functions, row)
             if not await _write_function(
@@ -2818,7 +2840,7 @@ class FilterManager:
             row_id = getattr(row, "id", "")
             if not _is_pipe_video_filter_row(content, row_id):
                 continue
-            if not _claimable_by(row, self._install_owner()):
+            if not await self._ours_or_a_past_install_that_is_gone(row, Functions):
                 continue
             if getattr(row, "is_active", True) is False:
                 continue

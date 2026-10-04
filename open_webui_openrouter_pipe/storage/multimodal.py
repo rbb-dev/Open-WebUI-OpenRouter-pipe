@@ -916,7 +916,9 @@ class MultimodalHandler:
         url: str,
         timeout_seconds: int | None = None,
         seconds: float | None = None,
-        charge: Callable[[float], None] | None = None
+        charge: Callable[[float], None] | None = None,
+        *,
+        refused: dict[str, str] | None = None
     ) -> dict[str, Any] | None:
         """Download file or image from remote URL with exponential backoff retry logic.
 
@@ -1074,6 +1076,8 @@ class MultimodalHandler:
                                         content_length,
                                         max_size_bytes,
                                     )
+                                    if refused is not None:
+                                        refused[url] = "too_large"
                                     return None
                             except ValueError:
                                 pass
@@ -1092,6 +1096,8 @@ class MultimodalHandler:
                                     size_mb,
                                     effective_limit_mb,
                                 )
+                                if refused is not None:
+                                    refused[url] = "too_large"
                                 return None
                             payload.extend(chunk)
 

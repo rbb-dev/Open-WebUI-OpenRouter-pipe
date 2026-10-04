@@ -62,7 +62,7 @@ from ..media import (
     make_thumbnail,
     probe_video,
 )
-from ..media.frame_extraction import _without_paths
+from ..media.frame_extraction import _INPUT_DEMUXER, _without_paths
 from ..models.registry import OpenRouterModelRegistry
 from ..requests.fusion_engine import asks_for_help, latest_user_text
 from ..requests.orchestrator import (
@@ -105,6 +105,7 @@ from .provider_options import (
     UnvettableRequest,
     bare_pins,
     carrier_slug,
+    label_segment,
     merge_provider_options,
     options_key,
     payload_addresses,
@@ -235,11 +236,13 @@ def _clip_loss_reason(outputs: int, reported: int, refused: dict[str, str]) -> s
     )
     causes = set(refused.values())
     if causes == {"http_error"}:
-        return f"{base} from OpenRouter."
-    clause = _CLIP_REFUSAL_CLAUSES.get(next(iter(causes))) if len(causes) == 1 else None
-    if clause is None:
-        return f"{base}."
-    return f"{base}: {clause}."
+        said = f"{base} from OpenRouter."
+    else:
+        clause = _CLIP_REFUSAL_CLAUSES.get(next(iter(causes))) if len(causes) == 1 else None
+        said = f"{base}." if clause is None else f"{base}: {clause}."
+    if reported > outputs:
+        said += f" The job produced {reported} clips; this pipe fetches the first {outputs}."
+    return said
 
 
 def _promotable_as_frame(entry: dict[str, Any], valves: Any = None) -> bool:
@@ -2552,7 +2555,7 @@ class VideoGenerationAdapter:
         """
         grouped: dict[str, list[str]] = {}
         for item, reason in withheld:
-            grouped.setdefault(reason, []).append(item)
+            grouped.setdefault(reason, []).append(label_segment(item))
         return "; ".join(
             f"{summarise_names(items, 16)} was not sent ({reason})"
             for reason, items in grouped.items()
@@ -3516,6 +3519,8 @@ class VideoGenerationAdapter:
                         "Could not put the attached %s behind a link via %s: %s",
                         family, host, exc,
                     )
+                    if getattr(exc, "host_independent", False):
+                        break
                     if getattr(exc, "may_have_stored_it", True):
                         if stored is not None:
                             stored.add((family, host))
@@ -4204,7 +4209,11 @@ class VideoGenerationAdapter:
             file_obj = await get_file_by_id(file_id, self._pipe.logger)
             if file_obj is None:
                 return None
-            max_bytes = int(self._pipe.valves.VIDEO_MAX_SIZE_MB) * 1024 * 1024
+            max_bytes = (
+                    int(getattr(self._pipe.valves, "REMOTE_VIDEO_MAX_SIZE_MB", 500))
+                    * 1024
+                    * 1024
+                )
             try:
                 temp = await materialize_owui_file_to_temp(
                     file_obj,
@@ -4214,7 +4223,7 @@ class VideoGenerationAdapter:
                     allow_unknown_size=bool(
                         getattr(self._pipe.valves, "ALLOW_UNKNOWN_SIZE_CLOUD_READS", False)
                     ),
-                    allowed_suffixes={".mp4", ".webm", ".mov", ".mkv", ".m4v", ".avi"},
+                    allowed_suffixes=set(_INPUT_DEMUXER),
                 )
             except RequiredInternalFileError as exc:
                 self.logger.warning(

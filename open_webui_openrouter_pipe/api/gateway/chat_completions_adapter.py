@@ -60,6 +60,7 @@ from ..transforms import (
     _responses_payload_to_chat_completions_payload,
     _unhandled_citation_types,
     chat_payload_loses_fusion_entry,
+    responses_refusal_text,
 )
 from .responses_adapter import (
     _BODY_EXCERPT_CHARS,
@@ -189,6 +190,10 @@ def _build_output_items(
     return output
 
 
+def _message_answer_and_refusal(message: Any) -> tuple[str, str | None]:
+    return _chat_message_text(message), responses_refusal_text(message)
+
+
 def _content_list_carries_an_answer(content: list[Any], message: Any) -> bool:
     if _chat_message_text(message).strip():
         return True
@@ -213,6 +218,8 @@ def _choice_carries_an_answer(choice: Any) -> bool:
     if isinstance(content, str) and content.strip():
         return True
     if isinstance(content, list) and content and _content_list_carries_an_answer(content, message):
+        return True
+    if isinstance(content, dict) and _content_list_carries_an_answer([content], message):
         return True
     for key in ("tool_calls", "images", "annotations", "reasoning_details"):
         value = message.get(key)
@@ -448,7 +455,10 @@ class ChatCompletionsAdapter:
             if closed_at is not None and len(arguments) == closed_at:
                 return False
             stripped = arguments.rstrip()
-            if not stripped or stripped[-1] not in _ARGUMENTS_VALUE_TERMINATORS:
+            if not stripped:
+                return True
+            gate = "}" if stripped[0] == "{" else _ARGUMENTS_VALUE_TERMINATORS
+            if stripped[-1] not in gate:
                 return True
             if _arguments_parse(arguments):
                 slot["arguments_closed_at"] = len(arguments)
@@ -805,19 +815,17 @@ class ChatCompletionsAdapter:
                             "item_id": reasoning_item_id,
                             "delta": message_reasoning_text,
                         }
-                message_refusal = message_obj.get("refusal")
-                if isinstance(message_refusal, str) and message_refusal.strip():
-                    provider_refusal_full = message_refusal.strip()
+                message_text, message_refusal = _message_answer_and_refusal(message_obj)
+                if message_refusal:
+                    provider_refusal_full = message_refusal
                     refusal_text_seen = True
                     message_refusal_published = True
-                if not assistant_text_seen:
-                    message_text = _chat_message_text(message_obj)
-                    if message_text:
-                        assistant_text_parts.append(message_text)
-                        assistant_text_seen = True
-                        delivered_any = True
-                        message_text_published = True
-                        yield {"type": "response.output_text.delta", "delta": message_text}
+                if not assistant_text_seen and message_text:
+                    assistant_text_parts.append(message_text)
+                    assistant_text_seen = True
+                    delivered_any = True
+                    message_text_published = True
+                    yield {"type": "response.output_text.delta", "delta": message_text}
                 message_images = message_obj.get("images")
                 if (
                     not images_emitted
@@ -870,8 +878,8 @@ class ChatCompletionsAdapter:
                 delivered_any = True
                 yield {"type": "response.output_text.delta", "delta": content_delta}
 
-            delta_refusal = delta_obj.get("refusal")
-            if isinstance(delta_refusal, str) and delta_refusal.strip() and not message_refusal_published:
+            _delta_text, delta_refusal = _message_answer_and_refusal(delta_obj)
+            if delta_refusal and not message_refusal_published:
                 provider_refusal_parts.append(delta_refusal)
                 refusal_text_seen = True
 
