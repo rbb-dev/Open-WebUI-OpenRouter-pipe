@@ -1261,9 +1261,9 @@ class OpenRouterModelRegistry:
                 architecture = dict(item_architecture)
 
             capabilities = dict(prior.get("capabilities") or {})
+            capabilities["vision"] = "vision" in features
+            capabilities["file_upload"] = "file_input" in features
             for capability, value in {
-                "vision": accepts_uploads,
-                "file_upload": accepts_uploads,
                 "web_search": False,
                 "image_generation": is_image_output_architecture(architecture),
                 "video_generation": True,

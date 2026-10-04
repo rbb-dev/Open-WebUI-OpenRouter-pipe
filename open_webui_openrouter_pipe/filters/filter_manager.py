@@ -55,7 +55,7 @@ from ..core.utils import (
     _clean_str,
 )
 from ..core.utils import OWUI_FUNCTION_ID_ILLEGAL_RE as _MODEL_FILTER_ID_RE
-from ..core.warn_latch import bounded_warn_level, warn_level
+from ..core.warn_latch import bounded_warn_level, prune_expired, warn_level
 from ..integrations.provider_options import CHAT_PROVIDER_KEYS, TRANSPORT_PROVIDER_KEYS
 from ..models.catalog_manager import WEB_TOOL_SWITCHES, every_web_tool_is_off
 
@@ -88,8 +88,9 @@ if TYPE_CHECKING:
 _PROVIDER_NAME_ALLOWLIST_RE = re.compile(r"[^A-Za-z0-9 \-_.]")
 _PROVIDER_NAME_COLLAPSE_RE = re.compile(r"[ _]{2,}")
 
-_warned_stale_filter_rows: set[str] = set()
+_warned_stale_filter_rows: OrderedDict[str, None] = OrderedDict()
 _warned_write_refusals: dict[str, float] = {}
+_WARNED_WRITE_REFUSALS_PRUNE_AT = 256
 _warned_image_filter_installs: OrderedDict[str, None] = OrderedDict()
 _warned_video_filter_installs: OrderedDict[str, None] = OrderedDict()
 _PER_MODEL_INSTALL_WARN_WINDOW = 300
@@ -238,6 +239,8 @@ async def _write_function(Functions, function_id, updates, what, logger, raised=
             function_id,
             what,
         )
+        if len(_warned_write_refusals) > _WARNED_WRITE_REFUSALS_PRUNE_AT:
+            prune_expired(_warned_write_refusals, time.monotonic(), 3600)
         return False
     if settle:
         await _settle_the_off_stamp(Functions, function_id, updates, landed, logger, refused_out)
@@ -281,7 +284,9 @@ async def _settle_the_off_stamp(Functions, function_id, updates, landed, logger,
         _PIPE_OFF_LANDED_AT[str(function_id)] = landed_at
     if landed_at > int(stamp):
         logger.log(
-            warn_level(_warned_stale_filter_rows, f"off_stamp:{function_id}"),
+            bounded_warn_level(
+                _warned_stale_filter_rows, f"off_stamp:{function_id}", _PER_MODEL_INSTALL_WARN_WINDOW,
+            ),
             "The switch-off stamp on %s names second %s while Open WebUI last wrote that "
             "row at %s.",
             function_id,
@@ -1074,7 +1079,9 @@ class FilterManager:
                 candidate_id = f"{preferred_id}_{suffix}"
                 if suffix == 1:
                     self.logger.log(
-                        warn_level(_warned_stale_filter_rows, f"id_taken:{preferred_id}"),
+                        bounded_warn_level(
+                            _warned_stale_filter_rows, f"id_taken:{preferred_id}", _PER_MODEL_INSTALL_WARN_WINDOW,
+                        ),
                         "The function id %r is already taken by a filter the pipe did not "
                         "install, so the pipe installs this filter under the numbered id %r "
                         "instead. The id the models carry does not change with it; remove the "
@@ -1132,7 +1139,9 @@ class FilterManager:
                     refused_out=refused_out,
                 ):
                     self.logger.log(
-                        warn_level(_warned_stale_filter_rows, f"not_activated:{candidate_id}"),
+                        bounded_warn_level(
+                            _warned_stale_filter_rows, f"not_activated:{candidate_id}", _PER_MODEL_INSTALL_WARN_WINDOW,
+                        ),
                         "OpenRouter %s filter %r was not activated; treating it as not installed",
                         log_label,
                         candidate_id,
@@ -1164,7 +1173,9 @@ class FilterManager:
             switch_on = _switch_on(chosen)
             if not switch_on:
                 self.logger.log(
-                    warn_level(_warned_stale_filter_rows, f"admin_off:{function_id}"),
+                    bounded_warn_level(
+                        _warned_stale_filter_rows, f"admin_off:{function_id}", _PER_MODEL_INSTALL_WARN_WINDOW,
+                    ),
                     "%s %r is switched off in Open WebUI; the pipe keeps its code up to date "
                     "and leaves it off. Switch it on in Workspace > Functions to get it "
                     "back.%s",
@@ -1213,7 +1224,9 @@ class FilterManager:
                     )
         elif existing_content != desired_source:
             self.logger.log(
-                warn_level(_warned_stale_filter_rows, f"stale_row:{function_id}"),
+                bounded_warn_level(
+                    _warned_stale_filter_rows, f"stale_row:{function_id}", _PER_MODEL_INSTALL_WARN_WINDOW,
+                ),
                 "%s %r is installed and in use but its stored source is out of date. "
                 "%s is off, so the pipe will not rewrite it and every fix to this filter "
                 "stays undelivered. Turn %s on to let the pipe update it.",
@@ -1639,10 +1652,9 @@ class FilterManager:
                     resolved = str(getattr(picked, "id", "") or "")
                     if resolved and resolved != function_id:
                         self.logger.log(
-                            warn_level(
+                            bounded_warn_level(
                                 _warned_stale_filter_rows,
-                                f"web_tools_id_taken:{resolved}",
-                                cooldown_s=3600,
+                                f"web_tools_id_taken:{resolved}", _PER_MODEL_INSTALL_WARN_WINDOW,
                             ),
                             "The OpenRouter Web Tools function id %r is held by a row this "
                             "pipe does not own; the per-user configuration the panel "
@@ -1806,7 +1818,9 @@ class FilterManager:
                     )
                     if raised:
                         self.logger.log(
-                            warn_level(_warned_stale_filter_rows, f"web_tools_deactivate_raised:{row_id}"),
+                            bounded_warn_level(
+                                _warned_stale_filter_rows, f"web_tools_deactivate_raised:{row_id}", _PER_MODEL_INSTALL_WARN_WINDOW,
+                            ),
                             "OpenRouter Web Tools filter %r could not be switched off with every web tool "
                             "disabled, so it is still on: switch it off by hand, or let the repair try again.%s",
                             row_id,
@@ -1817,7 +1831,9 @@ class FilterManager:
                         continue
                     if not landed:
                         self.logger.log(
-                            warn_level(_warned_stale_filter_rows, f"web_tools_deactivate_refused:{row_id}"),
+                            bounded_warn_level(
+                                _warned_stale_filter_rows, f"web_tools_deactivate_refused:{row_id}", _PER_MODEL_INSTALL_WARN_WINDOW,
+                            ),
                             "OpenRouter Web refused the write that switches OpenRouter Web Tools filter %r "
                             "off while every web tool is disabled, so it is still on and still offering %s: switch "
                             "it off by hand, or let the repair try again.%s",
@@ -1835,7 +1851,9 @@ class FilterManager:
             row_id = getattr(row, "id", "")
             if offered is None:
                 self.logger.log(
-                    warn_level(_warned_stale_filter_rows, f"web_tools_unreadable:{row_id}:{','.join(sorted(switched_off))}"),
+                    bounded_warn_level(
+                        _warned_stale_filter_rows, f"web_tools_unreadable:{row_id}:{','.join(sorted(switched_off))}", _PER_MODEL_INSTALL_WARN_WINDOW,
+                    ),
                     "OpenRouter Web Tools filter %r still offers %s, which this pipe has switched off, but its "
                     "code could not be read, so it is left exactly as it is: update it or remove it.%s",
                     row_id,
@@ -1861,7 +1879,9 @@ class FilterManager:
             )
             if raised:
                 self.logger.log(
-                    warn_level(_warned_stale_filter_rows, f"web_tools_rewrite_raised:{row_id}"),
+                    bounded_warn_level(
+                        _warned_stale_filter_rows, f"web_tools_rewrite_raised:{row_id}", _PER_MODEL_INSTALL_WARN_WINDOW,
+                    ),
                     "OpenRouter Web Tools filter %r still offers %s, which this pipe has switched off, and its "
                     "code could not be replaced, so it is left exactly as it is: update it or remove it.%s",
                     row_id,
@@ -1873,7 +1893,9 @@ class FilterManager:
                 continue
             if not landed:
                 self.logger.log(
-                    warn_level(_warned_stale_filter_rows, f"web_tools_rewrite_refused:{row_id}"),
+                    bounded_warn_level(
+                        _warned_stale_filter_rows, f"web_tools_rewrite_refused:{row_id}", _PER_MODEL_INSTALL_WARN_WINDOW,
+                    ),
                     "OpenRouter Web Tools filter %r still offers %s, which this pipe has switched off. Its code "
                     "could not be replaced, so it is left exactly as it is: update it or remove it.%s",
                     row_id,
@@ -1983,8 +2005,8 @@ class FilterManager:
                 function_id = str(getattr(row, "id", "") or "")
                 if function_id:
                     self.logger.log(
-                        warn_level(
-                            _warned_stale_filter_rows, f"foreign_install_record:{function_id}"
+                        bounded_warn_level(
+                            _warned_stale_filter_rows, f"foreign_install_record:{function_id}", _PER_MODEL_INSTALL_WARN_WINDOW,
                         ),
                         "Left the %s filter %r switched off: its install record names %r, "
                         "not this copy.",
@@ -2210,7 +2232,9 @@ class FilterManager:
             )
         except Exception as exc:
             self.logger.log(
-                warn_level(_warned_stale_filter_rows, f"valve_read:{type(exc).__name__}"),
+                bounded_warn_level(
+                    _warned_stale_filter_rows, f"valve_read:{type(exc).__name__}", _PER_MODEL_INSTALL_WARN_WINDOW,
+                ),
                 "Could not read the image generation filter's selected model, so the "
                 "installed filter is left as it is rather than rebuilt for the default "
                 "model: %s",
@@ -2221,7 +2245,9 @@ class FilterManager:
 
         if stored is None:
             self.logger.log(
-                warn_level(_warned_stale_filter_rows, "valve_read:none"),
+                bounded_warn_level(
+                    _warned_stale_filter_rows, "valve_read:none", _PER_MODEL_INSTALL_WARN_WINDOW,
+                ),
                 "Could not read the image generation filter's selected model, so the "
                 "installed filter is left as it is rather than rebuilt for the default "
                 "model",
@@ -2504,8 +2530,8 @@ class FilterManager:
                     if not past_install:
                         if function_id:
                             self.logger.log(
-                                warn_level(
-                                    _warned_stale_filter_rows, f"foreign_stamp:{function_id}"
+                                bounded_warn_level(
+                                    _warned_stale_filter_rows, f"foreign_stamp:{function_id}", _PER_MODEL_INSTALL_WARN_WINDOW,
                                 ),
                                 "Left the %s filter %r active: its install record names %r, "
                                 "which Open WebUI still loads as a pipe.",
@@ -2966,7 +2992,7 @@ __PRIORITY_FIELD__
         )
         DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST: str = Field(
             default="wav,mp3",
-            description="Comma-separated audio formats eligible for /responses input_audio.format. It selects only among the nine formats OpenRouter documents; naming an undocumented one such as webm here is not a route back to sending it.",
+            description="Comma-separated audio formats eligible for /responses input_audio.format. The /responses endpoint publishes an enum of mp3 and wav for that field, so a format outside mp3 and wav is never sent there whatever this valve says: the clip goes to /chat/completions instead, which documents all nine formats OpenRouter accepts. Naming an undocumented one such as webm here is not a route back to sending it.",
         )
 
     class UserValves(BaseModel):
@@ -4177,7 +4203,9 @@ class Filter:
             for slug in sorted(deliverable_off):
                 existing_id = getattr(existing_filters.get(slug), "id", "")
                 self.logger.log(
-                    warn_level(_warned_stale_filter_rows, f"admin_off:{existing_id}"),
+                    bounded_warn_level(
+                        _warned_stale_filter_rows, f"admin_off:{existing_id}", _PER_MODEL_INSTALL_WARN_WINDOW,
+                    ),
                     "Provider routing filter %r is switched off in Open WebUI; the pipe "
                     "keeps its code up to date and leaves it off. Switch it on in "
                     "Workspace > Functions to get it back.%s",
@@ -4298,7 +4326,9 @@ class Filter:
                 switch_on = _switch_on(existing)
                 if not switch_on:
                     self.logger.log(
-                        warn_level(_warned_stale_filter_rows, f"admin_off:{existing_id}"),
+                        bounded_warn_level(
+                            _warned_stale_filter_rows, f"admin_off:{existing_id}", _PER_MODEL_INSTALL_WARN_WINDOW,
+                        ),
                         "Provider routing filter %r is switched off in Open WebUI; the pipe "
                         "keeps its code up to date and leaves it off. Switch it on in "
                         "Workspace > Functions to get it back.%s",

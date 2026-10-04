@@ -839,6 +839,13 @@ def _image_render_catalog_fallback(model_id: str, image_model: dict[str, Any] | 
     return "\n".join(parts)
 
 
+def image_panel_is_attached(valves: Any) -> bool:
+    return bool(
+        valves.ENABLE_OPENROUTER_IMAGE_GENERATION
+        and valves.AUTO_ATTACH_IMAGE_FILTERS
+    )
+
+
 def render_image_help(
     model_id: str,
     image_model: dict[str, Any] | None = None,

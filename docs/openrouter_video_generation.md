@@ -1393,8 +1393,8 @@ generation job and returns the model's help blurb directly:
   settings, each with a one-sentence description tailored to it, then the
   four reuse-of-previous-video controls, which read the same on every
   model because they are pipe behaviour. With `AUTO_ATTACH_VIDEO_FILTERS`
-  off there is no panel carrying those four on the model, so they are left
-  off the card too; the model's own controls are unaffected.
+  off there is no panel carrying those controls on the model, so the card
+  lists no controls at all.
 - **Tips & pitfalls**: 3–4 practical bullets — what works, what fails,
   prompt patterns.
 
@@ -2195,6 +2195,14 @@ This handles:
   charged once, because the endpoint that would have answered this job is
   the thing that did not, and a burst is one failed call like any other. A
   later poll that reports `failed` or `expired` still ends the job for real.
+  Only transport-shaped failures count against this budget — a connection
+  that failed, a read that timed out, or a status OpenRouter reported
+  itself. A fault of the pipe's own code is neither counted nor retried: it
+  would read identically on every attempt, so the pipe logs it with its
+  traceback, names itself as the party at fault rather than blaming
+  OpenRouter, and stops the watching on the first attempt with the same
+  resumable card. It is still charged once against the request breaker,
+  like any other failure after the job was submitted.
 - **Scattered status-poll errors** — the same valve bounds a second,
   larger way. `VIDEO_STATUS_POLL_MAX_ERRORS` consecutive failures ends
   the watching as above, but any successful poll resets that tally, so an
@@ -2327,14 +2335,14 @@ Functions → OpenRouter pipe → Valves; the per-model filter ones live on each
 |-------|---------|-------|---------|
 | `ENABLE_VIDEO_GENERATION` | `True` | bool | Master kill switch. A video-generation model is never answered from as a Fusion panel, judge or synthesis member: a Fusion turn that names one takes the ordinary chat path and starts no job. False removes all video models from `pipes()` output and deactivates all installed per-model video filter rows at the next model-list refresh; the rows are identified by their source, so a hand-made copy of one of these filters' source is switched off too. `AUTO_INSTALL_VIDEO_FILTERS` is the install valve for that family. Turning it back on re-activates a filter the pipe itself switched off whose family's install valve, `AUTO_INSTALL_VIDEO_FILTERS`, is still on; a row that valve has retired stays off until that valve comes back on. |
 | `AUTO_INSTALL_VIDEO_FILTERS` | `True` | bool | Install per-model filter rows in OWUI Functions table on `pipes()`. A model whose catalogue entry publishes no video contract is left as it is: any filter it already has is kept, and none is installed for it, and the same holds for a model whose install this pass could not write. With this off, an installed row whose stored source is out of date is logged but never rewritten, so every fix to that filter stays undelivered until it is on. Turning this off retires the rows the pipe installed for it - switched off, not deleted, so their settings survive - and turning it back on brings them back; a copy an admin installed by hand carries no such record and is left alone. A row an earlier install of this pipe wrote — the pipe function was renamed or re-created, so its record names an id Open WebUI no longer loads as a pipe — is retired too. |
-| `AUTO_ATTACH_VIDEO_FILTERS` | `True` | bool | Attach each filter to its corresponding video model row. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone, and a `help` reply on a video model no longer lists the four reuse-of-previous-video controls, because the panel carrying them is not on the model. A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next catalog fetch. |
+| `AUTO_ATTACH_VIDEO_FILTERS` | `True` | bool | Attach each filter to its corresponding video model row. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. A `help` reply on a video model lists no controls at all, because the panel that card describes is not on the model. A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next catalog fetch. |
 | `AUTO_DEFAULT_VIDEO_FILTERS` | `True` | bool | Keep per-model filter enabled by default per chat (**re-asserted on every catalog metadata sync** — admins who manually disable a filter will see it re-defaulted on the next sync; set to `False` to opt out). A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next catalog fetch. |
 | `VIDEO_INITIAL_POLL_DELAY_SECONDS` | `5.0` | 0.0–60.0 | Wait before the first poll on a freshly submitted job. |
 | `VIDEO_POLL_INTERVAL_SECONDS` | `5.0` | 1.0–60.0 | Base polling interval. |
 | `VIDEO_POLL_BACKOFF_FACTOR` | `1.2` | 1.0–4.0 | Multiplier applied to the interval after each non-terminal poll. |
 | `VIDEO_POLL_INTERVAL_MAX_SECONDS` | `20.0` | 1.0–120.0 | Cap on the polling interval after backoff. |
 | `VIDEO_MAX_POLL_TIME_SECONDS` | `1800` | 30–7200 | Max time a job may go silent — reset by every status check that reports the job still running. On expiry the card is persisted as still running, not failed. Floored at `VIDEO_POLL_INTERVAL_MAX_SECONDS` + the HTTP read timeout. |
-| `VIDEO_STATUS_POLL_MAX_ERRORS` | `5` | 1–25 | Tolerable consecutive status-poll errors, and (as a multiple of this value) status-poll errors in total across one watch, before the pipe stops polling; the job is not failed. |
+| `VIDEO_STATUS_POLL_MAX_ERRORS` | `5` | 1–25 | Tolerable consecutive status-endpoint failures or error answers, and (as a multiple of this value) such failures in total across one watch, before the pipe stops polling; the job is not failed. A fault of the pipe's own code is not counted and is not retried. |
 | `REMOTE_VIDEO_MAX_SIZE_MB` | `500` | 1–2048 | Max downloaded video size; oversized aborts streaming. Bounds the generated video only, never an attachment. |
 | `VIDEO_DOWNLOAD_CHUNK_SIZE` | `1048576` | 65536–8388608 | Chunk size in bytes for streaming download. |
 | `MAX_CONCURRENT_VIDEO_GENS` | `2` | 1–100 | Global concurrency cap per pipe process. Applies on the next generation, with no restart; a lower value binds from that moment and jobs already running finish first. |

@@ -146,6 +146,7 @@ class SessionTracker:
             "current_tool": None,
         }
         with self._lock:
+            self._stream_stamps.pop(request_id, None)
             self._active[request_id] = entry
             evicted = self._evict_stale_locked()
         if evicted is not None:

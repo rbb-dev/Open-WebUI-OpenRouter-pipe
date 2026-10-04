@@ -50,7 +50,14 @@ async def test_direct_uploads_audio_with_allowlisted_format_routes_to_responses(
     """Test that audio with allowlisted format routes to /responses endpoint.
 
     REAL TEST: Uses actual Pipe with HTTP mocked at the boundary.
-    When audio format (m4a) IS in the allowlist, the request should go to /responses.
+    When audio format (mp3) IS in the allowlist, the request should go to /responses.
+
+    The format is `mp3` rather than the `m4a` this node used to carry, and that is the
+    point of the change rather than a detail: `/responses` publishes `enum: [mp3, wav]`
+    for `input_audio.format`, where `/chat/completions` takes a free-text one, so an
+    operator who allowlists `m4a` has that clip routed to `/chat/completions` and it
+    never reaches `/responses` at all. The node's own claim -- an allowlisted format goes
+    to `/responses` -- is only true for a format `/responses` documents.
     """
     pipe = Pipe()
 
@@ -58,15 +65,15 @@ async def test_direct_uploads_audio_with_allowlisted_format_routes_to_responses(
         pipe.valves.API_KEY = EncryptedStr("test-api-key")
         pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
 
-        # Metadata with audio that's in the allowlist (m4a in "m4a" allowlist)
+        # Metadata with audio that's in the allowlist (mp3 in "mp3" allowlist)
         metadata: dict[str, Any] = {
             "chat_id": "chat_123",
             "message_id": "msg_456",
             "model": {"id": "openai/gpt-4o-mini"},
             "openrouter_pipe": {
                 "direct_uploads": {
-                    "responses_audio_format_allowlist": "m4a",  # m4a is allowed
-                    "audio": [{"id": "file_audio_1", "format": "m4a"}],
+                    "responses_audio_format_allowlist": "mp3",  # mp3 is allowed
+                    "audio": [{"id": "file_audio_1", "format": "mp3"}],
                 }
             },
         }
@@ -118,7 +125,7 @@ async def test_direct_uploads_audio_with_allowlisted_format_routes_to_responses(
         mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         # 2. _read_file_record_base64 returns the raw base64 data (NOT a data URL)
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_m4a_like_base64())
+        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_mp3_like_base64())
 
         with aioresponses() as mock_http:
             mock_http.post(
@@ -170,7 +177,7 @@ async def test_direct_uploads_audio_with_allowlisted_format_routes_to_responses(
         )
         # When audio format IS in allowlist, the request must go to /responses
         assert not chat_called, (
-            "an m4a attachment listed in the responses allowlist is legal on "
+            "an mp3 attachment listed in the responses allowlist is legal on "
             f"/responses, so the request must not go to /chat/completions; got "
             f"responses={len(responses_called)} chat={len(chat_called)}")
         assert responses_called, "the request must go to /responses"

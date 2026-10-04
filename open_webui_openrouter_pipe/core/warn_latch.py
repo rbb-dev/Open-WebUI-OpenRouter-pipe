@@ -52,6 +52,11 @@ def warn_level(
     return logging.WARNING
 
 
+def prune_expired(latch: dict, now: float, window: float) -> None:
+    for key in [k for k, seen in latch.items() if now - seen >= window]:
+        latch.pop(key, None)
+
+
 _shared_latches: dict[str, set[str]] = {}
 
 

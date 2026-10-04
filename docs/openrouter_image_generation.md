@@ -1401,8 +1401,9 @@ Recraft's typography champion — the only AI image model that can render long-f
 The `## Controls` section covers the settings that model publishes
 together with the ones every panel carries whatever it publishes. A model
 that publishes none of its own says so rather than showing an empty
-section; a model whose panel is not installed is shown with no section at
-all. On a model that answers only with a picture, Provider options,
+section; a model whose panel is not installed, or not attached to that
+model because `AUTO_ATTACH_IMAGE_FILTERS` is off, is shown with no
+section at all. On a model that answers only with a picture, Provider options,
 Reference images and Reference image links head the list, ahead of
 anything the model publishes. Output size comes after the published lists
 of choices and before the rest of what the model publishes — its number

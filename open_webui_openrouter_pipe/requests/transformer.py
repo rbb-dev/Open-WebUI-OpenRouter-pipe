@@ -14,11 +14,13 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import hashlib
 import json
 import logging
 import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterable, Iterator
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 from ..core.config import (
@@ -372,8 +374,38 @@ def _is_valid_base64_as_a_whole(cleaned: str) -> bool:
     return True
 
 
+_validate_inline_memo: OrderedDict[bytes, bool] = OrderedDict()
+_VALIDATE_INLINE_MEMO_MAX = 256
+_PAYLOAD_DIGEST_CHUNK_CHARS = 65536
+_memo_writes_allowed: ContextVar[bool] = ContextVar("memo_writes_allowed", default=True)
+
+
+def _set_memo_writes(allowed: bool) -> None:
+    _memo_writes_allowed.set(allowed)
+
+
+def _payload_digest(cleaned: str) -> bytes:
+    digest = hashlib.blake2b(digest_size=16)
+    for start in range(0, len(cleaned), _PAYLOAD_DIGEST_CHUNK_CHARS):
+        digest.update(
+            cleaned[start : start + _PAYLOAD_DIGEST_CHUNK_CHARS].encode("latin-1", "replace")
+        )
+    return digest.digest()
+
+
 async def _validate_inline_payload(cleaned: str) -> bool:
-    return await asyncio.to_thread(_is_well_formed_base64, cleaned)
+    key = _payload_digest(cleaned)
+    remembered = _validate_inline_memo.get(key)
+    if remembered is not None:
+        _validate_inline_memo.move_to_end(key)
+        return remembered
+    verdict = await asyncio.to_thread(_is_well_formed_base64, cleaned)
+    if _memo_writes_allowed.get():
+        _validate_inline_memo[key] = verdict
+        _validate_inline_memo.move_to_end(key)
+        while len(_validate_inline_memo) > _VALIDATE_INLINE_MEMO_MAX:
+            _validate_inline_memo.popitem(last=False)
+    return verdict
 
 
 AUDIO_FORMAT_MAP: dict[str, str] = {
@@ -985,11 +1017,28 @@ def _handoff_back(messages: list[dict[str, Any]], position: int) -> bool:
     return is_tool_image_handoff_for_round(results, messages[position])
 
 
-def _is_tool_image_handoff_at(messages: list[dict[str, Any]], position: int) -> bool:
-    return bool(position) and (
+def _is_tool_image_handoff_at(
+    messages: list[dict[str, Any]],
+    position: int,
+    memo: dict[int, bool] | None = None,
+) -> bool:
+    if memo is not None and position in memo:
+        return memo[position]
+    answer = bool(position) and (
         is_tool_image_handoff(messages[position - 1], messages[position])
         or _handoff_back(messages, position)
     )
+    if memo is not None:
+        memo[position] = answer
+    return answer
+
+
+def _handoff_back_answers(messages: list[dict[str, Any]]) -> dict[int, bool]:
+    answers: dict[int, bool] = {}
+    for position, message in enumerate(messages):
+        if position and (message.get("role") or "").lower() == "user":
+            _is_tool_image_handoff_at(messages, position, answers)
+    return answers
 
 
 def _tool_picture_gate(
@@ -1404,7 +1453,7 @@ async def transform_messages_to_input(
                 role = (msg.get("role") or "").lower()
                 turn_idx: int | None = None
 
-                if role == "user" and _is_tool_image_handoff_at(messages, position):
+                if role == "user" and _is_tool_image_handoff_at(messages, position, handoff_back_at):
                     turn_idx = current_turn if current_turn >= 0 else None
                 elif role == "user":
                     if last_dialog_role != "user":
@@ -1487,6 +1536,7 @@ async def transform_messages_to_input(
             logger.debug("Pruned tool output (marker=%s, call_id=%s, turn=%s, removed_chars=%d, retention=%d)", marker, item.get("call_id"), turn_index, removed_chars, retention_turns)
             return True
 
+        handoff_back_at = _handoff_back_answers(messages)
         turn_indices, total_turns = _compute_turn_indices()
         current_turn_people = [
             position
@@ -1494,14 +1544,14 @@ async def transform_messages_to_input(
             if (message.get("role") or "").lower() == "user"
             and turn_indices[position] is not None
             and turn_indices[position] == total_turns - 1
-            and not _is_tool_image_handoff_at(messages, position)
+            and not _is_tool_image_handoff_at(messages, position, handoff_back_at)
         ]
         last_person_position = current_turn_people[-1] if current_turn_people else -1
         tool_handoff_positions = [
             position
             for position, message in enumerate(messages)
             if (message.get("role") or "").lower() == "user"
-            and _is_tool_image_handoff_at(messages, position)
+            and _is_tool_image_handoff_at(messages, position, handoff_back_at)
         ]
         last_tool_handoff_index = tool_handoff_positions[-1] if tool_handoff_positions else -1
         person_images_this_turn = False
@@ -1509,6 +1559,7 @@ async def transform_messages_to_input(
         turn_images_dropped = 0
         turn_images_index: int | None = None
         temporary_chat = is_temporary_chat(chat_id) if temporary_chat is None else temporary_chat
+        _set_memo_writes(not temporary_chat)
         memo_owner = _memo_owner_key(user_obj)
         request_memo: dict[tuple[str, str], tuple[str | None, bytes, str]] = {}
 
@@ -1578,7 +1629,7 @@ async def transform_messages_to_input(
         ask_user_loader = ask_user_round_loader if openwebui_model_id else None
         full_loader = artifact_loader if chat_id and openwebui_model_id else None
         if full_loader or ask_user_loader:
-            wanted_by_group: dict[str | None, list[str]] = {}
+            markers_by_group: dict[str | None, dict[str, None]] = {}
             for entry_index, entry in enumerate(messages):
                 entry_role = (entry.get("role") or "").lower()
                 if entry_role in {"tool", "user"}:
@@ -1588,10 +1639,10 @@ async def transform_messages_to_input(
                 if not entry_spans:
                     continue
                 group_id = entry.get("message_id") or _message_identifier(entry)
-                group_markers = wanted_by_group.setdefault(group_id, [])
+                group_markers = markers_by_group.setdefault(group_id, {})
                 for segment in _marker_segments_for(entry_text, entry_spans):
-                    if segment.get("type") == "marker" and segment["marker"] not in group_markers:
-                        group_markers.append(segment["marker"])
+                    if segment.get("type") == "marker":
+                        group_markers[segment["marker"]] = None
 
             async def _load_ask_user_group(
                 loader: Callable[[str | None, list[str]], Awaitable[dict[str, dict[str, Any]]]],
@@ -1612,8 +1663,8 @@ async def transform_messages_to_input(
             if ask_user_loader:
                 for group_id, loaded in await asyncio.gather(
                     *(
-                        _load_ask_user_group(ask_user_loader, gid, group_markers)
-                        for gid, group_markers in wanted_by_group.items()
+                        _load_ask_user_group(ask_user_loader, gid, list(group_markers))
+                        for gid, group_markers in markers_by_group.items()
                         if group_markers
                     )
                 ):
@@ -1646,8 +1697,8 @@ async def transform_messages_to_input(
                         return load_group_id, {}, {}
 
             pending_groups = [
-                (group_id, group_markers)
-                for group_id, group_markers in wanted_by_group.items()
+                (group_id, list(group_markers))
+                for group_id, group_markers in markers_by_group.items()
                 if group_markers
             ]
             if full_loader and pending_groups:
@@ -1840,7 +1891,7 @@ async def transform_messages_to_input(
                 continue
 
             if role == "user":
-                tool_images = _is_tool_image_handoff_at(messages, idx)
+                tool_images = _is_tool_image_handoff_at(messages, idx, handoff_back_at)
                 if tool_images:
                     last_image_blocks, last_image_turn = [], None
                 if tool_images and _tool_round_withheld(msg_turn_index):
@@ -1946,13 +1997,15 @@ async def transform_messages_to_input(
                             )
 
                         gated_split: tuple[str, str] | None = None
+                        from_gate = False
                         if is_inline_data_url(url):
                             try:
                                 url, gated_split, refusal = await _gate_inline_data_url(
-                                    url, max_inline_bytes, resolve_type=False,
+                                    url, max_inline_bytes, resolve_type=True,
                                 )
                                 if refusal is not None:
                                     return refusal
+                                from_gate = True
                             except Exception as exc:
                                 pipe.logger.exception("Failed to process base64 image")
                                 await pipe._ensure_error_formatter()._emit_error(
@@ -2122,9 +2175,13 @@ async def transform_messages_to_input(
                         split = (
                             gated_split
                             if gated_split is not None
-                            else split_base64_data_url(url)
+                            else (None if from_gate else split_base64_data_url(url))
                         )
-                        if mode == "reuse" and not (split[1] if split is not None else ""):
+                        if (
+                            mode == "reuse"
+                            and not from_gate
+                            and not (split[1] if split is not None else "")
+                        ):
                             if is_http_or_https_url(url):
                                 return _refuse(
                                     f"{held_len} bytes, over the "

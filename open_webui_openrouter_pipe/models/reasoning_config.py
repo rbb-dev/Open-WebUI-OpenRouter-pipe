@@ -49,6 +49,7 @@ class ReasoningConfigManager:
         """
         self._pipe = pipe
         self.logger = logger
+        self._refusal_left_no_level = False
 
     @staticmethod
     def _set_include_reasoning(responses_body: ResponsesBody, value: bool | None) -> None:
@@ -89,17 +90,16 @@ class ReasoningConfigManager:
             return
         cfg["max_tokens"] = fitted
 
-    @classmethod
     def _refuse_off_on_mandatory_model(
-        cls,
+        self,
         model_id: str,
         cfg: dict[str, Any],
         *,
         off_from_settings: bool = False,
     ) -> tuple[dict[str, Any], bool]:
-        if not cls._request_asks_for_no_reasoning(cfg):
+        if not self._request_asks_for_no_reasoning(cfg):
             return cfg, False
-        if not cls._model_requires_reasoning(model_id):
+        if not self._model_requires_reasoning(model_id):
             return cfg, False
         consumed = ("enabled", "max_tokens") if off_from_settings else ("enabled",)
         repaired = {k: v for k, v in cfg.items() if k not in consumed}
@@ -115,6 +115,8 @@ class ReasoningConfigManager:
             repaired["effort"] = lowest
         elif _normalised_effort(repaired) in _EFFORT_REASONING_OFF:
             repaired.pop("effort", None)
+        if not lowest:
+            self._refusal_left_no_level = True
         return repaired, True
 
     def _apply_reasoning_preferences(self, responses_body: ResponsesBody, valves: Pipe.Valves) -> str | None:
@@ -228,6 +230,9 @@ class ReasoningConfigManager:
         )
 
         responses_body.thinking_config = None
+        if self._refusal_left_no_level:
+            self._refusal_left_no_level = False
+            return None
         if not _classify_gemini_thinking_family(ModelFamily.base_model(responses_body.model)):
             return None
         if "reasoning" not in ModelFamily.catalog_supported_parameters(responses_body.model):
@@ -244,6 +249,7 @@ class ReasoningConfigManager:
             off, refused = self._refuse_off_on_mandatory_model(
                 responses_body.model, off, off_from_settings=False
             )
+            self._refusal_left_no_level = False
             responses_body.reasoning = off
             self._set_include_reasoning(responses_body, None)
             return responses_body.model if refused else None
@@ -271,6 +277,16 @@ class ReasoningConfigManager:
         if isinstance(cap, int) and not isinstance(cap, bool) and cap >= 1 and budget:
             budget = min(budget, cap - _ANSWER_RESERVE_TOKENS)
             if budget < 1:
+                if self._model_requires_reasoning(responses_body.model):
+                    off = {k: v for k, v in cfg.items() if k != "max_tokens"}
+                    off["effort"] = _NO_EFFORT
+                    off, refused = self._refuse_off_on_mandatory_model(
+                        responses_body.model, off, off_from_settings=False
+                    )
+                    self._refusal_left_no_level = False
+                    responses_body.reasoning = off or None
+                    self._set_include_reasoning(responses_body, None)
+                    return responses_body.model if refused else None
                 responses_body.reasoning = None
                 self._set_include_reasoning(responses_body, None)
                 return None

@@ -118,7 +118,7 @@ If the assistant text contains embedded marker lines, the pipe splits the text i
 
 When a marker split produces several `output_text` items for one assistant message, `annotations` and `reasoning_details` go on the **last** of them, once each, and on no other item. When a turn emits no text item at all — a round that reasoned and called a tool without writing prose — the two lists go on one assistant `message` item whose `output_text` is empty, emitted immediately before that round's tool calls, and only when there is something to carry.
 
-Marker detection and splitting is performed by helper functions (for example `contains_marker(...)` and `split_text_by_markers(...)`); an assistant message's spans are computed once per message per request and read by every consumer of them, and a message carrying no `]: #` is not scanned at all. The marker format is:
+Marker detection and splitting is performed by helper functions (for example `contains_marker(...)` and `split_text_by_markers(...)`); an assistant message's spans are computed once per message per request and read by every consumer of them, and a message carrying no `]: #` is not scanned at all. The markers one group hands the artifact loader are deduped through an insertion-ordered mapping, so the sequence it is handed is first-occurrence order with each marker once, and the number of comparisons the dedupe costs does not grow with the length of the chat. The marker format is:
 
 ```text
 [<20-char-ulid>]: #
@@ -220,6 +220,8 @@ This keeps replay payloads smaller while preserving recency and high-level conte
 
 ### 5.4 The pipe's own copy of each tool round
 
+What is remembered between turns, for a round replayed from that copy: nothing about the round's rows themselves. A stored picture's well-formedness verdict is remembered by the digest of its payload -- a 16-byte digest and a yes or no, never the picture -- so a replayed picture is not re-validated on every turn, and a temporary chat, which keeps nothing, is not remembered at all.
+
 Every tool round the pipe runs itself, and every round of an OpenRouter server tool, is also stored by the pipe: the
 call and its output as a pair, behind a hidden marker placed in the answer where the round happened. Four exceptions:
 with results kept, a server tool whose own item OpenRouter takes back unchanged -- the advisor, the subagent, model
@@ -302,7 +304,11 @@ only through the card Open WebUI keeps for it in the browser, and none with card
   ask_user-shaped round it records, on the run path and on the hand-back path alike, with `True` for Open WebUI's
   builtin and `False` for any other tool carrying that name, so a stamp is never absent and a later turn reads a
   record rather than re-deciding it,
-  and the bare name `ask_user` is reserved for the built-in, so a user's own tool of that name is advertised (and,
+  and the round is read back by **its own record rather than by its name**: the lookup is keyed on the round's
+  position -- the message it sits in, its `call_id`, and its ordinal among the rounds sharing that id -- so a
+  renamed round is found by whichever spelling of its name it happens to carry, whether the advertised
+  `ask_user__<digest>` or the origin name it was stored under. The bare name
+  `ask_user` is reserved for the built-in, so a user's own tool of that name is advertised (and,
   with tool cards on, displayed) as `ask_user__<digest>` and a round recorded before this change stays
   grandfathered until it ages out of `TOOL_OUTPUT_RETENTION_TURNS`. A round the pipe answers back to Open WebUI
   instead of running -- which is what `Open-WebUI` mode does with the built-in, since the pipe never executes it --

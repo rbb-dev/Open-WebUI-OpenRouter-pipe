@@ -2072,6 +2072,8 @@ class Pipe:
                 with contextlib.suppress(Exception):
                     await session.close()
 
+        if getattr(self, "_closed", False):
+            return self._select_model_rows(OpenRouterModelRegistry.list_models())
         available_models = OpenRouterModelRegistry.list_models()
         if refresh_error and available_models:
             level = warn_level(_warned_pipes_maintenance, f"catalog_cached:{type(refresh_error).__name__}")

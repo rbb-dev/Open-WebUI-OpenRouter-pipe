@@ -16,7 +16,7 @@ from typing import Any
 
 from ..core.errors import OpenRouterAPIError
 from ..core.logging_system import SessionLogger
-from ..core.warn_latch import warn_level
+from ..core.warn_latch import prune_expired, warn_level
 from .client import (
     _ANSWER_PART_TYPES,
     TaskModelFault,
@@ -32,6 +32,7 @@ _MIN_CANDIDATE_SLICE_S = 0.05
 _MIN_CANDIDATE_SHARE = 0.25
 _warned_task_candidate: dict[str, float] = {}
 _TASK_CANDIDATE_WARN_COOLDOWN_S = 3600.0
+_TASK_CANDIDATE_PRUNE_AT = 256
 
 _TASK_MODEL_FAULT_PREFIX = "task_model_"
 _TAIL_NON_WHITESPACE = re.compile(r"\S")
@@ -243,6 +244,10 @@ async def call_with_candidates(
                 ),
                 "structured_task candidate '%s' failed: %s", model_id, _fault_code(exc),
             )
+            if len(_warned_task_candidate) > _TASK_CANDIDATE_PRUNE_AT:
+                prune_expired(
+                    _warned_task_candidate, time.monotonic(), _TASK_CANDIDATE_WARN_COOLDOWN_S
+                )
             continue
         for attempt in range(1, max(1, attempts_per_candidate) + 1):
             repair = None
@@ -287,6 +292,10 @@ async def call_with_candidates(
                     ),
                     "structured_task candidate '%s' failed: %s", model_id, _fault_code(exc),
                 )
+                if len(_warned_task_candidate) > _TASK_CANDIDATE_PRUNE_AT:
+                    prune_expired(
+                        _warned_task_candidate, time.monotonic(), _TASK_CANDIDATE_WARN_COOLDOWN_S
+                    )
             if not _is_correctable(attempt_error):
                 last_error = attempt_error
                 break

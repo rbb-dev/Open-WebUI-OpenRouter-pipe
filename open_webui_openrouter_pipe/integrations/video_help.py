@@ -1019,6 +1019,13 @@ def _knob_is_active(knob: str, spec: VideoFilterSpec, admin_valves: Any = None) 
     return gate in spec.allowed_params
 
 
+def _video_panel_is_attached(admin_valves: Any) -> bool:
+    return bool(
+        getattr(admin_valves, "AUTO_ATTACH_VIDEO_FILTERS", True)
+        and getattr(admin_valves, "ENABLE_VIDEO_GENERATION", True)
+    )
+
+
 def _published_amount(value: Any) -> Decimal | None:
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         return None
@@ -1127,7 +1134,7 @@ def _render_template(
     tip_lines = "\n".join(f"- {bullet}" for bullet in tips)
 
     knobs_section = ""
-    if knob_lines:
+    if knob_lines and _video_panel_is_attached(admin_valves):
         knobs_section = "\n\n**Controls**\n" + "\n".join(knob_lines)
 
     tips_section = ""

@@ -1740,6 +1740,15 @@ async def test_audio_format_allowlist_from_metadata(monkeypatch):
     """Test that responses_audio_format_allowlist from metadata is used.
 
     Covers lines 221-224: custom allowlist for audio formats.
+
+    The clip is `wav` and the allowlist `mp3,wav,ogg` since B978. It used to be an `OggS`
+    clip in the same allowlist, which routed to `/responses` because the pipe read the
+    valve verbatim -- and `/responses` publishes `enum: [mp3, wav]` for
+    `input_audio.format`, so a format outside it now routes to `/chat/completions` whatever
+    the valve says and this node captured nothing. The stated purpose (a custom allowlist
+    for audio formats reaches the `/responses` decision) needs a format `/responses`
+    documents to be about anything, and `wav` is one: the valve names a third format the
+    pipe must ignore, and the clip still goes to `/responses`.
     """
     pipe = Pipe()
 
@@ -1765,9 +1774,7 @@ async def test_audio_format_allowlist_from_metadata(monkeypatch):
         mock_file_obj.id = "audio_1"
         mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(
-            return_value=base64.b64encode(b"OggS" + b"\x00" * 28).decode("ascii")
-        )
+        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_wav_like_base64())
 
         async def event_emitter(event):
             pass
@@ -1804,7 +1811,8 @@ async def test_audio_format_allowlist_from_metadata(monkeypatch):
 
             await _consume_stream(result)
 
-        # With custom allowlist including ogg, should route to responses
+        # With a custom allowlist naming a format `/responses` does not publish, the
+        # documented `wav` clip still routes to `/responses`
         assert len(captured_payloads) >= 1
 
     finally:

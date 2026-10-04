@@ -662,6 +662,14 @@ _VIDEO_POLL_TOTAL_ERRORS_SPENT = (
     "still billed."
 )
 
+_VIDEO_POLL_PIPE_FAULT = (
+    "The pipe hit an error of its own while checking on this video, so this message "
+    "stopped watching it. Nothing is known about the job: OpenRouter was never told to "
+    "cancel it and is still billing it."
+)
+
+_POLL_TRANSPORT_ERRORS = (aiohttp.ClientError, TimeoutError, OSError, OpenRouterAPIError)
+
 _VIDEO_IS_STILL_RUNNING_STATUS = "Video generation is still running at OpenRouter."
 
 _VIDEO_GENERATION_FAILED_STATUS = "No video was produced."
@@ -2075,7 +2083,7 @@ class VideoGenerationAdapter:
                 polling_url = _clean_str(payload.get("polling_url"))
             except UpstreamBodyUnreadable:
                 raise
-            except Exception as exc:
+            except _POLL_TRANSPORT_ERRORS as exc:
                 consecutive_errors += 1
                 total_errors += 1
                 if consecutive_errors >= int(valves.VIDEO_STATUS_POLL_MAX_ERRORS):
@@ -2089,6 +2097,11 @@ class VideoGenerationAdapter:
                 await asyncio.sleep(min(interval, max_interval))
                 interval = min(max_interval, interval * backoff)
                 continue
+            except Exception as exc:
+                self.logger.exception(
+                    "Video poll loop hit a fault of the pipe's own (job_id=%s)", job_id
+                )
+                raise VideoStatusUnavailable(_VIDEO_POLL_PIPE_FAULT) from exc
 
             status = _clean_str(payload.get("status")).lower()
             if status in self.TERMINAL_SUCCESS | self.TERMINAL_FAILURE:

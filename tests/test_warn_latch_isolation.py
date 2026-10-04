@@ -89,6 +89,10 @@ EXPECTED_LATCHES = {
     # entry for every model the pipe has ever served and outlive every request that
     # filled it, and a model whose database recovered would never warn again. The window
     # evicts by trim, so a cause the pipe has not seen in a long time warns again.
+    # `_warned_video_filter_installs` is the twin of `_warned_image_filter_installs` and
+    # `_warned_stale_filter_rows` the third member of this family: one decision, three
+    # look-alike rows, all three `OrderedDict`s on `_PER_MODEL_INSTALL_WARN_WINDOW`.
+    "_warned_stale_filter_rows",
     "_warned_image_filter_installs",
     "_warned_image_provider_keys",
     "_warned_image_reuse",
@@ -134,7 +138,6 @@ EXPECTED_LATCHES = {
     "_warned_reference_scope_entry",
     "_warned_responses_chunk_parse",
     "_warned_row_timestamps",
-    "_warned_stale_filter_rows",
     # The two latches the RENDERED provider-routing filter declares. They are in this
     # inventory for the same reason the rest are: without a per-test reset the first
     # test to trip one silently disarms every later assertion that the warning is

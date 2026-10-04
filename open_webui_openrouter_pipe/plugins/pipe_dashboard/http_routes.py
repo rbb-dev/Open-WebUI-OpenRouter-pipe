@@ -17,9 +17,10 @@ import time
 from typing import Any, cast
 
 from fastapi import Depends, Request
+from fastapi.params import Depends as _DependsMarker
 from pydantic import BaseModel
 
-from .actions import ACTIONS, _audit, _redacted_args
+from .actions import _PD_PRUNE_AT, ACTIONS, _audit, _redacted_args
 from .authz import can_view
 
 logger = logging.getLogger(__name__)
@@ -102,7 +103,7 @@ async def _plugins_enabled(pipe: Any) -> bool:
 
 
 def _audit_off(user: Any, action: str, client_ip: Any) -> None:
-    from ...core.warn_latch import warn_level
+    from ...core.warn_latch import prune_expired, warn_level
     from .actions import _scrub
     from .actions import logger as _actions_logger
 
@@ -112,6 +113,8 @@ def _audit_off(user: Any, action: str, client_ip: Any) -> None:
         "pipe_dashboard action user=%s action=%s outcome=plugin_system_off ip=%s args=-",
         _scrub(uid), _scrub(action), _scrub(client_ip),
     )
+    if len(_warned_off_audit_state) > _PD_PRUNE_AT:
+        prune_expired(_warned_off_audit_state, time.monotonic(), _PD_OFF_AUDIT_EVERY_S)
 
 
 async def _dispatch_unavailable(
@@ -132,11 +135,15 @@ def clear_fresh_dispatch(pipe: Any) -> None:
 
 
 def _coarse_rate_limited(user_id: str) -> bool:
+    from ...core.warn_latch import prune_expired
+
     now = time.monotonic()
     last = _coarse_state.get(user_id)
     if last is not None and 0.0 <= now - last < _PD_COARSE_MIN_INTERVAL:
         return True
     _coarse_state[user_id] = now
+    if len(_coarse_state) > _PD_PRUNE_AT:
+        prune_expired(_coarse_state, now, _PD_COARSE_MIN_INTERVAL)
     return False
 
 
@@ -147,9 +154,12 @@ class ActionBody(BaseModel):
 
 
 _MAX_JSON_DEPTH = 64
+_PD_MAX_BODY_BYTES = 1024 * 1024
 
 
 def _exceeds_json_depth(raw: bytes, limit: int = _MAX_JSON_DEPTH) -> bool:
+    if len(raw) > _PD_MAX_BODY_BYTES:
+        return True
     depth = 0
     in_string = False
     escaped = False
@@ -176,7 +186,17 @@ def _exceeds_json_depth(raw: bytes, limit: int = _MAX_JSON_DEPTH) -> bool:
 async def _bounded_json_body(request: Request) -> None:
     from fastapi import HTTPException
 
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            over_cap = int(declared) > _PD_MAX_BODY_BYTES
+        except ValueError:
+            over_cap = False
+        if over_cap:
+            raise HTTPException(status_code=413, detail="args too large")
     raw = await request.body()
+    if len(raw) > _PD_MAX_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="args too large")
     if _exceeds_json_depth(raw):
         raise HTTPException(status_code=400, detail="args nested too deeply")
 
@@ -304,15 +324,21 @@ async def _current_dispatch(request: Any, user: Any, pipe: Any, fid: Any, action
     return _preferred_dispatch(action, str(getattr(pipe, "id", "") or "")), pipe
 
 
+async def _bearer_user_dep(request: Request) -> Any:
+    return await bearer_user(request)
+
+
 async def _action_route(
     request: Request,
     body: ActionBody,
-    _depth: Any = Depends(_bounded_json_body),  # noqa: B008 - the guard must be declared here to run before the body is parsed
+    user: Any = Depends(_bearer_user_dep),  # noqa: B008 - late-bound, and declared first so auth runs before the body guard
+    _depth: Any = Depends(_bounded_json_body),  # noqa: B008 - the guard must be declared here to run before the dispatcher
 ):
     from fastapi import HTTPException
     from fastapi.responses import JSONResponse
 
-    user = await bearer_user(request)
+    if isinstance(user, _DependsMarker):
+        user = await bearer_user(request)
     pipe_id = str(body.pipe or "")
     pipe = _live_routes_get_pipe(pipe_id)
     if not pipe_id or pipe is None:

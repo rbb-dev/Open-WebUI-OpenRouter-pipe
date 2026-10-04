@@ -119,7 +119,7 @@ class Filter:
         )
         DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST: str = Field(
             default="wav,mp3",
-            description="Comma-separated audio formats eligible for /responses input_audio.format. It selects only among the nine formats OpenRouter documents; naming an undocumented one such as webm here is not a route back to sending it.",
+            description="Comma-separated audio formats eligible for /responses input_audio.format. The /responses endpoint publishes an enum of mp3 and wav for that field, so a format outside mp3 and wav is never sent there whatever this valve says: the clip goes to /chat/completions instead, which documents all nine formats OpenRouter accepts. Naming an undocumented one such as webm here is not a route back to sending it.",
         )
 
     class UserValves(BaseModel):

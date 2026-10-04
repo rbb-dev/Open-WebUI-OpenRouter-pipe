@@ -853,6 +853,13 @@ def _reset_warn_latches():
     Which latches exist is asserted in test_warn_latch_isolation.py rather than here:
     a module that no test imported has no latch to reset, so a per-test assertion on
     the full set fails for reasons that have nothing to do with isolation.
+
+    The two memos beside them are the same kind of state for the same reason. One holds
+    downloaded image bytes so a picture reused across turns is fetched once; the other
+    holds a payload's base64 decode verdict so a stored picture is not re-validated every
+    turn. Both answer for the life of the worker by design, and across tests they must not:
+    the first test to reach a payload would satisfy every later assertion that it was
+    reached, which is a decoder mock that stops being called.
     """
     latches = _warn_latches()
     for latch in latches.values():
@@ -862,6 +869,9 @@ def _reset_warn_latches():
     memo = getattr(_transformer, "_reuse_download_memo", None)
     if memo is not None:
         memo.clear()
+    verdicts = getattr(_transformer, "_validate_inline_memo", None)
+    if verdicts is not None:
+        verdicts.clear()
     _clear_stub_task_models()
     yield
 

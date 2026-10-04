@@ -70,7 +70,7 @@ from ..core.utils import (
 from ..core.warn_latch import bounded_warn_level
 from ..filters.filter_manager import FilterManager
 from ..filters.fusion_filter_renderer import is_fusion_model
-from ..integrations.image_help import render_image_help
+from ..integrations.image_help import image_panel_is_attached, render_image_help
 from ..integrations.provider_options import (
     CHAT_PROVIDER_KEYS,
     TRANSPORT_PROVIDER_KEYS,
@@ -279,6 +279,8 @@ _PLUGIN_ID_FOR_SERVER_TOOL_TYPE = {"openrouter:web_search": "web"}
 
 
 def _server_tool_type(tool_key: str) -> str:
+    if tool_key.startswith(_SERVER_TOOL_PREFIX):
+        return tool_key
     return _SERVER_TOOL_TYPE_OVERRIDES.get(tool_key, f"{_SERVER_TOOL_PREFIX}{tool_key}")
 
 
@@ -300,14 +302,21 @@ def _openwebui_model_id_kwarg(model_id: Any) -> dict[str, Any]:
     return {"openwebui_model_id": model_id} if model_id else {}
 
 
-def _switched_off_web_tools_asked_for(metadata: Any, valves: Any) -> bool:
+def _switched_off_web_tools_asked_for(
+    metadata: Any, valves: Any, request_tools: Any = None
+) -> bool:
     pipe_meta = metadata.get(_PIPE_METADATA_KEY) if isinstance(metadata, dict) else None
     server_tools = pipe_meta.get("server_tools") if isinstance(pipe_meta, dict) else None
     if not isinstance(server_tools, dict):
-        return False
-    for key in server_tools:
-        if not isinstance(key, str):
-            continue
+        server_tools = {}
+    candidates = [key for key in server_tools if isinstance(key, str)]
+    if isinstance(request_tools, list):
+        candidates.extend(
+            entry["type"]
+            for entry in request_tools
+            if isinstance(entry, dict) and isinstance(entry.get("type"), str)
+        )
+    for key in candidates:
         tool_type = _server_tool_type(key)
         switch = _SERVER_TOOL_SWITCHES.get(tool_type)
         if switch and tool_type != _IMAGE_GENERATION_TOOL_TYPE and not getattr(valves, switch):
@@ -961,7 +970,10 @@ class RequestOrchestrator:
                     if isinstance(_row_operator, str):
                         _operator = _csv_set(_row_operator)
                         _source = "row"
-                _resolved = ((_responses, _operator, _source), _caps)
+                _resolved = (
+                    (_responses & _DEFAULT_RESPONSES_AUDIO_FORMATS, _operator, _source),
+                    _caps,
+                )
                 _gate.append(_resolved)
                 return _resolved
 
@@ -2031,7 +2043,7 @@ class RequestOrchestrator:
                     image_model if isinstance(image_model, dict) else None,
                     endpoint_record=endpoint_record,
                     dedicated_image_api=uses_dedicated_image_api(video_spec),
-                    panel_installed=valves.ENABLE_OPENROUTER_IMAGE_GENERATION,
+                    panel_installed=image_panel_is_attached(valves),
                 )
                 if __event_emitter__:
                     await self._pipe._event_emitter_handler._emit_unstreamed_answer(
@@ -2163,7 +2175,7 @@ class RequestOrchestrator:
                     plugins.append({"id": "file-parser", "pdf": {"engine": engine}})
                     responses_body.plugins = plugins
 
-        if _switched_off_web_tools_asked_for(__metadata__, valves):
+        if _switched_off_web_tools_asked_for(__metadata__, valves, responses_body.tools):
             self._pipe._schedule_web_tools_filter_repair()
 
         server_tools = (

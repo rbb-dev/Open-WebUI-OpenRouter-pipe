@@ -43,6 +43,7 @@ from .update_service import UpdateError, _distributed_lock
 logger = logging.getLogger(__name__)
 
 _PD_ACTION_MIN_INTERVAL = 1.0
+_PD_PRUNE_AT = 256
 _VALUE_ERROR_PREFIX = "Value error, "
 _rate_state: dict[tuple[str, str], float] = {}
 _config_write_locks: dict[tuple[str, int], asyncio.Lock] = {}
@@ -161,12 +162,16 @@ def _validate(args: Any, schema: Mapping[str, SchemaValue] | None) -> tuple[bool
 
 
 def _rate_limited(user_id: str, name: str) -> bool:
+    from ...core.warn_latch import prune_expired
+
     now = time.monotonic()
     key = (user_id, name)
     last = _rate_state.get(key)
     if last is not None and 0.0 <= now - last < _PD_ACTION_MIN_INTERVAL:
         return True
     _rate_state[key] = now
+    if len(_rate_state) > _PD_PRUNE_AT:
+        prune_expired(_rate_state, now, _PD_ACTION_MIN_INTERVAL)
     return False
 
 

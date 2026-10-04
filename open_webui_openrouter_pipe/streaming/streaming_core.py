@@ -481,10 +481,10 @@ _REASONING_HEAD_CHARS = 1024
 
 
 class _ReasoningTextBox:
-    __slots__ = ("head", "length", "parts", "tail")
+    __slots__ = ("_text", "head", "length", "tail")
 
     def __init__(self) -> None:
-        self.parts: list[str] = []
+        self._text: str = ""
         self.length = 0
         self.head = ""
         self.tail = ""
@@ -492,12 +492,15 @@ class _ReasoningTextBox:
     def add(self, append: str) -> None:
         if len(self.head) < _REASONING_HEAD_CHARS:
             self.head += append[: _REASONING_HEAD_CHARS - len(self.head)]
-        self.parts.append(append)
-        self.length += len(append)
-        self.tail = (self.tail + append)[-_REASONING_HEAD_CHARS:]
+        text = self._text
+        self._text = ""
+        text += append
+        self._text = text
+        self.length = len(self._text)
+        self.tail = self._text[-_REASONING_HEAD_CHARS:]
 
     def text(self) -> str:
-        return "".join(self.parts)
+        return self._text
 
     def ends_with(self, candidate: str) -> bool:
         if not candidate or len(candidate) > len(self.tail):
@@ -505,14 +508,7 @@ class _ReasoningTextBox:
         return self.tail.endswith(candidate)
 
     def is_prefix_of(self, text: str) -> bool:
-        if not text or len(text) < self.length:
-            return False
-        offset = 0
-        for part in self.parts:
-            if text[offset : offset + len(part)] != part:
-                return False
-            offset += len(part)
-        return True
+        return bool(text) and text.startswith(self._text)
 
 
 class StreamingHandler:
@@ -1719,10 +1715,9 @@ class StreamingHandler:
                 elif len(candidate) == box.length:
                     append = "" if candidate == box.text() else (candidate if allow_misaligned else "")
                 elif len(candidate) > box.length:
-                    current = box.text()
                     append = (
                         candidate[box.length :]
-                        if candidate.startswith(current)
+                        if candidate.startswith(box.text())
                         else (candidate if allow_misaligned else "")
                     )
                 elif len(candidate) <= len(box.head):
@@ -1731,10 +1726,9 @@ class StreamingHandler:
                     else:
                         append = "" if box.ends_with(candidate) else (candidate if allow_misaligned else "")
                 else:
-                    current = box.text()
                     append = (
                         ""
-                        if current.startswith(candidate) or current.endswith(candidate)
+                        if box.text().startswith(candidate) or box.text().endswith(candidate)
                         else (candidate if allow_misaligned else "")
                     )
                 if append:
@@ -3534,7 +3528,6 @@ class StreamingHandler:
                     await self._pipe._event_emitter_handler._emit_completion(
                         event_emitter,
                         content=intermediate_content,
-                        usage=total_usage,
                         done=False,
                     )
 
@@ -4451,12 +4444,12 @@ class StreamingHandler:
                 handed_back_for_retry = True
                 _record_outcome()
                 raise
+            await _close_and_emit_reasoning_items(assistant_message)
             reported = await self._pipe._ensure_error_formatter()._report_openrouter_error(
                 exc,
                 event_emitter=event_emitter,
                 normalized_model_id=body.model,
                 api_model_id=getattr(body, "api_model", None),
-                usage=total_usage,
                 partial_answer=assistant_message,
                 terminal=False,
             )
@@ -4466,6 +4459,7 @@ class StreamingHandler:
             error_occurred = True
             session_log_reason = str(e)
             cancel_thinking()
+            await _close_and_emit_reasoning_items(assistant_message)
             reported = await self._pipe._ensure_error_formatter()._emit_error(
                 event_emitter,
                 e.user_message,
@@ -4482,6 +4476,7 @@ class StreamingHandler:
             session_log_reason = str(e)
             if bool((metadata or {}).get("chat_id")) and bool((metadata or {}).get("message_id")):
                 cancel_thinking()
+                await _close_and_emit_reasoning_items(assistant_message)
                 reported = await self._pipe._ensure_error_formatter()._emit_templated_error(
                     event_emitter,
                     template=valves.SERVICE_ERROR_TEMPLATE,
@@ -4505,6 +4500,7 @@ class StreamingHandler:
             error_occurred = True
             session_log_reason = str(e)
             self.logger.exception("Unexpected error in streaming loop")
+            await _close_and_emit_reasoning_items(assistant_message)
             if isinstance(e, (TimeoutError, aiohttp.ClientConnectionError, aiohttp.ClientPayloadError)):
                 if strip_hidden_marker_lines(assistant_message).strip() or named_tool_call:
                     template, variables = valves.STREAM_INTERRUPTED_TEMPLATE, {"model": body.model or ""}
@@ -4551,7 +4547,12 @@ class StreamingHandler:
                     _flush_trailing_reasoning, assistant_message
                 )
             else:
-                await _flush_trailing_reasoning(assistant_message)
+                try:
+                    await _flush_trailing_reasoning(assistant_message)
+                except (asyncio.CancelledError, Exception) as _exc:
+                    if isinstance(_exc, asyncio.CancelledError):
+                        _finalise_cancelled = _exc
+                    self.logger.debug("Flushing trailing reasoning failed", exc_info=True)
             surrogate_carry["assistant"] = ""
             surrogate_carry["reasoning"] = ""
 

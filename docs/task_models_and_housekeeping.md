@@ -182,7 +182,7 @@ Housekeeping tasks run frequently. The safest approach is to configure housekeep
 - Configured to produce concise strings (titles/tags/summaries) rather than long prose.
 - Not dependent on external tools or plugins (task requests do not execute tool loops, and a housekeeping request builds no tool specs at all).
 
-If you need tasks to be as fast as possible, reduce `TASK_MODEL_REASONING_EFFORT` (for example to `minimal` or `none`). `none` switches reasoning off where the model allows it; a model whose reasoning is mandatory answers at the lowest level its catalog entry lists other than `none` instead, and a request that only hides the trace (`reasoning.exclude` of `true`) is not a `none` at all. If task quality is inadequate, increase it (for example `medium`).
+If you need tasks to be as fast as possible, reduce `TASK_MODEL_REASONING_EFFORT` (for example to `minimal` or `none`). `none` switches reasoning off where the model allows it; a model whose reasoning is mandatory answers at the lowest level its catalog entry lists other than `none` instead — and where it lists no other level, no thinking budget is derived from `REASONING_EFFORT` either, so the task goes out asking the row to think at whatever depth it decides — and a request that only hides the trace (`reasoning.exclude` of `true`) is not a `none` at all. If task quality is inadequate, increase it (for example `medium`).
 
 ---
 

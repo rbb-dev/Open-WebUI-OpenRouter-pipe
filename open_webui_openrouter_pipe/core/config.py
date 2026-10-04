@@ -1660,7 +1660,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "in a string is read as that number, and one that expresses no number is left out of the request "
             "rather than sent. A request that carries its own output limit has the budget reduced to fit inside it, the "
             "limit itself is never changed, and when the limit leaves no room the pipe asks for no bounded budget and "
-            "the model decides. The same reserve applies to a request's own reasoning.max_tokens on any "
+            "the model decides; on a model that cannot stop thinking it keeps asking regardless, and in a chat "
+            "it says so in a status line naming the model (a background task shows nothing). The same reserve "
+            "applies to a request's own reasoning.max_tokens on any "
             "reasoning-capable model, not only the Gemini 2.5 family."
         ),
     )
@@ -1681,7 +1683,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "takes only the legacy `include_reasoning`, `include_reasoning: true` since there is no effort to "
             "substitute. A task request "
             "that only hides the reasoning trace (`reasoning.exclude` of `true`) is not one of these offs: it "
-            "keeps the depth this setting chose and draws no status line."
+            "keeps the depth this setting chose and draws no status line. Where no level at all can be "
+            "substituted, no thinking budget is derived from any other setting either: the task goes out "
+            "asking the row to think, at whatever depth it decides for itself."
         ),
     )
 
@@ -1714,7 +1718,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     PERSIST_TOOL_RESULTS: bool = Field(
         default=False,
         title="Keep tool results",
-        description="Give the model the full arguments and results of tool calls from earlier turns. When disabled, the model sees each tool call from an earlier turn, and each round that arrived before the chat's first turn -- an API caller, an imported or reordered chat, or a filter posts one -- as its name and a short note on whether it succeeded (the built-in ask_user question and the person's answer always go back), and relies on its own earlier answers or runs the tool again. Each round is judged by its own call, so two rounds that happen to share one call id are kept or withheld separately, and one round's exemption never carries to another behind it. The turn the request ends in is never withheld: a round is replaced only when its turn is earlier than the final one, so a round whose assistant message opens the chat is kept while no later turn follows it. The setting applies in both tool execution modes and decides what the model is handed, not whether results are stored: a shown tool card keeps the full result in the message, and the pipe's own copy of each tool round keeps the full call and result, pictures included, encrypted only while ARTIFACT_ENCRYPTION_KEY is set and ENCRYPT_ALL is on. A temporary chat stores none of its tool rounds or thinking; in Open-WebUI tool mode the rounds and thinking of a streamed reply are held in memory for that reply only, and dropped when the pipe answers its last call back, or when the provider refuses a call-back the pipe was waiting for, or when the reply is stopped, or after 15 minutes unused. A user setting the pipe cannot read (an undecodable stored row, after a rotation of `WEBUI_SECRET_KEY`, or the deprecated `WEBUI_JWT_SECRET_KEY` it falls back to (a default, so an empty primary is not a fallback)) falls back to that field's own per-user default, whichever side of this site-wide value that default sits on, and never to the value set here. A call that carries no chat_id has its tool records held in memory for the length of that request only and never written to the database (see API_CALL_ARTIFACT_MEMORY), so an API call's records last for the request, not the conversation.",
+        description="Give the model the full arguments and results of tool calls from earlier turns. When disabled, the model sees each tool call from an earlier turn, and each round that arrived before the chat's first turn -- an API caller, an imported or reordered chat, or a filter posts one -- as its name and a short note on whether it succeeded (the built-in ask_user question and the person's answer always go back), and relies on its own earlier answers or runs the tool again. Each round is judged by its own call, so two rounds that happen to share one call id are kept or withheld separately, and one round's exemption never carries to another behind it. The turn the request ends in is never withheld: a round is replaced only when its turn is earlier than the final one, so a round whose assistant message opens the chat is kept while no later turn follows it. The setting applies in both tool execution modes and decides what the model is handed, not whether results are stored: a shown tool card keeps the full result in the message, and the pipe's own copy of each tool round keeps the full call and result, pictures included, encrypted only while ARTIFACT_ENCRYPTION_KEY is set and ENCRYPT_ALL is on. A temporary chat stores none of its tool rounds or thinking; in Open-WebUI tool mode the rounds and thinking of a streamed reply are held in memory for that reply only, and dropped when the pipe answers its last call back, or when the provider refuses a call-back the pipe was waiting for, or when the reply is stopped, or after 15 minutes unused. A user setting the pipe cannot read (an undecodable stored row, after a rotation of `WEBUI_SECRET_KEY`, or the deprecated `WEBUI_JWT_SECRET_KEY` it falls back to (a default, so an empty primary is not a fallback)) falls back to that field's own per-user default, whichever side of this site-wide value that default sits on, and never to the value set here. A call that carries no chat_id has its tool records held in memory for the length of that request only and never written to the database (see API_CALL_ARTIFACT_MEMORY), so an API call's records last for the request, not the conversation. This valve also decides how many stored pictures each turn re-validates: a picture's well-formedness is checked once and remembered, and a temporary chat remembers nothing.",
     )
     API_CALL_ARTIFACT_MEMORY: bool = Field(
         default=True,
@@ -2501,7 +2505,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     )
     UPDATE_MODEL_CAPABILITIES: bool = Field(
         default=True,
-        description="When enabled, automatically sync model capabilities (vision, file_upload, web_search, etc.) to Open WebUI model metadata. OpenRouter's catalog publishes no capability verdicts, so the pipe derives them from the model's own row: `vision` and image output from its input and output modalities, `web_search` from whether its pricing names a paid web search. Four of the boxes are the pipe's own rather than the row's — `file_upload` (the pipe's direct-upload blocklist) and `code_interpreter`, `status_updates` and `usage`, which every chat model gets whatever its row says; on an image-only or video model the whole set is the pipe's. Four checkboxes are written only where the model has no setting of its own yet, so a value set by hand is kept: `web_search`, `citations`, `File context` and `Built-in tools` — the last two being the pipe's own rule for a model that answers with a picture or a clip and no text, not anything read from the row. The `Files` box inside Built-in tools is unticked only where the pipe unticked `File context` on that same pass, and the boxes it filled are recorded under the model's own openrouter_pipe metadata as `builtin_tool_defaults`, so a box you set by hand is neither recorded as the pipe's nor changed by it; a row filled before that record existed keeps its box. Disable to manage capabilities manually.",
+        description="When enabled, automatically sync model capabilities (vision, file_upload, web_search, etc.) to Open WebUI model metadata. OpenRouter's catalog publishes no capability verdicts, so the pipe derives them from the model's own row: `vision` and image output from its input and output modalities, `web_search` from whether its pricing names a paid web search. Four of the boxes are the pipe's own rather than the row's — `file_upload` (the pipe's direct-upload blocklist) and `code_interpreter`, `status_updates` and `usage`, which every chat model gets whatever its row says; on an image-only or video model the whole set is the pipe's, as it is for a model both catalogues list -- there the chat row still owns the six boxes it published, and the video row's own two follow the merged features so the two sides cannot disagree. Four checkboxes are written only where the model has no setting of its own yet, so a value set by hand is kept: `web_search`, `citations`, `File context` and `Built-in tools` — the last two being the pipe's own rule for a model that answers with a picture or a clip and no text, not anything read from the row. The `Files` box inside Built-in tools is unticked only where the pipe unticked `File context` on that same pass, and the boxes it filled are recorded under the model's own openrouter_pipe metadata as `builtin_tool_defaults`, so a box you set by hand is neither recorded as the pipe's nor changed by it; a row filled before that record existed keeps its box. Disable to manage capabilities manually.",
     )
     DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS: bool = Field(
         default=True,
@@ -2677,7 +2681,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "and takes them off at the next refresh that installs it, or at the next one "
             "that finds it no longer offers images. A pass that cannot find the panel it "
             "was told to attach leaves the existing one in place and tries again at the "
-            "next catalog fetch."
+            "next catalog fetch. With this off, an image model's `help` reply omits its "
+            "`## Controls` section, because the panel that section describes is not on "
+            "the model."
         ),
     )
     AUTO_DEFAULT_IMAGE_FILTERS: bool = Field(
@@ -2707,7 +2713,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     )
     AUTO_ATTACH_VIDEO_FILTERS: bool = Field(
         default=True,
-        description="Automatically attach the OpenRouter Video Generation filter to OpenRouter video-generation models. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone, and a help reply on a video model no longer lists the four reuse-of-previous-video controls, because the panel carrying them is not on the model. A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next catalog fetch.",
+        description="Automatically attach the OpenRouter Video Generation filter to OpenRouter video-generation models. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. A `help` reply on a video model lists no controls at all, because the panel that card describes is not on the model. A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next catalog fetch.",
     )
     AUTO_DEFAULT_VIDEO_FILTERS: bool = Field(
         default=True,
@@ -2825,11 +2831,16 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "than written off as a failure: nothing is cancelled, the render is still "
             "going at OpenRouter, and the person can press Continue Response on that "
             "message to pick it back up. A later check that reports the job as failed or "
-            "expired ends it for real, as it would have anyway. A second, larger "
-            "budget bounds the total failures as well: this many times the configured "
-            "value, counted across one whole watch however they are spaced, also stops "
-            "the watching, because an endpoint that fails every other poll never runs out "
-            "a run of them."
+            "expired ends it for real, as it would have anyway. Only transport-shaped "
+            "errors count against this budget — a connection that failed, a read that "
+            "timed out, or a status OpenRouter reported itself. A fault of the pipe's own "
+            "code is not counted and not retried: it ends the watching at once, and it is "
+            "named in the server log with its traceback rather than blamed on OpenRouter. "
+            "It is still charged once against the request breaker, like any other failure "
+            "after the job was submitted. A second, larger budget bounds the total "
+            "failures as well: this many times the configured value, counted across one "
+            "whole watch however they are spaced, also stops the watching, because an "
+            "endpoint that fails every other poll never runs out a run of them."
         ),
     )
     SEND_MEDIA_VIA_FILE_HOST: bool = Field(

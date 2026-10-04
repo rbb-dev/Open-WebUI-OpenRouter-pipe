@@ -6040,9 +6040,21 @@ async def test_completion_events_preserve_streamed_text(monkeypatch, pipe_instan
     completion_events = [event for event in emitted if event.get("type") == "chat:completion"]
     assert completion_events, "Expected at least one completion event"
 
+    # Open WebUI folds every `usage` payload on the stream additively and stores the total, so
+    # the turn makes exactly one record of its cost and the terminal frame is where it rides.
+    # A per-round frame carrying the same accumulator is what doubled the stored row.
+    terminal = [event for event in completion_events if event["data"].get("done") is True]
+    assert len(terminal) == 1, f"Expected exactly one terminal chat:completion, got {terminal}"
+
     for event in completion_events:
         assert event["data"]["content"] == "Hello world"
-        assert event["data"].get("usage") == {"input_tokens": 5, "output_tokens": 2, "turn_count": 1, "function_call_count": 0}
+        if event["data"].get("done") is True:
+            assert event["data"].get("usage") == {"input_tokens": 5, "output_tokens": 2, "turn_count": 1, "function_call_count": 0}
+        else:
+            assert "usage" not in event["data"], (
+                f"a non-terminal chat:completion published a usage payload Open WebUI would fold "
+                f"into the stored row again: {event}"
+            )
 
 
 @pytest.mark.asyncio

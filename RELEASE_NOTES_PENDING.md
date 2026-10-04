@@ -129,6 +129,24 @@
   window ran out. Nothing is cancelled either way. The card is the resumable still-running one, the job's
   marker stays, Continue Response still picks the same job back up, and the person is told how many times the
   endpoint did not answer across the watch rather than in a row.
+  That budget is a **transport** budget, and it now says so on both help surfaces as well as in `docs/`. Only
+  connection failures, timeouts and provider-reported statuses count against it. A fault of the pipe's own code
+  escaping the status check -- a bug, or the `RuntimeError("Session is closed")` aiohttp raises on a closed
+  session -- used to be counted as a flaky poll, retried the full budget over roughly 27 s of the user's backoff,
+  and then reported as "OpenRouter's status endpoint did not answer this video's job 5 times in a row": a card
+  naming a party that was never asked anything. Worse, it reached the failure card, whose
+  `### Video generation failed` heading the resume path reads as final, so a job the user had already paid for
+  was never polled again. Such a fault is now neither counted nor retried. It ends the watching on the first
+  attempt, is named in the server log as the pipe's own with its traceback rather than blamed on OpenRouter, and
+  leaves the same resumable card the transport case leaves -- marker kept, resume offered wherever the marker can
+  be stored. It is still charged once against the request breaker, like any other failure after the job was
+  submitted. No valve changed, and no real status-endpoint outage behaves differently.
+
+- **OpenRouter Web Tools filter id** — a recurring "the OpenRouter Web Tools function id is held by a row this pipe
+  does not own" warning now re-warns once 300 other causes have been armed, instead of going permanently silent after
+  its first emission. The latch that backs it carries no timestamps, so the `cooldown_s` it was given was never read;
+  it is now a window-bounded latch like the two per-model install latches beside it, and the eviction is what the
+  repeat is keyed on. Nothing else about the filter, the id, or the repair changes.
 
 - **Pipe dashboard, viewer payload** — the live dashboard payload no longer carries the data-dir path, so a viewer
   holding only a read grant no longer learns the server's filesystem layout from the System tab. The key was published
@@ -282,6 +300,15 @@
   refreshes overlap. The pass that could not install the panel reported its verdict on a value shared with the pass that
   overlapped it, so a refusal to write could read as an answer and release the panel; the verdict now travels with the
   answer the pass obtained, and a pass that never obtained one leaves every model's filter list exactly as it was.
+
+- **A model-list refresh that outlives its generation no longer writes** — when a hot reload, a valve save or a deleted
+  function row retires a Pipe while its own `/api/models` refresh is still running, the refresh used to go on installing
+  and repairing filter rows, running the startup stale-id prune, scheduling the metadata sync and dispatching
+  `on_models` after that generation's `close()` had already returned — so two generations could write the same rows, and a
+  dashboard could be re-pointed at an instance nothing was serving any more. It already returned its own cached rows
+  rather than an empty picker; it now also re-checks after the catalogue load, so a close landing underneath a refresh
+  that has already started skips the whole write region instead of only the part before it. A refresh on a live
+  instance is unaffected, and nothing a person sees in a chat changes.
 - **Media on the `/chat/completions` leg** — a turn resolved to the chat endpoint — by `DEFAULT_LLM_ENDPOINT=chat_completions`, by a model in `FORCE_CHAT_COMPLETIONS_MODELS`, or by the `AUTO_FALLBACK_CHAT_COMPLETIONS` fallback — now judges every media link its converter copies, by the same rule the `/responses` leg applies at ingress: the transport (`http://` only with `ALLOW_INSECURE_HTTP` **and** an allowlisted host), the scheme, a link naming this Open WebUI's own `/api/v1/files/` endpoint, and the inline size bound. Such a link used to be copied verbatim onto the wire, and the cleartext valve was never asked about it on this leg. A refused block is dropped from the turn and named on it as `[An attached item was not sent: …]`, in the request side's own words, beside whatever else survived — except an `input_file` that also carries a `file_id`, which keeps that id and drops only the refused link, exactly as on the other leg. An admin who allows cleartext HTTP sees the same link forwarded as before, and a `https://` link, a `data:` URL and raw base64 in `file_data` are untouched. One asymmetry is worth naming: a `data:` video sent to a chat-leg model is now held to the same size bound as on the other leg (`BASE64_MAX_SIZE_MB`, not `VIDEO_MAX_SIZE_MB`), so a clip over it is reported as not sent instead of forwarded.
 
 - **Presets** — a request naming a preset in the spelling the pipe itself dispatches (`<base>@preset/<slug>`) is now served instead of being refused as blocked. The pipe publishes presets as `<base>:preset/<slug>` and dispatches them with the `@`; the model-restriction gate read the dispatched spelling as a model of its own, so an id copied out of a request log or a response body came back as the `Blocked model message`. The published row was already enforced under the picker spelling, so nothing new is admitted — the two spellings now name one model. A preset turn also stops being billed to the 128 000-token fallback and picks up its base model's real context window, so a tool result the base's window can hold is no longer trimmed away and one it cannot is no longer shipped whole.
