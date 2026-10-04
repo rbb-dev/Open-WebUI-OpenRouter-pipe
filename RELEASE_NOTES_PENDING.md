@@ -24,6 +24,18 @@
   or picture produces all carry the same rule, and the refusal log now names the port instead of blaming a host the
   operator did allowlist.
 
+- **An SVG a person attaches, a tool hands over, or the model wrote is not sent to the provider** — Open WebUI asks two questions before it turns a file into a model image block, is it an `image/` type and is it not `image/svg+xml`, and asks both at both places it does so. The pipe asked only the first, so a vector the interface had declined to draw was typed, converted and forwarded to a third party. The pipe now answers the same two questions, on the resolved media type rather than the declaration, and reports the refusal the way it reports every other picture refusal: the person sees `Images: skipped N (not identifiable as an image).` on the turn that carried it, the picture is not sent, and it is not counted against `MAX_INPUT_IMAGES_PER_REQUEST`. Every leg a picture travels on now runs the same rule: an inline attachment, a remote attachment the pipe downloads, an Open WebUI file, a picture reused from an earlier turn, a live tool round, the request sanitizer, and the `/chat/completions` fallback — the last two reach a gate that checks the scheme, the cleartext valve and the size cap and never resolved a type, which is why an SVG survived them while the same picture was refused everywhere else. Everything else is unchanged: a payload of any other `image/*` type still goes, including the BMP and TIFF spellings this gate has always forwarded under their declaration, and PNG bytes that declare themselves an SVG are still sent as the PNG they are. The picture the pipe *generates* is untouched — a stored SVG is still stored as `image/svg+xml`, and Open WebUI still draws it in the chat. What changes is the next turn: an SVG the model wrote is no longer lifted back onto a later request as a picture. No valve and no configuration change.
+
+- **A file's name can no longer carry the pipe's own transport markers** — every other free-text field the pipe hands the provider has its hidden marker lines removed before the request goes out, and a caller-supplied `input_file.filename` was the one that did not: it was forwarded exactly as it arrived, on both block spellings and on either transport. The pipe's framing is line-based, so a name carrying `[P:final_answer]: #` or a ULID marker line on a line of its own was not an odd string but a second thing — a marker the pipe's own replay then read as its own, which split a reply into several messages and could rebind a stored artifact to a turn the caller does not own. The same line filter as everywhere else now runs on the name, with the same rule that a marker-shaped line only counts on a line of its own, so `[2026] report.pdf`, `quarterly [P:final_answer]: # report.pdf` and a name with an ordinary newline all survive byte for byte, and nothing is renamed or trimmed. A name that is nothing but marker lines loses the `filename` field and the file still goes out on its `file_id`, so a person never loses an attachment to a name. No valve and no configuration change.
+
+- **Pipe Dashboard write gate** — on an install with `BYPASS_ADMIN_ACCESS_CONTROL=false`, a second administrator who is
+  neither the dashboard model's owner nor a write-grantee is no longer refused the operator actions; and an
+  administrator whose `Pipe Dashboard` model row was never inserted is no longer locked out of a dashboard the picker
+  still lists. The write gate now answers Open WebUI's own model-write formula (`routers/models.py:888`, `:956`,
+  `:1077`, `:1126`), whose admin term carries no valve. The **read** gate is unchanged and still honours the valve, so
+  whether a second admin can *open* the dashboard is still that administrator's setting; only the actions he can run
+  once it is open follow Open WebUI now. A model row whose read raises is still undeterminable rather than a verdict.
+
 - **Session log assembler, one offer per pass** — a turn the assembler already offered, or already failed, inside a
   pass is not offered again by that pass, and a turn whose assembly lock another pass holds is offered once per pass
   instead of once per re-listing round. The pass re-lists itself after meeting a lock-contended turn so the window
@@ -33,6 +45,13 @@
   `SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS` on SQL and never reaching the turns behind it. Nothing else changes: the
   backoff is still `SESSION_LOG_LOCK_STALE_SECONDS`, a turn whose only failure was the stale-finalize pass is still
   offered by the completed-turn listing straight away, and contention still books nothing.
+
+- **Artifact encryption on a schema-qualified deployment** — on a deployment with `DATABASE_SCHEMA` set, the artifact store now finds its
+  encryption key and stops writing rows in plaintext. It was reading Open WebUI's `function` row by an unqualified name, could not
+  reach the row at all, and read that failure as "there is no unreadable row here" — so after a `WEBUI_SECRET_KEY` rotation the guard
+  never armed and every artifact (reasoning traces, tool results, tool arguments) was stored in the clear with nothing said to
+  anyone. The row is now read from the same schema the pipe's own artifact table is built in. The existing key-guard WARNING may
+  appear there for the first time; follow it (re-enter the key) rather than silence it.
 
 - **Chat-message writes are gated on ownership** — a reply's error note, its Fusion snapshot and its turn metadata (`sources`, `annotations`, `reasoning_details`) are now written only to a saved chat the asker owns, or, for an admin, any saved chat. The gate matches Open WebUI's own rule for writing to an existing chat and fails closed: if the ownership check cannot be run, nothing is written and the operator log says why once per cooldown. Two consequences are visible: the Fusion panel and the loop-limit note are no longer persisted on a Temporary Chat or on a channel (both are still delivered live, and a temporary chat has no reload to restore from), and no turn writes into another user's saved chat. A `channel:` chat has no chat row of its own, so the write was already a no-op on a real installation.
 - **Citation notices** — the "this response included a citation type the pipe can't render" notice now names the
@@ -179,15 +198,33 @@
   written, and the batch is dropped rather than held — and a row that is merely unset, or plain JSON from an install
   that never turned Open WebUI's valve encryption on, is still read as an ordinary off and does not warn.
 
-- **Video generation, machine callers** — a video turn that fails *before* OpenRouter answers the submission now
-  reaches a caller with no chat as an HTTP error instead of a `200` with a Markdown card in it. A rejected job
+- **Video generation, machine callers** — a video turn that fails reaches a caller with no chat as an HTTP error
+  instead of a `200` with a Markdown card in it, whether OpenRouter rejected the submission or accepted it and
+  the job then failed. A rejected job
   leaves with the status the pipe resolved on the status line and the same number in `error.code` (`502` when a
   proxy rewrote the `/videos` body); a fault the pipe owns leaves as `500` carrying `Video generation failed.`,
   with no Python class name in the body and the full message and traceback at ERROR in the session log as before.
-  The gate is the same one the chat leg uses — no truthy `chat_id` **and** `message_id`, `stream: false`, never on
-  an Anthropic Messages path — so a chat keeps its card, a streamed turn keeps its card in the stream chunks, and a
-  successful job is unchanged. A plain API client that submits a video model with no chat can now branch on
-  `status_code` the way it already could for a chat completion.
+  The two refusals the pipe raises on its own terms — the per-user cap and a missing prompt — still hand that
+  caller their cards, unchanged; the gate here is a failure the upstream path produced, not every refusal.
+  This now covers the failures that arrive **after** the submission was accepted as well: a video job OpenRouter took
+  and then failed on the poll — a status response a proxy, CDN or WAF rewrote instead of OpenRouter's — used to
+  reach the same chatless caller as a `200` carrying a Markdown card that quoted the first 200 characters of that
+  body's own words, which is the body a provider's operator could put there. It now leaves as the same `502` with
+  the same endpoint and `Content-Type` and no excerpt, both on the turn that submitted the job and on one that
+  joins a job already running. Nothing else about the accounting moved: a rewritten body is still charged nothing
+  against the breaker and still marks the turn failed, because the envelope is built after that bookkeeping
+  rather than before it. On a channel chat the same card now withholds the excerpt as the rest of the pipe's cards
+  already did — the job is watched in a background task that does not inherit the request's chat id, so the card
+  reads the one it was handed.
+
+  **Two carve-outs stay, and they are the same two the submit arm already had.** A **streamed** chatless caller and
+  a caller on an Anthropic Messages path (`/api/v1/messages`, `/api/message`) still receive the card with the
+  fenced excerpt, on this arm as on every other. A begun stream cannot carry a status line, and Open WebUI's
+  Anthropic Messages handler re-wraps any streaming response into a converter with no error branch, so an
+  envelope on either path would arrive as an empty `end_turn`. So a machine caller that streams, or that speaks
+  the Anthropic format, still sees the proxy's own words: the statement above is about the unstreamed
+  `/chat/completions` envelope. A prompt a provider echoes back is not masked either — the pipe cannot tell which
+  bytes of a reply are its own request — but it is already withheld on a channel.
 
 - **Provider routing panels** — a model's provider-routing filter is no longer detached from it when two model-list
   refreshes overlap. The pass that could not install the panel reported its verdict on a value shared with the pass that

@@ -189,7 +189,7 @@ class PipeDashboardPlugin(PluginBase):
                 "request, with no restart and whether or not the dashboard model itself is on. "
                 "Turning it off stops records written by the background abandon sweep as well as by the "
                 "request path, on every worker including ones that have served no request, with no "
-                "restart; a request already in flight when you switch it off still records its own usage. "
+                "restart; the setting is read again when the row is written, so a request already in flight when you switch it off records nothing. "
                 "A stored row this server cannot decrypt counts as off, and the refusal is reported in the "
                 "log naming the read."
             ),
@@ -400,8 +400,7 @@ class PipeDashboardPlugin(PluginBase):
         _description = (
             "Live dashboard for pipe monitoring and diagnostics. "
             "Access: a read grant = view the dashboard; a write grant = run operator actions; "
-            "the Config tab = the admin role. Admins pass on the role alone only while "
-            "BYPASS_ADMIN_ACCESS_CONTROL is on; with it off an admin needs the model grant too."
+            "the Config tab = the admin role."
         )
         _dashboard_on, _gate_read_ok = await persisted_dashboard_enabled(self.ctx.pipe)
         self._maybe_start_sweep()

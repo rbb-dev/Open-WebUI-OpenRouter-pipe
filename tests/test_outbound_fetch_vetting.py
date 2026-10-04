@@ -127,8 +127,14 @@ EXEMPT: dict[str, str] = {
     "open_webui_openrouter_pipe/integrations/video_client.py::OpenRouterVideoClient::submit":
         "self._base_url plus the literal '/videos'",
     "open_webui_openrouter_pipe/integrations/video_client.py::OpenRouterVideoClient::status":
-        "VideoClient.poll_url refuses any candidate that is not self._base_url or a path "
-        "under its origin, and falls back to '<base>/videos/<job_id>'",
+        "VideoClient.poll_url refuses any candidate that is neither self._base_url nor a "
+        "URL whose origin is that origin, and falls back to '<base>/videos/<job_id>'. The "
+        "refusal is an ORIGIN test only, so a candidate that does sit on the configured "
+        "origin can still name any path on it; what holds the path is that poll_url "
+        "resolves the candidate's own dot segments before returning it, so the URL the "
+        "pipe builds is the URL it dials and a '..' in the candidate cannot reach a path "
+        "the candidate does not name. A relative candidate is joined onto that origin, so "
+        "it keeps naming a path under it",
     "open_webui_openrouter_pipe/integrations/media_relay.py::relay_to_public_url":
         "_ENDPOINTS is a two-entry literal table of file hosts; 'host' selects a row and "
         "an unknown host raises before any request",

@@ -223,25 +223,6 @@ async def test_the_view_check_does_not_bypass_the_model_acl(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_admin_bypass_is_refused_when_the_operator_disables_it(monkeypatch):
-    """BYPASS_ADMIN_ACCESS_CONTROL was never exercised as False.
-
-    Upstream defaults it True, so this only bites a deployment that deliberately
-    hardens it -- whose setting would then be silently ignored.
-    """
-    user = SimpleNamespace(id="a1", role="admin")
-    monkeypatch.setattr(
-        authz, "_owui",
-        lambda: _seam(write_ok=False, model=Mock(user_id="someone_else"), user=user,
-                      bypass_admin=False),
-    )
-    assert await authz.can_act(user, _pipe()) is False, (
-        "an admin was granted operator rights with BYPASS_ADMIN_ACCESS_CONTROL off and "
-        "no write grant; the operator's hardening is being ignored"
-    )
-
-
-@pytest.mark.asyncio
 async def test_the_operator_check_asks_about_the_dashboard_model(monkeypatch):
     """Pins WHICH resource, not just which permission.
 

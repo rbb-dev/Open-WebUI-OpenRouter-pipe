@@ -136,6 +136,7 @@ from ..requests.sanitizer import (
 )
 from ..requests.transformer import (
     _AddressBudget,
+    _gate_did_not_run_refusals,
     _gate_round_output_pictures,
     _tool_picture_notice,
     _tool_picture_verdicts_for_input,
@@ -4333,16 +4334,26 @@ class StreamingHandler:
                         for position, round_output in enumerate(budgeted_outputs):
                             if not isinstance(round_output, dict):
                                 continue
-                            gated_output, round_refused = await _gate_round_output_pictures(
-                                self._pipe,
-                                round_output.get("output"),
-                                self._pipe.valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
-                                allow_insecure=(
-                                    self._pipe._multimodal_handler._is_insecure_http_allowed
-                                ),
-                                seen=_round_seen,
-                                budget=_round_budget,
-                            )
+                            try:
+                                gated_output, round_refused = await _gate_round_output_pictures(
+                                    self._pipe,
+                                    round_output.get("output"),
+                                    self._pipe.valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
+                                    allow_insecure=(
+                                        self._pipe._multimodal_handler._is_insecure_http_allowed
+                                    ),
+                                    seen=_round_seen,
+                                    budget=_round_budget,
+                                )
+                            except Exception:
+                                self.logger.exception(
+                                    "A tool round's pictures could not be gated; none of them was sent",
+                                )
+                                round_text, round_pictures = tool_output_text_and_pictures(
+                                    round_output.get("output"),
+                                )
+                                gated_output = picture_output(round_text, [])
+                                round_refused = _gate_did_not_run_refusals(round_pictures)
                             if round_refused:
                                 budgeted_outputs[position] = {**round_output, "output": gated_output}
                                 round_refusals.extend(round_refused)

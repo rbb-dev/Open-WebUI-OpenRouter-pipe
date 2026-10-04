@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any
+from urllib.parse import urlunsplit
 
 import aiohttp
 
@@ -13,6 +14,7 @@ from ..core.config import (
     _apply_owui_forward_user_headers,
 )
 from ..core.errors import UpstreamBodyUnreadable, _build_openrouter_api_error
+from ..core.url_scheme import _split
 from ..core.utils import _DEFAULT_VALVES, http_timeout
 from ..requests.debug import (
     _debug_print_error_response,
@@ -24,6 +26,25 @@ from .video_types import VideoGenerationError
 _VIDEO_CATALOG_TIMEOUT_SECONDS = 15
 
 _VIDEO_BODY_EXCERPT_CHARS = 200
+
+
+def _resolved_candidate_path(candidate: str) -> str:
+    leading = "/" if candidate.startswith("/") else ""
+    resolved: list[str] = []
+    for segment in candidate[len(leading):].split("/"):
+        if segment == ".":
+            continue
+        if segment == "..":
+            if resolved:
+                resolved.pop()
+            continue
+        resolved.append(segment)
+    return leading + "/".join(resolved)
+
+
+def _absolute_with_resolved_path(candidate: str) -> str:
+    parts = _split(candidate)
+    return urlunsplit(parts._replace(path=_resolved_candidate_path(parts.path)))
 
 
 def _video_body_not_an_object(resp: Any, payload: Any, endpoint: str) -> UpstreamBodyUnreadable:
@@ -119,9 +140,13 @@ class OpenRouterVideoClient:
             return fallback
         if candidate.startswith("/"):
             parts = self._base_url.split("/", 3)
-            return f"{parts[0]}//{parts[2]}{candidate}" if len(parts) >= 3 else fallback
+            return (
+                f"{parts[0]}//{parts[2]}{_resolved_candidate_path(candidate)}"
+                if len(parts) >= 3
+                else fallback
+            )
         if candidate == self._base_url or candidate.startswith(f"{self._base_url}/"):
-            return candidate
+            return _absolute_with_resolved_path(candidate)
         return fallback
 
     @staticmethod

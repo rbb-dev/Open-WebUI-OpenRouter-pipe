@@ -696,6 +696,13 @@ icon sets, and flat illustrations that need to scale and edit
 downstream. The SVG arrives complete and Open WebUI draws it in the
 chat at full sharpness, whatever size you view it at.
 
+The output leg is untouched by any of that: a stored SVG is stored as
+`image/svg+xml` and Open WebUI draws it. What does not survive is the
+*next* turn — an SVG on the input side is not forwarded to the model
+and not re-sent from an earlier reply, because Open WebUI's own
+`is_raster_image_content_type` declines to draw one and the pipe holds
+itself to the same answer. See `docs/multimodal_ingestion_pipeline.md`.
+
 - Output is SVG, not PNG/JPEG — scales infinitely without quality loss.
 - Prefer simple, graphic prompts (logos, icons, flat illustrations)
   over photoreal subjects.

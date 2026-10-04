@@ -1946,6 +1946,17 @@ host allowlisted. Because the origin is exempt rather than validated, that
 one download is not pinned to a resolved address, so a DNS answer for
 the gateway's host can change between the check and the connection.
 
+That download is held to the job's own content path. The job id is
+whatever OpenRouter returned, so before it is used the pipe reduces it to
+one inert path segment — characters outside `[A-Za-z0-9._-]` become `_`,
+leading and trailing `.`, `_` and `-` are dropped, and the result is cut
+to 128 characters — which means the request is always
+`{BASE_URL}/videos/{id}/content` and a `..` inside the id cannot walk it
+onto another path on the exempt origin. An ordinary id is unchanged by
+that. The same reduction is applied at both of the pipe's readers, the
+submit answer and the `videojob` marker it reads back on resume, so the
+resume arm obeys the same rule rather than bypassing it.
+
 A job where some clips did not arrive says so, below the ones that
 did, naming every step that lost one, with its count — a clip the pipe
 could not fetch could not be fetched, without saying where it was lost,
@@ -2138,6 +2149,19 @@ Every time `pipe()` is invoked for a video chat:
    returned, on a line of its own, and free text interpolated into a rendered
    block beside it is whitespace-flattened onto a single line, so no line of
    the message body can be one.
+
+   The id read back off that marker is held to the same rule as the one read
+   off a submit answer: it is reduced to one inert path segment before it
+   becomes a request path, and a marker body that no longer reduces to
+   anything usable names no job. So a stored message cannot carry a job id
+   into the request that polling and the clip download build, on this arm or
+   the submit one.
+
+   The provider's own failure text cannot add a marker either. When a job
+   ends in failure, the reason OpenRouter reported is placed under the
+   `### Video generation failed` heading with its line structure flattened,
+   so it is prose on one line rather than a line of its own that the resume
+   scan would read as a marker the pipe wrote.
 2. If a marker is found AND a final ending also exists — a `<video>`
    block, or a `### Video generation failed` heading — the
    adapter returns the cached content (no re-poll, no double-submit).
@@ -2271,7 +2295,10 @@ rather than as a card: the status the pipe resolved on the status line and
 the same number in `error.code` (the upstream status, and `502` when the 200
 from `/videos` was not an OpenRouter document), or a `500` carrying
 `Video generation failed.` when the fault is one the pipe owns. An
-**accepted** one still answers with the clip. See
+**accepted** one answers with the clip when the job succeeds, and leaves the same
+way when the lifecycle that watches it fails: a rewritten status-poll body on that
+arm is a `502` naming the endpoint and the `Content-Type` and quoting no excerpt,
+on both the turn that submitted the job and one that joins an active one. See
 [Error Handling & User Experience](error_handling_and_user_experience.md#c-api-callers-with-no-chat-http-error-instead-of-a-card).
 
 Single-worker only: `_video_active_tasks` is process-local. Multi-worker

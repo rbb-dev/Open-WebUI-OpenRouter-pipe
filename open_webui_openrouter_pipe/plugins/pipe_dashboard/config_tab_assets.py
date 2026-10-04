@@ -469,17 +469,17 @@ function commitSave(){
     const r=resp&&resp.result;
     if(!resp||resp.error||!r){ refuseSave(btn,names,(resp&&resp.detail)||null,(resp&&resp.error)?resp.error:null); return; }
     if(r.unreadable){ inflightSave=false; $("#modal").classList.remove("show"); if(btn){btn.disabled=false;btn.textContent="Save "+names.length;} showConflict(storeUnreadableText(r.unreadable)); return; }
+    if(r.config_unreadable){ inflightSave=false; $("#modal").classList.remove("show"); if(btn){btn.disabled=false;btn.textContent="Save "+names.length;} configUnreadable=true; showUnreadable(); updateBar(); return; }
     const clashed=(r.conflict&&Array.isArray(r.conflicts)&&r.conflicts.length)?r.conflicts:null;
     if(r.conflict&&!clashed){
       inflightSave=false; $("#modal").classList.remove("show"); if(btn){btn.disabled=false;btn.textContent="Save "+names.length;}
-      if(r.config_unreadable){configUnreadable=true;showUnreadable();updateBar();return;}
       refuseSave(btn,names,null,null); return;
     }
     const vals=(r.values&&typeof r.values==="object")?r.values:{};
     const notSaved=Array.isArray(r.not_saved)?r.not_saved:[];
     const sec=(r.secrets&&typeof r.secrets==="object")?r.secrets:{};
     names.forEach(n=>{ const v=byName[n];
-      if(clashed&&clashed.indexOf(n)>=0){ if(v&&v.secret){ if(!adoptSecretFlags(r,n,v,sec)) v.secret_set=(edits[n]!==null); } revalidate(n); return; }
+      if(clashed&&clashed.indexOf(n)>=0){ if(v&&v.secret){adoptSecretFlags(r,n,v,sec);} revalidate(n); return; }
       if(v&&v.secret){ if(!adoptSecretFlags(r,n,v,sec)) v.secret_set=(edits[n]===null&&v.secret_stored)?v.secret_set:(edits[n]!==null&&notSaved.indexOf(n)<0);} else if(v){baseline[n]=Object.prototype.hasOwnProperty.call(vals,n)?vals[n]:edits[n];} delete edits[n]; });
     if(r.rev!=null){REV=r.rev;lastSeenRev=r.rev;}
     if(r.change!=null){lastChange=r.change;lastState=null;}
@@ -535,6 +535,8 @@ function paintDriftNote(dn,r){
   dn.textContent=[u?(u+" not documented"):"",dr?(dr+" not applicable"):""].filter(Boolean).join(" · ");
 }
 function applySnapshot(r){
+  const rv=Number(r.rev);
+  if(r.rev!=null&&((REV!=null&&rv<Number(REV))||(lastSeenRev!=null&&rv<Number(lastSeenRev))))return;
   VALVES=r.valves||[]; if(r.rev!=null)REV=r.rev;
   configUnreadable=!!r.config_unreadable;
   byName={}; baseline={};

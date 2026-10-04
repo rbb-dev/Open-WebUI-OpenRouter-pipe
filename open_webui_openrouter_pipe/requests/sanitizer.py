@@ -147,6 +147,15 @@ def _request_overhead_chars(body: Any) -> int:
 _pending_status_emissions: set[asyncio.Task[Any]] = set()
 
 
+def _inline_head_is_forwardable(url: str) -> bool:
+    from .transformer import _is_forwardable_image_type
+
+    text = url.strip()
+    if not text.lower().startswith("data:"):
+        return True
+    return _is_forwardable_image_type(text[5:].split(",", 1)[0])
+
+
 def _gate_tool_pictures(
     item: dict[str, Any], logger: logging.Logger, *,
     max_inline_bytes: int, allow_insecure: Callable[[str], bool],
@@ -171,6 +180,12 @@ def _gate_tool_pictures(
     )
     kept, unfetchable = _tool_picture_verdict_gate(kept, verdicts)
     refused = [*refused, *unfetchable]
+    unforwardable = [url for url in kept if not _inline_head_is_forwardable(url)]
+    if unforwardable:
+        refused.extend(
+            (url, "not identifiable as an image", "inline_untyped") for url in unforwardable
+        )
+        kept = [url for url in kept if url not in set(unforwardable)]
     if not refused:
         return item, False
     if refusals is not None:

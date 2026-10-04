@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import typing
 from functools import lru_cache
-from typing import Any
+from typing import Any, NamedTuple
 
 import annotated_types as at
 from pydantic import ValidationError
@@ -302,9 +302,17 @@ def _dashboard_valve_default() -> bool:
     return bool(getattr(field, "default", False))
 
 
+class MergeForSave(NamedTuple):
+    out: dict[str, Any]
+    dropped: list[str]
+    not_saved: set[str]
+    cleared: set[str]
+    changed: set[str]
+
+
 def merge_for_save_with_drops(
     valves_cls: type, current: dict[str, Any], edits: dict[str, Any]
-) -> tuple[dict[str, Any], list[str], set[str], set[str]]:
+) -> MergeForSave:
     stored, dropped = readable_stored(valves_cls, current)
     if dropped:
         logger.warning(
@@ -340,6 +348,8 @@ def merge_for_save_with_drops(
         merged[key] = value
         applied.add(key)
     full = valves_cls(**merged).model_dump()
+    before = valves_cls(**stored).model_dump()
+    changed = {k for k in applied if json_safe(full.get(k)) != json_safe(before.get(k))}
     defaults = valves_cls().model_dump()
     out: dict[str, Any] = {}
     for name, fld in valves_cls.model_fields.items():
@@ -360,7 +370,7 @@ def merge_for_save_with_drops(
         elif full.get(name) != defaults.get(name):
             out[name] = full[name]
     not_saved = set(edits) - applied
-    return out, dropped, not_saved, cleared
+    return MergeForSave(out, dropped, not_saved, cleared, changed)
 
 
 def merge_for_save(valves_cls: type, current: dict[str, Any], edits: dict[str, Any]) -> dict[str, Any]:

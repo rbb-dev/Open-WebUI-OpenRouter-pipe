@@ -51,7 +51,8 @@ Two other families of line are also hidden markers, and both are stripped from w
 `[P:<phase>]: #` (the phase label) and `[openrouter:v1:<kind>:<body>]: #` (the pipe's own transport lines, used by
 the video intent and media relay disclosures). Only the ULID form above is an **artifact reference** — the one this
 section is about, and the only one that is looked up and replayed. The kind form is a **transport line**: it carries
-state within a single message and is never resolved against the artifact store.
+state within a single message and is never resolved against the artifact store. The strip covers a caller-supplied
+`input_file.filename` as well as the text surfaces, so the reply path above is not the only one that answers it.
 
 On subsequent turns, the pipe scans prior assistant messages for marker lines, fetches the referenced artifacts in one batched pass per turn (from Redis cache if available, otherwise the database), and replays them into the next request in a structured form. Markers are emitted for chat turns only: a call that carries no `chat_id` adds none to its response, so a program calling the API sees exactly the bytes the model produced.
 

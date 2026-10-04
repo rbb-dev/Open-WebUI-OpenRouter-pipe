@@ -56,6 +56,9 @@ from tests.vetting_helpers import (
 )
 
 CDN = "cdn.example.com"
+ORIGIN = "origin.example.com"
+
+
 def _png(side: int = 6) -> bytes:
     from PIL import Image
 

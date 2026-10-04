@@ -65,7 +65,11 @@ from ..media import (
 from ..media.frame_extraction import _without_paths
 from ..models.registry import OpenRouterModelRegistry
 from ..requests.fusion_engine import asks_for_help, latest_user_text
-from ..requests.orchestrator import _is_api_caller, _provider_error_response
+from ..requests.orchestrator import (
+    _is_api_caller,
+    _is_chatless_caller,
+    _provider_error_response,
+)
 from ..storage.multimodal import (
     ADDRESS_CHECK_BUDGET_SECONDS,
     ADDRESS_CHECK_SECONDS,
@@ -834,6 +838,24 @@ class VideoResizableSemaphore(asyncio.Semaphore):
         self._limit = new_limit
 
 
+_VIDEO_JOB_ID_MAX_CHARS = 128
+_VIDEO_JOB_ID_UNSAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+_VIDEO_REASON_LINE_BREAKS = "\n\v\f\r\x1c\x1d\x1e\x85\u2028\u2029"
+_VIDEO_REASON_FLATTENED = str.maketrans(_VIDEO_REASON_LINE_BREAKS, " " * 10)
+
+
+def _flatten_reason(reason: str) -> str:
+    return reason.translate(_VIDEO_REASON_FLATTENED)
+
+
+def _safe_video_job_id(value: str) -> str:
+    text = _VIDEO_JOB_ID_UNSAFE_RE.sub("_", str(value or "").strip()).strip("._-")
+    if not text:
+        return "_"
+    return text[:_VIDEO_JOB_ID_MAX_CHARS]
+
+
 class VideoGenerationAdapter:
 
     TERMINAL_SUCCESS: ClassVar[set[str]] = {"completed", "succeeded", "success"}
@@ -899,7 +921,14 @@ class VideoGenerationAdapter:
         user_id = _clean_str(user.get("id")) or _clean_str(metadata.get("user_id")) or "anonymous"
         existing = await self._get_active_task(key)
         if existing is not None:
-            return await self._await_existing_task(existing, event_emitter, outcome_sink, metadata)
+            return await self._await_existing_task(
+                existing,
+                event_emitter,
+                outcome_sink,
+                metadata=metadata,
+                responses_body=responses_body,
+                request=request,
+            )
 
         message_lock = await self._acquire_message_lock(key)
         global_semaphore: asyncio.Semaphore | None = None
@@ -922,7 +951,14 @@ class VideoGenerationAdapter:
             if existing is not None:
                 await self._release_message_lock(key, message_lock)
                 message_lock = None  # type: ignore[assignment]
-                return await self._await_existing_task(existing, event_emitter, outcome_sink, metadata)
+                return await self._await_existing_task(
+                    existing,
+                    event_emitter,
+                    outcome_sink,
+                    metadata=metadata,
+                    responses_body=responses_body,
+                    request=request,
+                )
 
             persisted = await self._persistence.load_message_content(chat_id=chat_id, message_id=message_id, user=user_obj)
             if self._looks_like_final_video_content(persisted):
@@ -1312,8 +1348,11 @@ class VideoGenerationAdapter:
 
             result = await asyncio.shield(bg_task)
             await self._settle_request(result, outcome_sink, metadata)
+            escape = self._unreadable_body_escape(
+                result, metadata=metadata, responses_body=responses_body, request=request
+            )
             await self._emit_completion(event_emitter, result.content, usage=result.usage)
-            return result.content
+            return escape if escape is not None else result.content
         except asyncio.CancelledError:
             raise
         except OpenRouterAPIError as exc:
@@ -1842,7 +1881,7 @@ class VideoGenerationAdapter:
             )
             failed = True
             elapsed = max(0.0, time.monotonic() - started_at)
-            reason = self._unreadable_body_reason(exc)
+            reason = self._unreadable_body_reason(exc, chat_id=chat_id)
             content = self._build_failure_content(job_id=job_id, model_id=api_model_id, reason=reason)
             if disclosure_block:
                 content = disclosure_block + "\n" + content
@@ -1868,6 +1907,7 @@ class VideoGenerationAdapter:
                 elapsed=elapsed,
                 model_id=api_model_id,
                 output_mime=output_mime,
+                unreadable_body=exc,
             )
         except Exception as exc:
             self.logger.exception("Video lifecycle failed (job_id=%s)", job_id)
@@ -2031,13 +2071,18 @@ class VideoGenerationAdapter:
         event_emitter: EventEmitter | None,
         outcome_sink: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
-    ) -> str:
+        responses_body: Any = None,
+        request: Any = None,
+    ) -> str | StreamingResponse:
         await self._emit_status(event_emitter, "Waiting for active video generation job...", done=False)
         result = await asyncio.shield(task)
         await self._settle_request(result, outcome_sink, metadata, owns_usage=False)
+        escape = self._unreadable_body_escape(
+            result, metadata=metadata, responses_body=responses_body, request=request
+        )
         await self._emit_status(event_emitter, result.status_description, done=True)
         await self._emit_completion(event_emitter, result.content, usage=result.usage)
-        return result.content
+        return escape if escape is not None else result.content
 
     async def _get_active_task(self, key: tuple[str, str]) -> asyncio.Task[VideoLifecycleResult] | None:
         async with self._pipe._video_active_tasks_dict_lock:
@@ -4157,7 +4202,7 @@ class VideoGenerationAdapter:
         for key in ("id", "job_id", "jobId"):
             value = payload.get(key)
             if isinstance(value, str) and value.strip():
-                return value.strip()
+                return _safe_video_job_id(value.strip())
         data = payload.get("data")
         if isinstance(data, dict):
             return self._extract_job_id(data)
@@ -4168,11 +4213,11 @@ class VideoGenerationAdapter:
         for key in ("error", "message", "detail", "reason"):
             value = payload.get(key)
             if isinstance(value, str) and value.strip():
-                return value.strip()
+                return _flatten_reason(value.strip())
             if isinstance(value, dict):
                 message = value.get("message") or value.get("detail")
                 if isinstance(message, str) and message.strip():
-                    return message.strip()
+                    return _flatten_reason(message.strip())
         return f"OpenRouter reported video job status '{status or 'failed'}'."
 
     def _build_success_content(
@@ -4199,10 +4244,28 @@ class VideoGenerationAdapter:
             f"{clips}{shortfall}"
         )
 
-    def _unreadable_body_reason(self, exc: Any) -> str:
-        if is_channel_chat(OWUI_CHAT_ID.get()):
+    def _unreadable_body_reason(self, exc: Any, *, chat_id: str = "") -> str:
+        if is_channel_chat(chat_id) or is_channel_chat(OWUI_CHAT_ID.get()):
             return exc.summary()
         return f"{exc.summary()}\n\n{exc.body_excerpt_block()}"
+
+    def _unreadable_body_escape(
+        self,
+        result: VideoLifecycleResult,
+        *,
+        metadata: dict[str, Any] | None,
+        responses_body: Any,
+        request: Any,
+    ) -> StreamingResponse | None:
+        exc = result.unreadable_body
+        if exc is None or not _is_chatless_caller(metadata):
+            return None
+        return _unreadable_body_failure_response(
+            exc,
+            code=502,
+            stream=bool(getattr(responses_body, "stream", False)),
+            path=getattr(getattr(request, "url", None), "path", "") or "",
+        )
 
     def _build_failure_content(self, *, job_id: str, model_id: str, reason: str) -> str:
         markers = ""
@@ -4228,7 +4291,9 @@ class VideoGenerationAdapter:
     def _extract_video_job_marker(self, content: str) -> str:
         if not isinstance(content, str) or not content:
             return ""
-        return _find_first_kind_marker_body(content, kind=self.JOB_MARKER_KIND).strip()
+        return _safe_video_job_id(
+            _find_first_kind_marker_body(content, kind=self.JOB_MARKER_KIND)
+        )
 
     def _looks_like_final_video_content(self, content: str) -> bool:
         if not isinstance(content, str):

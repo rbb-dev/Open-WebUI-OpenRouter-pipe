@@ -143,10 +143,10 @@ async def _authorized(
             return await o.AccessGrants.has_access(
                 user_id=user.id, resource_type="model", resource_id=mid, permission="read",
             )
+        if getattr(user, "role", None) == "admin":
+            return True
         if model is None:
             return False
-        if user.role == "admin" and o.BYPASS_ADMIN:
-            return True
         if user.id == model.user_id:
             return True
         return await o.AccessGrants.has_access(

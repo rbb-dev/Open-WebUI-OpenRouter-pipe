@@ -951,6 +951,28 @@ def _server_only_media_refusal(link: str) -> str:
     return _server_only_media_verdict(link)[0]
 
 
+def _forwardable_inline_image(url: Any) -> bool:
+    if not isinstance(url, str) or not url.strip():
+        return False
+    text = url.strip()
+    if not text.lower().startswith("data:"):
+        return True
+    from ..requests.transformer import _is_forwardable_image_type
+    return _is_forwardable_image_type(text[5:].split(",", 1)[0])
+
+
+def _without_unforwardable_pictures(
+    kept: list[str], refused: list[tuple[str, str, str]]
+) -> list[str]:
+    survivors: list[str] = []
+    for url in kept:
+        if _forwardable_inline_image(url):
+            survivors.append(url)
+        else:
+            refused.append((url, "not identifiable as an image", "inline_untyped"))
+    return survivors
+
+
 def _chat_link_refusal_reason(
     field: str, url: Any, *, allow_insecure: Callable[[str], bool], max_inline_bytes: int,
 ) -> str | None:
@@ -1200,6 +1222,7 @@ async def _responses_input_to_chat_messages(
             pipe, tool_pictures, max_inline_bytes=max_inline_bytes,
             seen=_handover_seen, budget=_handover_budget,
         )
+        kept = _without_unforwardable_pictures(kept, refused)
         if refused and refused_out is not None:
             refused_out.extend(refused)
         for url, reason, cause in refused:
@@ -1356,6 +1379,9 @@ async def _responses_input_to_chat_messages(
                                 if refusal is not None:
                                     media_refusals[id(block)] = refusal
                                     continue
+                                if not _forwardable_inline_image(url):
+                                    media_refusals[id(block)] = "not identifiable as an image"
+                                    continue
                                 image_url_obj: dict[str, Any] = {"url": url.strip()}
                                 image_url_obj["detail"] = image_detail_or_auto(block.get("detail"))
                                 blocks_out.append({"type": "image_url", "image_url": image_url_obj})
@@ -1366,13 +1392,19 @@ async def _responses_input_to_chat_messages(
                             continue
                         if btype == "image_url":
                             image_url_val = block.get("image_url")
+                            chat_image_url = _chat_media_url(block, "image_url")
                             refusal = _chat_link_refusal_reason(
-                                "image_url", _chat_media_url(block, "image_url"),
+                                "image_url", chat_image_url,
                                 allow_insecure=allow_insecure,
                                 max_inline_bytes=max_inline_bytes,
                             )
                             if refusal is not None:
                                 media_refusals[id(block)] = refusal
+                                continue
+                            if isinstance(chat_image_url, str) and not _forwardable_inline_image(
+                                chat_image_url
+                            ):
+                                media_refusals[id(block)] = "not identifiable as an image"
                                 continue
                             if isinstance(image_url_val, dict):
                                 blocks_out.append({"type": "image_url", "image_url": dict(image_url_val)})

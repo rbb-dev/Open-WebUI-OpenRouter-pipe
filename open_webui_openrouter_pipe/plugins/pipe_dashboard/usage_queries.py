@@ -21,7 +21,7 @@ USAGE_RANGES: dict[str, tuple[int, int]] = {
     "30d": (2592000, 14400),
 }
 
-_UQ_MEMO: dict[tuple[str | None, str, bool, int, bool, int], tuple[float, dict[str, Any]]] = {}
+_UQ_MEMO: dict[tuple[str | None, str, bool, int, bool | None, int], tuple[float, dict[str, Any]]] = {}
 _UQ_MEMO_TTL = 30.0
 _UQ_MEMO_MAX = 256
 
@@ -482,7 +482,7 @@ async def run_usage_query(plugin: Any, pipe: Any, args: dict[str, Any]) -> dict[
                 exc_info=True,
             )
             row, stored_read_ok = {}, False
-        collect_on = bool(row.get("PIPE_DASHBOARD_USAGE_COLLECT", False)) if stored_read_ok else False
+        collect_on = bool(row.get("PIPE_DASHBOARD_USAGE_COLLECT", False)) if stored_read_ok else None
         retention_days = int(row.get("PIPE_DASHBOARD_USAGE_RETENTION_DAYS", 30) or 30) if stored_read_ok else 30
     base_meta = {"collect_on": collect_on, "retention_days": retention_days, "range": range_key}
 

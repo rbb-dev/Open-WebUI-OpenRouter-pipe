@@ -1147,7 +1147,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
 
     function usTotals(meta) {{
       var sinceText = meta.since ? new Date(meta.since * 1000).toLocaleDateString() : '\\u2014';
-      return '<div style="font-size:11px;color:var(--text-faint);margin-top:6px;">Figures cover activity since collection was enabled (' + esc(sinceText) + '); task models served outside this pipe are not counted.</div>';
+      return '<div style="font-size:11px;color:var(--text-faint);margin-top:6px;">Figures cover the records still retained (oldest ' + esc(sinceText) + '); older activity is past the retention window. Task models served outside this pipe are not counted.</div>';
     }}
 
     function usMetaLine(meta) {{
@@ -1156,7 +1156,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
       if (meta.records !== undefined && meta.records !== null) parts.push(meta.records + ' records');
       if (meta.approx_bytes) parts.push('\\u2248 ' + fmtBytes(meta.approx_bytes));
       parts.push('times in your timezone');
-      return 'collection ' + (meta.collect_on ? 'ON' : 'OFF') + ' \\u00b7 ' + parts.join(' \\u00b7 ');
+      return 'collection ' + (meta.collect_on === null ? 'unknown' : (meta.collect_on ? 'ON' : 'OFF')) + ' \\u00b7 ' + parts.join(' \\u00b7 ');
     }}
 
     function usApplyRetention(meta) {{
@@ -1188,11 +1188,24 @@ def _build_dashboard_shell(dash_id: str) -> str:
         }}
         body.style.display = 'none';
         note.style.display = '';
-        if (res && res.meta && res.meta.collect_on === false) {{
+        if (res && res.meta && res.meta.collect_on === null) {{
+          note.textContent = 'Usage collection could not be read from the stored settings'
+            + (res.reason ? ' (' + res.reason + ')' : '')
+            + '; the pipe logged the read — try again in a moment.';
+        }} else if (res && res.meta && res.meta.collect_on === false) {{
           note.textContent = 'Usage collection is off. Enable the PIPE_DASHBOARD_USAGE_COLLECT valve to start recording usage for this tab.';
         }} else {{
           note.textContent = 'Usage data unavailable: ' + reason;
         }}
+        reportHeight();
+        return;
+      }}
+      if (res.meta && res.meta.collect_on === null && (!res.totals || !res.totals.sessions)) {{
+        body.style.display = 'none';
+        note.style.display = '';
+        note.textContent = 'Usage collection could not be read from the stored settings'
+          + (res.reason ? ' (' + res.reason + ')' : '')
+          + '; the pipe logged the read — try again in a moment.';
         reportHeight();
         return;
       }}

@@ -143,6 +143,12 @@ Tool **results** are stripped of hidden marker lines before the model sees them;
 not, because a JSON argument value is not a line of the message and a caller may legitimately pass text that looks
 like a marker — stripping it would corrupt the payload it means to send.
 
+A caller-supplied `input_file.filename` is stripped too. The name is free text on a block the caller builds, and the
+pipe's framing is line-based, so a name carrying a marker on a line of its own would otherwise choose the framing of a
+turn the caller does not own — the same line filter as everywhere else, the same carve-out for tool **arguments**
+untouched. A name that is nothing but marker lines loses the `filename` field and the file still goes out on its
+`file_id`; the person keeps the attachment and the provider is not told the file is called nothing.
+
 The strip is a **line** filter, so it removes a line by its whole content rather than by the marker inside it. A
 marker-shaped line a user typed **on a line of its own** — in any of the three families above — is removed too, while
 the same text inline is preserved. Only whole lines are affected; a marker that is part of a sentence is left alone.

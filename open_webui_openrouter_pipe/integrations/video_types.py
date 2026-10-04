@@ -43,6 +43,7 @@ class VideoLifecycleResult(VideoGenerationResult):
     elapsed: float = 0.0
     model_id: str = ""
     output_mime: str = ""
+    unreadable_body: Any | None = None
 
 
 @dataclass(slots=True)

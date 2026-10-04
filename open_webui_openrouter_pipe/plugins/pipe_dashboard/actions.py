@@ -572,11 +572,12 @@ async def _write_config_edits(
         answer["conflict"] = True
         answer["rev"] = current_rev
         answer["config_unreadable"] = True
+        answer["unreadable"] = _reason
         if conflicts:
             answer["conflicts"] = conflicts
         return answer, False
     try:
-        to_save, dropped, not_saved, cleared = merge_for_save_with_drops(
+        to_save, dropped, not_saved, cleared, changed = merge_for_save_with_drops(
             type(pipe.valves), current, edits
         )
     except ValidationError as exc:
@@ -592,7 +593,7 @@ async def _write_config_edits(
         getattr(pipe, "id", ""), user, request, data={"pipe_config_change": change}
     )
     payload: dict[str, Any] = {
-        "saved": len(edits) - len(not_saved - cleared),
+        "saved": len(changed),
         "not_saved": sorted(not_saved - cleared),
         "rev": rev,
         "change": change,
@@ -614,16 +615,20 @@ async def _persist_base_checked_edit(
     current_rev: Any,
     base: dict[str, Any],
     lease: _ConfigLease | None = None,
+    stale_secrets: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, Any], bool]:
     effective, _dropped, stored, read_ok = await _effective_valves_and_state(pipe)
-    if not read_ok and stored is None:
-        return {
-            "unreadable": "the stored configuration could not be read from the database",
-            "rev": current_rev,
-        }, False
+    if not read_ok:
+        _readable, reason = await stored_row_readable(getattr(pipe, "id", ""), stored)
+        return {"unreadable": reason, "rev": current_rev}, False
     valves_cls = type(pipe.valves)
     conflicts = sorted(
-        name for name in args["edits"] if not _base_still_holds(valves_cls, effective, name, base)
+        {
+            name
+            for name in args["edits"]
+            if name in stale_secrets
+            or not _base_still_holds(valves_cls, effective, name, base)
+        }
     )
     stale = _config_snapshot(effective, stored)
     stale["rev"] = current_rev
@@ -658,8 +663,19 @@ async def _persist_config_edit(
         stale_payload["config_unreadable"] = not conflict_read_ok
         return stale_payload, False
     if isinstance(base, dict):
+        valves_cls = type(pipe.valves)
+        stale_secrets = (
+            frozenset(
+                name
+                for name in args["edits"]
+                if (fld := valves_cls.model_fields.get(name)) is not None
+                and is_secret(fld.annotation)
+            )
+            if stale
+            else frozenset()
+        )
         return await _persist_base_checked_edit(
-            pipe, user, args, request, current_rev, base, lease
+            pipe, user, args, request, current_rev, base, lease, stale_secrets
         )
     edits = args["edits"]
     if not edits:

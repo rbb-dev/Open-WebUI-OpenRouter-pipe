@@ -1008,13 +1008,18 @@ class ToolExecutor:
                     with contextlib.suppress(Exception):
                         server_payload.pop("specs", None)
 
-                    registry_key = f"{name}::direct"
+                    origin_key = f"{name}::direct"
+                    registry_key = origin_key
+                    ordinal = 2
+                    while registry_key in direct_registry:
+                        registry_key = f"{origin_key}#{ordinal}"
+                        ordinal += 1
                     direct_registry[registry_key] = {
                         "spec": spec_payload,
                         "direct": True,
                         "server": server_payload,
                         "callable": _browser_call(allowed_params, name, server_payload, event_call),
-                        "origin_key": registry_key,
+                        "origin_key": origin_key,
                     }
                 except Exception:
                     self.logger.debug("Skipping malformed direct tool spec", exc_info=True)
@@ -1103,6 +1108,7 @@ class ToolExecutor:
         self, files: list[dict[str, Any]], context: _ToolExecutionContext, *, tool_name: str = ""
     ) -> tuple[list[str], list[dict[str, Any]]]:
         from ..requests.transformer import (
+            _gate_did_not_run_refusals,
             _tool_picture_gate_with_address,
             _tool_picture_notice,
         )
@@ -1130,10 +1136,16 @@ class ToolExecutor:
             if isinstance(entry, dict) and entry.get("type") == "image" and isinstance(url, str) and url:
                 candidates.append(url)
         seen, budget = _request_address_budget(context)
-        pictures, refused = await _tool_picture_gate_with_address(
-            pipe, candidates, max_inline_bytes=max_inline_bytes,
-            seen=seen, budget=budget,
-        )
+        try:
+            pictures, refused = await _tool_picture_gate_with_address(
+                pipe, candidates, max_inline_bytes=max_inline_bytes,
+                seen=seen, budget=budget,
+            )
+        except Exception:
+            self.logger.exception(
+                "A tool's pictures could not be gated; none of them was sent"
+            )
+            pictures, refused = [], _gate_did_not_run_refusals(candidates)
         for refused_url, reason, cause in refused:
             self.logger.warning(
                 "Not forwarding a tool's picture (%s): %s [cause=%s]",

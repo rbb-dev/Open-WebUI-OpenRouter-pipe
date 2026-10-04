@@ -423,6 +423,11 @@ class ImageRefusal(NamedTuple):
     subject: str = ""
 
 
+def _is_forwardable_image_type(resolved: str | None) -> bool:
+    base = (resolved or "").split(";", 1)[0].strip().lower()
+    return base.startswith("image/") and base != "image/svg+xml"
+
+
 def _resolve_inline_type(
     head: str,
     body: str,
@@ -439,7 +444,7 @@ def _resolve_inline_type(
     except (binascii.Error, ValueError):
         sniffed = b""
     resolved = resolve_download_type(declared, _sniff_evidence(sniffed))
-    if not resolved.startswith("image/"):
+    if not _is_forwardable_image_type(resolved):
         return head, ImageRefusal("not identifiable as an image", cause, subject=subject)
     if resolved != declared:
         return f"data:{resolved};base64,{body}", None
@@ -797,6 +802,15 @@ _MEDIA_BLOCK_TYPES = frozenset({
     "input_audio", "audio", "video_url", "input_video", "video",
 })
 
+_GATE_DID_NOT_RUN_REASON = "could not be checked, so it was not sent"
+_GATE_DID_NOT_RUN_CAUSE = "tool_picture_gate_failed"
+
+
+def _gate_did_not_run_refusals(pictures: list[str]) -> list[tuple[str, str, str]]:
+    return [
+        (url, _GATE_DID_NOT_RUN_REASON, _GATE_DID_NOT_RUN_CAUSE) for url in pictures
+    ]
+
 
 def _source_url_of(block: dict[str, Any]) -> str:
     payload = block.get("image_url")
@@ -1037,6 +1051,8 @@ async def _tool_picture_address_gate(
                     permitted = await pipe._multimodal_handler._is_safe_url(
                         url, seconds=_seconds,
                     )
+                except RequiredInternalFileError:
+                    raise
                 except Exception:
                     pipe.logger.warning(
                         "The address check for a tool's picture could not run, so it was not sent: %s",
@@ -1797,10 +1813,16 @@ async def transform_messages_to_input(
                     _prune_tool_output(tool_item, marker=None, turn_index=msg_turn_index, retention_turns=pruning_turns)
                 openai_input.append(tool_item)
                 if tool_pictures and not _handoff_ahead(messages, idx):
-                    admitted, tool_refusals = await _tool_picture_gate_with_address(
-                        pipe, tool_pictures, max_inline_bytes=max_inline_bytes,
-                        seen=address_verdicts, budget=address_budget,
-                    )
+                    try:
+                        admitted, tool_refusals = await _tool_picture_gate_with_address(
+                            pipe, tool_pictures, max_inline_bytes=max_inline_bytes,
+                            seen=address_verdicts, budget=address_budget,
+                        )
+                    except Exception:
+                        pipe.logger.exception(
+                            "A tool round's pictures could not be gated; none of them was sent",
+                        )
+                        admitted, tool_refusals = [], _gate_did_not_run_refusals(tool_pictures)
                     _deferred_tool_refusals.extend(tool_refusals)
                     _deferred_tool_pictures.extend(admitted)
                 continue
@@ -2019,7 +2041,7 @@ async def transform_messages_to_input(
                                     declared_type,
                                     _sniff_evidence(bytes(downloaded["data"][:_SNIFF_PREFIX_BYTES])),
                                 )
-                                if not resolved_type.startswith("image/"):
+                                if not _is_forwardable_image_type(resolved_type):
                                     return _refuse(
                                         "not identifiable as an image",
                                         "inline_untyped",
@@ -2370,7 +2392,13 @@ async def transform_messages_to_input(
                         if file_data:
                             result["file_data"] = file_data
                         if filename:
-                            result["filename"] = filename
+                            clean_name = (
+                                strip_hidden_marker_lines(filename)
+                                if isinstance(filename, str)
+                                else filename
+                            )
+                            if clean_name:
+                                result["filename"] = clean_name
                         if file_url:
                             result["file_url"] = file_url
 
