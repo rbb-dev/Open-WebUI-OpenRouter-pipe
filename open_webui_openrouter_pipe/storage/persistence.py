@@ -818,7 +818,8 @@ class ArtifactStore:
             self.logger.warning(
                 "ARTIFACT_ENCRYPTION_KEY is set but cannot be decrypted with the current "
                 "WEBUI_SECRET_KEY; dropping %d artifact row(s) rather than storing them "
-                "unencrypted. Re-enter ARTIFACT_ENCRYPTION_KEY to resume storing artifacts. "
+                "unencrypted. Re-enter ARTIFACT_ENCRYPTION_KEY without the 'encrypted:' prefix "
+                "to resume storing artifacts. "
                 "The stored value looks like a ciphertext but does not decode: it may be "
                 "damaged, or it may be a passphrase typed with the 'encrypted:' prefix.",
                 len(rows),

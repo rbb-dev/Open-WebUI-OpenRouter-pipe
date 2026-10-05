@@ -316,19 +316,6 @@ def test_readable_bundle_hot_reload_uses_new_code(isolated_sys_modules):
     assert sys.modules.get("open_webui_openrouter_pipe") is mod2
 
 
-def test_get_lifecycle_registry_preserves_cross_version_instance(fresh_registry):
-    pipe_mod = _import_pipe_module()
-    simulated_old_class = type(
-        "_LifecycleRegistry",
-        (),
-        dict(pipe_mod._LifecycleRegistry.__dict__),
-    )
-    old_reg = simulated_old_class()
-    sys.modules[LIFECYCLE_REGISTRY_KEY] = old_reg  # type: ignore[assignment]
-    result = pipe_mod._get_lifecycle_registry()
-    assert result is old_reg
-
-
 def test_auto_register_chain_drains_predecessor(fresh_registry):
     pipe_mod = _import_pipe_module()
     g1 = pipe_mod.Pipe()

@@ -3203,8 +3203,7 @@ async def transform_messages_to_input(
                                 continue
                             if result.severity == "fatal":
                                 raise RequiredInternalFileError(
-                                    f"A referenced image ({result.subject}) is "
-                                    f"{result.reason}.",
+                                    "A referenced picture is no longer available in Open WebUI storage.",
                                     kind="image",
                                 )
                             pipe.logger.log(

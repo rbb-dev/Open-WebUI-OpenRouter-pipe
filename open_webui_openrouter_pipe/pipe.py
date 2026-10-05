@@ -461,6 +461,20 @@ class _LifecycleRegistry:
             ref = self._current.get(pipe_id)
             return ref() if ref else None
 
+    def adopt_from(self, previous: Any) -> None:
+        carried = getattr(previous, "_current", None)
+        if not isinstance(carried, dict):
+            return
+        snapshot = _snapshot_under_lock(carried, getattr(previous, "_lock", None))
+        with self._lock:
+            for pipe_id, ref in snapshot:
+                if not callable(ref):
+                    try:
+                        ref = weakref.ref(ref)
+                    except TypeError:
+                        continue
+                self._current[pipe_id] = ref
+
 
 class _ProcessLimits:
     def __init__(self) -> None:
@@ -472,6 +486,12 @@ class _ProcessLimits:
         self.panel_limit: int = 0
         self.video_semaphore: asyncio.Semaphore | None = None
         self.video_limit: int = 0
+
+    def adopt(self, previous: Any) -> None:
+        fields = tuple(vars(self))
+        for name in fields:
+            if hasattr(previous, name):
+                setattr(self, name, getattr(previous, name))
 
 
 class _ProcessLimitsHolder:
@@ -486,6 +506,17 @@ class _ProcessLimitsHolder:
                 slots = _ProcessLimits()
                 self._by_pipe_id[pipe_id] = slots
             return slots
+
+    def adopt_from(self, previous: Any) -> None:
+        carried = getattr(previous, "_by_pipe_id", None)
+        if not isinstance(carried, dict):
+            return
+        snapshot = _snapshot_under_lock(carried, getattr(previous, "_lock", None))
+        with self._lock:
+            for pipe_id, slots in snapshot:
+                adopted = _ProcessLimits()
+                adopted.adopt(slots)
+                self._by_pipe_id[pipe_id] = adopted
 
 
 _brings_tool_results = brings_tool_results
@@ -610,20 +641,38 @@ def _fallback_tool_text(raw_result: Any) -> str:
     return "" if raw_result is None else str(raw_result)
 
 
-def _get_lifecycle_registry():
-    reg = sys.modules.get(_LIFECYCLE_REGISTRY_KEY)
-    if reg is None:
-        reg = _LifecycleRegistry()
-        sys.modules[_LIFECYCLE_REGISTRY_KEY] = reg  # type: ignore[assignment]
-    return reg
+def _snapshot_under_lock(source: dict[Any, Any], lock: Any) -> list[tuple[Any, Any]]:
+    if hasattr(lock, "acquire") and hasattr(lock, "release"):
+        with lock:
+            return list(source.items())
+    return list(source.items())
+
+
+_PROCESS_UPGRADE_LOCK = threading.Lock()
+
+
+def _upgrade_process_state(key: str, current_type: type[Any]) -> Any:
+    stored = sys.modules.get(key)
+    if type(stored) is current_type:
+        return stored
+    with _PROCESS_UPGRADE_LOCK:
+        stored = sys.modules.get(key)
+        if type(stored) is current_type:
+            return stored
+        replacement = current_type()
+        previous = sys.modules.get(key)
+        if previous is not None:
+            replacement.adopt_from(previous)
+        sys.modules[key] = replacement  # type: ignore[assignment]
+        return replacement
+
+
+def _get_lifecycle_registry() -> _LifecycleRegistry:
+    return cast(_LifecycleRegistry, _upgrade_process_state(_LIFECYCLE_REGISTRY_KEY, _LifecycleRegistry))
 
 
 def _get_process_limits() -> _ProcessLimitsHolder:
-    holder = sys.modules.get(_LIMITS_HOLDER_KEY)
-    if holder is None:
-        holder = _ProcessLimitsHolder()
-        sys.modules[_LIMITS_HOLDER_KEY] = holder  # type: ignore[assignment]
-    return cast(_ProcessLimitsHolder, holder)
+    return cast(_ProcessLimitsHolder, _upgrade_process_state(_LIMITS_HOLDER_KEY, _ProcessLimitsHolder))
 
 
 def _tool_body_raised(exc: BaseException, fn: Any) -> bool:
@@ -3006,7 +3055,7 @@ class Pipe:
         session_log_manager = getattr(self, "_session_log_manager", None)
         if session_log_manager is None:
             return
-        session_log_manager.stop_workers()
+        await asyncio.to_thread(session_log_manager.stop_workers)
 
     async def _drain_session_log_persists(self) -> None:
         registered = getattr(self, "_session_log_persists", None)
@@ -3414,8 +3463,12 @@ class Pipe:
         from .integrations.video import VideoResizableSemaphore
 
         if current is None:
+            published = int(read_limit() or 0)
+            if not live and published > 0:
+                target = published
             write_sem(VideoResizableSemaphore(target))
-            write_limit(target)
+            if live or published == 0:
+                write_limit(target)
             self.logger.debug("Initialized %s (limit=%s)", what, target)
             return
         if not live:

@@ -327,21 +327,6 @@ class ReasoningConfigManager:
             self._set_include_reasoning(responses_body, None)
 
     def _apply_anthropic_verbosity(self, responses_body: ResponsesBody, valves: Pipe.Valves) -> None:
-        """Map xhigh effort to verbosity: "max" for Claude Opus/Sonnet models.
-
-        OpenRouter's ``verbosity`` parameter maps to Anthropic's
-        ``output_config.effort``.  The ``"max"`` level is only supported by
-        Claude 4.6 Opus/Sonnet and later, but older Claude models gracefully
-        fall back to ``"high"`` on the OpenRouter side, so the broad pattern
-        match (``anthropic.claude-opus-*`` / ``anthropic.claude-sonnet-*``) is
-        safe.
-
-        This is intentionally a no-op when the user has already set
-        ``verbosity`` explicitly (e.g. via a custom parameter), to avoid
-        overriding their choice.
-        """
-        from .registry import _is_claude_reasoning_model
-
         # Don't override if the user already set verbosity explicitly.
         if responses_body.verbosity is not None:
             return
@@ -352,8 +337,6 @@ class ReasoningConfigManager:
                 return
 
         normalized = ModelFamily.base_model(responses_body.model)
-        if not _is_claude_reasoning_model(normalized):
-            return
         if not ModelFamily.supports_verbosity(normalized):
             return
 

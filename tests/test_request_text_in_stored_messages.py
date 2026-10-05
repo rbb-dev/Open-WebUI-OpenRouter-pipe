@@ -113,6 +113,9 @@ def test_an_empty_key_still_produces_something_to_point_at():
         "https://catbox.moe/d.mp4\n",
         "HTTPS://catbox.moe/a.mp4",
         "Http://files.catbox.moe/b.mp4",
+        "https://files.catbox.moe/ok.mp4?",
+        "https://files.catbox.moe/ok.mp4#",
+        " https://files.catbox.moe/ok.mp4",
     ],
 )
 def test_a_link_that_parses_as_one_string_and_reads_as_another_is_refused(injected):
@@ -123,10 +126,17 @@ def test_a_link_that_parses_as_one_string_and_reads_as_another_is_refused(inject
     third case -- an origin bypass, since `cat\\nbox.moe` is checked as `catbox.moe`.
     The link is marked vetted the moment it comes back, so nothing downstream looks again.
 
-    The last two are the same invariant without a control character: `urlsplit` lowercases
+    The next two are the same invariant without a control character: `urlsplit` lowercases
     the scheme, so `HTTPS://` passes the scheme and origin checks on its own and only the
     round-trip refuses it. An uppercase *host* round-trips equal and is accepted, which is
     the other half of the property -- see the acceptance rows below.
+
+    The last three are the delimiters and the padding with nothing behind them: a bare
+    `?` and a bare `#`, and a leading space. Each is dropped by the parse, so what the
+    origin check validated is a shorter string than the one the host answered with, and
+    the tail that never got looked at is exactly the part a reader would have to trust.
+    A delimiter with nothing after it is refused rather than silently repaired, which is
+    the same side every other normalisation here is refused on.
     """
     body = json.dumps({"data": {"url": injected}})
 

@@ -779,9 +779,14 @@ def channel_safe_values(values: dict[str, Any]) -> dict[str, Any]:
 
 _INTERNAL_FILE_REF_RE = re.compile(r"[^\s()\[\]]*/api/v1/files/[^\s()\[\]]*", re.IGNORECASE)
 
+_BARE_FILE_UUID_RE = re.compile(
+    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+)
+
 
 def _channel_safe_card_text(text: str) -> str:
-    return _INTERNAL_FILE_REF_RE.sub("[a file reference withheld on a channel]", text)
+    text = _INTERNAL_FILE_REF_RE.sub("[a file reference withheld on a channel]", text)
+    return _BARE_FILE_UUID_RE.sub("[a file reference withheld on a channel]", text)
 
 
 _BLOCKED_RATHER_THAN_REJECTED = frozenset(

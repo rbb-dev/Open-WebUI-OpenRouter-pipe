@@ -69,7 +69,7 @@ def is_secret_annotation(annotation: Any) -> bool:
     secret = _encrypted_type()
     if annotation is secret:
         return True
-    return any(arg is secret for arg in typing.get_args(annotation))
+    return any(is_secret_annotation(arg) for arg in typing.get_args(annotation))
 
 
 def is_secret_field(cls: type, name: str) -> bool:

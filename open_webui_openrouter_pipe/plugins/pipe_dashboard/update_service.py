@@ -1116,9 +1116,13 @@ class UpdateService:
         if watchdog is None:
             return
         watchdog.cancel()
+        task = asyncio.current_task()
+        cancelling_before = task.cancelling() if task is not None else 0
         try:
-            await watchdog
+            await asyncio.shield(watchdog)
         except asyncio.CancelledError:
+            if task is not None and task.cancelling() > cancelling_before:
+                raise
             return
         except Exception:
             logger.debug("update: lock watchdog stopped on a failure", exc_info=True)

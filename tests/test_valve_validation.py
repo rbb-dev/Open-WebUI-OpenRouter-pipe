@@ -51,11 +51,20 @@ class TestEncryptedStr:
         assert result == ""
 
     def test_encrypt_already_encrypted_returns_early(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Already-encrypted value returns immediately (line 483 - startswith check)."""
+        """A value that is already a stored row returns immediately (line 483).
+
+        The short-circuit is on "is this a sealed row", not on the bare prefix: a
+        passphrase typed with the prefix is sealed rather than stored as typed, because
+        the row it lands in is otherwise the key for everything at rest in plain JSON. A
+        real token under this key is the case the short-circuit exists for, and it is
+        what keeps a Config-tab save from rewriting the row it read.
+        """
         monkeypatch.setenv("WEBUI_SECRET_KEY", "unit-test-webui-secret")
-        already_encrypted = "encrypted:some_data_here"
-        result = EncryptedStr.encrypt(already_encrypted)
-        assert result == already_encrypted
+        already_encrypted = EncryptedStr.encrypt("some_data_here")
+        assert already_encrypted.startswith(EncryptedStr._ENCRYPTION_PREFIX), (
+            f"the fixture was not sealed: {already_encrypted!r}"
+        )
+        assert EncryptedStr.encrypt(already_encrypted) == already_encrypted
 
 class TestUserValveInheritNormalization:
     """Tests for the 'inherit' string normalization in UserValves validator."""

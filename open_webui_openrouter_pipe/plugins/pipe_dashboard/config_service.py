@@ -27,7 +27,6 @@ _BRAND = {"OPENROUTER": "OpenRouter", "WEBUI": "WebUI", "OWUI": "Open WebUI"}
 
 
 def is_secret(annotation: Any) -> bool:
-    """True iff the field is an ``EncryptedStr`` (directly or under Optional)."""
     return is_secret_annotation(annotation)
 
 
@@ -174,9 +173,11 @@ def readable_stored(valves_cls: type, stored: dict[str, Any]) -> tuple[dict[str,
 
 
 def _is_blanked_nullable(valves_cls: type, name: str, value: Any) -> bool:
-    from ...core.valve_salvage import _admits_none
+    from ...core.valve_salvage import _admits_none, is_secret_field
 
-    return _admits_none(valves_cls, name) and isinstance(value, str) and not value.strip()
+    return (
+        _admits_none(valves_cls, name) or is_secret_field(valves_cls, name)
+    ) and isinstance(value, str) and not value.strip()
 
 
 def _is_clear_edit(fld: Any, value: Any, current: dict[str, Any]) -> bool:

@@ -393,6 +393,7 @@ _ZDR_CREDENTIAL_HISTORY = 4
 _IMAGE_CONTRACT_TARGET_HISTORY = 4
 _ZDR_CREDENTIAL_RETENTION_SECONDS = 4 * 60 * 60
 _ZDR_LIVE_CREDENTIAL_CEILING = 64
+_BUILD_YIELD_EVERY = 64
 _REGISTRY_CATALOG_TIMEOUT_SECONDS = 15
 
 
@@ -780,7 +781,9 @@ class OpenRouterModelRegistry:
         models: list[dict[str, Any]] = []
         id_map: dict[str, str] = {}
 
-        for item in data:
+        for index, item in enumerate(data):
+            if index % _BUILD_YIELD_EVERY == 0:
+                await asyncio.sleep(0)
             original_id = item.get("id")
             if not original_id:
                 continue
@@ -801,7 +804,9 @@ class OpenRouterModelRegistry:
             )
 
         specs: dict[str, dict[str, Any]] = {}
-        for norm_id, full_model in raw_specs.items():
+        for index, (norm_id, full_model) in enumerate(raw_specs.items()):
+            if index % _BUILD_YIELD_EVERY == 0:
+                await asyncio.sleep(0)
             supported_parameters = set(full_model.get("supported_parameters") or [])
             architecture = full_model.get("architecture") or {}
             pricing = full_model.get("pricing") or {}
@@ -1998,18 +2003,17 @@ _CLAUDE_REASONING_RE = re.compile(r"~?anthropic[./]claude-(opus|sonnet)-")
 
 
 def _is_claude_reasoning_model(normalized_model_id: str) -> bool:
-    """Return True for Claude Opus/Sonnet models that support verbosity mapping."""
     return bool(_CLAUDE_REASONING_RE.match((normalized_model_id or "").lower()))
 
 
 def _supports_verbosity(normalized_model_id: str) -> bool:
     normalized = normalized_model_id or ""
-    if not _is_claude_reasoning_model(normalized):
-        return False
     if not ModelFamily.catalog_spec(normalized):
         return False
     supported = ModelFamily.catalog_supported_parameters(normalized)
-    return not supported or "verbosity" in supported
+    if supported:
+        return "verbosity" in supported
+    return _is_claude_reasoning_model(normalized)
 
 
 # Gemini Reasoning Helpers
@@ -2081,13 +2085,11 @@ _PRICING_CATEGORY_KEYS = {
     "input_cache_write",
 }
 _PRICING_VALUE_KEYS = ("price", "amount", "value", "usd", "cost", "rate")
+_PRICING_SKIPPED_KEYS = frozenset({"discount", "overrides"})
 
 
 def sum_pricing_values(node: Any) -> tuple[Decimal, int]:
     """Return (sum, count) of numeric values found in a pricing node.
-
-    Recursively walks pricing structures from OpenRouter model specs,
-    summing all numeric values while ignoring discount fields.
 
     Args:
         node: Pricing data structure (dict, list, or scalar)
@@ -2102,7 +2104,7 @@ def sum_pricing_values(node: Any) -> tuple[Decimal, int]:
         keys = set(node.keys())
         if keys & _PRICING_CATEGORY_KEYS:
             for key, value in node.items():
-                if key == "discount":
+                if key in _PRICING_SKIPPED_KEYS:
                     continue
                 child_total, child_count = sum_pricing_values(value)
                 total += child_total
@@ -2120,7 +2122,7 @@ def sum_pricing_values(node: Any) -> tuple[Decimal, int]:
             return total, count
 
         for key, value in node.items():
-            if key == "discount":
+            if key in _PRICING_SKIPPED_KEYS:
                 continue
             child_total, child_count = sum_pricing_values(value)
             total += child_total

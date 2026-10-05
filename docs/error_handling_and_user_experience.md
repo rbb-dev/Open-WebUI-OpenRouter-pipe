@@ -149,10 +149,20 @@ reduced twice over: the file-error messages the pipe builds never carry the refe
 — the sentence says a referenced picture or file is no longer available in Open WebUI storage,
 and no host, path, query or file id is interpolated into it, which is also what keeps that
 reference out of the operator's own WARNING and out of a Fusion judge's prompt, both of which
-read the same string — and then the emission chokepoint reduces whatever reaches it on a
+read the same string. There are two construction sites for that sentence, and the picture
+arm is the second: `storage/owui_files.py` builds it for the gateway's own refusals and
+`requests/transformer.py` builds it for the fatal stored-picture refusal, and the picture
+arm is the one that used to interpolate a bare file id, because the only `severity="fatal"`
+`ImageRefusal` in the package passes `subject=` the id `extract_internal_file_id` read out
+of the requester's own URL. Both now say the same words — and then the emission chokepoint
+reduces whatever reaches it on a
 channel through `_channel_safe_card_text()`, which replaces a reference-shaped span whole
 (path, file id, filename and query string together) with *a file reference withheld on a
-channel* and leaves the pipe's own sentence around it intact. The first fourteen are the
+channel* and leaves the pipe's own sentence around it intact. It has a second rule beside
+that one, because an id standing alone is not the path form: Open WebUI mints every file id
+with `str(uuid.uuid4())` (`routers/files.py:365`), so a bare `8-4-4-4-12` hex id on its own is
+withheld by the same notice while the pipe's own `error_id` (16 hex), a model id, a dotted
+host and a timestamp all survive it. The first fourteen are the
 requester's identifiers, the text they wrote and the
 provider's own prose about it — and a provider's rejection body routinely quotes the
 prompt back, so the prose *can* be their words. `body_excerpt` is on the list for the
@@ -176,19 +186,23 @@ card is rendered from a template: the plain (non-templated) error arm is handed 
 sentence by its caller and puts it on the wire as it stands. Two of those callers hand it
 `e.user_message` from a file error, and the sentence those errors are built from — a request
 whose file cannot be read is reported as *"A referenced file is no longer available in Open
-WebUI storage."* — interpolates no reference into itself at all: no host, path, filename,
+WebUI storage."*, and whose *picture* cannot as *"A referenced picture is no longer available
+in Open WebUI storage."*, the two spellings being siblings from the same two construction
+sites — interpolates no reference into itself at all: no host, path, filename,
 file id or presigned query string, so the arm is handed nothing a channel could learn. That
 is the closure, and it is also what keeps the reference out of the operator's own WARNING
 and out of a Fusion judge's prompt, both of which read the same string. The chokepoint is
 the second, defensive layer under it: the plain arm withholds any reference-shaped span that
 reaches it anyway on a channel chat, replacing the whole span (path, filename, id and query
-string together) with *a file reference withheld on a channel*, and the pipe's own sentence
+string together) with *a file reference withheld on a channel*, and it withholds a bare
+`8-4-4-4-12` hex id standing alone by the same rule and the same notice, because that is the
+shape Open WebUI's own `str(uuid.uuid4())` file ids have. The pipe's own sentence
 around it survives. The pipe's own refusals — *"Request failed. Please retry."*, *"Server
 busy (503)"* — carry no such span and reach the room in their own words. A saved chat and an
 API caller are not reduced by the chokepoint, so anything that does reach them with a
 reference in it still carries it, and the operator's own log line always does; with the
 construction no longer producing one, a file error now names the file only as *"A referenced
-file"*, never as the thing itself.
+file"* and a lost picture only as *"A referenced picture"*, never as the thing itself.
 
 **A temporary chat's card is reduced by one key, and for a different reason.** A
 `temporary:` or `local:` chat's `session_id` is withheld on the same terms, and the rest

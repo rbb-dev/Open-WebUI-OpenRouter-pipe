@@ -267,6 +267,22 @@
   warm half is unchanged too: a picture the pipe already held and now declines to send still reports
   `N bytes, over the M-byte download limit, so it was not sent`, naming the count it is giving up. (T1283)
 
+- **Secret valve values, a passphrase typed with the `encrypted:` prefix** — a secret an operator types beginning
+  `encrypted:` that is not already a stored row is now sealed like any other, instead of being written into the
+  valve row as typed. `encrypt` short-circuited on the bare prefix, so on an install that leaves Open WebUI's
+  `ENABLE_VALVE_ENCRYPTION` at its default — which is where the row is plain JSON — that value was the artifact
+  encryption key and the session-log archive passphrase, sitting in `Function.valves` in the clear, while two help
+  texts promised it was stored encrypted at rest. Nothing about the secret changes: the same value is read back and
+  both consumers use exactly the text the operator typed, so the artifact table keeps its name and previously
+  written archives still open. What changes is the row, and a value already in one is left alone: a sealed row this
+  server can open, a damaged one, and one sealed under a retired `WEBUI_SECRET_KEY` all survive a Config-tab save
+  byte-identically, because re-sealing any of them would either rewrite the row on every save or hand the operator
+  the damaged blob back as their plaintext — which is what disarms the guard that tells them to re-enter the key.
+  Both refusals that a stored value can arm now name the remedy alongside the two causes: re-enter the secret
+  without the `encrypted:` prefix. An operator who stored a prefixed passphrase before this change keeps working; the
+  row is rewritten as a ciphertext the next time the value is saved through either Config tab, and nothing has to be
+  re-entered to make that happen.
+
 - **Session log assembler, one offer per pass** — a turn the assembler already offered, or already failed, inside a
   pass is not offered again by that pass, and a turn whose assembly lock another pass holds is offered once per pass
   instead of once per re-listing round. The pass re-lists itself after meeting a lock-contended turn so the window
@@ -1100,3 +1116,18 @@
   can describe the link. No valve and no configuration change.
 
 - **Image generation, the retired size spelling** — an image request that carries the output size under the pipe's own retired spelling `image_size` no longer fails with a 400 when the model's published settings cannot be read. `image_size` is kept alive for valve rows written by a filter that has since been deactivated; it was aliased onto `resolution`, which the OpenRouter schema documents as a closed enum of `512`, `1K`, `2K` and `4K`, so a pixel value written that way was refused by the whole generation. The retired spelling now meets the same gate as the modern one, `size`, whether the contract is readable, unreadable or a model that publishes a tier list of its own, and both spellings produce the same key, the same value and the same note. One behaviour does change and is worth stating: `image_size: "banana"` used to go out unchecked on an unreadable contract and is now refused as outside the contract, naming `size`, exactly as it already was where the contract could be read.
+- **Open-WebUI-owned tools** — a round only Open WebUI can run is handed back to Open WebUI on every turn, whatever
+  `MAX_FUNCTION_CALL_LOOPS` says. The registry entry under such a name is a marker recording who owns the tool, and
+  the pipe read its presence as "the pipe can run this"; at the cap that made the pipe answer a call Open WebUI was about
+  to run, and for a browser-run tool server, run it itself inside the pipe over Open WebUI's own Socket.IO bridge. The
+  three provenances that reach the hand-back are a browser-run tool server, Open WebUI's own builtins — which carry a
+  callable the pipe must not use — and a name the request withheld from the model before it ever saw it, under `ask`
+  approval in a streamed saved chat or under `function_calling: "legacy"`. A reply that keeps asking for such a tool now
+  goes back every time and is bounded by Open WebUI's own `CHAT_RESPONSE_MAX_TOOL_CALL_ITERATIONS` — which means such a
+  reply runs longer and consumes more of the operator's Open WebUI iteration budget than it used to. The skipped-call
+  card the pipe emits for a tool Open WebUI owns now names the reason that is true of the request it came from: the
+  spent-budget wording only where a hand-back budget really was charged and spent, which is the round that mixes an owned
+  call with one the pipe can run, at the cap; and a wording that names no budget at all on a reply that could not be
+  handed back, because it is not streamed, so no hand-back could have carried the round back and no turn of one was ever
+  spent. A round that mixes an owned call with a call nobody can run still falls to the pipe's own cap, because a call
+  with nothing behind it is not Open WebUI's to run either.

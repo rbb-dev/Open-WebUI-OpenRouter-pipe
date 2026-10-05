@@ -225,7 +225,7 @@ from ..tools.citation_harvester import (
     UNCITED_TOOLS,
     harvest_tool_citations,
 )
-from ..tools.tool_registry import open_webui_runs_the_calls
+from ..tools.tool_registry import OWUI_OWNS_KEY, open_webui_runs_the_calls
 from .constants import (
     _REPLAY_DROPPED_OPENING,
     DEFERRED_REASONING_FLUSH,
@@ -2198,6 +2198,9 @@ class StreamingHandler:
             _release_armed = False
             event_iter: AsyncGenerator[dict[str, Any], None] | None = None
         except BaseException:
+            if unclaimed_token is not None:
+                _UNCLAIMED_LATCH.reset(unclaimed_token)
+                unclaimed_token = None
             if _release_armed:
                 self._pipe._artifact_store._reply_memory.release(chat_id, message_id)
             if api_hold_key:
@@ -3748,6 +3751,10 @@ class StreamingHandler:
                 )
 
                 def _pipe_runs(name: str) -> bool:
+                    for key in (name, _origin_tool_name(name)):
+                        cfg = tool_registry.get(key)
+                        if isinstance(cfg, dict) and cfg.get(OWUI_OWNS_KEY) is True:
+                            return False
                     return name in tool_registry or _origin_tool_name(name) in tool_registry
 
                 def _open_webui_runs(name: str) -> bool:

@@ -139,6 +139,15 @@ _ARMS: dict[str, tuple[str, bool, bytes, str, int]] = {
     "responses-stream-server-error": ("responses", True, _responses_stream("server_error", "server"), "SERVICE_ERROR_TEMPLATE", 500),
     "responses-stream-invalid-prompt": ("responses", True, _responses_stream("invalid_prompt", "invalid_request"), "OPENROUTER_ERROR_TEMPLATE", 400),
     "responses-body-authentication": ("responses", False, _responses_body("server_error", "authentication"), "AUTHENTICATION_ERROR_TEMPLATE", 401),
+    # The sibling of `chat-body-out-of-credits`, on the skin the pipe defaults to, carrying the shape
+    # `api_reference/errors-and-debugging.md:476-483` documents there: the kind at the top level, the
+    # native code collapsed to "server_error" inside the error object. The code therefore DISAGREES with
+    # the 402 the row must decide, so this arm reads 402 out of
+    # `_IN_BAND_STATUS_BY_ERROR_TYPE["payment_required"]` and not back out of the code, which is what
+    # makes the pair with the numeric chat arm mean something. A code of "payment_required" here would be
+    # answered by `_IN_BAND_STATUS_BY_NATIVE_CODE` instead, and that table has no such row -- the arm
+    # would pass against a `payment_required` row that does not exist.
+    "responses-body-out-of-credits": ("responses", False, _responses_body("server_error", "payment_required"), "INSUFFICIENT_CREDITS_TEMPLATE", 402),
     "chat-stream-provider-disconnected": ("chat_completions", True, _chat_stream_native("server_error"), "SERVICE_ERROR_TEMPLATE", 500),
     "chat-stream-kind-the-pipe-does-not-know": ("chat_completions", True, _chat_stream(429, "quota_exhausted"), "RATE_LIMIT_TEMPLATE", 429),
     "responses-stream-error-event-rate-limit": ("responses", True, _responses_error_event("response.error", "rate_limit_exceeded"), "RATE_LIMIT_TEMPLATE", 429),

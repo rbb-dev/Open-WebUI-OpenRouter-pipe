@@ -44,12 +44,12 @@ from .url_scheme import (
     url_scheme,
 )
 from .valve_salvage import (
-    _STALE_VALVES_WARN_EVERY_S,  # noqa: F401
+    _STALE_VALVES_WARN_EVERY_S,
     _VALVE_SCHEMA_CACHE,  # noqa: F401
     _valve_schema,  # noqa: F401
     _warned_stale_valves,  # noqa: F401
     drop_unvalidatable,  # noqa: F401
-    is_secret_field,  # noqa: F401
+    is_secret_field,
     repair_unvalidatable,
 )
 from .warn_latch import warn_level
@@ -74,14 +74,15 @@ except Exception:
 logger = logging.getLogger(__name__)
 
 _warned_forward_headers: set[str] = set()
-_warned_bzip2_compresslevel: set[str] = set()
+_warned_bzip2_compresslevel: dict[str, float] = {}
 
 _BZIP2_COMPRESSLEVEL_ADAPTER: TypeAdapter[int | None] = TypeAdapter(int | None)
+_LOOP_COUNT_ADAPTER: TypeAdapter[int] = TypeAdapter(int)
 
 
 def _warn_bzip2_level_floored() -> None:
     logger.log(
-        warn_level(_warned_bzip2_compresslevel, "0"),
+        warn_level(_warned_bzip2_compresslevel, "0", cooldown_s=_STALE_VALVES_WARN_EVERY_S),
         "Session log zip compression is bzip2 at level 0, which bzip2 cannot use; "
         "writing archives at level 1. bzip2 takes levels 1-9: set Session log zip "
         "compress level to 1-9, or choose another codec. The stored setting still "
@@ -848,6 +849,21 @@ class EncryptedStr(str):
         return base64.urlsafe_b64encode(hashed_key)
 
     @classmethod
+    def _is_a_stored_row(cls, value: str) -> bool:
+        if not value.startswith(cls._ENCRYPTION_PREFIX):
+            return False
+        if cls._looks_like_ciphertext(value):
+            return True
+        key = cls._get_encryption_key()
+        if key is None:
+            return True
+        try:
+            Fernet(key).decrypt(value[len(cls._ENCRYPTION_PREFIX) :].encode())
+        except (InvalidToken, ValueError, TypeError):
+            return False
+        return True
+
+    @classmethod
     def encrypt(cls, value: str) -> str:
         """Encrypt ``value`` when an application secret is configured.
 
@@ -857,7 +873,7 @@ class EncryptedStr(str):
         Returns:
             str: Ciphertext prefixed with ``encrypted:`` or the original value.
         """
-        if not value or value.startswith(cls._ENCRYPTION_PREFIX):
+        if not value or cls._is_a_stored_row(value):
             return value
         key = cls._get_encryption_key()
         if not key:
@@ -1074,18 +1090,28 @@ class Valves(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
+    def _restore_blanked_secrets(cls, values):
+        if not isinstance(values, Mapping):
+            return values
+        dropped: dict[str, Any] | None = None
+        for name, value in values.items():
+            if not is_secret_field(cls, name) or not isinstance(value, str) or value.strip():
+                continue
+            if dropped is None:
+                dropped = dict(values)
+            dropped.pop(name, None)
+        return values if dropped is None else dropped
+
+    @model_validator(mode="before")
+    @classmethod
     def _floor_the_tool_loop_count(cls, values):
         if not isinstance(values, Mapping):
             return values
-        count = values.get("MAX_FUNCTION_CALL_LOOPS")
-        if isinstance(count, str):
-            try:
-                count = int(count.strip())
-            except ValueError:
-                return values
-        if isinstance(count, float) and count.is_integer():
-            count = int(count)
-        if isinstance(count, int) and count < 1:
+        try:
+            coerced = _LOOP_COUNT_ADAPTER.validate_python(values.get("MAX_FUNCTION_CALL_LOOPS"))
+        except ValidationError:
+            return values
+        if coerced < 1:
             return dict(values, MAX_FUNCTION_CALL_LOOPS=1)
         return values
 
@@ -1760,7 +1786,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         title="Keep API-call artifacts in memory",
         description=(
             "When True (default), the reasoning and tool records of a call that carries no `chat_id` are held in "
-            "memory for the length of that request only, keyed on the request id, and are never written to the "
+            "memory for the length of that request only, keyed on the same chat-id and message-id pair every "
+            "record of that request is stored under - the request id fills the message-id slot only when the "
+            "caller sent none - and are never written to the "
             "database. Off, it does nothing for existing callers, because such a call writes nothing "
             "either way; the difference is that on, the records exist for the request and are dropped when it ends. "
             "The same limits apply as for a temporary chat's held reply - 15 minutes idle and 64 MiB per pool, "
@@ -3518,6 +3546,13 @@ def _is_a_legal_referer_value(value: str) -> bool:
     )
 
 
+def _referer_or_default(value: Any) -> str:
+    candidate = value.strip() if isinstance(value, str) else ""
+    if candidate and _is_a_legal_referer_value(candidate):
+        return candidate
+    return _OPENROUTER_REFERER
+
+
 def _select_openrouter_http_referer(valves: Any | None) -> str:
     """Select HTTP referer for OpenRouter requests, with optional valve override."""
     override = valves.HTTP_REFERER_OVERRIDE if valves else ""
@@ -3529,7 +3564,7 @@ def _select_openrouter_http_referer(valves: Any | None) -> str:
 
 def openrouter_attribution_headers(valves: Any | str | None) -> dict[str, str]:
     if isinstance(valves, str):
-        return {"HTTP-Referer": valves or _OPENROUTER_REFERER}
+        return {"HTTP-Referer": _referer_or_default(valves)}
     return {"HTTP-Referer": _select_openrouter_http_referer(valves)}
 
 

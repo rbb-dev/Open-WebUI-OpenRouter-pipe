@@ -344,7 +344,30 @@ def test_a_tier_size_collides_only_with_a_differing_resolution(tier, resolution,
 
 @pytest.mark.parametrize(
     ("value", "expected"),
-    [("2²x2", None), ("1024x1024", (1024, 1024))],
+    [
+        ("2²x2", None),
+        ("1024x1024", (1024, 1024)),
+        ("1024x0", None),
+        ("0x1024", None),
+        ("0x0", None),
+        ("-1x1024", None),
+        ("1024x-1", None),
+        ("1024", None),
+        (None, None),
+        (1024, None),
+    ],
+    ids=[
+        "superscript",
+        "pixels",
+        "zero-h",
+        "zero-w",
+        "zero-both",
+        "negative-w",
+        "negative-h",
+        "one-side",
+        "none",
+        "not-a-string",
+    ],
 )
 def test_pixel_size_refuses_a_digit_int_would_refuse(value, expected):
     """``"²".isdigit()`` is True and ``int("²")`` raises.

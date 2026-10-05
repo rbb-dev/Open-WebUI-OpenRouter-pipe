@@ -27,9 +27,11 @@ EXPECTED_LATCHES = {
     "_warned_archive_write_failed",
     # Tells an administrator that a stored `bzip2` level of 0, which the codec cannot
     # use, is being read as 1. Keyed on the stored value rather than on the field name
-    # so one line covers every level that needs flooring, and latched because a
-    # `Valves` is built on Open WebUI's module load and on every Config-tab save --
-    # never on an archive write, which would fire per turn.
+    # so one line covers every level that needs flooring, and rate-limited rather than
+    # latched: a `Valves` is built on Open WebUI's module load and on every Config-tab
+    # save -- never on an archive write, which would fire per turn -- so the rate is one
+    # WARNING per cooldown window, and an operator who re-saves a still-unfixed setting
+    # is told again.
     "_warned_bzip2_compresslevel",
     "_warned_chat_chunk_parse",
     # The chat-write ownership gate's unreadable arm (storage/owui_files.py). A dict on an

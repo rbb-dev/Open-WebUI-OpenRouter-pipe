@@ -5006,7 +5006,7 @@ def test_apply_anthropic_verbosity_request_level_effort():
 
 
 def test_apply_anthropic_verbosity_non_opus_sonnet_skipped():
-    """Claude models that aren't Opus/Sonnet don't get verbosity mapping."""
+    """A row that declares no `verbosity` gets none, whatever family its id spells."""
     pipe = Pipe()
     ModelFamily.set_dynamic_specs({
         "anthropic.claude-3-haiku": {"supported_parameters": ["reasoning"]},

@@ -100,7 +100,9 @@ def _report_drain_incomplete(
 
 
 def _writer_loop(mgr_ref: Any, stop_event: threading.Event, job_queue: queue.Queue) -> None:
+    drain_started: float | None = None
     drain_deadline: float | None = None
+    written_since_drain = 0
     dropped = 0
 
     def _should_stop(deadline: float | None) -> bool:
@@ -110,9 +112,14 @@ def _writer_loop(mgr_ref: Any, stop_event: threading.Event, job_queue: queue.Que
         manager_gone = mgr_ref() is None
         item: Any = None
         if manager_gone or stop_event.is_set():
-            if drain_deadline is None:
-                drain_deadline = time.monotonic() + _WRITER_DRAIN_SECONDS
-            if drain_deadline is not None and time.monotonic() >= drain_deadline and not job_queue.empty():
+            if drain_started is None:
+                drain_started = time.monotonic()
+            drain_deadline = drain_started + min(
+                _WRITER_DRAIN_SECONDS
+                * max(1, written_since_drain + _unwritten_archive_count(job_queue)),
+                _WRITER_DRAIN_MAX_SECONDS,
+            )
+            if time.monotonic() >= drain_deadline and not job_queue.empty():
                 _report_drain_incomplete(mgr_ref, job_queue, dropped)
                 break
             try:
@@ -164,6 +171,8 @@ def _writer_loop(mgr_ref: Any, stop_event: threading.Event, job_queue: queue.Que
         finally:
             with contextlib.suppress(Exception):
                 job_queue.task_done()
+        if drain_started is not None:
+            written_since_drain += 1
         mgr = None
 
 
@@ -228,6 +237,8 @@ def _assembler_loop(mgr_ref: Any, stop_event: threading.Event) -> None:
 _UNREADABLE_ARCHIVE_CAPTURE_AFTER = 3
 
 _WRITER_DRAIN_SECONDS = 1.0
+
+_WRITER_DRAIN_MAX_SECONDS = 30.0
 
 _MAX_EXCLUDED_TURNS = 1000
 
@@ -547,6 +558,7 @@ class SessionLogManager:
         self._cleanup_thread: threading.Thread | None = None
         self._assembler_thread: threading.Thread | None = None
         self._retiring_threads: list[threading.Thread] = []
+        self._joined_threads: set[threading.Thread] = set()
 
         # Thread-safe configuration access
         self._lock = threading.Lock()
@@ -807,11 +819,14 @@ class SessionLogManager:
         if self._queue:
             with contextlib.suppress(Exception):
                 self._queue.put_nowait(None)  # type: ignore[arg-type]
+        self._joined_threads = {t for t in self._joined_threads if t.is_alive()}
         threads = (self._worker_thread, self._cleanup_thread, self._assembler_thread)
         for thread in threads:
-            if thread and thread.is_alive():
+            if thread and thread.is_alive() and thread not in self._joined_threads:
                 with contextlib.suppress(Exception):
                     thread.join(timeout=2.0)
+                if thread.is_alive():
+                    self._joined_threads.add(thread)
         for _name in ("_worker_thread", "_cleanup_thread", "_assembler_thread"):
             _thread = getattr(self, _name)
             if _thread is None or not _thread.is_alive():
@@ -927,7 +942,7 @@ class SessionLogManager:
         if not password:
             self._warn_once(
                 "password",
-                "Session log storage is enabled but SESSION_LOG_ZIP_PASSWORD is not configured or cannot be decrypted with the current WEBUI_SECRET_KEY; skipping persistence. The stored value looks like a ciphertext but does not decode: it may be damaged, or it may be a passphrase typed with the 'encrypted:' prefix.",
+                "Session log storage is enabled but SESSION_LOG_ZIP_PASSWORD is not configured or cannot be decrypted with the current WEBUI_SECRET_KEY; skipping persistence. Re-enter SESSION_LOG_ZIP_PASSWORD without the 'encrypted:' prefix to resume. The stored value looks like a ciphertext but does not decode: it may be damaged, or it may be a passphrase typed with the 'encrypted:' prefix.",
             )
             return None
 
