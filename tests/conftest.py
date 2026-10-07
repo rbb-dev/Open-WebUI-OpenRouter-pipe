@@ -739,10 +739,9 @@ def _reset_package_caches():
     folded into it: the two guard unrelated invariants, and folding them would couple a
     cache clear to a latch clear for ~2 ms a test.
 
-    Every published failure count for the arms that test this fixture is SERIAL. CI
-    (`.github/workflows/verify.yml`) runs `pytest tests -q` with no `-n`; a `-n 4` run
-    is a weaker witness, not a green one, because arms 1-3 arm in one test and read in
-    a later one.
+    CI (`.github/workflows/verify.yml`) runs on four workers with `--dist loadfile`, which
+    keeps each test file on one worker in file order, so a test that arms state for a
+    later test in its file still shares that test's process.
     """
     _clear_package_caches()
     yield

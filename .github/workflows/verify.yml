@@ -8,10 +8,11 @@ name: Verify
 # Split into one `build` job and a five-way `test` matrix. The five suites used to run
 # back to back in a single job: measured on a fast workstation the package suite alone is
 # ~153s and the flat bundled suite ~137s, so five of them is ~12 minutes there, and a
-# 2-core `ubuntu-latest` runner is slower still -- enough to reach the job cap before the
-# install, the bundler, ruff and pyright are even counted. The modes are independent, so
-# they run on five machines instead of one after another. Nothing is dropped: the matrix
-# runs the same five commands, with the same flags, that the sequential step ran.
+# single core of an `ubuntu-latest` runner is slower still -- enough to reach the job cap
+# before the install, the bundler, ruff and pyright are even counted. The modes are
+# independent, so they run on five machines instead of one after another, and each suite
+# runs on all four cores a public repository's runner has. Nothing is dropped: the matrix
+# runs the same five suites that the sequential step ran.
 #
 # `build` remains the ONLY place the bundler runs. Every test job downloads the artifact
 # it uploaded, and so does bundle.yml's `Build` job, so the bundles that get published are
@@ -214,4 +215,8 @@ jobs:
           # Unsetting it makes this job's environment identical to the sequential run it
           # replaces.
           [ -n "$OWUI_PIPE_BUNDLE_PATH" ] || unset OWUI_PIPE_BUNDLE_PATH
-          PYTHONPATH=. pytest tests -q --timeout=60 --timeout-method=thread
+          # -p xdist: the project's pytest bootstrap switches plugin autoloading off, so the
+          # plugin has to be named to load. --dist loadfile keeps each test file on one
+          # worker in file order: a test that checks state an earlier test in its file left
+          # behind would otherwise pass on a fresh worker without checking anything.
+          PYTHONPATH=. pytest tests -q -p xdist -n 4 --dist loadfile --timeout=60 --timeout-method=thread

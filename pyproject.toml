@@ -40,7 +40,8 @@ test = [
   "markdown-it-py",
   "pytest",
   "pytest-asyncio",
-  "pytest-timeout"
+  "pytest-timeout",
+  "pytest-xdist"
 ]
 
 [project.urls]
