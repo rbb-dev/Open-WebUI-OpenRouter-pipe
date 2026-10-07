@@ -413,7 +413,8 @@ def aggregate_worker_payloads(payloads: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 async def _redis_op(awaitable: Any, timeout: float = _PD_REDIS_OP_TIMEOUT) -> Any:
-    return await asyncio.wait_for(awaitable, timeout=timeout)
+    async with asyncio.timeout(timeout):
+        return await awaitable
 
 
 async def _scan_worker_slices(client: Any, namespace: str) -> list[dict[str, Any]]:
@@ -514,7 +515,8 @@ async def _redis_alive(pipe: Any, client: Any = None) -> bool:
     try:
         result = target.ping()
         if inspect.isawaitable(result):
-            result = await asyncio.wait_for(result, timeout=0.25)
+            async with asyncio.timeout(0.25):
+                result = await result
         return bool(result)
     except Exception:
         logger.debug("Redis liveness probe failed", exc_info=True)
@@ -797,10 +799,8 @@ async def run_dashboard_publisher(
             if not is_active:
                 if pubsub is not None:
                     try:
-                        msg = await asyncio.wait_for(
-                            pubsub.get_message(ignore_subscribe_messages=True, timeout=_PD_POLL_INTERVAL),
-                            timeout=_PD_POLL_INTERVAL + 1.0,
-                        )
+                        async with asyncio.timeout(_PD_POLL_INTERVAL + 1.0):
+                            msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=_PD_POLL_INTERVAL)
                         if msg and msg.get("type") == "message":
                             continue
                     except Exception:
