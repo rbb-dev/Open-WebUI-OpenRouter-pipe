@@ -622,6 +622,7 @@ class TestToolRenameLogging:
 
         with patch("open_webui_openrouter_pipe.requests.orchestrator.ModelFamily") as mock_family:
             mock_family.base_model.return_value = "openai/gpt-4o"
+            mock_family.undated.side_effect = lambda model_id: model_id
             mock_family.supports.return_value = True
             mock_family.capabilities.return_value = {}
             mock_family.max_completion_tokens.return_value = None
@@ -661,6 +662,7 @@ class TestInnerToolOriginDedup:
             mock_build.return_value = ([], {}, {})
             with patch("open_webui_openrouter_pipe.requests.orchestrator.ModelFamily") as mock_family:
                 mock_family.base_model.return_value = "openai/gpt-4o"
+                mock_family.undated.side_effect = lambda model_id: model_id
                 mock_family.supports.return_value = True
                 mock_family.capabilities.return_value = {}
                 mock_family.max_completion_tokens.return_value = None
@@ -771,6 +773,7 @@ class TestOpenRouterAPIErrorHandling:
 
         with patch("open_webui_openrouter_pipe.requests.orchestrator.ModelFamily") as mock_family:
             mock_family.base_model.return_value = "openai/o1"
+            mock_family.undated.side_effect = lambda model_id: model_id
             mock_family.supports.return_value = False
             mock_family.capabilities.return_value = {}
             mock_family.max_completion_tokens.return_value = None
@@ -832,6 +835,7 @@ class TestOpenRouterAPIErrorHandling:
 
         with patch("open_webui_openrouter_pipe.requests.orchestrator.ModelFamily") as mock_family:
             mock_family.base_model.return_value = "openai/gpt-4o"
+            mock_family.undated.side_effect = lambda model_id: model_id
             mock_family.supports.return_value = False
             mock_family.capabilities.return_value = {}
             mock_family.max_completion_tokens.return_value = None
@@ -886,6 +890,7 @@ class TestOpenRouterAPIErrorHandling:
 
         with patch("open_webui_openrouter_pipe.requests.orchestrator.ModelFamily") as mock_family:
             mock_family.base_model.return_value = "openai/gpt-4o"
+            mock_family.undated.side_effect = lambda model_id: model_id
             mock_family.supports.return_value = False
             mock_family.capabilities.return_value = {}
             mock_family.max_completion_tokens.return_value = None
@@ -953,6 +958,7 @@ class TestOpenRouterAPIErrorHandling:
 
         with patch("open_webui_openrouter_pipe.requests.orchestrator.ModelFamily") as mock_family:
             mock_family.base_model.return_value = "openai/o1"
+            mock_family.undated.side_effect = lambda model_id: model_id
             mock_family.supports.return_value = False
             mock_family.capabilities.return_value = {}
             mock_family.max_completion_tokens.return_value = None
@@ -1009,6 +1015,7 @@ class TestNonStreamingPath:
 
         with patch("open_webui_openrouter_pipe.requests.orchestrator.ModelFamily") as mock_family:
             mock_family.base_model.return_value = "openai/gpt-4o"
+            mock_family.undated.side_effect = lambda model_id: model_id
             mock_family.supports.return_value = False
             mock_family.capabilities.return_value = {}
             mock_family.max_completion_tokens.return_value = None
@@ -1205,6 +1212,7 @@ class TestToolsRegistryAsList:
 
         with patch("open_webui_openrouter_pipe.requests.orchestrator.ModelFamily") as mock_family:
             mock_family.base_model.return_value = "openai/gpt-4o"
+            mock_family.undated.side_effect = lambda model_id: model_id
             mock_family.supports.return_value = True
             mock_family.capabilities.return_value = {}
             mock_family.max_completion_tokens.return_value = None
@@ -1280,6 +1288,7 @@ class TestReasoningBodyInitialization:
 
         with patch("open_webui_openrouter_pipe.requests.orchestrator.ModelFamily") as mock_family:
             mock_family.base_model.return_value = "openai/o1"
+            mock_family.undated.side_effect = lambda model_id: model_id
             mock_family.supports.return_value = False
             mock_family.capabilities.return_value = {}
             mock_family.max_completion_tokens.return_value = None
@@ -1687,6 +1696,7 @@ class TestReasoningEffortNoEventEmitter:
 
         with patch("open_webui_openrouter_pipe.requests.orchestrator.ModelFamily") as mock_family:
             mock_family.base_model.return_value = "openai/o1"
+            mock_family.undated.side_effect = lambda model_id: model_id
             mock_family.supports.return_value = False
             mock_family.capabilities.return_value = {}
             mock_family.max_completion_tokens.return_value = None
@@ -1752,6 +1762,7 @@ class TestReasoningEffortNoEventEmitter:
 
         with patch("open_webui_openrouter_pipe.requests.orchestrator.ModelFamily") as mock_family:
             mock_family.base_model.return_value = "openai/o1"
+            mock_family.undated.side_effect = lambda model_id: model_id
             mock_family.supports.return_value = False
             mock_family.capabilities.return_value = {}
             mock_family.max_completion_tokens.return_value = None

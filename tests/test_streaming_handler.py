@@ -11053,11 +11053,11 @@ class TestSessionLogPersistException:
             "a failed session-log write replaced the turn's answer with an exception: "
             f"the loop returned {result!r}"
         )
-        records = [
-            record
+        records = list({
+            id(record): record
             for record in caplog.records
             if "Failed to persist session log segment" in record.getMessage()
-        ]
+        }.values())
         assert len(records) == 1, (
             "the failure was reported "
             f"{len(records)} time(s) (or not at all); the turn is over and published, so "

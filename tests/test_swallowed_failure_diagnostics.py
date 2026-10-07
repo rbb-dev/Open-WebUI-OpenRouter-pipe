@@ -22,7 +22,7 @@ import types
 
 import pytest
 
-from tests.conftest import arm_dashboard_pipe
+from conftest import arm_dashboard_pipe
 
 from open_webui_openrouter_pipe.core.warn_latch import warn_level
 

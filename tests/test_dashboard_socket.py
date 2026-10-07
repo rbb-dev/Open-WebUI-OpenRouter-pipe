@@ -171,7 +171,7 @@ from open_webui_openrouter_pipe.plugins.pipe_dashboard.dashboard_socket import (
     register_socket_handler,
     viewers_room,
 )
-from tests.conftest import arm_dashboard_pipe
+from conftest import arm_dashboard_pipe
 from tests.pipe_limits import set_slot, slot
 
 # Every pipe in this file has this id, so the room it authorsises into is one value.

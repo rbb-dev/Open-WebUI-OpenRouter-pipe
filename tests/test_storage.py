@@ -1012,11 +1012,11 @@ async def test_flush_redis_queue_lock_release_failure(pipe_instance, caplog):
         f"the lock was never taken, so the release failure this test drives never happened: "
         f"{sorted(client.storage)}"
     )
-    reported = [
-        rec
+    reported = list({
+        id(rec): rec
         for rec in caplog.records
         if rec.levelno == logging.DEBUG and "Failed to release Redis flush lock" in rec.message
-    ]
+    }.values())
     assert len(reported) == 1, (
         f"one raised release is reported by {len(reported)} DEBUG record(s); the handler is "
         f"what keeps the exception from reaching the flusher's failure counter: "

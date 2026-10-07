@@ -849,6 +849,7 @@ async def _chat_path_error_card(pipe, status: int) -> str:
     with patch("open_webui_openrouter_pipe.requests.orchestrator.ModelFamily") as family, \
          patch("open_webui_openrouter_pipe.requests.orchestrator.OpenRouterModelRegistry") as registry:
         family.base_model.return_value = "openai/gpt-4o"
+        family.undated.side_effect = lambda model_id: model_id
         family.supports.return_value = False
         family.capabilities.return_value = {}
         family.max_completion_tokens.return_value = None

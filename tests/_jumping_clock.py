@@ -14,7 +14,7 @@ import asyncio
 
 import pytest
 
-from tests.conftest import _TimeTravelPolicy
+from conftest import _TimeTravelPolicy
 
 
 @pytest.fixture

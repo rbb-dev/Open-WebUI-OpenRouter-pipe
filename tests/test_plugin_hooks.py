@@ -4,6 +4,7 @@ and the shared table_suffix helper."""
 from __future__ import annotations
 
 import hashlib
+import inspect
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
@@ -458,7 +459,7 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
             # `refresh_error` path, so the same once-per-cause rule applies, and it is
             # driven here rather than exempted: the fault is a valve that cannot be read,
             # which this drive produces by patching the resolver, not by any endpoint.
-            real_resolver = pipe_module.Pipe.__dict__["_resolve_openrouter_api_key"]
+            real_resolver = inspect.getattr_static(pipe_module.Pipe, "_resolve_openrouter_api_key")
             real_startup_checks = pipe._maybe_start_startup_checks
 
             def _resolver(valves: Any) -> tuple[str, str]:
