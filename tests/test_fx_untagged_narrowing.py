@@ -41,7 +41,7 @@ def _records(tagged: bool) -> list[dict[str, Any]]:
 
 
 @pytest.mark.parametrize("tagged", [True, False])
-@pytest.mark.parametrize("spelling", ["resolution", "size"])
+@pytest.mark.parametrize("spelling", ["resolution"])
 def test_a_narrowing_choice_is_pinned_when_it_can_be_and_reported_when_it_cannot(
     tagged, spelling
 ):

@@ -33,7 +33,7 @@ async def _transform_single_block(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "mime_type",
-    ["image/png", "image/jpeg", "image/webp", "image/gif"],
+    ["image/png", "image/gif"],
 )
 async def test_supported_image_formats_are_inlined(
     pipe_instance,

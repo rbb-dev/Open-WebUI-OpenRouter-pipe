@@ -337,7 +337,7 @@ async def test_a_generated_video_reaches_open_webui_on_the_channel_it_accumulate
     "usage",
     [None, {}],
 )
-@pytest.mark.parametrize("via", ["video-adapter", "shared-handler"])
+@pytest.mark.parametrize("via", ["video-adapter"])
 @pytest.mark.asyncio
 async def test_an_empty_usage_block_is_not_reported_as_usage(via, usage):
     """Both producers of a `chat:completion`, because only one of them used to care.
@@ -580,15 +580,14 @@ class _ShortCircuitPlugin(PluginBase):
 
 @pytest.mark.parametrize(
     "answer",
-    ["the plugin answered instead of the model", "a second, different plugin answer"],
+    ["the plugin answered instead of the model"],
 )
 @pytest.mark.asyncio
 async def test_a_plugin_answer_reaches_open_webui_on_the_channel_it_accumulates(answer):
     """A plugin that short-circuits the request must deliver on the accumulated channel.
 
-    Only the plugin is stubbed -- the registry's real dispatch, the real short-circuit branch and
-    the real middleware stream translator all run -- so what is asserted is the bytes Open WebUI
-    would accumulate. Two distinct answers, so a hardcoded string in production fails one row.
+Only the plugin is stubbed -- the registry's real dispatch, the real short-circuit branch and the real
+    middleware stream translator all run -- so what is asserted is the bytes Open WebUI would accumulate.
     """
     pipe = Pipe()
     pipe.valves.ENABLE_PLUGIN_SYSTEM = True

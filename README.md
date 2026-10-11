@@ -78,7 +78,7 @@ Model icons + descriptions + capabilities sync automatically. Per-chat cost disp
 ## For IT & Operations
 
 ⚡ **Production Hardened**
-Rate limiting, circuit breakers, request admission, graceful degradation. 10,000+ pytest tests, all four generated bundles (readable and compressed, each with and without plugins).
+Rate limiting, circuit breakers, request admission, graceful degradation. About 7,000 pytest tests, all four generated bundles (readable and compressed, each with and without plugins).
 
 🔐 **Security First**
 Encrypted credential storage. SSRF protection with HTTPS-only remote fetches by default. No secrets in logs. Capability-gated filter attach (image and video models cannot accidentally enable tools they don't support).

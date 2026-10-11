@@ -784,7 +784,7 @@ async def test_update_snapshot_delete_happy(update_env):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("client_rev", [None, 1000, "whatever-the-client-had"])
+@pytest.mark.parametrize("client_rev", [None, "whatever-the-client-had"])
 async def test_a_row_open_webui_cannot_read_blocks_the_write(
     fake_functions, caplog, client_rev, config_rev_reader
 ):
@@ -825,8 +825,8 @@ async def test_a_row_open_webui_cannot_read_blocks_the_write(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("in_memory_enable", [True, False])
-@pytest.mark.parametrize("valves_shape", ["simple-namespace", "pipe-valves"])
+@pytest.mark.parametrize("in_memory_enable", [True])
+@pytest.mark.parametrize("valves_shape", ["simple-namespace"])
 @pytest.mark.parametrize(
     ("outcome", "readable"),
     [

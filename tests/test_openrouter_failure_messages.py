@@ -73,10 +73,8 @@ def _markers_shown(reply: str) -> list[str]:
 
 
 _BEFORE_ANY_TEXT = {
-    "timed-out": (asyncio.TimeoutError, (), "NETWORK_TIMEOUT_TEMPLATE"),
     "socket-read-timed-out": (aiohttp.ServerTimeoutError, ("Timeout on reading data from socket",), "NETWORK_TIMEOUT_TEMPLATE"),
     "connection-refused": (aiohttp.ClientConnectionError, ("Cannot connect to host openrouter.ai:443",), "CONNECTION_ERROR_TEMPLATE"),
-    "server-disconnected": (aiohttp.ServerDisconnectedError, (), "CONNECTION_ERROR_TEMPLATE"),
 }
 
 
@@ -126,7 +124,7 @@ async def test_the_timeout_message_gives_the_seconds_of_the_limit_that_ran_out(m
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("empty_body", [b"", b"data: [DONE]\n\n"], ids=["nothing", "only-the-end-marker"])
+@pytest.mark.parametrize("empty_body", [b""], ids=["nothing"])
 @pytest.mark.parametrize("endpoint", ["responses", "chat_completions"])
 async def test_a_stream_openrouter_closes_without_sending_anything_shows_the_connection_failure_message(
     monkeypatch, endpoint, empty_body

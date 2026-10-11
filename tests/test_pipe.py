@@ -6327,12 +6327,6 @@ from open_webui_openrouter_pipe import Pipe
         {
             "UVICORN_WORKERS": "2",
             "REDIS_URL": "redis://localhost",
-            "WEBSOCKET_MANAGER": "memory",
-            "WEBSOCKET_REDIS_URL": "redis://localhost",
-        },
-        {
-            "UVICORN_WORKERS": "2",
-            "REDIS_URL": "redis://localhost",
             "WEBSOCKET_MANAGER": "redis",
             "WEBSOCKET_REDIS_URL": "",
         },

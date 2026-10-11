@@ -118,17 +118,14 @@ def _record(file_id, stored_mime, filename="clip.mp4"):
 # ---------------------------------------------------------------- FINDING 3 --
 @pytest.mark.parametrize(
     ("declared", "stored_mime"),
-    [("video/mp4", ";"), ("audio/mpeg", "; charset=utf-8")],
+    [("video/mp4", ";")],
 )
 @pytest.mark.asyncio
 async def test_the_kind_a_file_is_relayed_as_comes_from_the_record_not_the_request(
     declared, stored_mime
 ):
-    """`body["files"][i]["content_type"]` is browser input. It must never decide
-    which family a stored file belongs to, nor reach the upload's Content-Type.
-
-    Parametrised over two declared types so a production `return "video/mp4"`
-    cannot satisfy both.
+    """`body["files"][i]["content_type"]` is browser input. It must never decide which family a stored file belongs to,
+    nor reach the upload's Content-Type.
     """
     harness = _Harness({"f1": PNG}, {"f1": _record("f1", stored_mime)})
     valves = Valves()

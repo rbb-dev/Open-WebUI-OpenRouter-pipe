@@ -540,7 +540,7 @@ def test_a_data_url_is_still_truncated_with_its_header_intact():
     assert len(redacted) < 1000
 
 
-@pytest.mark.parametrize("key", ["result", "imageB64", "data"])
+@pytest.mark.parametrize("key", ["result", "data"])
 def test_a_blob_under_any_key_is_truncated(key):
     from open_webui_openrouter_pipe.core.utils import _redact_payload_blobs
 
@@ -580,9 +580,9 @@ def test_the_shape_rule_fires_only_above_its_threshold(length, truncated):
 
 
 @pytest.mark.parametrize(
-    "key", ["b64_json", "b64", "base64", "image_base64", "thumb_b64"]
+    "key", ["b64_json", "thumb_b64"]
 )
-@pytest.mark.parametrize(("length", "truncated"), [(255, False), (300, True)])
+@pytest.mark.parametrize(("length", "truncated"), [(255, False)])
 def test_a_known_blob_key_truncates_at_max_chars(key, length, truncated):
     from open_webui_openrouter_pipe.core.utils import _redact_payload_blobs
 

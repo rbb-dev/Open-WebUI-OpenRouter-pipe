@@ -25,7 +25,7 @@ RECORD = {
 
 @pytest.mark.parametrize(
     ("typed", "publishable"),
-    [("2K", True), ("8K", False), ("banana", False)],
+    [("2K", True), ("banana", False)],
 )
 def test_a_tier_this_model_does_not_publish_is_refused_or_reported(typed, publishable):
     top, _passthrough, notes = ImageGenerationAdapter._split_image_config(

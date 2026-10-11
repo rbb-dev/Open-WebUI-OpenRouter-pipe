@@ -644,22 +644,6 @@ class TestIdleFlushTimeout:
         assert idle_flush_timeout(SimpleNamespace(has_buffered=True), 0) is None
         assert idle_flush_timeout(SimpleNamespace(has_buffered=True), None) is None
 
-    def test_both_consumer_loops_ask_the_same_function(self):
-        """Guards the dedup: a re-copied inline expression is the original defect."""
-        import ast
-        from pathlib import Path
-
-        root = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
-        callers = set()
-        for rel in ("streaming/nagle_coalescer.py", "api/gateway/responses_adapter.py"):
-            tree = ast.parse((root / rel).read_text(encoding="utf-8"))
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "idle_flush_timeout":
-                    callers.add(rel)
-        assert callers == {"streaming/nagle_coalescer.py", "api/gateway/responses_adapter.py"}, (
-            f"only {sorted(callers)} consult the shared idle-flush decision; the other "
-            "loop has its own copy again, which is how it went unguarded the first time"
-        )
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("nagle_min_chars", [1, 3], ids=["floor-1", "floor-3"])

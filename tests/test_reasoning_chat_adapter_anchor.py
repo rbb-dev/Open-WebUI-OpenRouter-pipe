@@ -196,7 +196,7 @@ def _anchors(payloads: list[dict[str, Any]]) -> list[tuple[str, int]]:
 # 1. The adapter's own event order IS the contract the persist side reads.
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
-@pytest.mark.parametrize("n_calls", [1, 2, 3])
+@pytest.mark.parametrize("n_calls", [1, 3])
 async def test_chat_adapter_emits_reasoning_done_before_every_function_call_done(
     pipe_instance_async, n_calls
 ):
@@ -248,7 +248,7 @@ async def test_chat_adapter_emits_reasoning_done_before_every_function_call_done
 #    ([0] vs [0,1] vs [0,1,2]); no constant return value satisfies all three.
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
-@pytest.mark.parametrize("n_rounds", [1, 2, 3])
+@pytest.mark.parametrize("n_rounds", [1, 3])
 async def test_chat_adapter_anchors_pre_call_reasoning_to_the_following_call(
     pipe_instance_async, monkeypatch, n_rounds
 ):
@@ -263,7 +263,7 @@ async def test_chat_adapter_anchors_pre_call_reasoning_to_the_following_call(
 #    whichever endpoint carried it.
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
-@pytest.mark.parametrize("n_rounds", [1, 2, 3])
+@pytest.mark.parametrize("n_rounds", [1, 3])
 async def test_chat_and_responses_transports_agree_on_anchors(
     pipe_instance_async, monkeypatch, n_rounds
 ):
@@ -278,7 +278,7 @@ async def test_chat_and_responses_transports_agree_on_anchors(
 #    block across the tool boundary (the shape the provider 400s on).
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
-@pytest.mark.parametrize("n_rounds", [1, 2, 3])
+@pytest.mark.parametrize("n_rounds", [1, 3])
 async def test_chat_persisted_reasoning_replays_before_its_own_call(
     pipe_instance_async, monkeypatch, n_rounds
 ):

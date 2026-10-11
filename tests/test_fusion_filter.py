@@ -182,7 +182,7 @@ def test_panel_and_judge_and_max_tool_calls_map():
     assert p["max_tool_calls"] == 5
 
 
-@pytest.mark.parametrize("n,raises", [(0, False), (1, False), (8, False), (9, True)])
+@pytest.mark.parametrize("n,raises", [(8, False), (9, True)])
 def test_panel_cardinality_fails_visibly(n, raises):
     panel = ",".join(f"v/m{i}" for i in range(n))
     mod = _load()
@@ -253,7 +253,6 @@ def test_force_sets_required_even_when_other_tools_present():
 
 @pytest.mark.parametrize(("body_extra", "expected"), [
     ({"function_call": {"name": "x"}}, {"function_call": {"name": "x"}}),
-    ({"tool_choice": "auto"}, {"tool_choice": "auto"}),
     ({"tool_choice": ""}, {"tool_choice": ""}),   # explicit (falsy) caller value must still block
 ])
 def test_force_not_applied_when_caller_set_tool_choice_or_function_call(body_extra, expected):

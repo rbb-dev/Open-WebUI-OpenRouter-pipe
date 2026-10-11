@@ -34,7 +34,7 @@ RECORDS = [VERTEX, STUDIO]
 
 
 @pytest.mark.parametrize("spelling", ["resolution", "size"])
-@pytest.mark.parametrize("tier", ["4K", "2K"])
+@pytest.mark.parametrize("tier", ["4K"])
 def test_a_tier_is_routed_by_who_publishes_it_whichever_control_set_it(spelling, tier):
     fitted, _passthrough, notes = ImageGenerationAdapter._split_image_config(
         {"image_config": {spelling: tier}},

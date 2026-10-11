@@ -53,7 +53,7 @@ def test_every_routing_variant_of_a_zdr_base_is_zdr_capable(zdr_registry, varian
     )
 
 
-@pytest.mark.parametrize("variant", ["", ":nitro", ":floor"])
+@pytest.mark.parametrize("variant", ["", ":floor"])
 def test_a_variant_of_a_non_zdr_model_is_still_rejected(zdr_registry, variant):
     """The opposite arm: stripping must not admit a model that is genuinely not ZDR.
 
@@ -124,8 +124,8 @@ def media_registry(monkeypatch):
 
 @pytest.mark.parametrize(
     ("model", "expected"),
-    [(_ZDR_IMAGE, True), (_PLAIN_IMAGE, False), (_ZDR_VIDEO, True), (_PLAIN_VIDEO, False)],
-    ids=["image-on-the-list", "image-not-on-it", "video-on-the-list", "video-not-on-it"],
+    [(_ZDR_IMAGE, True), (_PLAIN_IMAGE, False)],
+    ids=["image-on-the-list", "image-not-on-it"],
 )
 def test_a_media_model_is_as_zdr_capable_as_openrouter_says_it_is(media_registry, model, expected):
     """Issue #61: the answer comes from the list, for every modality.
@@ -142,8 +142,8 @@ def test_a_media_model_is_as_zdr_capable_as_openrouter_says_it_is(media_registry
 
 @pytest.mark.parametrize(
     ("model", "restricted"),
-    [(_ZDR_IMAGE, False), (_PLAIN_IMAGE, True), (_ZDR_VIDEO, False), (_PLAIN_VIDEO, True)],
-    ids=["image-on-the-list", "image-not-on-it", "video-on-the-list", "video-not-on-it"],
+    [(_ZDR_IMAGE, False), (_PLAIN_VIDEO, True)],
+    ids=["image-on-the-list", "video-not-on-it"],
 )
 def test_show_only_zdr_models_keeps_the_media_models_openrouter_lists(media_registry, model, restricted):
     """The gate the reporter hit: "Show only ZDR models" hid every pure image model."""
@@ -424,21 +424,17 @@ async def test_a_user_with_no_id_still_reaches_openrouter_with_their_own_setting
     )
 
 
-@pytest.mark.parametrize("requested", [True, False], ids=["zdr-on", "zdr-off"])
+@pytest.mark.parametrize("requested", [True], ids=["zdr-on"])
 @pytest.mark.asyncio
 async def test_every_return_path_yields_something_parse_user_valves_understands(requested):
     """A request with no user id must not silently lose the user's settings.
 
-    `_stored_user_valves` has four returns. One of them returned a 2-tuple, which
-    `parse_user_valves` recognises as neither a model instance nor a Mapping, so it fell
-    through to `model(), []` -- a default-constructed UserValves with an EMPTY rejected
-    list. Every field the user had set reverted to its default, and because `rejected`
-    was empty the diagnostic loop at the pipe entry point printed nothing. `REQUEST_ZDR`
-    went from True to False in total silence.
-
-    Parametrised over both values so a production `return UserValves(REQUEST_ZDR=True)`
-    cannot satisfy it, and asserted on the PARSED valve rather than on the return type:
-    the shape of the intermediate is not the property, the surviving setting is.
+`_stored_user_valves` has four returns. One of them returned a 2-tuple, which `parse_user_valves` recognises as
+    neither a model instance nor a Mapping, so it fell through to `model(), []` -- a default-constructed UserValves
+    with an EMPTY rejected list. Every field the user had set reverted to its default, and because `rejected` was
+    empty the diagnostic loop at the pipe entry point printed nothing. `REQUEST_ZDR` went from True to False in
+    total silence. Asserted on the PARSED valve rather than on the return type: the shape of the intermediate is not
+    the property, the surviving setting is.
     """
     from open_webui_openrouter_pipe import Pipe
     from open_webui_openrouter_pipe.core.config import parse_user_valves

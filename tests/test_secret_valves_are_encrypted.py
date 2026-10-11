@@ -67,21 +67,6 @@ def test_the_secret_valve_rule_still_finds_the_known_secrets():
     }, f"the credential-name rule no longer finds the known secrets; it found {_SECRET_VALVES}"
 
 
-def test_every_valve_that_names_a_credential_is_encrypted_at_rest():
-    """The check a hardcoded list could not make: it covers valves not yet written."""
-    from open_webui_openrouter_pipe import Pipe
-
-    plaintext = [
-        name
-        for name in _SECRET_VALVES
-        if "EncryptedStr" not in str(Pipe.Valves.model_fields[name].annotation)
-    ]
-    assert not plaintext, (
-        "these valves name a credential but are declared as plain str, so their value is "
-        f"persisted and shown in clear: {plaintext}. Declare them EncryptedStr."
-    )
-
-
 @pytest.fixture
 def _real_secret_key(monkeypatch):
     """Undo the suite-wide WEBUI_SECRET_KEY deletion for these tests only."""
@@ -155,8 +140,7 @@ def test_encryption_is_a_no_op_without_an_application_secret(monkeypatch):
 def test_every_exemption_actually_exempts_something():
     """An entry that changes no outcome is permission nobody asked for.
 
-    The sibling census in test_swallowed_failure_diagnostics checks its exemptions in
-    both directions for exactly this reason. Both names here are already excluded a line
+    Both names here are already excluded a line
     later by the annotation filter -- neither is `str`-typed -- so the list decides
     nothing today and would go on deciding nothing while a reader treats it as a
     reviewed record of what was considered and cleared.

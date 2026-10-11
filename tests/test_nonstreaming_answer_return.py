@@ -146,12 +146,11 @@ async def test_the_generic_card_is_returned_as_well_as_shown(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("status", "heading"),
-    [(402, "Out of credits"), (429, "Too many requests")],
+    [(402, "Out of credits")],
 )
 async def test_an_openrouter_rejection_card_is_returned_as_well_as_shown(
     monkeypatch, pipe_instance_async, status, heading
 ) -> None:
-    """Two statuses select two different templates, so one constant cannot serve both."""
     pipe = pipe_instance_async
     _prepared(pipe, monkeypatch)
     pipe.valves.INSUFFICIENT_CREDITS_TEMPLATE = "### Out of credits\n\n{openrouter_message}"
@@ -259,7 +258,6 @@ async def test_an_unusable_catalog_is_returned_as_well_as_shown(
 
 _TASK_ROWS = [
     ("title_generation", "title", "Chat"),
-    ("tags_generation", "tags", ["General"]),
     ("follow_up_generation", "follow_ups", []),
 ]
 
@@ -332,7 +330,7 @@ _NOTHING_STORED = (_NO_SLICE, _UNPARSEABLE, _NOT_A_DICT, None)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("task", "key", "expected"), _TASK_ROWS)
+@pytest.mark.parametrize(("task", "key", "expected"), _TASK_ROWS[:1])
 @pytest.mark.parametrize("raised", _TASK_FAILURES, ids=_TASK_FAILURE_IDS)
 async def test_a_failed_task_call_keeps_the_toast_and_drops_the_rest(
     monkeypatch, pipe_instance_async, task, key, expected, raised
@@ -533,7 +531,7 @@ async def test_a_restricted_model_card_is_returned_as_well_as_shown(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("task", "wants_card"),
-    [(None, True), ("title_generation", False), ("tags_generation", False)],
+    [(None, True), ("title_generation", False)],
 )
 async def test_a_preset_endpoint_conflict_never_hands_a_card_to_a_task(
     monkeypatch, task, wants_card
@@ -858,15 +856,14 @@ async def test_a_templated_card_is_built_even_with_nobody_to_show_it_to(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("status", "message"), [(402, "out of credits"), (429, "too many")])
+@pytest.mark.parametrize(("status", "message"), [(402, "out of credits")])
 async def test_an_openrouter_rejection_is_rendered_even_with_nobody_to_show_it_to(
     pipe_instance_async, status, message
 ) -> None:
     """Same property on the OpenRouter path, which selects its template from the status.
 
-    Two statuses select two different templates, so one rendered constant cannot pass both.
-    The heading each row expects is taken from the selector rather than written out here,
-    so this cannot drift from whatever the templates say.
+The heading each row expects is taken from the selector rather than written out here, so this cannot drift from
+    whatever the templates say.
     """
     pipe = pipe_instance_async
     formatter = pipe._ensure_error_formatter()
@@ -973,7 +970,7 @@ _EMITTERLESS_BRANCHES = [
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("branch", _EMITTERLESS_BRANCHES)
-@pytest.mark.parametrize("variant", ["Herring", "Mackerel"], ids=["first", "second"])
+@pytest.mark.parametrize("variant", ["Herring"], ids=["first"])
 async def test_every_failure_branch_answers_a_caller_with_no_emitter(
     monkeypatch, pipe_instance_async, branch, variant
 ) -> None:

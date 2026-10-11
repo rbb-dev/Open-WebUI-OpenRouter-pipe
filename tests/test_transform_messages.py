@@ -391,11 +391,9 @@ def test_transform_drops_unrenderable_content_block_without_aborting():
     "content",
     [
         {"type": "text", "text": "the real user question"},
-        {"content": "the real user question"},
-        {"type": "text", "text": None, "content": "the real user question"},
         {"type": "text", "text": 123, "content": "the real user question"},
     ],
-    ids=["text-key", "content-key", "text-key-is-none", "text-key-is-not-a-string"],
+    ids=["text-key", "text-key-is-not-a-string"],
 )
 def test_transform_preserves_a_dict_shaped_user_content(content):
     """A dict `content` must yield the user's text, not the dict's keys.

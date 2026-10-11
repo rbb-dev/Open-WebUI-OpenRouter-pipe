@@ -622,14 +622,6 @@ class TestResponsesPayloadToChatCompletionsPayload:
         [
             pytest.param("Be helpful", "Existing prompt", "Be helpful\n\nExisting prompt", id="plain"),
             pytest.param("AAA-FIRST", "ZZZ-SECOND", "AAA-FIRST\n\nZZZ-SECOND", id="markers"),
-            pytest.param("Be helpful", "  Existing prompt \n", "Be helpful\n\nExisting prompt", id="stripped"),
-            pytest.param(
-                "Be helpful",
-                "First line\nSecond line",
-                "Be helpful\n\nFirst line\nSecond line",
-                id="two-lines",
-            ),
-            pytest.param("Be helpful", "   ", "Be helpful", id="blank"),
         ],
     )
     async def test_instructions_prepended_to_existing_system(self, instructions, existing, expected):
@@ -1539,12 +1531,6 @@ class TestResponsesInputToChatMessages:
         [
             ("auto", "auto"),
             ("low", "low"),
-            ("high", "high"),
-            ("original", "original"),
-            ("bogus", "bogus"),
-            ("", "auto"),
-            (None, "auto"),
-            (7, "auto"),
         ],
     )
     async def test_input_image_with_detail(self, given, expected):

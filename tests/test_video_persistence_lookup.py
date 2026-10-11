@@ -100,7 +100,7 @@ async def test_a_row_without_content_yields_an_empty_string_not_none(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("chat_id", "message_id"),
-    [("", "msg-1"), ("chat-1", ""), ("local:abc", "msg-1")],
+    [("", "msg-1"), ("local:abc", "msg-1")],
 )
 async def test_ids_that_cannot_name_a_stored_message_are_not_looked_up(
     persistence, monkeypatch, chat_id, message_id

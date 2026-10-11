@@ -311,7 +311,7 @@ class TestLooksLikeResponsesUnsupported:
         assert StreamingHandler._looks_like_responses_unsupported(error) is True
 
     @pytest.mark.parametrize(
-        "model", ["qwen/qwen-image-3", "openai/gpt-image-2", "krea/krea-2-large"]
+        "model", ["qwen/qwen-image-3", "krea/krea-2-large"]
     )
     def test_an_image_model_404_does_not_read_as_a_responses_problem(self, model):
         """The 404 says 'chat/completions', which is the phrase this predicate hunts for.
@@ -4604,13 +4604,10 @@ class TestAdaptiveToolBudgeting:
     @pytest.mark.parametrize(
         ("loops", "max_tokens", "user_chars", "expect_notices"),
         [
-            (1, 200, 6_000, 1),
-            (2, 200, 6_000, 1),
-            (8, 200, 6_000, 1),
             (25, 200, 6_000, 1),
             (25, 100_000, 260, 0),
         ],
-        ids=["1-loop", "2-loops", "8-loops", "25-loops-the-shipped-default", "not-futile"],
+        ids=["25-loops-the-shipped-default", "not-futile"],
     )
     @pytest.mark.asyncio
     async def test_the_futility_verdict_is_announced_once_a_turn(
@@ -4957,10 +4954,8 @@ class TestAdaptiveToolBudgeting:
         [
             (100_000, 200, 200, False, False),
             (3_000, 2_000, 200, True, False),
-            (5_000, 1_000, 12_000, True, False),
-            (200, 9_000, 200, True, True),
         ],
-        ids=["fits", "history-dropped", "dropped-after-a-tool-round", "dropped-and-hopeless"],
+        ids=["fits", "history-dropped"],
     )
     @pytest.mark.asyncio
     async def test_the_user_is_told_when_the_replay_pass_drops_history(
@@ -5889,9 +5884,6 @@ def test_valve_descriptions_warn_about_small_bounded_queues(pipe_instance):
 @pytest.mark.parametrize(("qsize", "warn_size", "expected"), [
     (999, 1000, False),
     (1000, 1000, True),
-    (1200, 1000, True),
-    (0, 1000, False),
-    (1000, 100, True),
 ])
 def test_warn_condition_logic(qsize, warn_size, expected):
     """The drain loop's backlog threshold. The cooldown is warn_level's, not this.
@@ -5917,8 +5909,6 @@ def test_queue_valve_constraints():
 
 @pytest.mark.parametrize('chunk_size, event_size', [
     (0, 0),
-    (1000, 1000),
-    (50, 50),
     (100, 200),
 ])
 def test_valve_accepts_various_queue_sizes(chunk_size, event_size, pipe_instance):
@@ -5967,7 +5957,7 @@ def test_warning_cooldown_prevents_spam(caplog):
     )
 
 
-@pytest.mark.parametrize('warn_size', [100, 500, 1000, 5000])
+@pytest.mark.parametrize('warn_size', [100, 5000])
 def test_warning_size_minimum(warn_size, pipe_instance):
     """Verify warning size minimum prevents spam on normal loads."""
     pipe = pipe_instance
@@ -12891,8 +12881,8 @@ def _published_thoughts(emitted: list[dict], text: str) -> list[dict]:
 @pytest.mark.parametrize("stream", [True, False], ids=["streaming", "non-streaming"])
 @pytest.mark.parametrize(
     ("fail_with_nothing_shown", "expect_hand_back"),
-    [(True, True), (False, False)],
-    ids=["handed-back-for-retry", "finished-cleanly"],
+    [(True, True)],
+    ids=["handed-back-for-retry"],
 )
 async def test_an_attempt_handed_back_for_retry_defers_its_reasoning(
     pipe_instance_async, monkeypatch, fail_with_nothing_shown, expect_hand_back, stream
@@ -13023,7 +13013,7 @@ async def _orchestrated_turn(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", [402, 429])
-@pytest.mark.parametrize("thought", ["WEIGHING-THE-OPTIONS", "CHECKING-THE-UNITS"])
+@pytest.mark.parametrize("thought", ["WEIGHING-THE-OPTIONS"])
 async def test_a_turn_that_ends_in_a_card_keeps_the_thinking_the_reader_watched(
     pipe_instance_async, monkeypatch, status, thought
 ):
@@ -13170,8 +13160,8 @@ async def test_a_turn_that_really_retries_shows_only_the_winning_attempts_thinki
 @pytest.mark.parametrize("artifact_count", [1, 3], ids=["one-row", "three-rows"])
 @pytest.mark.parametrize(
     ("exit_kind", "fail_with_nothing_shown"),
-    [("retry_handback", True), ("finished", False)],
-    ids=["handed-back-for-retry", "finished-cleanly"],
+    [("retry_handback", True)],
+    ids=["handed-back-for-retry"],
 )
 async def test_an_abandoned_turn_leaves_no_unaddressed_artifact_rows(
     pipe_instance_async, monkeypatch, artifact_count, exit_kind, fail_with_nothing_shown

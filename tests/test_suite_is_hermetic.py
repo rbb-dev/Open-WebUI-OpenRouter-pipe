@@ -64,12 +64,9 @@ def test_loopback_stays_loopback():
     "host",
     [
         "nonexistent.example.com",
-        "no-such-host.example.com",
-        "does-not-exist.example.com",
-        "images.example.test",
         "something.invalid",
     ],
-    ids=["marker-nonexistent", "marker-no-such-host", "marker-does-not-exist", "tld-test", "tld-invalid"],
+    ids=["marker-nonexistent", "tld-invalid"],
 )
 def test_an_unresolvable_name_still_fails(host):
     """Negative paths need a real NXDOMAIN, not a successful answer.

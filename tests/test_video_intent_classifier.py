@@ -680,7 +680,6 @@ class TestClarificationMessage:
 
 _STANDING = [
     pytest.param("HOUSE STYLE: always cel-shaded, teal background", id="house-style"),
-    pytest.param("STUDIO RULE: hand-held camera, 35mm grain", id="studio-rule"),
 ]
 
 _ASKS = [

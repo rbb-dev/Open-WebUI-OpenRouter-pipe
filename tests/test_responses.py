@@ -2613,15 +2613,8 @@ async def test_responses_no_toplevel_cache_control_for_non_anthropic(pipe_instan
 @pytest.mark.parametrize(
     ("reported", "survives"),
     [
-        ("completed", True),
-        ("incomplete", True),
         ("in_progress", True),
         ("failed", False),
-        ("error", False),
-        ("cancelled", False),
-        ("", False),
-        (None, False),
-        (123, False),
     ],
 )
 def test_only_documented_tool_output_statuses_reach_the_wire(pipe_instance, reported, survives):

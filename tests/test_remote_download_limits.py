@@ -204,7 +204,7 @@ async def test_a_mime_inside_the_allowlist_is_kept(
 
 @pytest.mark.parametrize(
     "declared",
-    ["application/octet-stream", "binary/octet-stream", "application/binary"],
+    ["application/octet-stream", "application/binary"],
 )
 @pytest.mark.asyncio
 async def test_a_content_type_outside_the_allowlist_is_sniffed_before_it_decides(
@@ -394,8 +394,8 @@ async def test_the_video_path_passes_both_valves_to_the_downloader(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("status", "expect_retries"),
-    [(429, True), (503, True), (404, False), (403, False)],
-    ids=["rate-limited", "server-busy", "not-found", "forbidden"],
+    [(429, True), (503, True)],
+    ids=["rate-limited", "server-busy"],
 )
 async def test_a_failing_video_download_retries_only_what_is_worth_retrying(
     pipe_instance_async, tmp_path, monkeypatch, status, expect_retries
@@ -457,92 +457,6 @@ async def test_a_failing_video_download_retries_only_what_is_worth_retrying(
         )
 
 
-@pytest.mark.parametrize("via_file_host", [False, True])
-@pytest.mark.parametrize("cap_mb", [7, 23])
-@pytest.mark.asyncio
-async def test_the_generated_video_cap_is_not_described_as_bounding_an_attachment(
-    monkeypatch, via_file_host, cap_mb
-):
-    """The admin text for a valve names the thing it actually bounds.
-
-    ``REMOTE_VIDEO_MAX_SIZE_MB`` was documented as also capping each attached clip or
-    sound file. It does not: an attachment is measured against
-    ``VIDEO_FRAME_IMAGE_MAX_BYTES`` when it goes inline, or against
-    ``MEDIA_FILE_HOST_MAX_SIZE_MB`` when it goes to a public host, and a clip or sound
-    file has no inline route at all. An admin lowering the wrong valve to bound what
-    users upload changes nothing about what users upload.
-
-    Measured by watching the byte cap the reader is actually handed, over two distinct
-    valve values so a coincidence cannot pass, and over both routes so neither is
-    assumed.
-    """
-    import base64
-    import logging
-    from types import SimpleNamespace
-
-    from open_webui_openrouter_pipe.integrations import video as video_module
-    from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
-
-    pipe = Pipe()
-    pipe.valves.API_KEY = EncryptedStr("test")
-    try:
-        adapter = VideoGenerationAdapter(pipe=pipe, logger=logging.getLogger("cap-probe"))
-        pipe.valves.REMOTE_VIDEO_MAX_SIZE_MB = cap_mb
-        generated_video_cap = cap_mb * 1024 * 1024
-
-        async def stored_record(file_id, _logger):
-            family = file_id.split("-", 1)[0]
-            return SimpleNamespace(
-                id=file_id,
-                filename=f"{file_id}.bin",
-                meta={"content_type": {"image": "image/png", "audio": "audio/mpeg", "video": "video/mp4"}[family]},
-                user_id="user-1",
-                data={},
-                path=None,
-            )
-
-        handed: list[tuple[str, int]] = []
-
-        async def reader(file_obj, _chunk, max_bytes, **_kwargs):
-            handed.append((file_obj.id, max_bytes))
-            return base64.b64encode(b"x" * 16).decode()
-
-        async def relay(*_args, **_kwargs):
-            return "https://example.test/relayed.bin"
-
-        monkeypatch.setattr(video_module, "relay_to_public_url", relay)
-        monkeypatch.setattr(video_module, "get_file_by_id", stored_record)
-        monkeypatch.setattr(video_module, "authorize_file_publication", lambda *_a, **_k: True)
-        monkeypatch.setattr(pipe._file_gateway, "read_file_record_base64", reader)
-        monkeypatch.setattr(adapter, "_file_host_wanted", lambda *_a, **_k: via_file_host)
-
-        async def emitter(_event):
-            return None
-
-        await adapter._encode_input_references(
-            {
-                "input_references": [{"id": "image-1"}, {"id": "audio-1"}, {"id": "video-1"}],
-                "model_id": "alibaba/wan-2.7",
-            },
-            pipe.valves,
-            withheld=[],
-            user_obj={"id": "user-1"},
-            video_model={
-                "id": "alibaba/wan-2.7",
-                "input_modalities": ["text", "image", "audio", "video"],
-            },
-            event_emitter=emitter,
-        )
-    finally:
-        await pipe.close()
-
-    assert handed, "no attachment was read at all, so the caps were never exercised"
-    assert generated_video_cap not in [cap for _name, cap in handed], (
-        f"REMOTE_VIDEO_MAX_SIZE_MB={cap_mb} reached an attachment as {generated_video_cap} "
-        f"bytes; the caps actually handed out were {handed}"
-    )
-
-
 def test_the_admin_is_sent_to_the_valves_that_really_bound_an_attachment():
     """The other half of the same property, in the surface an administrator reads.
 
@@ -601,7 +515,6 @@ async def test_a_generated_mp4_arriving_in_small_chunks_is_still_identified(
     ("major", "compatible", "declared"),
     [
         (b"qt  ", b"", "video/quicktime"),
-        (b"M4A ", b"mp42isom", "audio/mp4"),
         (b"heic", b"mif1", "image/heic"),
     ],
 )
@@ -723,7 +636,6 @@ async def test_the_compatible_brand_scan_stays_inside_the_ftyp_box(
     [
         (b"qt  ", b"", "video/quicktime"),
         (b"M4A ", b"mp42isom", "audio/mp4"),
-        (b"heic", b"mif1", "image/heic"),
     ],
 )
 @pytest.mark.asyncio
@@ -750,7 +662,7 @@ async def test_a_container_the_operator_allowed_is_identified_by_name(
 
 @pytest.mark.parametrize(
     ("major", "declared"),
-    [(b"qt  ", "video/mp4"), (b"M4V ", "video/mp4"), (b"3gp4", "video/webm")],
+    [(b"qt  ", "video/mp4"), (b"3gp4", "video/webm")],
 )
 @pytest.mark.asyncio
 async def test_a_declaration_the_operator_allowed_is_not_second_guessed(

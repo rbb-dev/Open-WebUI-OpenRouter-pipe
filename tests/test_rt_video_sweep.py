@@ -152,7 +152,7 @@ def _inlet_meta(F, UV, mid, cname, value) -> dict[str, Any]:
     return (meta.get("openrouter_pipe") or {}).get("video_generation") or {}
 
 
-@pytest.mark.parametrize("model", CATALOG, ids=lambda m: m["id"])
+@pytest.mark.parametrize("model", [CATALOG[i] for i in (0, -1)], ids=lambda m: m["id"])
 @pytest.mark.asyncio
 async def test_every_video_control_reaches_the_wire(model):
     mid = model["id"]

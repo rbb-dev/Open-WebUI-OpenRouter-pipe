@@ -840,9 +840,7 @@ def _reset_package_process_state():
 
     Kept separate from `_reset_warn_latches` rather than folded into it: the two
     guard unrelated invariants, and folding them would couple a state clear to a
-    latch clear for ~2 ms a test. `_warned` is also the exact set equality
-    test_warn_latch_isolation.py:155 asserts, so widening that predicate to reach a
-    container with no such prefix would fail it.
+    latch clear for ~2 ms a test.
     """
     _clear_package_process_state()
     yield
@@ -855,9 +853,6 @@ def _reset_warn_latches():
 
     A latch suppresses its warning for the life of the process, so without this the
     first test to trip one silently disarms every later assertion that it is emitted.
-    Which latches exist is asserted in test_warn_latch_isolation.py rather than here:
-    a module that no test imported has no latch to reset, so a per-test assertion on
-    the full set fails for reasons that have nothing to do with isolation.
 
     The two memos beside them are the same kind of state for the same reason. One holds
     downloaded image bytes so a picture reused across turns is fetched once; the other

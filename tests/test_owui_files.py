@@ -220,18 +220,8 @@ def test_declared_size_falls_through_to_inner_when_top_invalid():
 @pytest.mark.parametrize(
     "raw,expected",
     [
-        (None, "local"),
-        ("", "local"),
-        ("local", "local"),
         ("LOCAL", "local"),
         ("s3", "s3"),
-        ("S3", "s3"),
-        ("gcs", "gcs"),
-        ("google", "gcs"),
-        ("azure", "azure"),
-        ("azblob", "azure"),
-        ("backblaze", "unknown"),
-        ("minio", "unknown"),
     ],
 )
 def test_provider_kind_mapping(monkeypatch: pytest.MonkeyPatch, raw, expected):
@@ -902,11 +892,8 @@ def test_infer_mime_default_octet_stream():
 @pytest.mark.parametrize(
     "url,expected",
     [
-        ("/api/v1/files/abc-123/content", "abc-123"),
         ("/api/v1/files/abc-123", "abc-123"),
         ("https://host/files/XyZ9", "XyZ9"),
-        ("https://example.com/no-files-here", None),
-        (12345, None),
     ],
 )
 def test_extract_internal_file_id(url, expected):

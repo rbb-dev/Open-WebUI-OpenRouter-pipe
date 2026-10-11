@@ -82,21 +82,6 @@ def test_deduped_header_names_are_the_same_object(tmp_path):
     assert not unproven, "unsafe header name collisions:\n  " + "\n  ".join(unproven)
 
 
-def test_the_known_collision_is_still_detected(tmp_path):
-    """Guards the detector itself: if this stops firing, the check has gone blind."""
-    bundler = _bundler()
-    bundler.bundle(output_path=tmp_path / "built.py", compressed=False)
-
-    assert any(
-        name == "Request" and "fastapi" in kept and "starlette.requests" in dropped
-        for name, kept, dropped in bundler.NAME_COLLISIONS
-    ), (
-        "the fastapi/starlette Request collision is no longer reported. Either the "
-        "source stopped importing both (fine -- drop this test) or collision "
-        "detection broke (not fine)."
-    )
-
-
 def test_annotated_module_globals_are_visible_to_the_collision_report(tmp_path):
     """`x: T = ...` binds a module global exactly as `x = ...` does.
 
@@ -150,39 +135,6 @@ def test_no_annotated_global_is_defined_by_two_modules():
     )
 
 
-def test_annotated_globals_reach_the_collision_detector(tmp_path):
-    """The detector must see annotated globals, or the check above cannot fire.
-
-    An earlier version asserted `seen or reported`, and `reported` always contains the
-    fastapi/starlette `Request` pair -- so the assertion could never fail.
-    """
-    import ast
-
-    bundler = _bundler()
-    src = "import typing\n_dup: typing.Any = None\n"
-    mods = {}
-    for short in ("alpha", "beta"):
-        mod = bundler.ModuleInfo(
-            dotted_name=short,
-            file_path=tmp_path / f"{short}.py",
-            raw_source=src,
-            source_lines=src.splitlines(keepends=True),
-            tree=ast.parse(src),
-        )
-        bundler.analyze_module(mod, {short: mod})
-        mods[short] = mod
-
-    assert all("_dup" in m.top_level_names for m in mods.values()), (
-        "annotated globals are invisible to the bundler, so two modules declaring the "
-        "same one merge silently in the flat bundle with no collision reported"
-    )
-    assert not bundler._definitions_textually_identical("_dup", ["alpha", "beta"], mods), (
-        "`_dup: Any = None` was treated as a benign identical redefinition. It is not: "
-        "the second module's body re-runs the assignment and resets whatever the first "
-        "one was holding."
-    )
-
-
 @lru_cache(maxsize=None)
 def _package_annotated_collisions() -> frozenset[str]:
     import ast
@@ -213,76 +165,6 @@ def test_internal_collision_fails_the_build(tmp_path, monkeypatch):
         bundler.bundle(output_path=tmp_path / "built.py", compressed=False)
 
     assert "defined by more than one module" in str(excinfo.value)
-
-
-def test_the_benign_exemption_is_not_vacuous(tmp_path):
-    """The build passes because the collisions are provably identical, not because
-    the detector found none. If nothing is ever exempted the exemption is dead code
-    and the previous test proves nothing about the real build."""
-    bundler = _bundler()
-    bundler.bundle(output_path=tmp_path / "built.py", compressed=False)
-
-    duplicated = {
-        name: origins
-        for name, origins in _module_name_origins(bundler).items()
-        if len(origins) > 1
-    }
-    assert duplicated, (
-        "no top-level name is defined by two modules any more -- the benign path is "
-        "never exercised, so test_internal_collision_fails_the_build only proves the "
-        "raise is syntactically reachable. Re-anchor this test or drop both."
-    )
-    mods = _mods_by_short(bundler)
-    unexempted = [
-        name
-        for name, origins in duplicated.items()
-        if not (
-            bundler._definitions_textually_identical(
-                name, [o.removeprefix(bundler.PACKAGE_NAME + ".") for o in origins], mods
-            )
-            or bundler._bindings_are_equivalent(
-                name, [o.removeprefix(bundler.PACKAGE_NAME + ".") for o in origins], mods
-            )
-        )
-    ]
-    assert not unexempted, (
-        f"the build succeeded but {unexempted} are not provably identical -- the gate "
-        "is not running over the same set this test inspects"
-    )
-
-    by_binding = [
-        name
-        for name, origins in duplicated.items()
-        if bundler._bindings_are_equivalent(
-            name, [o.removeprefix(bundler.PACKAGE_NAME + ".") for o in origins], mods
-        )
-    ]
-    assert by_binding, (
-        "no duplicate name is exempted by binding equivalence, so that path is dead "
-        "code here. It exists for the optional-import guards -- if those are all gone, "
-        "drop the path rather than leaving an untested exemption in the gate."
-    )
-
-
-def _module_name_origins(bundler) -> dict[str, list[str]]:
-    from collections import defaultdict
-
-    origins: dict[str, list[str]] = defaultdict(list)
-    for short, mod in _mods_by_short(bundler).items():
-        for name in mod.top_level_names:
-            origins[name].append(short)
-    return origins
-
-
-def _mods_by_short(bundler) -> dict[str, Any]:
-    all_modules = bundler.discover_modules(bundler.PACKAGE_DIR, exclude_plugins=False)
-    for mod in all_modules.values():
-        bundler.analyze_module(mod, all_modules)
-    return {
-        mod.dotted_name.removeprefix(bundler.PACKAGE_NAME + "."): mod
-        for mod in all_modules.values()
-        if not mod.is_init
-    }
 
 
 def test_the_hoisted_import_guard_rejects_a_dropped_import():

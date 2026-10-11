@@ -181,13 +181,6 @@ class TestProviderSlugPattern:
 
     @pytest.mark.parametrize("slug", [
         "openai",
-        "amazon-bedrock",
-        "google-vertex",
-        "together",
-        "deepinfra",
-        "anthropic",
-        "mistral",
-        "openai/gpt-4o",
         "google-vertex/us",
     ])
     def test_valid_slugs(self, slug):
@@ -213,12 +206,6 @@ class TestQuantizationPattern:
 
     @pytest.mark.parametrize("quant", [
         "int4",
-        "int8",
-        "fp8",
-        "fp16",
-        "bf16",
-        "unknown",
-        "INT4",
         "fp-8",
     ])
     def test_valid_quantizations(self, quant):

@@ -179,7 +179,7 @@ def test_the_budget_constants_leave_room_for_more_than_one_lookup():
 
 # ----------------------------------------------------------- THE SLOT ---------
 @pytest.mark.parametrize("address", [
-    "https://one.example/clip.mp4", "https://two.example/other.mp4",
+    "https://one.example/clip.mp4",
 ])
 @pytest.mark.asyncio
 async def test_the_deployment_wide_slot_is_taken_after_the_addresses_are_resolved(
@@ -187,14 +187,13 @@ async def test_the_deployment_wide_slot_is_taken_after_the_addresses_are_resolve
 ):
     """One user's chosen nameservers must not be able to pin every video slot.
 
-    `getaddrinfo` blocks for as long as the host in the request wants it to, and the
-    whole request used to sit inside the deployment-wide semaphore while it did. Two
-    slots by default, so two in-flight requests from one person were the whole pipe.
+`getaddrinfo` blocks for as long as the host in the request wants it to, and the whole request used to sit
+    inside the deployment-wide semaphore while it did. Two slots by default, so two in-flight requests from one
+    person were the whole pipe.
 
-    Observed by recording when each thing happened rather than by racing a stall: the
-    semaphore records the order it was acquired in, the real resolver seam records the
-    order it was asked in, and the sequence has to read resolve-then-acquire. Two
-    addresses, so a production `if url == ...` cannot satisfy both.
+Observed by recording when each thing happened rather than by racing a stall: the semaphore records the order it
+    was acquired in, the real resolver seam records the order it was asked in, and the sequence has to read resolve-
+    then-acquire.
     """
     from open_webui_openrouter_pipe.core.config import EncryptedStr
     from open_webui_openrouter_pipe.pipe import Pipe

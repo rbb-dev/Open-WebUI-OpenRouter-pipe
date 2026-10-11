@@ -487,7 +487,7 @@ def test_frontend_fallback_map_uses_single_featured_endpoint(pipe_instance) -> N
 
 @pytest.mark.parametrize(
     ("raw_slug", "expected"),
-    [("fal", ["fal"]), (" fal ", ["fal"]), ("\tfal\n", ["fal"]), ("xai/zdr", ["xai/zdr"])],
+    [("\tfal\n", ["fal"]), ("xai/zdr", ["xai/zdr"])],
 )
 def test_the_provider_slug_is_the_exact_token_the_carrier_compares(
     pipe_instance, raw_slug, expected

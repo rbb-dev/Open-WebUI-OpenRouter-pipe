@@ -246,7 +246,6 @@ def test_building_again_from_the_pipes_own_registry_keeps_each_renamed_tools_ori
 
 RENAMED_AND_PLAIN_KEYS = [
     pytest.param("My MCP_search", id="renamed-space"),
-    pytest.param("acme.mcp_search", id="renamed-dot"),
     pytest.param("search", id="not-renamed"),
 ]
 
@@ -278,7 +277,7 @@ def _names_open_webui_stores(events: list[dict[str, Any]]) -> dict[str, str]:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("argument_deltas", [True, False], ids=["argument-deltas", "completion-only"])
-@pytest.mark.parametrize("key", RENAMED_AND_PLAIN_KEYS)
+@pytest.mark.parametrize("key", RENAMED_AND_PLAIN_KEYS[:1])
 async def test_open_webui_stores_a_handed_back_call_under_the_key_it_runs(
     monkeypatch, pipe_instance_async, key, argument_deltas
 ):

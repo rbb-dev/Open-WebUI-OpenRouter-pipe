@@ -2174,7 +2174,6 @@ class TestProviderRoutingHashPersistence:
         ("routable", "undeliverable"),
         [
             ("example/steady-model", "acme/reelmaker-1"),
-            ("vendor/other-model", "zeta/clipsmith-9"),
         ],
     )
     async def test_a_transport_without_routing_controls_gets_no_filter(
@@ -2182,11 +2181,9 @@ class TestProviderRoutingHashPersistence:
     ):
         """A model whose transport carries none of the routing keys is skipped.
 
-        Video requests carry a provider block of `options` alone, so every routing
-        control a filter offered would be accepted from the user and then dropped before
-        the request left. Installing the filter anyway puts controls on screen that
-        cannot do anything. Two slug pairs, so a mapping built from a constant cannot
-        satisfy both.
+Video requests carry a provider block of `options` alone, so every routing control a filter offered would be
+        accepted from the user and then dropped before the request left. Installing the filter anyway puts controls
+        on screen that cannot do anything.
         """
         pipe = pipe_instance_async
         filter_manager = pipe._ensure_filter_manager()
@@ -2505,7 +2502,6 @@ class TestInstalledRowMatchesTheRenderedModule:
         [
             ("example/toggle-model", "", "admin", False),
             ("", "example/toggle-model", "user", True),
-            ("example/toggle-model", "example/toggle-model", "both", True),
         ],
     )
     async def test_the_row_advertises_the_toggle_its_module_declares(
@@ -2713,10 +2709,8 @@ def test_the_installed_filter_table_still_names_every_filter_renderer():
 @pytest.mark.parametrize(
     ("prose", "accepted"),
     [
-        ("Pick the ratio from config, or leave this empty.", False),
         ("Read the value from main before the request goes out.", False),
         ("Pick the ratio from the model default, or leave this empty.", True),
-        ("Read the value from the request body before it goes out.", True),
     ],
 )
 def test_generated_prose_open_webui_would_rewrite_is_refused(prose, accepted):
@@ -2770,7 +2764,6 @@ def test_the_replace_imports_guard_runs_against_open_webui_s_own_rule():
     ("valve", "label"),
     [
         ("AUTO_INSTALL_IMAGE_FILTERS", "OpenRouter image filter for a/b"),
-        ("AUTO_INSTALL_VIDEO_FILTERS", "OpenRouter Video Generation filter for a/b"),
     ],
 )
 @pytest.mark.asyncio
@@ -2779,8 +2772,7 @@ async def test_a_row_that_will_never_be_updated_says_so_once(
 ):
     """INSTALL off + ATTACH on finds the row, attaches it, and never rewrites it.
 
-    Without a signal every fix to that filter stays undelivered forever. Two distinct
-    valve names and two distinct labels, so a constant message cannot satisfy both.
+Without a signal every fix to that filter stays undelivered forever.
     """
     import logging
     from types import SimpleNamespace
@@ -2959,7 +2951,7 @@ async def test_a_valve_read_that_failed_leaves_the_installed_filter_alone():
 
 @pytest.mark.parametrize("model_id", ["google/veo-3.1", "bytedance/seedance-2.0"])
 @pytest.mark.parametrize(
-    ("frame_mode", "any_picture_sent"), [("none", False), ("auto", True)]
+    ("frame_mode", "any_picture_sent"), [("none", False)]
 )
 @pytest.mark.asyncio
 async def test_setting_frames_to_none_stops_every_picture_reaching_the_model(

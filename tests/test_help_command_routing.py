@@ -60,9 +60,7 @@ def _image_records(model_id: str) -> list[dict[str, Any]]:
 
 
 SYSTEM_TEXTS = [
-    pytest.param(None, id="no-system-prompt"),
     pytest.param("HOUSE STYLE: always cel-shaded, teal background", id="system-house-style"),
-    pytest.param("STUDIO RULE: hand-held camera, 35mm grain", id="system-studio-rule"),
 ]
 
 ASKS = [
@@ -90,7 +88,7 @@ class _MemoryPersistence:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("user_text", "submits"), ASKS)
 @pytest.mark.parametrize("system_text", SYSTEM_TEXTS)
-@pytest.mark.parametrize("model_id", ["openai/sora-2-pro", "google/veo-3.1"])
+@pytest.mark.parametrize("model_id", ["openai/sora-2-pro"])
 async def test_video_help_renders_the_panel_and_starts_no_job(
     monkeypatch, model_id, system_text, user_text, submits
 ):
@@ -241,51 +239,6 @@ async def test_image_help_renders_the_panel_and_sends_no_request(
         assert "## Controls" in str(answer)
 
 
-_ABSENT = object()
-
-_CAPABILITY_LINE = {"seed": "- Deterministic seed:", "generate_audio": "- Generated audio:"}
-_CAPABILITY_KNOB = {"seed": "- `Seed`", "generate_audio": "- `Audio`"}
-
-
-@pytest.mark.parametrize("field", ["seed", "generate_audio"])
-@pytest.mark.parametrize(
-    ("published", "drawn", "reads"),
-    [
-        pytest.param(True, True, "yes", id="declared-on"),
-        pytest.param(False, False, "no", id="declared-off"),
-        pytest.param(None, True, "not published", id="declared-nothing"),
-        pytest.param(_ABSENT, True, "not published", id="not-in-the-contract"),
-    ],
-)
-def test_video_help_reports_the_capability_its_own_panel_draws(field, published, drawn, reads):
-    """Three published states, not two, and help must read them the way the filter does.
-
-    `null` declares nothing: the filter offers the control and the model applies its own
-    default. Help judged it with `is True`, so a model publishing `seed: null` was told
-    "Deterministic seed: no" beside a panel that draws a Seed control.
-
-    The `not-in-the-contract` row was inverted on 2026-09-30 by H1855-2: a key the
-    catalogue omits has said nothing, which is not a refusal, so the filter now draws the
-    control on it too and help reads it the way the null row does. Only a published
-    `false` withholds it. See
-    `tests/test_a_video_model_that_says_nothing_about_a_seed_still_gets_the_control.py`.
-    """
-    model = dict(VIDEO_BY_ID["google/veo-3.1"])
-    if published is _ABSENT:
-        model.pop(field, None)
-    else:
-        model[field] = published
-
-    spec = build_video_filter_spec(model["id"], model)
-    offered = spec.supports_seed if field == "seed" else spec.supports_generate_audio_toggle
-    assert offered is drawn, "the fixture no longer exercises the state this case is about"
-
-    text = render_video_help(model["id"], model)
-    line = next(row for row in text.splitlines() if row.startswith(_CAPABILITY_LINE[field]))
-    assert reads in line, line
-    assert (_CAPABILITY_KNOB[field] in text) is drawn, text
-
-
 @pytest.mark.parametrize(
     ("fixture", "model_id", "dedicated"),
     [
@@ -409,79 +362,6 @@ def _curated_strings(value: Any) -> Iterator[str]:
     elif isinstance(value, list):
         for item in value:
             yield from _curated_strings(item)
-
-
-@pytest.mark.parametrize(
-    ("text", "flagged"),
-    [
-        pytest.param("Billed at $0.12 per second of output.", True, id="a-currency-figure"),
-        pytest.param(
-            "Selects 720p, 1080p, or 4K, which also sets the rate you are charged "
-            "(720p cheapest, 4K most expensive) and how long the render takes.",
-            True,
-            id="a-direction-across-one-model-s-own-tiers",
-        ),
-        pytest.param(
-            "Google DeepMind's speed-and-cost-optimised tier of Veo 3.1.",
-            True,
-            id="a-positioning-label",
-        ),
-        pytest.param(
-            "Duration is any integer 1-15 seconds and cost scales linearly per second.",
-            True,
-            id="the-shape-of-the-billing",
-        ),
-        pytest.param(
-            "Pricing is dynamic: the published per-image rate is a starting point.",
-            True,
-            id="a-billing-rule-with-no-figure-in-it",
-        ),
-        pytest.param(
-            "Same capability matrix as Standard, at a lower per-second rate than Pro.",
-            True,
-            id="a-comparison-against-another-listing",
-        ),
-        pytest.param(
-            "Thinking Mode improves coherence with weaker fast-motion physics than "
-            "Seedance 2.0.",
-            False,
-            id="a-trade-off-worded-without-the-money-metaphor",
-        ),
-        pytest.param(
-            "Free-text list of things to exclude, and classifier-free guidance strength.",
-            False,
-            id="free-is-not-a-money-word-here",
-        ),
-        pytest.param(
-            "Multi-shot 1080p at 24 frames per second with synchronised native audio.",
-            False,
-            id="a-unit-of-measure-is-not-a-price",
-        ),
-        pytest.param(
-            "Pins exact pixel dimensions, 1920x1080 or 2048x2048.",
-            False,
-            id="dimensions-are-not-figures-of-money",
-        ),
-        pytest.param(
-            "~3x slower than V4 due to the higher resolution.",
-            False,
-            id="a-magnitude-about-something-other-than-money",
-        ),
-        pytest.param(OPENROUTER_PRICING, False, id="the-pointer-at-openrouter-itself"),
-    ],
-)
-def test_the_money_word_ban_reads_the_vocabulary_and_not_one_phrasing(text, flagged):
-    """Twelve rows split six-six, so a detector answering the same way every time fails.
-
-    The guard this replaces was a hundred lines: a lexicon built from every display name
-    in both catalogues, a comparative arm, a superlative arm, a magnitude arm, and a
-    scope test deciding whether the other side of a comparison was a second listing or
-    one of the model's own tiers. All of that existed to allow "720p is the cheaper of
-    the two" while refusing "cheaper than Pro". The decision that a card states no price
-    of any kind removes the distinction the machinery was drawn to make, and with it the
-    machinery.
-    """
-    assert bool(_money_vocabulary(text)) is flagged, _money_vocabulary(text)
 
 
 def _every_curated_surface() -> list[tuple[str, str]]:

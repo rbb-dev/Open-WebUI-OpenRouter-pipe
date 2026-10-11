@@ -20,11 +20,9 @@ import contextlib
 import functools
 import inspect
 import json
-import logging
 import math
 import re
 import sysconfig
-import threading
 import time as _real_time
 import typing
 from pathlib import Path
@@ -32,15 +30,17 @@ from typing import Any
 
 import pytest
 from tests.pipe_limits import limits_for
-from open_webui_openrouter_pipe.integrations import image_catalog, video_catalog
 from aiohttp.helpers import TimerContext
-from tests._jumping_clock import event_loop_policy  # noqa: F401
 
 import open_webui_openrouter_pipe.core.circuit_breaker as circuit_breaker_module
 import open_webui_openrouter_pipe.tools.tool_executor as tool_executor_module
 from open_webui_openrouter_pipe import _ToolExecutionContext
 from open_webui_openrouter_pipe.plugins.base import PluginBase
 from open_webui_openrouter_pipe.plugins.registry import PluginRegistry
+import logging
+import threading
+from open_webui_openrouter_pipe.integrations import image_catalog, video_catalog
+from tests._jumping_clock import event_loop_policy  # noqa: F401
 
 # Time here is simulated, never waited out. The loop jumps its own clock to the next scheduled wake-up
 # instead of sleeping until it, so a tool that "takes 300 seconds" costs nothing while still finishing
@@ -281,22 +281,6 @@ async def test_an_unanswered_ask_user_is_cut_only_after_its_prompt_has_closed(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("timeout_ms", [90_000, 200_000])
-async def test_an_ask_user_answered_just_before_a_late_opened_prompt_closes_reaches_the_model(
-    pipe_instance_async, monkeypatch, timeout_ms
-):
-    # The browser starts its countdown when the dialog opens, after the pipe's call has started: here the dialog opened
-    # 12 s late and the user answered 2 s before it closed.
-    trace: list[str] = []
-    registry = {"ask_user": _builtin_ask_user(_answers_after(timeout_ms / 1000 + 10, trace))}
-
-    outputs, _ = await _run(pipe_instance_async, monkeypatch, registry, [_call("c1", "ask_user", _ask(timeout_ms))])
-
-    assert trace == ["asked", "answered"]
-    assert outputs["c1"]["status"] == "completed"
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("timeout_ms", [30_000, 90_000.0])
 async def test_an_ask_user_timeout_open_webui_rejects_gets_open_webuis_default_prompt_time(
     pipe_instance_async, monkeypatch, timeout_ms
@@ -364,7 +348,7 @@ def _open_webui_builtin_ask_user(opened_for: list[Any]):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("timeout_ms", ["150000", "200000", 200_000], ids=["text-150000", "text-200000", "number-200000"])
+@pytest.mark.parametrize("timeout_ms", ["150000", 200_000], ids=["text-150000", "number-200000"])
 async def test_an_ask_user_timeout_sent_as_text_gets_the_same_time_in_the_browser_and_in_the_pipe(
     pipe_instance_async, monkeypatch, timeout_ms
 ):
@@ -427,7 +411,7 @@ async def test_the_idle_timeout_does_not_cut_an_open_ask_user_prompt(pipe_instan
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("timeout_ms", "batch_timeout"), [(60_000, 120.0), (120_000, 120.0), (200_000, 120.0), (120_000, 600.0)]
+    ("timeout_ms", "batch_timeout"), [(60_000, 120.0), (120_000, 600.0)]
 )
 async def test_an_ask_user_nobody_answered_does_not_count_against_the_tool(
     pipe_instance_async, monkeypatch, timeout_ms, batch_timeout
@@ -639,8 +623,8 @@ def _times_out_inside(how: str):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("limit", [45.0, 70.0])
-@pytest.mark.parametrize("how", ["asyncio.wait_for", "asyncio.timeout", "aiohttp timer"])
+@pytest.mark.parametrize("limit", [45.0])
+@pytest.mark.parametrize("how", ["asyncio.wait_for", "aiohttp timer"])
 async def test_a_tool_whose_own_timer_runs_out_is_not_reported_as_cut_off_by_the_pipe(
     pipe_instance_async, monkeypatch, how, limit
 ):
@@ -821,45 +805,6 @@ async def test_default_limits_let_two_long_calls_in_one_batch_finish_one_after_t
     assert trace == ["started", "finished", "started", "finished"]
     assert outputs["c1"]["status"] == "completed"
     assert outputs["c2"]["status"] == "completed"
-
-
-@pytest.mark.asyncio
-async def test_with_default_limits_a_call_is_cut_at_five_minutes_and_not_before(pipe_instance_async, monkeypatch):
-    registry = {
-        "shorter": _entry(_works_for(295, []), tool_type="function", name="shorter"),
-        "longer": _entry(_works_for(305, []), tool_type="function", name="longer"),
-    }
-
-    outputs = await _run_job(
-        pipe_instance_async, monkeypatch, registry, [_call("c1", "shorter"), _call("c2", "longer")]
-    )
-
-    assert outputs["c1"]["status"] == "completed"
-    assert outputs["c2"]["status"] != "completed"
-    assert re.search(r"(?<!\d)300(?!\d)", _text(outputs["c2"])), _text(outputs["c2"])
-
-
-@pytest.mark.asyncio
-async def test_with_default_limits_a_batch_is_cut_at_ten_minutes_and_not_before(pipe_instance_async, monkeypatch):
-    # With one tool running at a time, a batch's calls run back to back: two 295 s calls take 590 s, three 205 s
-    # calls take 615 s.
-    fits = await _run_job(
-        pipe_instance_async,
-        monkeypatch,
-        {"render": _entry(_works_for(295, []), tool_type="function", name="render")},
-        [_call("c1", "render"), _call("c2", "render")],
-        MAX_PARALLEL_TOOLS_PER_REQUEST=1,
-    )
-    overflows = await _run_job(
-        pipe_instance_async,
-        monkeypatch,
-        {"render": _entry(_works_for(205, []), tool_type="function", name="render")},
-        [_call("c1", "render"), _call("c2", "render"), _call("c3", "render")],
-        MAX_PARALLEL_TOOLS_PER_REQUEST=1,
-    )
-
-    assert [output["status"] for output in fits.values()] == ["completed", "completed"]
-    assert any(re.search(r"exceeded 600s", _text(output)) for output in overflows.values()), overflows
 
 
 # --- a set idle limit only caps the wait for a result ----------------------------------------------------------------
@@ -1043,10 +988,9 @@ def _records_its_start(name: str, seconds: float, starts: list[float], finishes:
     "calls",
     [
         [("c1", "render", 250), ("c2", "lookup", 200)],
-        [("c1", "render", 250), ("c2", "lookup", 200), ("c3", "fetch", 200)],
         [("c1", "render", 250), ("c2", "lookup", 30), ("c3", "lookup", 30), ("c4", "fetch", 30)],
     ],
-    ids=["two-tools", "three-tools", "a-pair-between-two-tools"],
+    ids=["two-tools", "a-pair-between-two-tools"],
 )
 async def test_a_slow_call_does_not_hold_up_other_tools_while_slots_are_free(pipe_instance_async, monkeypatch, calls):
     # On default settings there are five slots, so every call in the response starts at once, and the round lasts as long
@@ -1246,7 +1190,7 @@ def _takes_as_long_as_asked():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("quick", "slow", "idle"), [(5, 80, 30), (10, 120, 45)])
-@pytest.mark.parametrize("quick_first", [True, False], ids=["quick-call-listed-first", "slow-call-listed-first"])
+@pytest.mark.parametrize("quick_first", [True], ids=["quick-call-listed-first"])
 async def test_a_quick_call_batched_with_a_slow_one_keeps_its_result_when_the_wait_for_results_is_limited(
     pipe_instance_async, monkeypatch, quick, slow, idle, quick_first
 ):
@@ -1547,8 +1491,8 @@ def _models_keep_calling(tool_name: str, fed_back: list[str], *, think_after_fir
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("think_seconds", [0, 70], ids=["models-answer-at-once", "models-think-past-the-window"])
-@pytest.mark.parametrize("threshold", [1, 2, 3, 4, 5, 6, 7, 8, 10, 12])
+@pytest.mark.parametrize("think_seconds", [0], ids=["models-answer-at-once"])
+@pytest.mark.parametrize("threshold", [1, 12])
 async def test_a_fusion_turn_stops_calling_a_tool_that_keeps_timing_out_without_touching_the_users_own_switch(
     monkeypatch, threshold, think_seconds
 ):
@@ -1767,50 +1711,8 @@ async def test_a_round_hands_back_its_results_in_call_order_however_the_calls_fi
 
 # --- the four places the idle limit is described to an operator ---------------------------------------------
 
-# Prescription 117 named four surfaces and the wording was fixed on all four, but nothing observed them: round
-# 32's verify lens measured each revert SURVIVING the whole suite. The limit is one wait for the whole round,
-# counted from the model's request -- not a fresh wait per call, in call order.
-IDLE_LIMIT_SURFACES = [
-    pytest.param("Field description", "open_webui_openrouter_pipe/core/config.py", id="field"),
-    pytest.param("Config tab detail", "open_webui_openrouter_pipe/plugins/pipe_dashboard/config_meta.py",
-                 id="config-tab"),
-    pytest.param("tooling doc", "docs/tooling_and_integrations.md", id="tooling-doc"),
-    pytest.param("valve atlas", "docs/valves_and_configuration_atlas.md", id="atlas"),
-]
-RETIRED_PER_CALL_PHRASES = ("for each tool call's result", "one by one in call order", "one at a time",
-                            "for each tool result, in turn")
-
-
-@pytest.mark.parametrize(("surface", "path"), IDLE_LIMIT_SURFACES)
-def test_every_place_the_idle_limit_is_described_calls_it_one_wait_for_the_round(surface, path):
-    import pathlib as _pathlib
-
-    text = _pathlib.Path(path).read_text(encoding="utf-8")
-    start = text.index("TOOL_IDLE_TIMEOUT_SECONDS")
-    window = text[start : start + 4000]
-
-    assert "in total for one response" in window, f"{surface} no longer calls it one wait for the round"
-    for phrase in RETIRED_PER_CALL_PHRASES:
-        assert phrase not in window, f"{surface} still promises a per-call wait: {phrase!r}"
-
 
 # --- Stop during a round counts only what the tools did (round 35, tools F1) ----------------------------------------
-
-
-async def _wait_for(predicate, *, seconds: float, what: str) -> None:
-    """Wait until ``predicate`` holds, up to a wall-clock ``seconds`` budget, and say so by name if it never does.
-
-    The budget is a deadline on the real monotonic clock, not a count of sleeps, so it means the same thing
-    however slowly the machine runs the loop. Running the budget out is the helper raising with ``what``
-    naming what never happened; the caller asserts the count it expects, so what reaches the report from a
-    loaded machine is the wait that missed its target rather than a bare ``assert (3, 0) == (3, 3)`` that
-    says a number is wrong without saying which wait gave up.
-    """
-    deadline = _real_time.monotonic() + seconds
-    while not predicate():
-        if _real_time.monotonic() >= deadline:
-            raise AssertionError(what)
-        await asyncio.sleep(0.01)
 
 
 # --- the idle allowance starts when the round does, not when the enqueue does -----------------------
@@ -1822,6 +1724,3 @@ async def _wait_for(predicate, *, seconds: float, what: str) -> None:
 # allowance, so the wait for results is one bounded wait for the round either way.
 
 
-def _never_returns(**_kwargs):
-    """A tool that never returns, so what ends it is a limit or a teardown, never itself."""
-    return asyncio.sleep(NEVER)

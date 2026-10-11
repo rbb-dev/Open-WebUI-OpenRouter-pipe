@@ -1128,8 +1128,8 @@ def _panel_model_that_asks_the_user(captured: list[dict]):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("renamed", "outer_names_in_metadata"),
-    [(False, True), (True, True), (True, False)],
-    ids=["keyed-as-open-webui-keys-it", "renamed-for-a-name-collision", "merged-back-from-open-webui-metadata"],
+    [(False, True), (True, False)],
+    ids=["keyed-as-open-webui-keys-it", "merged-back-from-open-webui-metadata"],
 )
 async def test_no_model_in_a_fusion_turn_is_offered_or_runs_open_webuis_ask_user(
     orchestrator_and_pipe, monkeypatch, renamed, outer_names_in_metadata

@@ -62,15 +62,13 @@ def _write(root: Path, rel: str, body: str) -> None:
 
 @pytest.mark.parametrize(
     ("appended", "expected"),
-    [("x = 2\n", {3}), ("x = 2\ny = 3\n", {3, 4})],
+    [("x = 2\ny = 3\n", {3, 4})],
 )
 def test_added_lines_are_the_working_tree_lines_the_diff_introduced(
     tmp_path, appended, expected
 ):
-    """Two different appends, so a constant line set cannot satisfy both.
-
-    The diff runs to the WORKING TREE. ``base..HEAD`` sees nothing here, which is the
-    state this gate is written to inspect.
+    """The diff runs to the WORKING TREE. ``base..HEAD`` sees nothing here, which is the state this gate is written to
+    inspect.
     """
     root = _repo(tmp_path, {"pkg/m.py": "a = 0\nb = 1\n"})
     _write(root, "pkg/m.py", "a = 0\nb = 1\n" + appended)

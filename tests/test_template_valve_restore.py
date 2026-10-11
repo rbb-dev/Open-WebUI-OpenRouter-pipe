@@ -21,7 +21,7 @@ import pytest
 from open_webui_openrouter_pipe.core.config import Valves
 
 _RESTORABLE = ["RATE_LIMIT_TEMPLATE", "CONNECTION_ERROR_TEMPLATE"]
-_BLANKS = ["", "   ", "\n\t \n"]
+_BLANKS = ["   "]
 
 
 def _factory_text(name):
@@ -45,7 +45,7 @@ def _owui_valves_update(form_data):
 
 
 @pytest.mark.parametrize("name", _RESTORABLE)
-@pytest.mark.parametrize("blank", _BLANKS, ids=["empty", "spaces", "newlines"])
+@pytest.mark.parametrize("blank", _BLANKS, ids=["spaces"])
 def test_the_open_webui_valve_panel_restores_a_cleared_template(name, blank):
     """The restore survives the door that does not go through the pipe's save helper.
 

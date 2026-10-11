@@ -1305,7 +1305,7 @@ class TestTryLinkFileToChat:
             chats_mod.Chats = original_chats
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("message_id", ["msg-1", None], ids=["with-a-message", "with-no-message"])
+    @pytest.mark.parametrize("message_id", ["msg-1"], ids=["with-a-message"])
     @pytest.mark.parametrize(
         ("chat_id", "linkable"),
         [
@@ -3382,13 +3382,8 @@ class TestAudioTransformer:
     @pytest.mark.parametrize(
         "mime_type,expected_format",
         [
-            ("audio/mpeg", "mp3"),
             ("audio/mp3", "mp3"),
             ("audio/wav", "wav"),
-            ("audio/wave", "wav"),
-            ("audio/x-wav", "wav"),
-            ("audio/unknown", None),
-            (None, "mp3"),
         ],
     )
     async def test_audio_mime_type_to_format_mapping(

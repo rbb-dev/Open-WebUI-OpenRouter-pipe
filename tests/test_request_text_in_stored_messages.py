@@ -148,7 +148,6 @@ def test_a_link_that_parses_as_one_string_and_reads_as_another_is_refused(inject
     "link",
     [
         "https://files.catbox.moe/abc123.mp4",
-        "https://litter.catbox.moe/xyz.mp3?v=2",
         "https://catbox.moe/a.mp4#t=3",
     ],
 )

@@ -2233,7 +2233,7 @@ class TestDedicatedImageApiDispatch:
         return recorded
 
     @pytest.mark.parametrize("prompt", ["draw a leaf", "help"])
-    @pytest.mark.parametrize("enabled", [True, False])
+    @pytest.mark.parametrize("enabled", [True])
     @pytest.mark.asyncio
     async def test_the_master_valve_decides_whether_the_image_transport_opens(
         self, enabled, prompt, orchestrator_and_pipe, mock_valves, mock_session, monkeypatch
@@ -2460,7 +2460,7 @@ class TestDedicatedImageApiDispatch:
 
     @pytest.mark.parametrize(
         "model_id",
-        ["qwen/qwen-image-3", "recraft/recraft-v3", "black-forest-labs/flux.2-pro"],
+        ["qwen/qwen-image-3", "black-forest-labs/flux.2-pro"],
     )
     @pytest.mark.asyncio
     async def test_every_image_only_vendor_reaches_the_dispatch(

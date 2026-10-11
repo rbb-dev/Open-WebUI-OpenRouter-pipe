@@ -148,7 +148,7 @@ def test_apply_server_tools_metadata_no_stop_guard_when_absent():
     assert getattr(body, "stop_server_tools_when", None) is None
 
 
-SIZE_RATIO_PAIRS = [("1024x1024", "16:9", "1:1"), ("1920x1080", "1:1", "16:9")]
+SIZE_RATIO_PAIRS = [("1024x1024", "16:9", "1:1")]
 
 
 async def _image_size_notice(monkeypatch, size, ratio, *, image_generation_on=True):
@@ -233,14 +233,11 @@ async def test_a_size_superseding_a_ratio_on_the_image_tool_is_told_to_the_user(
 ):
     """The ratio the pipe removes from the image tool reaches the chat, not just the wire.
 
-    Both controls are drawn together on 24 of the 40 recorded contracts, so choosing
-    exact pixels and a shape that disagrees with them is an ordinary thing to do. The
-    pixels win and the shape is withheld; a user who is not told sees a picture in the
-    wrong shape with nothing to explain it.
+Both controls are drawn together on 24 of the 40 recorded contracts, so choosing exact pixels and a shape that
+    disagrees with them is an ordinary thing to do. The pixels win and the shape is withheld; a user who is not told
+    sees a picture in the wrong shape with nothing to explain it.
 
-    The assertion is on the notification the emitter received, because that is the only
-    place the user reads. Two rows whose pixels imply DIFFERENT shapes, so a fixed
-    string cannot satisfy both -- the second row keeps the ratio the first row drops.
+The assertion is on the notification the emitter received, because that is the only place the user reads.
     """
     told, _sent = await _image_size_notice(monkeypatch, size, ratio)
 

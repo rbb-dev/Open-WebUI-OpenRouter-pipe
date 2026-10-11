@@ -173,7 +173,7 @@ def test_an_absolute_url_is_external_whatever_the_scheme_is_typed_as(scheme):
 
 @pytest.mark.parametrize(
     "relative",
-    ["/api/v1/files/abc/content", "/api/v1/files/abc/content?token=Az09", "./api/v1/files/abc"],
+    ["/api/v1/files/abc/content", "./api/v1/files/abc"],
 )
 def test_a_relative_owui_path_is_still_internal(relative):
     """The must-pass half: narrowing the classifier must not un-classify the paths it

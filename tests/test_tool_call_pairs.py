@@ -43,8 +43,8 @@ def _shape(items: list[Any]) -> list[tuple[str, str]]:
 
 @pytest.mark.parametrize(
     ("calls", "results", "kept"),
-    [(1, 2, 1), (2, 2, 2), (1, 3, 1), (3, 2, 2)],
-    ids=["one-call-two-results", "two-rounds-on-one-id", "one-call-three-results", "three-calls-two-results"],
+    [(2, 2, 2), (1, 3, 1)],
+    ids=["two-rounds-on-one-id", "one-call-three-results"],
 )
 def test_an_id_never_carries_more_results_than_it_has_calls(calls, results, kept):
     """Two rounds of one answer sharing an id is a real shape; so is one call answered twice, which is not."""

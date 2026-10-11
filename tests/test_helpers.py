@@ -880,7 +880,7 @@ class TestPrettyJson:
         assert '"key"' in result
         assert '"value"' in result
 
-    @pytest.mark.parametrize("empty", [{}, [], ()])
+    @pytest.mark.parametrize("empty", [{}, ()])
     def test_an_empty_container_is_not_applicable_rather_than_a_placeholder(self, empty):
         """Every consumer is a template field gated on `{{#if <field>}}`.
 

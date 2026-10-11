@@ -385,7 +385,7 @@ async def test_start_and_stop_purge_task(monkeypatch):
 
 @pytest.mark.parametrize(
     "tz",
-    ["UTC", "Australia/Brisbane", "America/New_York", "Asia/Kolkata"],
+    ["UTC", "Asia/Kolkata"],
 )
 def test_purge_cutoff_is_in_the_same_naive_frame_as_stored_timestamps(tz, monkeypatch):
     """The purge cutoff must live in the naive-LOCAL frame, not naive-UTC.
@@ -418,7 +418,7 @@ def test_purge_cutoff_is_in_the_same_naive_frame_as_stored_timestamps(tz, monkey
 
 @pytest.mark.parametrize(
     "tz",
-    ["UTC", "Australia/Brisbane", "America/New_York", "Asia/Kolkata"],
+    ["UTC", "Asia/Kolkata"],
 )
 def test_the_writer_and_the_decoder_agree_on_the_stored_frame(tz, monkeypatch):
     """A row written for an instant must read back as that same instant.

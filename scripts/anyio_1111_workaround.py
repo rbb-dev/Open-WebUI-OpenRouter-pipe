@@ -103,8 +103,7 @@ def _apply_anyio_1111_workaround() -> None:
             # this runs when anyio delivers a cancellation, long after load -- but
             # because this file is the BUNDLE HEAD, and bundle_v2's validator rejects
             # any absolute internal import surviving there ("leftover absolute internal
-            # import"). The census in test_swallowed_failure_diagnostics.py knows about
-            # this one site by name and fails if a second appears.
+            # import").
             _seen = getattr(_patched_deliver_cancellation, "_cleanup_failure_logged", False)
             _patched_deliver_cancellation._cleanup_failure_logged = True  # type: ignore[attr-defined]
             with _contextlib.suppress(Exception):

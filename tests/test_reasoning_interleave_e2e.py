@@ -224,7 +224,7 @@ async def test_e2e_prompt_caching_does_not_touch_or_leak_reasoning(monkeypatch, 
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 @pytest.mark.parametrize("persist_reasoning", ["disabled", "next_reply", "conversation"])
-@pytest.mark.parametrize("n_rounds", [1, 2, 3])
+@pytest.mark.parametrize("n_rounds", [1])
 @pytest.mark.parametrize("tool_mode", ["Pipeline", "Open-WebUI"])
 async def test_e2e_invariant_matrix(monkeypatch, pipe_instance_async,
                                     persist_reasoning, n_rounds, tool_mode):

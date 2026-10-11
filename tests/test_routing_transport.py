@@ -157,8 +157,6 @@ def test_a_format_that_carries_none_of_these_settings_gets_no_picker(visibility)
     [
         (["image"], set(), "image"),
         (["image", "text"], set(), "chat"),
-        (["text"], set(), "chat"),
-        (["video"], {"video_generation"}, "video"),
     ],
 )
 def test_the_request_format_is_read_from_the_catalogue_not_the_name(

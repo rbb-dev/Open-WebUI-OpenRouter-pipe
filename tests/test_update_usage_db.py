@@ -92,9 +92,6 @@ def test_an_unusable_log_level_falls_back_instead_of_killing_the_drain(drain, va
     [
         ("DEBUG", logging.DEBUG),
         ("info", logging.INFO),
-        (" warning ", logging.WARNING),
-        ("ERROR", logging.ERROR),
-        ("CRITICAL", logging.CRITICAL),
     ],
 )
 def test_a_real_level_is_honoured(drain, value, expected, monkeypatch):

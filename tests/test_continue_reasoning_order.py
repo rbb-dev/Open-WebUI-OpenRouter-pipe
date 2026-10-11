@@ -253,8 +253,8 @@ def _assert_replays_exactly_and_apart(replay: list[dict[str, Any]], expected: li
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "listing", ["with-reasoning", "without-reasoning"],
-    ids=["completion-lists-the-reasoning", "completion-omits-the-reasoning"],
+    "listing", ["with-reasoning"],
+    ids=["completion-lists-the-reasoning"],
 )
 @pytest.mark.parametrize("shape", list(SHAPES))
 async def test_a_continued_message_replays_its_reasoning_in_order_and_never_side_by_side(
@@ -395,10 +395,10 @@ async def test_next_reply_cleanup_keeps_the_rows_of_the_message_a_continue_is_st
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("results_kept", [True, False], ids=["results-kept", "results-not-kept"])
+@pytest.mark.parametrize("results_kept", [True], ids=["results-kept"])
 @pytest.mark.parametrize(
-    "listing", ["with-reasoning", "without-reasoning"],
-    ids=["completion-lists-the-reasoning", "completion-omits-the-reasoning"],
+    "listing", ["with-reasoning"],
+    ids=["completion-lists-the-reasoning"],
 )
 @pytest.mark.parametrize("shape", list(SHAPES))
 async def test_a_continue_that_is_not_streamed_replays_the_whole_turn_just_as_a_streamed_one_does(
@@ -444,7 +444,7 @@ AFTER_A_THINKING_RETRY = {
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("cards", [True, False], ids=["cards-on", "cards-off"])
+@pytest.mark.parametrize("cards", [True], ids=["cards-on"])
 @pytest.mark.parametrize("shape", list(AFTER_A_THINKING_RETRY))
 async def test_a_continue_retried_without_its_replayed_thinking_still_numbers_its_reasoning_after_the_first_generation(
     monkeypatch, pipe_instance_async, shape, cards

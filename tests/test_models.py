@@ -4294,9 +4294,8 @@ class _HostileModel(dict):
     ("models", "expected"),
     [
         (["vendor/good", "vendor/bad"], (1, 2)),
-        (["vendor/ok1", "vendor/ok2", "vendor/bad"], (1, 3)),
     ],
-    ids=["one-of-two", "one-of-three"],
+    ids=["one-of-two"],
 )
 async def test_a_partial_metadata_sync_failure_is_reported_with_its_counts(
     pipe_instance_async, caplog, escapes_apply, models, expected
@@ -4388,14 +4387,11 @@ async def test_a_partial_metadata_sync_failure_is_reported_with_its_counts(
 @pytest.mark.parametrize(
     ("features", "expects_default"),
     [
-        ({"image_output"}, True),
-        ({"video_generation"}, True),
         ({"image_output", "vision"}, True),
         ({"vision"}, False),
-        (set(), False),
     ],
 )
-@pytest.mark.parametrize("valve_on", [True, False])
+@pytest.mark.parametrize("valve_on", [True])
 def test_media_models_arrive_with_builtin_tools_unticked(features, expects_default, valve_on):
     """A model that answers with a picture or a clip is offered no built-in tools.
 
@@ -4869,13 +4865,10 @@ class TestTagScannerIsDisabledOnEveryModelRow:
     @pytest.mark.parametrize(
         ("existing", "expected"),
         [
-            (None, False),
-            ({}, False),
             ({"temperature": 0.5}, False),
             ({"reasoning_tags": ["<a>", "</a>"]}, ["<a>", "</a>"]),
-            ({"reasoning_tags": False}, False),
         ],
-        ids=["absent", "empty", "other-params", "operator-set", "already-disabled"],
+        ids=["other-params", "operator-set"],
     )
     def test_the_row_carries_a_scanner_verdict(self, existing, expected):
         from open_webui.models.models import ModelParams

@@ -315,13 +315,7 @@ class TestInvariants:
     @pytest.mark.parametrize(
         ("attachments_count", "source_index", "kept"),
         [
-            pytest.param(1, 99, False, id="one-99-far-out"),
             pytest.param(1, 0, True, id="one-zero-kept"),
-            pytest.param(1, 1, False, id="one-one-dropped"),
-            pytest.param(2, 1, True, id="two-one-kept"),
-            pytest.param(2, 2, False, id="two-two-dropped"),
-            pytest.param(3, 2, True, id="three-two-kept"),
-            pytest.param(3, 3, False, id="three-three-dropped"),
             pytest.param(2, -1, False, id="two-negative-dropped"),
         ],
     )

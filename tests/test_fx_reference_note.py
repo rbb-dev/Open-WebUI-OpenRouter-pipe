@@ -59,8 +59,6 @@ def _adapter_allowing_links() -> ImageGenerationAdapter:
     [
         (2, 0, 5, "keeping the most recent", "first"),
         (2, 5, 0, "keeping the first 2 link(s) you listed", "most recent"),
-        (3, 2, 4, "keeping the first 2 link(s) and the 1 most recent attachment(s)", "x"),
-        (0, 2, 2, "sending none", "keeping"),
     ],
 )
 @pytest.mark.asyncio

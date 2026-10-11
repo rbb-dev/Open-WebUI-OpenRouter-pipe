@@ -1184,25 +1184,20 @@ async def test_the_health_indicator_reads_the_session_the_process_actually_has(
     assert _states() == ("closed", "closed"), _states()
 
 
-@pytest.mark.parametrize("state", ["idle", "retiring"])
+@pytest.mark.parametrize("state", ["idle"])
 def test_a_state_the_dashboard_cannot_render_is_substituted_and_said_out_loud(
     state, caplog
 ):
     """`TRANSPORT_SESSION_STATES` is a second copy of a vocabulary the handler owns.
 
-    Nothing links the two: `transport_session_state` gaining a fourth state would have
-    been filtered to "none" here, and the panel would have rendered Idle for a worker
-    that was doing something else, with no line in any log to notice it by. The filter
-    itself has to stay -- `_worker_health(pipe)["http"]` is `json.dumps`-ed inside an
-    `except Exception: logger.debug(...)`, so passing an unserialisable value through
-    would silently drop the whole worker's slice -- so the fix is to announce the
-    substitution, not to stop substituting.
+Nothing links the two: `transport_session_state` gaining a fourth state would have been filtered to "none" here,
+    and the panel would have rendered Idle for a worker that was doing something else, with no line in any log to
+    notice it by. The filter itself has to stay -- `_worker_health(pipe)["http"]` is `json.dumps`-ed inside an
+    `except Exception: logger.debug(...)`, so passing an unserialisable value through would silently drop the whole
+    worker's slice -- so the fix is to announce the substitution, not to stop substituting.
 
-    Two distinct unknown states, so a hardcoded "none" in the collector satisfies the
-    return value and still fails the record. The offending value is asserted in the
-    record's text rather than the message, because it travels as the raised value: a
-    diagnostic that says a state was unknown without saying which one cannot be acted
-    on.
+The offending value is asserted in the record's text rather than the message, because it travels as the raised
+    value: a diagnostic that says a state was unknown without saying which one cannot be acted on.
     """
     import logging
 

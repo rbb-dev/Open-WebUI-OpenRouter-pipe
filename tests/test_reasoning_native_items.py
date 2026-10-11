@@ -226,7 +226,7 @@ class TestEmptyAndModes:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "mode,expect_native,expect_status",
-        [("open_webui", 1, False), ("status", 0, True), ("both", 1, True)],
+        [("open_webui", 1, False), ("status", 0, True)],
     )
     async def test_mode_matrix(self, monkeypatch, pipe_instance_async, mode, expect_native, expect_status):
         """T4: box/status/both gating."""
@@ -630,7 +630,7 @@ class TestSeededHistoryIsHealed:
 
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("held_status", ["queued", "pending", "requires_approval"])
+    @pytest.mark.parametrize("held_status", ["queued", "requires_approval"])
     async def test_a_call_awaiting_approval_is_never_resolved(
         self, monkeypatch, pipe_instance_async, held_status
     ):

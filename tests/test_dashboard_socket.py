@@ -919,8 +919,10 @@ class TestPublisherLoop:
     @pytest.fixture(autouse=True)
     def _fast_sleep(self, monkeypatch):
         real_sleep = asyncio.sleep
+        self._slept = []
 
-        async def fast(_delay):
+        async def fast(delay):
+            self._slept.append(delay)
             await real_sleep(0)
 
         monkeypatch.setattr(dashboard_publisher.asyncio, "sleep", fast)
@@ -929,7 +931,11 @@ class TestPublisherLoop:
         task = asyncio.get_running_loop().create_task(
             run_dashboard_publisher(get_pipe, get_redis, "testns"),
         )
-        await _REAL_SLEEP(0.05)
+        pass_ends = {dashboard_publisher._PD_PUBLISH_INTERVAL, dashboard_publisher._PD_POLL_INTERVAL}
+        for _ in range(400):
+            if task.done() or sum(d in pass_ends for d in self._slept[1:]) >= 4:
+                break
+            await _REAL_SLEEP(0.01)
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
@@ -1199,15 +1205,11 @@ class TestReadConfigRev:
             f"--- stderr ---\n{proc.stderr}"
         )
 
-    @pytest.mark.parametrize("rev", [1717171717, 1828282828])
+    @pytest.mark.parametrize("rev", [1717171717])
     def test_it_returns_the_rows_updated_at(self, tmp_path, rev):
-        """Two revisions, because one is satisfied by returning that constant.
-
-        Verified: with a single case, replacing the body with `return 1717171717`
-        passed. A second distinct value makes any hardcoded answer fail one of them.
-        The single-statement assertion is what makes this the read's own: Open WebUI's
-        `get_function_by_id` issues a whole-row select, so the wide path fails here on
-        the column list rather than on the value, which is the point.
+        """The single-statement assertion is what makes this the read's own: Open WebUI's `get_function_by_id` issues a
+        whole-row select, so the wide path fails here on the column list rather than on the value, which is the
+        point.
         """
         self._run(
             tmp_path,

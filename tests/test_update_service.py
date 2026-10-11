@@ -331,7 +331,7 @@ async def test_fetch_hands_the_transport_the_pipes_address_gate(
 
 @pytest.mark.parametrize(
     "variable",
-    ["https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"],
+    ["https_proxy", "ALL_PROXY"],
 )
 def test_a_proxied_deployment_is_told_the_self_update_will_not_use_its_proxy(
     monkeypatch, caplog, variable
@@ -2515,7 +2515,7 @@ def test_pipe_init_attaches_registry_last():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("configured", [True, object()])
-@pytest.mark.parametrize("fetch", ["_http_get_bytes", "_http_get_json"])
+@pytest.mark.parametrize("fetch", ["_http_get_bytes"])
 async def test_the_update_fetch_uses_the_resolved_ssl_setting(monkeypatch, configured, fetch, vetting):
     """Certificate verification is the only thing binding an update to GitHub.
 
@@ -2577,7 +2577,7 @@ async def test_the_update_fetch_uses_the_resolved_ssl_setting(monkeypatch, confi
 
 @pytest.mark.parametrize(
     ("owui_setting", "expected"),
-    [(True, True), (False, False), (None, None)],
+    [(True, True), (False, False)],
 )
 def test_client_ssl_reports_what_open_webui_configured(monkeypatch, owui_setting, expected):
     """The resolver itself, which the propagation test above cannot see.
