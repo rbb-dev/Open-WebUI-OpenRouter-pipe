@@ -280,6 +280,9 @@ def _open_webui_convert_output_to_messages():
     source = Path(sysconfig.get_paths()["purelib"]) / "open_webui" / "utils" / "misc.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
     wanted = {"convert_output_to_messages", "reconcile_tool_pairs", "get_content_from_message", "get_output_text"}
+    module_defs = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)}
+    if "get_paired_tool_call_ids" in module_defs:
+        wanted.add("get_paired_tool_call_ids")
     nodes: list[ast.stmt] = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted]
     assert sorted(node.name for node in nodes if isinstance(node, ast.FunctionDef)) == sorted(wanted)
     namespace: dict[str, Any] = {"json": json}

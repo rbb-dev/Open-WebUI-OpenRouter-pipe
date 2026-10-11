@@ -34,17 +34,26 @@ import owui_stubs  # noqa: F401 - the stand-ins, without conftest's package impo
 
 import logging
 
-out = {"ok": False, "error": None, "schema": {}, "proxy": {}}
+out = {
+    "ok": False,
+    "error": None,
+    "schema": {},
+    "proxy": {},
+    "pipe_id": None,
+    "alias_resolves": None,
+    "alias_probe_attr": None,
+}
 try:
     path = __ARTIFACT__
     source = open(path, "r", encoding="utf-8").read()
-    module = types.ModuleType("function_owui_faithful_smoke")
-    sys.modules["function_owui_faithful_smoke"] = module
+    module = types.ModuleType(__MODULE_NAME__)
+    sys.modules[__MODULE_NAME__] = module
     exec(compile(source, path, "exec"), module.__dict__)
 
     pipe_cls = getattr(module, "Pipe", None)
     if pipe_cls is None:
         raise AssertionError("Pipe class missing after exec")
+    out["pipe_id"] = getattr(pipe_cls, "id", None)
     valves = getattr(pipe_cls, "Valves", None)
     user_valves = getattr(pipe_cls, "UserValves", None)
     if valves is None:
@@ -86,28 +95,46 @@ try:
         "collisions": collisions,
         "wrong": wrong,
     }
+    if __POP_MODULE__ and __MODULE_NAME__ in sys.modules:
+        sys.modules.pop(__MODULE_NAME__, None)
+    probe_attr = next((a for a in attrs if a not in module.__dict__), None)
+    if probe_attr is None and attrs:
+        probe_attr = attrs[0]
+        module.__dict__.pop(probe_attr, None)
+    out["alias_probe_attr"] = probe_attr
+    if probe_attr:
+        try:
+            out["alias_resolves"] = getattr(module, probe_attr) is not None
+        except Exception as exc:
+            out["alias_resolves"] = f"{type(exc).__name__}: {exc}"
     out["ok"] = True
 except BaseException as exc:
     out["error"] = f"{type(exc).__name__}: {exc}"
 print("PROBE_JSON:" + json.dumps(out))
 '''
 
-_CACHE: dict[str, dict] = {}
+_CACHE: dict[tuple[str, str, bool], dict] = {}
 
 
-def probe(artifact: Path) -> dict:
+def probe(
+    artifact: Path,
+    module_name: str = "function_owui_faithful_smoke",
+    pop_module: bool = False,
+) -> dict:
     """Load ``artifact`` in a fresh interpreter and return every observation about it.
 
     Cached per artifact path, so the second caller pays nothing. Never raises for a
     failed load: the caller gets ``ok=False`` and the reason, because a probe that
     aborts silently is indistinguishable from one whose checks all passed.
     """
-    key = str(Path(artifact).resolve())
+    key = (str(Path(artifact).resolve()), module_name, pop_module)
     if key in _CACHE:
         return _CACHE[key]
 
     script = _SCRIPT.replace("__TESTS__", repr(str(TESTS_DIR))).replace(
-        "__ARTIFACT__", repr(key)
+        "__ARTIFACT__", repr(key[0])
+    ).replace("__MODULE_NAME__", repr(module_name)).replace(
+        "__POP_MODULE__", repr(pop_module)
     )
     result = subprocess.run(
         [sys.executable, "-c", script],

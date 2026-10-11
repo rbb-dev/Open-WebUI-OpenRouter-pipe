@@ -18,9 +18,14 @@ If you fork this repo:
 """
 
 from open_webui_openrouter_pipe import Pipe as BasePipe
+from open_webui_openrouter_pipe.core.config import _pipe_id_from_module_name
 
 _MODULE_PREFIX = "function_"
-_runtime_id = __name__[len(_MODULE_PREFIX) :] if __name__.startswith(_MODULE_PREFIX) else BasePipe.id
+_runtime_id = (
+    _pipe_id_from_module_name(__name__)
+    if __name__.startswith(_MODULE_PREFIX)
+    else BasePipe.id
+)
 
 
 class Pipe(BasePipe):

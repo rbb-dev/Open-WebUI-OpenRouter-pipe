@@ -1232,6 +1232,15 @@ def test_detect_runtime_pipe_id_default(monkeypatch):
     assert ow._detect_runtime_pipe_id("fallback") == "fallback"
 
 
+def test_detect_runtime_pipe_id_strips_the_reload_suffix(monkeypatch):
+    monkeypatch.setitem(
+        ow_config.__dict__,
+        "__name__",
+        "function_demo.plugin_0123456789abcdef0123456789abcdef",
+    )
+    assert ow._detect_runtime_pipe_id("fallback") == "demo.plugin"
+
+
 def test_render_error_template_handles_conditionals():
     template = """{{#if show}}Line {value}\n{{/if}}{{#if skip}}{missing}{{/if}}"""
     rendered = ow._render_error_template(template, {"show": True, "value": "X", "skip": False, "missing": ""})

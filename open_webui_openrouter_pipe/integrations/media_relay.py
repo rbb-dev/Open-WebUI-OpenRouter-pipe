@@ -15,6 +15,12 @@ RELAY_HOSTS: tuple[str, ...] = ("litterbox", "catbox")
 
 RELAY_RETENTIONS: tuple[str, ...] = ("1h", "12h", "24h", "72h")
 
+_FORBIDDEN_HEADER_CHARS_RE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
+
+
+def _header_safe_filename(filename: str) -> str:
+    return _FORBIDDEN_HEADER_CHARS_RE.sub(" ", filename or "")
+
 
 class _Endpoint(NamedTuple):
     url: str
@@ -135,7 +141,7 @@ def _form(
     form = aiohttp.FormData()
     for name, value in fields.items():
         form.add_field(name, value)
-    form.add_field(field, blob, filename=filename, content_type=mime)
+    form.add_field(field, blob, filename=_header_safe_filename(filename), content_type=mime)
     return form
 
 

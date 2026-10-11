@@ -3454,6 +3454,109 @@ class ArtifactStore:
 
 
     @timed
+    def reap_per_load_id_remnants(self) -> None:
+        canon_id = str(getattr(self, "id", "") or "")
+        canon_table = self._artifact_table_name
+        if not canon_id or not canon_table or self._session_factory is None or self._item_model is None:
+            return
+        low = _sanitize_table_fragment(f"{canon_id}_{'0' * 32}")
+        high = _sanitize_table_fragment(f"{canon_id}_{'f' * 32}")
+        fork_prefix = os.path.commonprefix([low, high])
+        hex_len = len(low) - len(fork_prefix)
+        if hex_len <= 0:
+            return
+        fork_re = re.compile(rf"^response_items_({re.escape(fork_prefix)}[0-9a-f]{{{hex_len}}})_[0-9a-f]{{8}}$")
+        schema = self._owui_schema
+        prefix = f"{self._quote_identifier(schema)}." if isinstance(schema, str) and schema.strip() else ""
+
+        with _db_session(self._session_factory) as session:
+            try:
+                names = sa_inspect(session.get_bind()).get_table_names(schema=schema)
+            except SQLAlchemyError:
+                return
+        forks = [
+            (name, match.group(1))
+            for name in names
+            if name != canon_table and (match := fork_re.match(name)) is not None
+        ]
+        if not forks:
+            return
+        others = _other_installed_fragments(self)
+        if others is None or self._artifact_table_fragment in others:
+            for name, _fragment in forks:
+                self.logger.log(
+                    warn_level(
+                        self._retired_warn,
+                        f"per_load_unverified:{name}",
+                        cooldown_s=_ARTIFACT_SHARED_FRAGMENT_COOLDOWN_S,
+                    ),
+                    "artifact table %s, left by an Open WebUI 0.12 per-load id, was not merged: the pipe "
+                    "cannot tell its own tables apart from another installed copy's",
+                    name,
+                )
+            return
+
+        canon_columns = [column.name for column in self._item_model.__table__.columns]
+        canon_qualified = prefix + self._quote_identifier(canon_table)
+        collist = ", ".join(self._quote_identifier(column) for column in canon_columns)
+        id_column = self._quote_identifier("id")
+        with _db_session(self._session_factory) as session:
+            inspector = sa_inspect(session.get_bind())
+            for name, fragment in forks:
+                if fragment in others:
+                    continue
+                try:
+                    columns = {c["name"] for c in inspector.get_columns(name, schema=schema)}
+                except SQLAlchemyError:
+                    continue
+                missing = [column for column in canon_columns if column not in columns]
+                if missing:
+                    self.logger.warning(
+                        "Per-load remnant table %s lacks %s; leaving it untouched",
+                        name,
+                        ", ".join(missing),
+                    )
+                    continue
+                stale_qualified = prefix + self._quote_identifier(name)
+                try:
+                    sample = session.execute(
+                        text(
+                            f"SELECT {self._quote_identifier('payload')} FROM {stale_qualified} "
+                            f"WHERE {self._quote_identifier('is_encrypted')} = :encrypted LIMIT 1"
+                        ),
+                        {"encrypted": True},
+                    ).first()
+                    if sample is not None:
+                        payload = sample[0]
+                        if isinstance(payload, str):
+                            with contextlib.suppress(ValueError):
+                                payload = json.loads(payload)
+                        if not self._row_readable_under_current_key({"is_encrypted": True, "payload": payload}):
+                            self.logger.warning(
+                                "Per-load remnant table %s holds rows the current ARTIFACT_ENCRYPTION_KEY "
+                                "cannot read; leaving it untouched",
+                                name,
+                            )
+                            continue
+                    session.execute(
+                        text(
+                            f"INSERT INTO {canon_qualified} ({collist}) SELECT {collist} "
+                            f"FROM {stale_qualified} WHERE {id_column} "
+                            f"NOT IN (SELECT {id_column} FROM {canon_qualified})"
+                        )
+                    )
+                    session.execute(text(f"DROP TABLE {stale_qualified}"))
+                    session.commit()
+                except SQLAlchemyError:
+                    session.rollback()
+                    self.logger.warning(
+                        "Per-load remnant table %s could not be merged into %s",
+                        name,
+                        canon_table,
+                        exc_info=True,
+                    )
+
+    @timed
     async def _artifact_cleanup_worker(self) -> None:
         while True:
             try:

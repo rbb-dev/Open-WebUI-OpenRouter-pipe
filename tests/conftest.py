@@ -24,8 +24,30 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
+import aiohttp
+import aioresponses.core as _aioresponses_core
 import pytest
 import pytest_asyncio
+
+
+def _let_aioresponses_build_aiohttp_314_responses() -> None:
+    import inspect
+
+    if "stream_writer" not in inspect.signature(aiohttp.ClientResponse.__init__).parameters:
+        return
+
+    class _NothingUploaded:
+        output_size = 0
+
+    class _MockedResponse(aiohttp.ClientResponse):
+        def __init__(self, *args: Any, stream_writer: Any = None, **kwargs: Any) -> None:
+            nothing_uploaded: Any = _NothingUploaded()
+            super().__init__(*args, stream_writer=stream_writer or nothing_uploaded, **kwargs)
+
+    setattr(_aioresponses_core, "ClientResponse", _MockedResponse)
+
+
+_let_aioresponses_build_aiohttp_314_responses()
 
 
 _PIPES_TO_CLOSE: list["Pipe"] = []

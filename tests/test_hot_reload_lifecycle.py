@@ -329,6 +329,24 @@ def test_auto_register_chain_drains_predecessor(fresh_registry):
     assert g2._draining is False
 
 
+def test_attach_drains_instances_a_012_load_left_under_a_per_load_id(fresh_registry):
+    pipe_mod = _import_pipe_module()
+    left_behind = pipe_mod.Pipe()
+    left_behind.id = "per_load_reload_test_0123456789abcdef0123456789abcdef"
+    left_behind._active_pipes_calls = 1
+    left_behind._attach_to_lifecycle_registry()
+    unrelated = pipe_mod.Pipe()
+    unrelated.id = "per_load_reload_test_other_0123456789abcdef0123456789abcdef"
+    unrelated._active_pipes_calls = 1
+    unrelated._attach_to_lifecycle_registry()
+    fixed = pipe_mod.Pipe()
+    fixed.id = "per_load_reload_test"
+    fixed._attach_to_lifecycle_registry()
+    assert left_behind._draining is True
+    assert unrelated._draining is False
+    assert fixed._draining is False
+
+
 def test_attach_to_lifecycle_registry_no_predecessor_is_noop(fresh_registry):
     pipe_mod = _import_pipe_module()
     g1 = pipe_mod.Pipe()

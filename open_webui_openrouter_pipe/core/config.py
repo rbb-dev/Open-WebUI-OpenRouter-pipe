@@ -1013,6 +1013,17 @@ def _resolve_log_level_default() -> Literal["DEBUG", "INFO", "WARNING", "ERROR",
     return cast(Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], value)
 
 
+_FUNCTION_ID_TAIL_RE = re.compile(r"^(.+)_([0-9a-f]{32})$")
+
+
+def _pipe_id_from_module_name(module_name: str) -> str:
+    if not module_name.startswith(_FUNCTION_MODULE_PREFIX):
+        return module_name
+    candidate = module_name[len(_FUNCTION_MODULE_PREFIX) :].strip()
+    tail = _FUNCTION_ID_TAIL_RE.match(candidate)
+    return tail.group(1) if tail else candidate
+
+
 def _detect_runtime_pipe_id(default: str = _DEFAULT_PIPE_ID) -> str:
     """Infer the Open WebUI function id from the module name.
 
@@ -1021,7 +1032,7 @@ def _detect_runtime_pipe_id(default: str = _DEFAULT_PIPE_ID) -> str:
     """
     module_name = globals().get("__name__", "")
     if isinstance(module_name, str) and module_name.startswith(_FUNCTION_MODULE_PREFIX):
-        candidate = module_name[len(_FUNCTION_MODULE_PREFIX) :].strip()
+        candidate = _pipe_id_from_module_name(module_name)
         if candidate:
             return candidate
     return default

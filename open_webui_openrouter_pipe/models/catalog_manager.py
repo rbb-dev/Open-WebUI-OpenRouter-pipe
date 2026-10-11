@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, TypeGuard
@@ -2694,6 +2695,32 @@ class ModelCatalogManager:
         finally:
             with contextlib.suppress(Exception):
                 await session.close()
+
+    async def remove_per_load_model_rows(self) -> int:
+        from open_webui.models.models import Models
+
+        pipe_id = str(getattr(self._pipe, "id", "") or "")
+        if not pipe_id:
+            return 0
+        per_load_id = re.compile(rf"^{re.escape(pipe_id)}_[0-9a-f]{{32}}\.")
+        removed = 0
+        for model in await Models.get_all_models():
+            model_id = str(getattr(model, "id", "") or "")
+            if getattr(model, "user_id", None) != "" or per_load_id.match(model_id) is None:
+                continue
+            try:
+                deleted = await Models.delete_model_by_id(model_id)
+            except Exception as exc:
+                self.logger.warning(
+                    "Model '%s', written under an Open WebUI 0.12 per-load id, could not be removed: %s",
+                    model_id,
+                    exc,
+                    exc_info=True,
+                )
+                continue
+            if deleted:
+                removed += 1
+        return removed
 
     async def prune_stale_openrouter_filter_ids(self) -> int:
         """Remove stale ``openrouter_*`` filter IDs from all model metadata.

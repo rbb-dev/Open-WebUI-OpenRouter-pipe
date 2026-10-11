@@ -1237,6 +1237,55 @@ async def test_reload_success_passes_replace_imports_content(svc, fake_functions
     assert instance.name == "instance"
 
 
+@pytest.mark.asyncio
+async def test_reload_accepts_the_four_value_loader_and_registers_the_module(
+    svc, fake_functions, flat_module, monkeypatch
+):
+    import subprocess
+
+    import open_webui.utils.plugin as owp
+
+    module = types.ModuleType(f"function_{PID}_0123456789abcdef0123456789abcdef")
+    setattr(module, "_INTERMEDIATE_PACKAGES", {})
+
+    async def _load(fid, content=None):
+        return SimpleNamespace(name="instance4"), "pipe", {"version": "2.8.0"}, module
+
+    monkeypatch.setattr(owp, "load_function_module_by_id", _load)
+    instance, _frontmatter, _content, restore = await svc._reload_via_loader(GOOD_HEADER)
+
+    assert instance.name == "instance4"
+    assert sys.modules[f"function_{PID}"] is module
+    restore()
+    assert sys.modules[f"function_{PID}"] is flat_module
+
+
+@pytest.mark.asyncio
+async def test_a_caller_raised_process_error_after_exec_is_not_a_deps_failure(
+    svc, fake_functions, flat_module, monkeypatch
+):
+    import subprocess
+
+    import open_webui.utils.plugin as owp
+
+    module = types.ModuleType(f"function_{PID}_0123456789abcdef0123456789abcdef")
+    exec(
+        "def _boom():\n"
+        "    import subprocess\n"
+        "    raise subprocess.CalledProcessError(3, 'git')",
+        module.__dict__,
+    )
+
+    async def _load(fid, content=None):
+        module._boom()
+
+    monkeypatch.setattr(owp, "load_function_module_by_id", _load)
+    with pytest.raises(us.UpdateError) as exc:
+        await svc._reload_via_loader(GOOD_HEADER)
+
+    assert exc.value.code == "exec_failed"
+
+
 # ── apply / restore / snapshot_delete ────────────────────────────────────────
 
 

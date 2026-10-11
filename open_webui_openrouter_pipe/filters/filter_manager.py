@@ -2859,6 +2859,43 @@ class FilterManager:
             )
         )
 
+    async def remove_per_load_duplicates(self, rows: _FilterRows | None) -> int:
+        owner = self._install_owner()
+        table = rows.all_rows if rows is not None else None
+        if not owner or not table:
+            return 0
+        try:
+            from open_webui.models.functions import Functions
+        except ImportError:
+            return 0
+        per_load_stamp = re.compile(rf"^{re.escape(owner)}_[0-9a-f]{{32}}$")
+        by_id = {str(getattr(row, "id", "") or ""): row for row in table}
+        removed = 0
+        for function_id, row in by_id.items():
+            if per_load_stamp.match(_installed_by(row)) is None:
+                continue
+            base_id, _, number = function_id.rpartition("_")
+            base = by_id.get(base_id)
+            if (
+                not number.isdigit()
+                or base is None
+                or not _claimable_by(base, owner)
+                or getattr(base, "name", None) != getattr(row, "name", None)
+            ):
+                continue
+            live = await Functions.get_function_by_id(function_id)
+            if live is None or per_load_stamp.match(_installed_by(live)) is None:
+                continue
+            if await Functions.delete_function_by_id(function_id):
+                removed += 1
+                self.logger.warning(
+                    "Removed the filter %r: a copy of %r the pipe installed under an Open WebUI 0.12 "
+                    "per-load id.",
+                    function_id,
+                    base_id,
+                )
+        return removed
+
     async def retire_families_whose_install_valve_is_off(
         self,
         *,

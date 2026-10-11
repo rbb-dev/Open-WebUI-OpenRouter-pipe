@@ -1067,6 +1067,8 @@ _SUBMODULE_ATTRS: frozenset[str] = frozenset({{{attr_set}}})
 _INTERMEDIATE_PACKAGES: frozenset[str] = frozenset({{{intermediate_set}}})
 _PACKAGE_CHILDREN: dict = {{{children_map}}}
 
+_SELF_MODULE = sys.modules[__name__]
+
 def __getattr__(name: str):
     """Allow attribute access for submodule names (PEP 562).
 
@@ -1076,7 +1078,7 @@ def __getattr__(name: str):
     component name.
     """
     if name in _SUBMODULE_ATTRS:
-        return sys.modules[__name__]
+        return _SELF_MODULE
     raise AttributeError(f"module {{__name__!r}} has no attribute {{name!r}}")
 
 
@@ -1142,7 +1144,7 @@ def _render_entry_point() -> str:
 # Import and export the Pipe class for Open WebUI
 
 _MODULE_PREFIX = "function_"
-_runtime_id = __name__[len(_MODULE_PREFIX):] if __name__.startswith(_MODULE_PREFIX) else Pipe.id
+_runtime_id = _pipe_id_from_module_name(__name__) if __name__.startswith(_MODULE_PREFIX) else Pipe.id
 
 class _BundledPipe(Pipe):
     id = _runtime_id
@@ -1437,9 +1439,10 @@ def _generate_compressed_entry_point() -> str:
 # Import and export the Pipe class for Open WebUI
 
 from open_webui_openrouter_pipe import Pipe as BasePipe
+from open_webui_openrouter_pipe.core.config import _pipe_id_from_module_name
 
 _MODULE_PREFIX = "function_"
-_runtime_id = __name__[len(_MODULE_PREFIX):] if __name__.startswith(_MODULE_PREFIX) else BasePipe.id
+_runtime_id = _pipe_id_from_module_name(__name__) if __name__.startswith(_MODULE_PREFIX) else BasePipe.id
 
 class Pipe(BasePipe):
     id = _runtime_id

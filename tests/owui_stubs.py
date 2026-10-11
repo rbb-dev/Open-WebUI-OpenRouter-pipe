@@ -171,6 +171,10 @@ def _install_open_webui_stubs() -> None:
         async def insert_new_model(_model_form, user_id=""):
             return None
 
+        @staticmethod
+        async def delete_model_by_id(_model_id, db=None):
+            return True
+
     class _Files:
         @staticmethod
         async def get_file_by_id(_file_id):

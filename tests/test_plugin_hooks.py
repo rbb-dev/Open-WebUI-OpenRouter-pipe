@@ -358,6 +358,7 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
         raise RuntimeError("catalog table is read-only")
 
     cast(Any, catalog_mgr).prune_stale_openrouter_filter_ids = _explode_async
+    cast(Any, catalog_mgr).remove_per_load_model_rows = _explode_async
 
     # `_keep_web_tools_filters_in_step` answers its own filter-manager failures (the
     # web_tools and web_tools_repair sites), so the pipes() arm around it only runs when
@@ -626,6 +627,7 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
         "fusion", "image_gen",
         "image_gen_model",
         "video", "direct_uploads", "provider_routing", "provider_routing_probe", "stale_prune",
+        "per_load_rows",
         "on_models",
         "zdr_list_unavailable", "models_missing", "models_patterns_unmatched",
         "models_excluded_everything", "variant_base_missing", "variant_excluded_by_model_id",

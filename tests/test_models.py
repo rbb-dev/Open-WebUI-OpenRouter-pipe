@@ -3562,6 +3562,32 @@ async def test_bulk_prune_skips_models_without_meta(pipe_instance_async) -> None
     update_mock.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_rows_written_under_a_per_load_id_are_removed_through_open_webui(pipe_instance_async) -> None:
+    pipe = pipe_instance_async
+    per_load = f"{pipe.id}_0123456789abcdef0123456789abcdef"
+    rows = [
+        SimpleNamespace(id=f"{per_load}.openai.gpt-x", user_id=""),
+        SimpleNamespace(id=f"{per_load}.google.gemma", user_id=""),
+        SimpleNamespace(id=f"{per_load}.openai.kept-by-admin", user_id="admin-1"),
+        SimpleNamespace(id=f"{pipe.id}.openai.gpt-x", user_id=""),
+    ]
+    asked: list[str] = []
+
+    async def _delete(model_id, db=None):
+        asked.append(model_id)
+        if model_id.endswith("gpt-x"):
+            raise ValueError("Model not found")
+        return True
+
+    with patch("open_webui.models.models.Models.get_all_models", new=AsyncMock(return_value=rows)), \
+         patch("open_webui.models.models.Models.delete_model_by_id", new=AsyncMock(side_effect=_delete)):
+        removed = await pipe._ensure_catalog_manager().remove_per_load_model_rows()
+
+    assert asked == [f"{per_load}.openai.gpt-x", f"{per_load}.google.gemma"]
+    assert removed == 1
+
+
 def test_startup_prune_flag_prevents_repeat_calls(pipe_instance) -> None:
     """The _stale_filter_ids_pruned flag should prevent repeat bulk prune calls."""
     pipe = pipe_instance

@@ -129,6 +129,7 @@ from .api.gateway.responses_adapter import _drop_backlog_latch, _FailureCharge
 from .core.circuit_breaker import CircuitBreaker
 from .core.config import (
     _DIRECT_UPLOADS_FILTER_MARKER,
+    _FUNCTION_ID_TAIL_RE,
     _OPENROUTER_CATEGORIES,
     _OPENROUTER_TITLE,
     _PIPE_RUNTIME_ID,
@@ -460,6 +461,16 @@ class _LifecycleRegistry:
         with self._lock:
             ref = self._current.get(pipe_id)
             return ref() if ref else None
+
+    def pop_per_load_entries(self, pipe_id: str) -> list[Pipe]:
+        with self._lock:
+            keys = [
+                key
+                for key in self._current
+                if (tail := _FUNCTION_ID_TAIL_RE.match(key)) is not None and tail.group(1) == pipe_id
+            ]
+            refs = [self._current.pop(key) for key in keys]
+        return [previous for ref in refs if (previous := ref()) is not None]
 
     def adopt_from(self, previous: Any) -> None:
         carried = getattr(previous, "_current", None)
@@ -985,6 +996,9 @@ class Pipe:
         )
         self._artifact_store._pipe_owned_row_reapers.append(
             self._session_log_manager.reap_staged_rows
+        )
+        self._artifact_store._pipe_owned_row_reapers.append(
+            self._artifact_store.reap_per_load_id_remnants
         )
         self._maybe_start_log_worker()
 
@@ -2262,6 +2276,19 @@ class Pipe:
 
         if not self._stale_filter_ids_pruned:
             try:
+                removed = await self._ensure_catalog_manager().remove_per_load_model_rows()
+                copies = await self._ensure_filter_manager().remove_per_load_duplicates(read_rows)
+                if removed or copies:
+                    self.logger.info(
+                        "Removed %d model row(s) and %d filter copy(ies) written under an Open WebUI 0.12 "
+                        "per-load id.",
+                        removed,
+                        copies,
+                    )
+            except Exception as exc:
+                level = warn_level(_warned_pipes_maintenance, f"per_load_rows:{type(exc).__name__}")
+                self.logger.log(level, "Startup removal of per-load model rows failed: %s", exc, exc_info=True)
+            try:
                 count = await self._ensure_catalog_manager().prune_stale_openrouter_filter_ids()
                 self._stale_filter_ids_pruned = True
                 if count:
@@ -2844,20 +2871,22 @@ class Pipe:
         registry = _get_lifecycle_registry()
         try:
             predecessor = registry.swap_in(self)
+            left_under_per_load_ids = registry.pop_per_load_entries(self.id)
         except Exception:
             self.logger.warning("hot-reload: lifecycle registry swap_in failed", exc_info=True)
             return
-        if predecessor is None:
-            return
-        self.logger.info(
-            "hot-reload: sent close to predecessor (id=%s, predecessor_active_calls=%d)",
-            getattr(predecessor, "id", "?"),
-            getattr(predecessor, "_active_pipes_calls", -1),
-        )
-        try:
-            predecessor.close_when_idle()
-        except Exception:
-            self.logger.warning("hot-reload: predecessor close_when_idle failed", exc_info=True)
+        for previous in (predecessor, *left_under_per_load_ids):
+            if previous is None:
+                continue
+            self.logger.info(
+                "hot-reload: sent close to predecessor (id=%s, predecessor_active_calls=%d)",
+                getattr(previous, "id", "?"),
+                getattr(previous, "_active_pipes_calls", -1),
+            )
+            try:
+                previous.close_when_idle()
+            except Exception:
+                self.logger.warning("hot-reload: predecessor close_when_idle failed", exc_info=True)
 
     def _schedule_close(self) -> None:
         try:

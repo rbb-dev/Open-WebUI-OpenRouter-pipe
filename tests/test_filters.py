@@ -3014,3 +3014,52 @@ async def test_setting_frames_to_none_stops_every_picture_reaching_the_model(
 
 
 from unittest.mock import AsyncMock, patch  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_only_copies_installed_under_a_per_load_id_are_removed(monkeypatch):
+    import open_webui.models.functions as functions_module
+
+    from open_webui_openrouter_pipe.filters.filter_manager import _PIPE_INSTALLED_META_KEY, _FilterRows
+
+    _FakeFunctionsTable.reset()
+    monkeypatch.setattr(functions_module, "Functions", _FakeFunctionsTable)
+    pipe = Pipe()
+    owner = pipe.id
+    per_load = f"{owner}_0123456789abcdef0123456789abcdef"
+
+    def _row(function_id: str, name: str, stamp: str) -> SimpleNamespace:
+        row = SimpleNamespace(
+            id=function_id,
+            name=name,
+            content="",
+            meta={_PIPE_INSTALLED_META_KEY: stamp},
+            is_active=True,
+            is_global=False,
+        )
+        _FakeFunctionsTable.store[function_id] = row
+        return row
+
+    rows = [
+        _row("openrouter_fusion", "OpenRouter Fusion", owner),
+        _row("openrouter_fusion_1", "OpenRouter Fusion", per_load),
+        _row("openrouter_fusion_2", "OpenRouter Fusion", per_load),
+        _row("openrouter_image_filter_recraft_recraft_v4", "Recraft V4", owner),
+        _row("openrouter_image_filter_recraft_recraft_v4_1", "Recraft V4.1", per_load),
+        _row("someone_elses_filter", "Theirs", "another_pipe"),
+        _row("someone_elses_filter_1", "Theirs", per_load),
+    ]
+    _FakeFunctionsTable.store["openrouter_fusion_2"].is_active = False
+    try:
+        removed = await pipe._ensure_filter_manager().remove_per_load_duplicates(_FilterRows(rows, None, True))
+    finally:
+        await pipe.close()
+
+    assert removed == 2
+    assert sorted(_FakeFunctionsTable.store) == [
+        "openrouter_fusion",
+        "openrouter_image_filter_recraft_recraft_v4",
+        "openrouter_image_filter_recraft_recraft_v4_1",
+        "someone_elses_filter",
+        "someone_elses_filter_1",
+    ]

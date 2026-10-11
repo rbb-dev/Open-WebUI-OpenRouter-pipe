@@ -2158,3 +2158,112 @@ async def test_redis_client_enables_a_pubsub_keepalive(pipe_instance, monkeypatc
 
 
 _PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".venv", "bin", "python")
+
+
+def _row_values(row_id: str, chat_id: str, payload: dict, stamp: datetime.datetime) -> dict:
+    return {
+        "id": row_id,
+        "chat_id": chat_id,
+        "message_id": "m1",
+        "item_type": "message",
+        "payload": payload,
+        "is_encrypted": False,
+        "created_at": stamp,
+    }
+
+
+@pytest.mark.parametrize("pipe_id", ["open_webui_openrouter_pipe", "open_webui_openrouter_integration"])
+def test_per_load_remnants_are_copied_then_dropped(pipe_instance, pipe_id):
+    import sqlalchemy
+
+    engine = create_engine("sqlite://")
+    store = pipe_instance._artifact_store
+    assert store.reap_per_load_id_remnants in store._pipe_owned_row_reapers
+    store.id = pipe_id
+    stale_id = f"{pipe_id}_0123456789abcdef0123456789abcdef"
+    stamp = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+    with _install_internal_db(engine):
+        store._artifact_store_signature = None
+        store._init_artifact_store(
+            pipe_identifier=stale_id, table_fragment=persistence_mod._sanitize_table_fragment(stale_id)
+        )
+        stale_name = store._artifact_table_name
+        with engine.begin() as conn:
+            conn.execute(
+                sqlalchemy.insert(store._item_model.__table__),
+                [
+                    _row_values("stale-row-1", "c1", {"kind": "stale"}, stamp),
+                    _row_values("stale-row-2", "c1", {"kind": "stale-two"}, stamp),
+                ],
+            )
+
+        store._artifact_store_signature = None
+        store._init_artifact_store(
+            pipe_identifier=pipe_id, table_fragment=persistence_mod._sanitize_table_fragment(pipe_id)
+        )
+        canon_name = store._artifact_table_name
+        with engine.begin() as conn:
+            conn.execute(
+                sqlalchemy.insert(store._item_model.__table__),
+                [_row_values("stale-row-1", "c9", {"kind": "canonical"}, stamp)],
+            )
+            conn.exec_driver_sql("CREATE TABLE function (id TEXT)")
+            conn.exec_driver_sql(f"INSERT INTO function (id) VALUES ('{pipe_id}'), ('another_tool')")
+
+        store.reap_per_load_id_remnants()
+        store.reap_per_load_id_remnants()
+
+        tables = sqlalchemy.inspect(engine).get_table_names()
+        assert stale_name != canon_name
+        assert stale_name not in tables, tables
+        assert canon_name in tables, tables
+        with engine.connect() as conn:
+            rows = conn.execute(
+                sqlalchemy.select(
+                    store._item_model.__table__.c.id, store._item_model.__table__.c.payload
+                ).order_by(store._item_model.__table__.c.id)
+            ).all()
+        assert [(row[0], dict(row[1])) for row in rows] == [
+            ("stale-row-1", {"kind": "canonical"}),
+            ("stale-row-2", {"kind": "stale-two"}),
+        ], rows
+
+
+def test_a_per_load_table_the_current_key_cannot_read_is_left_alone(pipe_instance):
+    import sqlalchemy
+
+    engine = create_engine("sqlite://")
+    store = pipe_instance._artifact_store
+    pipe_id = "open_webui_openrouter_pipe"
+    store.id = pipe_id
+    stale_id = f"{pipe_id}_0123456789abcdef0123456789abcdef"
+    stamp = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+    with _install_internal_db(engine):
+        store._apply_artifact_encryption_key("key-in-use-during-the-0.12-run", "")
+        store._artifact_store_signature = None
+        store._init_artifact_store(
+            pipe_identifier=stale_id, table_fragment=persistence_mod._sanitize_table_fragment(stale_id)
+        )
+        stale_name = store._artifact_table_name
+        sealed, encrypted = store._encrypt_if_needed("reasoning", {"text": "secret"})
+        assert encrypted
+        with engine.begin() as conn:
+            conn.execute(
+                sqlalchemy.insert(store._item_model.__table__),
+                [{**_row_values("sealed-row", "c1", sealed, stamp), "item_type": "reasoning", "is_encrypted": True}],
+            )
+
+        store._apply_artifact_encryption_key("key-in-use-now", "")
+        store._artifact_store_signature = None
+        store._init_artifact_store(
+            pipe_identifier=pipe_id, table_fragment=persistence_mod._sanitize_table_fragment(pipe_id)
+        )
+        with engine.begin() as conn:
+            conn.exec_driver_sql("CREATE TABLE function (id TEXT)")
+            conn.exec_driver_sql(f"INSERT INTO function (id) VALUES ('{pipe_id}')")
+
+        store.reap_per_load_id_remnants()
+
+        assert stale_name in sqlalchemy.inspect(engine).get_table_names()
+        with engine.connect() as conn:
+            assert conn.execute(sqlalchemy.select(store._item_model.__table__.c.id)).all() == []

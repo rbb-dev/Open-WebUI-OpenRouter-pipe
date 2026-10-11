@@ -103,12 +103,58 @@ def _restorer(
     return _restore
 
 
+def _is_pipe_module_name(name: str, pipe_id: str) -> bool:
+    prefix = f"function_{pipe_id}"
+    if name == prefix:
+        return True
+    if not name.startswith(f"{prefix}_"):
+        return False
+    tail = name[len(prefix) + 1 :]
+    return len(tail) == 32 and all(c in "0123456789abcdef" for c in tail)
+
+
+def _registered_pipe_module(pipe_id: str) -> Any:
+    module = sys.modules.get(f"function_{pipe_id}")
+    if module is not None:
+        return module
+    for key, value in list(sys.modules.items()):
+        if isinstance(key, str) and _is_pipe_module_name(key, pipe_id):
+            return value
+    return None
+
+
 def _attempt_owned_key(key: str, pipe_id: str) -> bool:
     return (
-        key == f"function_{pipe_id}"
+        _is_pipe_module_name(key, pipe_id)
         or key == pipe_id
         or key.startswith(f"{pipe_id}.")
     )
+
+
+def _adopt_loaded_module(pipe_id: str, module: Any) -> None:
+    if module is None:
+        return
+    canonical = f"function_{pipe_id}"
+    previous = sys.modules.get(canonical)
+    if previous is not None:
+        previous_name = getattr(previous, "__name__", None)
+        if (
+            isinstance(previous_name, str)
+            and previous_name != canonical
+            and sys.modules.get(previous_name) is previous
+        ):
+            del sys.modules[previous_name]
+    sys.modules[canonical] = module
+
+
+def _loader_reached_exec(exc: BaseException, pipe_id: str) -> bool:
+    frame = exc.__traceback__
+    while frame is not None:
+        module_name = frame.tb_frame.f_globals.get("__name__") if frame.tb_frame else None
+        if isinstance(module_name, str) and _is_pipe_module_name(module_name, pipe_id):
+            return True
+        frame = frame.tb_next
+    return False
 
 
 def _is_bundled_finder(finder: Any) -> bool:
@@ -395,7 +441,7 @@ class UpdateService:
             ):
                 return {"mode": "bundle", "compressed": False}
             return {"mode": "package", "compressed": False}
-        mod = sys.modules.get(f"function_{self._pipe().id}")
+        mod = _registered_pipe_module(self._pipe().id)
         if mod is not None:
             if hasattr(mod, "_BUNDLED_SOURCES_Z"):
                 return {"mode": "bundle", "compressed": True}
@@ -726,13 +772,10 @@ class UpdateService:
         before_meta_path = list(sys.meta_path)
         was_active = bool(getattr(await self._row(), "is_active", True))
         try:
-            instance, _ftype, frontmatter = await owp.load_function_module_by_id(
-                pipe_id, content=content
-            )
+            loaded = await owp.load_function_module_by_id(pipe_id, content=content)
+            instance, _ftype, frontmatter = loaded[:3]
         except Exception as exc:
-            loader_reached_exec = (
-                sys.modules.get(f"function_{pipe_id}") is not before.get(f"function_{pipe_id}")
-            )
+            loader_reached_exec = _loader_reached_exec(exc, pipe_id)
             _restore_module_state(before, before_meta_path, pipe_id)
             if isinstance(exc, subprocess.CalledProcessError) and not loader_reached_exec:
                 logger.warning(
@@ -779,6 +822,10 @@ class UpdateService:
                 "exec_failed",
                 f"{exc}; {pipe_id} was already switched off and is left as the operator left it",
             ) from exc
+        _adopt_loaded_module(
+            pipe_id,
+            loaded[3] if len(loaded) > 3 else _registered_pipe_module(pipe_id),
+        )
         return instance, dict(frontmatter or {}), content, _restorer(
             before, before_meta_path, pipe_id
         )
@@ -1246,7 +1293,7 @@ class UpdateService:
     ) -> None:
         try:
             restore()
-            old_module = sys.modules.get(f"function_{pipe_id}")
+            old_module = _registered_pipe_module(pipe_id)
             if old_module is None:
                 logger.warning(
                     "update: refused write left no prior module to revive on this worker"
