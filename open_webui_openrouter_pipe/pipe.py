@@ -735,6 +735,35 @@ def _model_id_exclusions(filter_value: str, pipe_id: str | None) -> list[tuple[s
     return out
 
 
+def _collect_variant_specs(raw_csv: str) -> list[tuple[str, str, bool]]:
+    specs: list[tuple[str, str, bool]] = []
+    if not isinstance(raw_csv, str):
+        return specs
+    raw_csv = raw_csv.strip()
+    if not raw_csv or raw_csv.lower() == "auto":
+        return specs
+    for spec in raw_csv.split(","):
+        spec = spec.strip()
+        if not spec or spec.lower() == "auto":
+            continue
+        if spec.startswith("!") or _is_model_glob(spec):
+            continue
+        if "@" in spec:
+            parts = spec.rsplit("@", 1)
+            base_id = parts[0].strip()
+            raw_tag = parts[1].strip()
+            is_preset = raw_tag.startswith("preset/")
+            if base_id and raw_tag:
+                specs.append((base_id, raw_tag, is_preset))
+        elif ":" in spec:
+            parts = spec.rsplit(":", 1)
+            base_id = parts[0].strip()
+            variant_tag = parts[1].strip().lower()
+            if base_id and variant_tag:
+                specs.append((base_id, variant_tag, False))
+    return specs
+
+
 # Data Classes
 
 @dataclass(slots=True)
@@ -2257,8 +2286,8 @@ class Pipe:
                 self.logger.log(level, "AUTO_INSTALL_DIRECT_UPLOADS_FILTER failed: %s", exc, exc_info=True)
 
         selected_models = self._select_models(self.valves.MODEL_ID, available_models)
-        selected_models = self._apply_model_filters(selected_models, self.valves)
         selected_models = self._expand_variant_models(selected_models, self.valves)
+        selected_models = self._apply_model_filters(selected_models, self.valves)
 
         read_rows = await self._read_filter_rows(pass_cache, fresh=True)
         admin_routing = (self.valves.ADMIN_PROVIDER_ROUTING_MODELS or "").strip()
@@ -2349,8 +2378,8 @@ class Pipe:
 
     def _select_model_rows(self, available_models: list[dict[str, Any]]) -> list[dict[str, Any]]:
         rows = self._select_models(self.valves.MODEL_ID, available_models)
-        rows = self._apply_model_filters(rows, self.valves)
-        return _model_rows(self._expand_variant_models(rows, self.valves))
+        rows = self._expand_variant_models(rows, self.valves)
+        return _model_rows(self._apply_model_filters(rows, self.valves))
 
     @timed
     async def pipe(
@@ -5355,30 +5384,14 @@ class Pipe:
         Returns:
             Extended list with both base models and variant/preset models
         """
-        variant_specs_csv = valves.VARIANT_MODELS
-        if not variant_specs_csv:
-            return models
-
         variant_specs: list[tuple[str, str, bool]] = []
-        for spec in variant_specs_csv.split(","):
-            spec = spec.strip()
-            if not spec:
-                continue
-
-            if "@" in spec:
-                parts = spec.rsplit("@", 1)
-                base_id = parts[0].strip()
-                raw_tag = parts[1].strip()
-                is_preset = raw_tag.startswith("preset/")
-                variant_tag = raw_tag
-                if base_id and variant_tag:
-                    variant_specs.append((base_id, variant_tag, is_preset))
-            elif ":" in spec:
-                parts = spec.rsplit(":", 1)
-                base_id = parts[0].strip()
-                variant_tag = parts[1].strip().lower()
-                if base_id and variant_tag:
-                    variant_specs.append((base_id, variant_tag, False))
+        seen_variant_specs: set[tuple[str, str, bool]] = set()
+        for raw_csv in (valves.VARIANT_MODELS, getattr(valves, "MODEL_ID", "") or ""):
+            for spec in _collect_variant_specs(raw_csv):
+                if spec in seen_variant_specs:
+                    continue
+                seen_variant_specs.add(spec)
+                variant_specs.append(spec)
 
         if not variant_specs:
             return models
@@ -5399,6 +5412,8 @@ class Pipe:
         exclusion_keys = [key for _as_written, key in model_id_exclusions]
 
         for base_id, variant_tag, is_preset in variant_specs:
+            if f"{sanitize_model_id(base_id)}:{variant_tag}" in _seen_published_ids:
+                continue
             # Find base model
             base_model = self._resolve_variant_base(model_map, base_id)
             if not base_model:
@@ -5481,34 +5496,6 @@ class Pipe:
             for admin-configured routing-only variants.
         """
         virtual_variant_bases: dict[str, str] = {}
-
-        def _collect_variant_specs(raw_csv: str) -> list[tuple[str, str, bool]]:
-            specs: list[tuple[str, str, bool]] = []
-            if not isinstance(raw_csv, str):
-                return specs
-            raw_csv = raw_csv.strip()
-            if not raw_csv or raw_csv.lower() == "auto":
-                return specs
-            for spec in raw_csv.split(","):
-                spec = spec.strip()
-                if not spec or spec.lower() == "auto":
-                    continue
-                if spec.startswith("!") or _is_model_glob(spec):
-                    continue
-                if "@" in spec:
-                    parts = spec.rsplit("@", 1)
-                    base_id = parts[0].strip()
-                    raw_tag = parts[1].strip()
-                    is_preset = raw_tag.startswith("preset/")
-                    if base_id and raw_tag:
-                        specs.append((base_id, raw_tag, is_preset))
-                elif ":" in spec:
-                    parts = spec.rsplit(":", 1)
-                    base_id = parts[0].strip()
-                    variant_tag = parts[1].strip().lower()
-                    if base_id and variant_tag:
-                        specs.append((base_id, variant_tag, False))
-            return specs
 
         variant_specs: list[tuple[str, str, bool]] = []
         seen_specs: set[tuple[str, str, bool]] = set()
