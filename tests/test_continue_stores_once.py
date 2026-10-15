@@ -283,6 +283,8 @@ def _open_webui_convert_output_to_messages():
     module_defs = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)}
     if "get_paired_tool_call_ids" in module_defs:
         wanted.add("get_paired_tool_call_ids")
+    if "get_provider_function" in module_defs:
+        wanted.add("get_provider_function")
     nodes: list[ast.stmt] = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted]
     assert sorted(node.name for node in nodes if isinstance(node, ast.FunctionDef)) == sorted(wanted)
     namespace: dict[str, Any] = {"json": json}

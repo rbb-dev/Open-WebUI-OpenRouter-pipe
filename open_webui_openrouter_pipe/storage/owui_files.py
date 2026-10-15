@@ -432,7 +432,14 @@ async def caller_may_write_chat(chat_id: Any, user_id: Any) -> bool:
 
         if await Chats.is_chat_owner(chat_id, principal):
             return True
-        return getattr(await Users.get_user_by_id(principal), "role", None) == "admin"
+        user = await Users.get_user_by_id(principal)
+        if getattr(user, "role", None) == "admin":
+            return True
+        get_accessible_chat = getattr(Chats, "get_accessible_chat_by_id", None)
+        if get_accessible_chat is None or user is None:
+            return False
+        chat = await get_accessible_chat(chat_id, user, permission="write")
+        return chat is not None
     except Exception as exc:
         logging.getLogger(__name__).log(
             bounded_warn_level(_warned_chat_write_ownership, type(exc).__name__, 16),

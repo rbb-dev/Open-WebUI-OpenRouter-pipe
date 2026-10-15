@@ -139,8 +139,14 @@ suggestion — and the sentence would be shown as one. A stub is a write, not
 a no-op: Open WebUI parses the reply and persists it, naming the chat from the
 returned `title`, **replacing** the stored tag list, and storing the follow-ups, so
 a stub handed back during an outage would overwrite the user's own title and tags
-with no retry. A value that does not parse leaves the stored tags and follow-ups
-untouched, because those two writes sit inside the `try` that wraps the parse.
+with no retry. A value that does not parse leaves the stored tags
+untouched, because that write sits inside the `try` that wraps the parse. The
+follow-ups write sits inside it too, so up to Open WebUI 0.12.0 the same holds
+for the stored suggestions; from 0.12.1 Open WebUI parses the reply with
+`parse_follow_ups`, which returns an empty list for anything it cannot read, and
+then stores and shows that empty list — a failed follow-up task, whose answer
+here is the error card, clears the earlier suggestions there instead of leaving
+them.
 The title is different: `update_chat_title_by_id` sits outside it, and Open
 WebUI's own `if not title:` fallback renames the chat to the user's first
 message on *any* title parse failure — for the card, for `""` and for an

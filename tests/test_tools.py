@@ -4738,3 +4738,18 @@ async def test_tool_passthrough_streaming_does_not_repeat_function_name() -> Non
 
         finally:
             await pipe.close()
+
+
+@pytest.mark.asyncio
+async def test_tool_rebind_gives_a_tool_an_empty_file_list_when_chat_metadata_files_is_none():
+    context = create_tool_context(asyncio.get_running_loop())
+    context.metadata = {"files": None}
+
+    async def file_taker(__files__=None):
+        return __files__
+
+    from open_webui.utils.tools import get_async_tool_function_and_apply_extra_params
+
+    loaded = await get_async_tool_function_and_apply_extra_params(file_taker, {"__files__": None})
+    bound = await ToolExecutor._with_current_chat(loaded, {}, context)
+    assert await bound() == []

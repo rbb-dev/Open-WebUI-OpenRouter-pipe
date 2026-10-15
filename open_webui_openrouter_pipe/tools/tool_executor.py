@@ -506,7 +506,7 @@ class ToolExecutor:
             function=fn,
             extra_params={
                 "__messages__": context.messages,
-                "__files__": (context.metadata or {}).get("files", []),
+                "__files__": (context.metadata or {}).get("files") or [],
             },
         )
     def _ask_user_window(self, tool_cfg: Any, args: dict[str, Any]) -> float | None:
