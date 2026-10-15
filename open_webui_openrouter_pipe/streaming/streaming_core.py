@@ -720,6 +720,7 @@ class StreamingHandler:
         committed_shell_calls: set[str] = set()
         stubbed_call_ids: set[str] = set()
         executed_tool_call_ids: set[tuple[str, str, str]] = set()
+        used_call_ids: set[str] = set()
         emitted_response_output_items = False
         emitted_output_items: list[dict[str, Any]] = []
         published_item_ids: list[str] = []
@@ -2212,6 +2213,16 @@ class StreamingHandler:
             max_loops = max(1, int(valves.MAX_FUNCTION_CALL_LOOPS))
             input_is_sanitized = False
             _answer_carry = [assistant_message]
+            if not owui_tool_passthrough:
+                used_call_ids.update(
+                    call_id
+                    for call_id in (
+                        _extract_call_id(item)
+                        for item in current_turn_items(body.input)
+                        if isinstance(item, dict) and item.get("type") == "function_call"
+                    )
+                    if call_id
+                )
             for loop_index in range(max_loops + 2):
                 if loop_index > max_loops and not loop_limit_reached:
                     ran_out = True
@@ -3614,6 +3625,16 @@ class StreamingHandler:
                             )
                             if _candidate is None:
                                 break
+                            _candidate_id = _extract_call_id(_candidate)
+                            if _candidate_id and _candidate_id in used_call_ids:
+                                _candidate = {
+                                    **_candidate,
+                                    "id": generate_item_id(),
+                                    "call_id": f"call_{uuid.uuid4().hex[:24]}",
+                                }
+                                _candidate_id = _extract_call_id(_candidate)
+                            if _candidate_id:
+                                used_call_ids.add(_candidate_id)
                             carried.append(_candidate)
                             _carried_positions.append(_position)
                         if carried:
