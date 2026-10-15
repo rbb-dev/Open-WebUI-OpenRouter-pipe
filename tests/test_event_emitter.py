@@ -557,6 +557,49 @@ async def test_emit_citation_generates_metadata_if_empty(event_handler):
     assert "date_accessed" in emitted[0]["data"]["metadata"][0]
 
 
+@pytest.mark.asyncio
+async def test_emit_citation_keeps_distances_aligned_to_surviving_documents(event_handler):
+    emitted = []
+
+    async def capture_emitter(event):
+        emitted.append(event)
+
+    knowledge_source = {
+        "source": {"name": "manual", "id": "doc-manual"},
+        "document": ["alpha passage", "   ", "gamma passage"],
+        "metadata": [
+            {"source": "doc-alpha", "name": "Alpha file"},
+            {"source": "doc-beta", "name": "Beta file"},
+            {"source": "doc-gamma", "name": "Gamma file"},
+        ],
+        "distances": [0.25, 0.5, 0.75],
+    }
+    await event_handler._emit_citation(capture_emitter, knowledge_source)
+
+    data = emitted[0]["data"]
+    assert data["document"] == ["alpha passage", "gamma passage"], (
+        f"the blank document is dropped; got {data['document']!r}"
+    )
+    assert data["distances"] == [0.25, 0.75], (
+        f"each surviving document keeps its own score, in order; got {data.get('distances')!r}"
+    )
+    assert data["metadata"] == [
+        {"source": "doc-alpha", "name": "Alpha file"},
+        {"source": "doc-gamma", "name": "Gamma file"},
+    ], (
+        "each surviving document keeps the metadata entry built from it, in order; "
+        f"got {data['metadata']!r}"
+    )
+
+    emitted.clear()
+    await event_handler._emit_citation(
+        capture_emitter, {"document": "web hit", "source": {"name": "web"}}
+    )
+    assert "distances" not in emitted[0]["data"], (
+        f"a source without distances emits exactly as before; got {emitted[0]['data']!r}"
+    )
+
+
 # -----------------------------------------------------------------------------
 # Test _emit_completion (lines 401, 430)
 # -----------------------------------------------------------------------------

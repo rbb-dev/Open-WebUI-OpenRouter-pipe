@@ -434,16 +434,20 @@ class EventEmitterHandler:
 
         documents_raw = citation.get("document")
         if isinstance(documents_raw, str):
-            documents = [documents_raw] if documents_raw.strip() else []
+            raw_documents = [documents_raw] if documents_raw.strip() else []
         elif isinstance(documents_raw, list):
-            documents = [str(doc).strip() for doc in documents_raw if str(doc).strip()]
+            raw_documents = [str(doc).strip() for doc in documents_raw]
         else:
-            documents = []
+            raw_documents = []
+        kept = [bool(doc) for doc in raw_documents]
+        documents = [doc for doc, keep in zip(raw_documents, kept) if keep]
         if not documents:
             documents = ["Citation"]
 
         metadata_raw = citation.get("metadata")
-        if isinstance(metadata_raw, list):
+        if any(kept) and isinstance(metadata_raw, list) and len(metadata_raw) == len(kept):
+            metadata = [m if isinstance(m, dict) else {} for m, keep in zip(metadata_raw, kept) if keep]
+        elif isinstance(metadata_raw, list):
             metadata = [m for m in metadata_raw if isinstance(m, dict)]
         else:
             metadata = []
@@ -466,17 +470,21 @@ class EventEmitterHandler:
                 }
             ]
 
+        distances_raw = citation.get("distances")
+        distances: list[Any] | None = None
+        if isinstance(distances_raw, list) and len(distances_raw) == len(kept):
+            distances = [d for d, keep in zip(distances_raw, kept) if keep]
+
+        data: dict[str, Any] = {
+            "document": documents,
+            "metadata": metadata,
+            "source": source_info,
+        }
+        if distances:
+            data["distances"] = distances
+
         try:
-            await event_emitter(
-                {
-                    "type": "source",
-                    "data": {
-                        "document": documents,
-                        "metadata": metadata,
-                        "source": source_info,
-                    },
-                }
-            )
+            await event_emitter({"type": "source", "data": data})
         except Exception:
             self.logger.exception("Failed to emit citation")
 
