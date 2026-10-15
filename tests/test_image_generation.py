@@ -2409,6 +2409,102 @@ async def test_a_contract_that_cannot_be_read_is_always_reported():
     assert "a/b" in logs[0] and "c/d" in logs[0], f"both models must be named; got {logs}"
 
 
+@pytest.mark.asyncio
+async def test_a_definitive_no_contract_answer_does_not_warn_and_a_failed_read_still_does(caplog):
+    import logging as _logging
+
+    import aiohttp
+    from multidict import CIMultiDict, CIMultiDictProxy
+    from yarl import URL
+
+    from open_webui_openrouter_pipe.integrations import image_catalog
+    from open_webui_openrouter_pipe.integrations.image_catalog import _fetch_endpoint_records
+    from open_webui_openrouter_pipe.integrations.image_client import OpenRouterImageClient
+
+    logger = _logging.getLogger("test.image.catalog.definitive")
+    image_catalog._warned_image_catalog.clear()
+
+    class _Answered:
+        async def endpoints(self, model_id: str):
+            if model_id == "vendor/gone":
+                raise aiohttp.ClientResponseError(
+                    request_info=aiohttp.RequestInfo(
+                        url=URL("https://openrouter.ai/api/v1/images"),
+                        method="GET",
+                        headers=CIMultiDictProxy(CIMultiDict()),
+                        real_url=URL("https://openrouter.ai/api/v1/images"),
+                    ),
+                    history=(),
+                    status=404,
+                    message="Not Found",
+                )
+            if model_id == "vendor/ok":
+                return [{"provider_slug": "p", "supported_parameters": {}}]
+            return []
+
+    with caplog.at_level(_logging.WARNING):
+        records, _abandoned = await _fetch_endpoint_records(
+            _Answered(),
+            [{"id": "vendor/gone"}, {"id": "vendor/ok"}, {"id": "vendor/empty"}],
+            logger,
+        )
+    warned = [
+        r
+        for r in caplog.records
+        if r.name == logger.name and r.levelno >= _logging.WARNING
+    ]
+    assert set(records) == {"vendor/ok"}, (
+        f"the model whose route answered with endpoints holds the only record; got {sorted(records)}"
+    )
+    assert warned == [], (
+        "a 404 and an empty endpoint list are the catalogue's answer about ids it just "
+        f"listed, not failed reads; got {[r.getMessage() for r in warned]}"
+    )
+
+    caplog.clear()
+    image_catalog._warned_image_catalog.clear()
+
+    class _Resp:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def json(self):
+            return {"error": {"message": "the route answered, the body is not an endpoint list"}}
+
+        def raise_for_status(self):
+            return None
+
+    class _Session:
+        def get(self, url, headers=None, timeout=None):
+            return _Resp()
+
+    with caplog.at_level(_logging.WARNING):
+        shaped, _abandoned = await _fetch_endpoint_records(
+            OpenRouterImageClient(
+                _Session(),  # type: ignore[arg-type]  - a stub standing in for the aiohttp session
+                base_url="https://x/api/v1",
+                api_key="k",
+                logger=_logging.getLogger("test.image.catalog.definitive.client"),
+            ),
+            [{"id": "vendor/badshape"}],
+            logger,
+        )
+    warned_shape = [
+        r
+        for r in caplog.records
+        if r.name == logger.name and r.levelno >= _logging.WARNING
+    ]
+    assert shaped == {}, "a wrong-shape 200 publishes no record"
+    assert warned_shape, (
+        "a 200 whose body carries no endpoint list is a failed read and must warn"
+    )
+
+
 @pytest.mark.parametrize(
     ("typed", "expected"),
     [
@@ -2547,7 +2643,7 @@ async def test_both_catalog_reads_are_bounded():
             return False
 
         async def json(self):
-            return {"data": []}
+            return {"data": [], "endpoints": []}
 
         def raise_for_status(self):
             return None

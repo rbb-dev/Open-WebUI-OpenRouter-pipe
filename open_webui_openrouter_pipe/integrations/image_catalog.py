@@ -407,6 +407,8 @@ async def _fetch_endpoint_records(
     records: dict[str, list[dict[str, Any]]] = {}
     gate = asyncio.Semaphore(max(1, concurrency))
     failures: list[str] = []
+    no_contract: list[str] = []
+    not_found: list[str] = []
     completed: set[str] = set()
 
     async def _one(model_id: str) -> None:
@@ -419,6 +421,16 @@ async def _fetch_endpoint_records(
                 # from both the records and the failures with no diagnostic at all.
                 offered = [item for item in published if isinstance(item, dict)]
                 completed.add(model_id)
+            except aiohttp.ClientResponseError as exc:
+                if exc.status == 404:
+                    completed.add(model_id)
+                    not_found.append(model_id)
+                    return
+                logger.debug(
+                    "Published contract read failed for %r: %s", model_id, exc, exc_info=True
+                )
+                failures.append(model_id)
+                return
             except Exception as exc:
                 # Broad on purpose: a model absent from the result must always be in
                 # `failures`, so it is always named in the log. A tuple of enumerated
@@ -433,7 +445,7 @@ async def _fetch_endpoint_records(
         if offered:
             records[model_id] = offered
         else:
-            failures.append(model_id)
+            no_contract.append(model_id)
 
     # Bounded as a whole, not only per read. This runs inside the call that builds Open
     # WebUI's model list, and one read per model at this concurrency would otherwise put
@@ -457,6 +469,21 @@ async def _fetch_endpoint_records(
             _SWEEP_BUDGET_SECONDS,
             len(unread),
             len(ids),
+        )
+
+    if records and not_found:
+        no_contract.extend(not_found)
+    elif not_found:
+        failures.extend(not_found)
+
+    if no_contract:
+        logger.debug(
+            "No published knob contract for %d of %d image model(s) (%s): the endpoints "
+            "route answered and the answer carries none, so their filters offer no knobs "
+            "this cycle; the next refresh rechecks.",
+            len(no_contract),
+            len(ids),
+            ", ".join(sorted(no_contract)[:5]),
         )
 
     if failures:

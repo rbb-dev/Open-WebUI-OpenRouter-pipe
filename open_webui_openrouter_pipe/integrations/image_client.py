@@ -276,9 +276,11 @@ class OpenRouterImageClient:
             payload = await resp.json()
         _debug_print_response(payload, logger=self._logger)
         if not isinstance(payload, dict):
-            return []
+            raise ImageGenerationError("Image endpoint response was not an object.")
         records = payload.get("endpoints")
-        return [item for item in records if isinstance(item, dict)] if isinstance(records, list) else []
+        if not isinstance(records, list):
+            raise ImageGenerationError("Image endpoint response carried no endpoint list.")
+        return [item for item in records if isinstance(item, dict)]
 
     async def _consume_stream_line(
         self, raw_line: str, state: dict[str, Any], on_progress: Any
