@@ -646,3 +646,59 @@ async def test_a_failure_card_is_the_last_word_and_the_progress_line_stops_with_
     statuses = _statuses(items)
     assert statuses, "the turn emitted no status at all"
     assert statuses[-1].get("done") is True, statuses
+
+
+# ---------------------------------------------------------------------------
+# An automation run's failed reply
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_automation_run_records_the_provider_rejection_the_reply_failed_with(
+    pipe_instance_async,
+) -> None:
+    pipe = pipe_instance_async
+    pipe.valves.INSUFFICIENT_CREDITS_TEMPLATE = "### Out of credits\n\n{openrouter_message}"
+
+    def rejected_source(partial: str) -> Any:
+        async def source() -> Any:
+            yield {"type": "response.created", "response": {"model": MODEL}}
+            yield {"type": "response.output_item.added", "output_index": 0, "item": {"type": "message"}}
+            yield {"type": "response.output_text.delta", "output_index": 0, "delta": partial}
+            raise OpenRouterAPIError(
+                status=402,
+                reason="rejected",
+                openrouter_message="provider said 402",
+            )
+
+        return source()
+
+    automation_job = SimpleNamespace(
+        session_id="",
+        request_id="",
+        user_id="u",
+        valves=pipe.valves,
+        metadata={"automation_id": "weekly-digest", "chat_id": "c1"},
+    )
+    context_tokens = pipe._apply_logging_context(automation_job)
+    try:
+        automation_items, _ = await _drive_items(pipe, rejected_source("Newton's second law says"))
+    finally:
+        for context_var, token in context_tokens:
+            context_var.reset(token)
+
+    plain_items, _ = await _drive_items(pipe, rejected_source("Photosynthesis begins when"))
+
+    assert "provider said 402" in _banner(automation_items), (
+        "the automation runner reads the failure off the reply's error; the queue "
+        f"carried none. got {_banner(automation_items)!r}"
+    )
+    assert "provider said 402" in _content(automation_items), (
+        "the card itself must still reach the reply text on an automation run, "
+        f"exactly as it does for a person watching. got {_content(automation_items)!r}"
+    )
+    assert not _banner(plain_items), (
+        "an ordinary chat has no runner to notify and must emit exactly what it "
+        f"always has: the card as text, no error item beside it. got {_banner(plain_items)!r}"
+    )
+    assert "provider said 402" in _content(plain_items), _content(plain_items)

@@ -15,7 +15,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
-from ..core.config import OWUI_CHAT_ID
+from ..core.config import AUTOMATION_RUN, OWUI_CHAT_ID
 from ..core.errors import _channel_safe_card_text, _inline_span, channel_safe_values
 from ..core.logging_system import SessionLogger
 from ..core.utils import (
@@ -373,7 +373,10 @@ class EventEmitterHandler:
                 "data": {"description": "The request could not be completed. See details below.", "done": True},
             })
             await self._publish_card(event_emitter, shown, on_channel, continuing, terminal=terminal)
+            automation_error = self._automation_error(markdown)
             completion: dict[str, Any] = {"done": terminal}
+            if automation_error is not None:
+                completion["error"] = automation_error
             if shown and (on_channel or not continuing):
                 completion["content"] = shown
             await event_emitter({
@@ -557,6 +560,7 @@ class EventEmitterHandler:
         output:   list[dict[str, Any]] | None = None,
         title:   str | None = None,
         usage:   dict[str, Any] | None = None,
+        error:   dict[str, Any] | None = None,
         done:    bool = True,
     ) -> None:
         """Emit a ``chat:completion`` event if an emitter is present.
@@ -579,6 +583,7 @@ class EventEmitterHandler:
                         **({"output": output} if output is not None else {}),
                         **({"title": title} if title is not None else {}),
                         **({"usage": usage} if usage else {}),
+                        **({"error": error} if error else {}),
                     }
                 }
             )
@@ -586,12 +591,18 @@ class EventEmitterHandler:
             self.logger.exception("Failed to emit completion")
 
 
+    def _automation_error(self, message: str) -> dict[str, Any] | None:
+        if not AUTOMATION_RUN.get():
+            return None
+        return {"message": message}
+
     async def _emit_unstreamed_answer(
         self,
         event_emitter: EventEmitter | None,
         *,
         content: str,
         usage: dict[str, Any] | None = None,
+        error: dict[str, Any] | None = None,
     ) -> None:
         if event_emitter is None:
             return
@@ -608,6 +619,7 @@ class EventEmitterHandler:
             content=content,
             done=True,
             usage=usage or None,
+            error=error,
         )
 
 

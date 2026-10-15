@@ -3581,6 +3581,7 @@ def openrouter_attribution_headers(valves: Any | str | None) -> dict[str, str]:
 
 OWUI_REQUEST: ContextVar[Any] = ContextVar("owui_request", default=None)
 OWUI_CHAT_ID: ContextVar[str] = ContextVar("owui_chat_id", default="")
+AUTOMATION_RUN: ContextVar[bool] = ContextVar("automation_run", default=False)
 
 
 def _apply_owui_forward_user_headers(headers: dict, user: Any, chat_id: Any = None) -> dict:

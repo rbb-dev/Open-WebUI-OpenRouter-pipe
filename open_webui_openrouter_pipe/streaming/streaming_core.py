@@ -2143,6 +2143,7 @@ class StreamingHandler:
             error_occurred = False
             was_cancelled = False
             fusion_no_usable_member = False
+            reply_ended_without_an_answer = False
             loop_limit_reached = False
             loop_limit_announced = False
             ran_out = False
@@ -4607,6 +4608,7 @@ class StreamingHandler:
                 and not answer_delivered
             ):
                 error_occurred = True
+                reply_ended_without_an_answer = True
 
             generation_status = _generation_status(
                 was_cancelled, error_occurred, fusion_no_usable_member
@@ -4994,6 +4996,13 @@ class StreamingHandler:
                             content=final_content,
                             output=final_output,
                             usage=total_usage,
+                            error=(
+                                self._pipe._event_emitter_handler._automation_error(
+                                    "The model returned no content."
+                                )
+                                if reply_ended_without_an_answer
+                                else None
+                            ),
                             done=True,
                         )
                     else:

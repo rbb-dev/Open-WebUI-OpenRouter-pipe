@@ -1245,7 +1245,9 @@ class ImageGenerationAdapter:
         content = f"### Image generation failed\n\n{reason}"
         if event_emitter:
             await self._pipe._event_emitter_handler._emit_unstreamed_answer(
-                event_emitter, content=content
+                event_emitter,
+                content=content,
+                error=self._pipe._event_emitter_handler._automation_error(content),
             )
         return content
 

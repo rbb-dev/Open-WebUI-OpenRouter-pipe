@@ -133,6 +133,7 @@ from .core.config import (
     _OPENROUTER_CATEGORIES,
     _OPENROUTER_TITLE,
     _PIPE_RUNTIME_ID,
+    AUTOMATION_RUN,
     OWUI_CHAT_ID,
     OWUI_REQUEST,
     EncryptedStr,
@@ -217,7 +218,11 @@ from .streaming.event_emitter import (
     EventEmitterHandler,
     openai_chat_chunk_message_template,
 )
-from .streaming.streaming_core import StreamingHandler, _wrap_event_emitter
+from .streaming.streaming_core import (
+    StreamingHandler,
+    _chats_upsert,
+    _wrap_event_emitter,
+)
 from .tools.tool_executor import (
     _OWUI_PRE_DISPATCH_ERROR_PREFIXES,
     _QueuedToolCall,
@@ -2540,6 +2545,8 @@ class Pipe:
                         show_error_message=True,
                         done=True,
                     )
+                with contextlib.suppress(Exception):
+                    await self._record_automation_reply_failure(__metadata__, message)
                 SessionLogger.cleanup()
                 return self._refusal_result(
                     __task__, message, status=429, request=__request__,
@@ -2555,6 +2562,8 @@ class Pipe:
                         show_error_message=True,
                         done=True,
                     )
+                with contextlib.suppress(Exception):
+                    await self._record_automation_reply_failure(__metadata__, message)
                 SessionLogger.cleanup()
                 return self._refusal_result(
                     __task__, message, status=503, request=__request__,
@@ -2572,6 +2581,8 @@ class Pipe:
                         show_error_message=True,
                         done=True,
                     )
+                with contextlib.suppress(Exception):
+                    await self._record_automation_reply_failure(__metadata__, "Service temporarily unavailable")
                 SessionLogger.cleanup()
                 return self._refusal_result(
                     __task__, "Service temporarily unavailable", status=503, request=__request__,
@@ -2653,6 +2664,8 @@ class Pipe:
                     )
                 except Exception:
                     self.logger.debug("Failed to emit error during pre-enqueue recovery", exc_info=True)
+            with contextlib.suppress(Exception):
+                await self._record_automation_reply_failure(__metadata__, "Request setup failed. Please retry.")
             try:
                 SessionLogger.cleanup()
             except Exception:
@@ -3607,6 +3620,21 @@ class Pipe:
         Pipe._put_streaming_refusal(job, None if cancel_future else _SERVER_BUSY_DETAIL)
         return True
 
+    async def _record_automation_reply_failure(self, metadata: Any, detail: str) -> None:
+        metadata_dict = metadata if isinstance(metadata, dict) else {}
+        if not metadata_dict.get("automation_id") or metadata_dict.get("task"):
+            return
+        chat_id = metadata_dict.get("chat_id")
+        message_id = resolve_message_id(metadata_dict)
+        if not chat_id or not message_id:
+            return
+        await _chats_upsert(
+            chat_id,
+            message_id,
+            {"error": {"content": detail}},
+            metadata_dict.get("user_id") or "",
+        )
+
     async def _refuse_at_admission(self, job: _PipeJob, *, wants_stream: bool) -> Any:
         if job.event_emitter:
             await self._ensure_error_formatter()._emit_error(
@@ -3615,6 +3643,8 @@ class Pipe:
                 show_error_message=True,
                 done=True,
             )
+        with contextlib.suppress(Exception):
+            await self._record_automation_reply_failure(job.metadata, "Server busy (503)")
         SessionLogger.cleanup()
         return self._refusal_result(
             job.task, "Server busy (503)", status=503, request=job.request,
@@ -4032,6 +4062,9 @@ class Pipe:
         tokens.append((SessionLogger.user_id, SessionLogger.user_id.set(user_id)))
         job_metadata = job.metadata if hasattr(job, "metadata") else {}
         tokens.append((OWUI_CHAT_ID, OWUI_CHAT_ID.set(str(job_metadata.get("chat_id") or ""))))
+        tokens.append(
+            (AUTOMATION_RUN, AUTOMATION_RUN.set(bool((job_metadata or {}).get("automation_id"))))
+        )
         tokens.append((SessionLogger.log_level, SessionLogger.log_level.set(log_level)))
         tokens.append(
             (

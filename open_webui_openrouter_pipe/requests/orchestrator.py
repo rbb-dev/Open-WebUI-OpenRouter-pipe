@@ -2549,11 +2549,19 @@ class RequestOrchestrator:
                 if invocation.no_usable_member and outcome_sink is not None:
                     outcome_sink["error_occurred"] = True
                 if invocation.no_usable_member and not fusion_inner:
+                    fusion_failure = "Every Fusion panel member failed; this run has no deliberated answer."
                     await self._pipe._event_emitter_handler._emit_notification(
                         __event_emitter__,
-                        "Every Fusion panel member failed; this run has no deliberated answer.",
+                        fusion_failure,
                         level="error",
                     )
+                    fusion_error = self._pipe._event_emitter_handler._automation_error(fusion_failure)
+                    if fusion_error is not None and __event_emitter__ is not None:
+                        await self._pipe._event_emitter_handler._emit_completion(
+                            __event_emitter__,
+                            content=None,
+                            error=fusion_error,
+                        )
                 return fusion_result
 
             reasoning_retry_attempted = False

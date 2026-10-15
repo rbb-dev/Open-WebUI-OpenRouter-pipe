@@ -540,6 +540,7 @@ class ErrorFormatter:
                 event_emitter,
                 content=shown if on_channel else "",
                 usage=usage or None,
+                error=self._pipe._event_emitter_handler._automation_error(content),
                 done=terminal,
             )
         except Exception:

@@ -883,6 +883,26 @@ class VideoGenerationAdapter:
         )
         return chat_id, message_id, (f"api:{request_id}", "")
 
+    def _failed_completion_error(self, content: str, *, failed: bool) -> dict[str, Any] | None:
+        if not failed:
+            return None
+        return self._pipe._event_emitter_handler._automation_error(content)
+
+    async def _emit_generation_outcome(
+        self,
+        emitter: EventEmitter | None,
+        content: str,
+        *,
+        failed: bool,
+        usage: dict[str, Any] | None = None,
+    ) -> None:
+        await self._emit_completion(
+            emitter,
+            content,
+            usage=usage,
+            error=self._failed_completion_error(content, failed=failed),
+        )
+
     async def generate(
         self,
         *,
@@ -1017,7 +1037,9 @@ class VideoGenerationAdapter:
                     handoff_registered = True
                 result = await asyncio.shield(bg_task)
                 await self._settle_request(result, outcome_sink, metadata)
-                await self._emit_completion(event_emitter, result.content, usage=result.usage)
+                await self._emit_generation_outcome(
+                    event_emitter, result.content, failed=result.failed, usage=result.usage
+                )
                 return result.content
 
             video_meta_pre = self._extract_video_metadata(metadata)
@@ -1273,7 +1295,7 @@ class VideoGenerationAdapter:
                 if disclosure_block:
                     content = disclosure_block + "\n" + content
                 await self._emit_status(event_emitter, "Video generation could not start.", done=True)
-                await self._emit_completion(event_emitter, content)
+                await self._emit_generation_outcome(event_emitter, content, failed=True)
                 await self._report_generation(None, "failed", metadata)
                 sink["member_refusal_reason"] = _VIDEO_NO_PROMPT_REFUSAL
                 return content
@@ -1359,7 +1381,9 @@ class VideoGenerationAdapter:
             escape = self._unreadable_body_escape(
                 result, metadata=metadata, responses_body=responses_body, request=request
             )
-            await self._emit_completion(event_emitter, result.content, usage=result.usage)
+            await self._emit_generation_outcome(
+                event_emitter, result.content, failed=result.failed, usage=result.usage
+            )
             return escape if escape is not None else result.content
         except asyncio.CancelledError:
             raise
@@ -1407,7 +1431,7 @@ class VideoGenerationAdapter:
             if disclosure_block:
                 content = disclosure_block + "\n" + content
             await self._emit_status(event_emitter, _VIDEO_GENERATION_FAILED_STATUS, done=True)
-            await self._emit_completion(event_emitter, content)
+            await self._emit_generation_outcome(event_emitter, content, failed=True)
             await self._report_generation(None, "failed", metadata)
             return content
         except Exception as exc:
@@ -1424,7 +1448,7 @@ class VideoGenerationAdapter:
             if disclosure_block:
                 content = disclosure_block + "\n" + content
             await self._emit_status(event_emitter, _VIDEO_GENERATION_FAILED_STATUS, done=True)
-            await self._emit_completion(event_emitter, content)
+            await self._emit_generation_outcome(event_emitter, content, failed=True)
             await self._report_generation(None, "failed", metadata)
             return content
         finally:
@@ -1479,11 +1503,12 @@ class VideoGenerationAdapter:
         *,
         owns_usage: bool = True,
     ) -> None:
+        failed = bool(result.failed or not result.file_id)
         if outcome_sink is not None:
-            outcome_sink["error_occurred"] = result.failed or not result.file_id
+            outcome_sink["error_occurred"] = failed
         await self._report_generation(
             result.usage if owns_usage else None,
-            "ok" if not (result.failed or not result.file_id) else "failed",
+            "ok" if not failed else "failed",
             metadata,
         )
 
@@ -2107,7 +2132,9 @@ class VideoGenerationAdapter:
             result, metadata=metadata, responses_body=responses_body, request=request
         )
         await self._emit_status(event_emitter, result.status_description, done=True)
-        await self._emit_completion(event_emitter, result.content, usage=result.usage)
+        await self._emit_generation_outcome(
+            event_emitter, result.content, failed=result.failed, usage=result.usage
+        )
         return escape if escape is not None else result.content
 
     async def _get_active_task(self, key: tuple[str, str]) -> asyncio.Task[VideoLifecycleResult] | None:
@@ -2240,7 +2267,7 @@ class VideoGenerationAdapter:
             ),
         )
         await self._emit_status(event_emitter, "Video generation limit reached.", done=True)
-        await self._emit_completion(event_emitter, content)
+        await self._emit_generation_outcome(event_emitter, content, failed=True)
         return content
 
     async def _vet_passthrough_addresses_before_admission(
@@ -4444,11 +4471,13 @@ class VideoGenerationAdapter:
         content: str,
         *,
         usage: dict[str, Any] | None = None,
+        error: dict[str, Any] | None = None,
     ) -> None:
         await self._pipe._event_emitter_handler._emit_unstreamed_answer(
             emitter,
             content=content,
             usage=usage if isinstance(usage, dict) else None,
+            error=error,
         )
 
     async def _safe_emit(self, emitter: EventEmitter | None, event: dict[str, Any]) -> None:
