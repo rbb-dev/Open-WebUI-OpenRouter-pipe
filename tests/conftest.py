@@ -521,9 +521,11 @@ def pytest_runtest_protocol(item, nextitem):
 def _record_leaked_threads(item, before: set) -> None:
     for thread in threading.enumerate():
         if thread.ident not in before and not thread.daemon:
-            _LEAKED_THREADS.append(
-                f"{item.nodeid} left non-daemon thread {thread.name!r} running"
-            )
+            thread.join(timeout=0.05)
+            if thread.is_alive():
+                _LEAKED_THREADS.append(
+                    f"{item.nodeid} left non-daemon thread {thread.name!r} running"
+                )
 
 
 def pytest_sessionfinish(session, exitstatus):
