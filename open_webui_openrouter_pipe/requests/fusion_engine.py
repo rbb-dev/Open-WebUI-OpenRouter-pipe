@@ -890,6 +890,22 @@ async def run_internal_fusion(
                        "item": {"type": "message"}}
             yield {"type": "response.output_text.done", "output_index": 1, "text": final_text}
 
+        synth_usage = synth_result.usage if synth_result is not None else None
+        synth_prompt = (synth_usage or {}).get("prompt_tokens")
+        if synth_prompt is None:
+            synth_prompt = (synth_usage or {}).get("input_tokens")
+        synth_completion = (synth_usage or {}).get("completion_tokens")
+        if synth_completion is None:
+            synth_completion = (synth_usage or {}).get("output_tokens")
+        if synth_prompt is not None:
+            total_usage["prompt_tokens"] = synth_prompt
+        else:
+            total_usage.pop("prompt_tokens", None)
+        if synth_completion is not None:
+            total_usage["completion_tokens"] = synth_completion
+        else:
+            total_usage.pop("completion_tokens", None)
+
         completed_response: dict[str, Any] = {
             "model": invocation.outer_model_id, "output": [], "usage": total_usage,
         }

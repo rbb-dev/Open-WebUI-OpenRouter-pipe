@@ -506,6 +506,8 @@ Last-wins (the incoming value replaces the accumulated one):
 
 A payload carrying **both** `input_tokens` and `prompt_tokens` gets both summed, so the quantity is counted twice in the block. Through the pipe's own request path the two spellings never coexist -- `core/costs.py` builds a fresh dict and copies one -- but `merge_usage_stats` is public API with no shape restriction, so a caller passing a raw chat-completions `usage` block sees it. This is unchanged from earlier releases and is pinned by a test rather than accidental.
 
+The block the pipe reports for a finished turn carries two things side by side. `input_tokens`, `output_tokens`, `total_tokens` and the cost keys are the turn's totals, summed over every upstream call the turn made. `prompt_tokens` and `completion_tokens` are the size of the last call only, which is the pair a reader's client counts as the conversation's current size and its context compaction acts on. A round that reports no token counts never displaces the counts of the last round that reported them, and a Fusion panel reports its synthesis call -- the call whose answer the reader reads -- rather than the panel's sum.
+
 ---
 
 ## 7. Optional telemetry export: cost snapshots to Redis

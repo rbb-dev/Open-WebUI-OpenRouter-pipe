@@ -683,6 +683,52 @@ class TestRunInternalFusion:
         synth_calls = [c for c in calls if "BACKGROUND MATERIAL" in str(c.get("messages"))]
         assert synth_calls
 
+    @pytest.mark.asyncio
+    async def test_fusion_usage_counts_the_synthesis_call(self, monkeypatch, pipe_instance_async):
+        member_usage = {"prompt_tokens": 4000, "completion_tokens": 100, "total_tokens": 4100, "cost": 1}
+        judge_usage = {"prompt_tokens": 9000, "completion_tokens": 200, "total_tokens": 9200, "cost": 1}
+        synth_usage = {"prompt_tokens": 12000, "completion_tokens": 400, "total_tokens": 12400, "cost": 2}
+
+        async def fake(pipe, invocation, **kw):
+            model = kw["model"]
+            if model in ("m/a", "m/b"):
+                return FusionMemberResult(
+                    model=model, content="draft", usage=dict(member_usage),
+                    failed=False, fail_reason=None,
+                )
+            if kw.get("temperature") == 0.0:
+                return FusionMemberResult(
+                    model=model, content=json.dumps(VALID_ANALYSIS),
+                    usage=dict(judge_usage), failed=False, fail_reason=None,
+                )
+            return FusionMemberResult(
+                model=model, content="The answer.", usage=dict(synth_usage),
+                failed=False, fail_reason=None,
+            )
+
+        import open_webui_openrouter_pipe.requests.fusion_engine as fe
+
+        monkeypatch.setattr(fe, "run_fusion_member", fake)
+        from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+        monkeypatch.setattr(FilterManager, "collect_installed_web_tools_config",
+                            AsyncMock(return_value=None))
+        plan = FusionRunPlan(("m/a", "m/b"), "j/x", "j/x", 8)
+        inv = FusionInnerInvocation(
+            orchestrator=Mock(), messages=[{"role": "user", "content": "Q?"}],
+            outer_model_id="openrouter/fusion", user={"id": "u"}, request=None,
+            event_call=None, metadata={}, tools={}, valves=pipe_instance_async.valves,
+            session=object(), pipe_identifier="p", user_id="u",
+        )
+        events = []
+        async for ev in fe.run_internal_fusion(pipe_instance_async, invocation=inv, plan=plan):
+            events.append(ev)
+        completed = [e for e in events if e["type"] == "response.completed"]
+        usage = completed[-1]["response"]["usage"]
+        assert usage["prompt_tokens"] == 12000
+        assert usage["completion_tokens"] == 400
+        assert usage["total_tokens"] == 29800
+        assert usage["cost"] == 5
+
     @staticmethod
     def _prompt_text(call):
         """The prompt a member was actually sent, read out of the content parts.

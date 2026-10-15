@@ -521,6 +521,26 @@ def _tagless_id(norm_id: str) -> str:
         current = head
 
 
+def _handover_usage(
+    total_usage: dict[str, Any],
+    last_round_usage: dict[str, Any],
+) -> dict[str, Any]:
+    if not last_round_usage:
+        return dict(total_usage)
+    usage = dict(total_usage)
+    prompt_tokens = last_round_usage.get("prompt_tokens")
+    if prompt_tokens is None:
+        prompt_tokens = last_round_usage.get("input_tokens")
+    completion_tokens = last_round_usage.get("completion_tokens")
+    if completion_tokens is None:
+        completion_tokens = last_round_usage.get("output_tokens")
+    if prompt_tokens is not None:
+        usage["prompt_tokens"] = prompt_tokens
+    if completion_tokens is not None:
+        usage["completion_tokens"] = completion_tokens
+    return usage
+
+
 class StreamingHandler:
     """Manages streaming response processing.
 
@@ -770,6 +790,7 @@ class StreamingHandler:
             "awaiting": [],
         }
         total_usage: dict[str, Any] = {}
+        last_round_usage: dict[str, Any] = {}
         reasoning_stream_active = False
         active_reasoning_item_id: str | None = None
         reasoning_stream_buffers: dict[str, _ReasoningTextBox] = {}
@@ -3542,6 +3563,8 @@ class StreamingHandler:
                         if isinstance(i, dict) and i.get("type") == "function_call"
                     )
                     total_usage = merge_usage_stats(total_usage, usage)
+                    if usage.get("prompt_tokens") is not None or usage.get("input_tokens") is not None:
+                        last_round_usage = dict(usage)
                     intermediate_content = (
                         None
                         if (emitted_response_output_items or fusion_armed or open_webui_keeps_stored_output)
@@ -3992,7 +4015,7 @@ class StreamingHandler:
                                             "logprobs": None,
                                         }
                                     ],
-                                    **({"usage": total_usage} if total_usage else {}),
+                                    **({"usage": _handover_usage(total_usage, last_round_usage)} if total_usage else {}),
                                 }
                                 if SessionLogger.debug_enabled(self.logger) and tool_calls_payload:
                                     summaries: list[dict[str, Any]] = []
@@ -4974,7 +4997,7 @@ class StreamingHandler:
             ):
                 outcome_sink["output"] = terminal_output
                 if total_usage:
-                    outcome_sink["usage"] = dict(total_usage)
+                    outcome_sink["usage"] = _handover_usage(total_usage, last_round_usage)
             if terminal_output and event_emitter:
                 try:
                     await event_emitter({
@@ -5016,7 +5039,7 @@ class StreamingHandler:
                             event_emitter,
                             content=final_content,
                             output=final_output,
-                            usage=total_usage,
+                            usage=_handover_usage(total_usage, last_round_usage),
                             error=(
                                 self._pipe._event_emitter_handler._automation_error(
                                     "The model returned no content."
@@ -5030,7 +5053,7 @@ class StreamingHandler:
                         await self._pipe._event_emitter_handler._emit_completion(
                             event_emitter,
                             content=None,
-                            usage=total_usage,
+                            usage=_handover_usage(total_usage, last_round_usage),
                             done=False,
                         )
                 except (asyncio.CancelledError, Exception) as _exc:

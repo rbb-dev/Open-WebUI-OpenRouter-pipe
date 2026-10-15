@@ -6039,12 +6039,214 @@ async def test_completion_events_preserve_streamed_text(monkeypatch, pipe_instan
     for event in completion_events:
         assert event["data"]["content"] == "Hello world"
         if event["data"].get("done") is True:
-            assert event["data"].get("usage") == {"input_tokens": 5, "output_tokens": 2, "turn_count": 1, "function_call_count": 0}
+            assert event["data"].get("usage") == {"input_tokens": 5, "output_tokens": 2, "prompt_tokens": 5, "completion_tokens": 2, "turn_count": 1, "function_call_count": 0}
         else:
             assert "usage" not in event["data"], (
                 f"a non-terminal chat:completion published a usage payload Open WebUI would fold "
                 f"into the stored row again: {event}"
             )
+
+
+@pytest.mark.asyncio
+async def test_terminal_frame_reports_last_round_usage_beside_the_totals(monkeypatch, pipe_instance_async):
+    """A two-round turn's terminal frame carries the last round's prompt and completion tokens beside the accumulated totals."""
+    pipe = pipe_instance_async
+    body = ResponsesBody(model="openrouter/test", input=[], stream=True)
+    valves = pipe.valves
+
+    ModelFamily.set_dynamic_specs({"openrouter.test": {"features": {"function_calling": True}}})
+
+    rounds = [
+        [
+            {
+                "type": "response.completed",
+                "response": {
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "Checking."}],
+                        },
+                        {
+                            "type": "function_call",
+                            "id": "call-1",
+                            "call_id": "call-1",
+                            "name": "lookup",
+                            "arguments": '{"foo": 1}',
+                        },
+                    ],
+                    "usage": {"input_tokens": 100, "output_tokens": 20, "cost": 1},
+                },
+            }
+        ],
+        [
+            {"type": "response.output_text.delta", "delta": "Done."},
+            {
+                "type": "response.completed",
+                "response": {
+                    "output": [],
+                    "usage": {"input_tokens": 30, "output_tokens": 4, "cost": 2},
+                },
+            },
+        ],
+    ]
+    served: list[int] = []
+
+    async def fake_stream(self, session, request_body, **_kwargs):
+        index = len(served)
+        served.append(index)
+        for event in rounds[index]:
+            yield event
+
+    monkeypatch.setattr(Pipe, "send_openai_responses_streaming_request", fake_stream)
+
+    async def mock_tool_callable(**kwargs):
+        return "ok"
+
+    emitted: list[dict] = []
+
+    async def emitter(event):
+        emitted.append(event)
+
+    context = _ToolExecutionContext(
+        queue=asyncio.Queue(),
+        per_request_semaphore=asyncio.Semaphore(1),
+        global_semaphore=None,
+        timeout=5.0,
+        batch_timeout=None,
+        idle_timeout=None,
+        user_id="user-123",
+        event_emitter=emitter,
+        batch_cap=4,
+    )
+    executor = pipe._ensure_tool_executor()
+    worker = asyncio.create_task(executor._tool_worker_loop(context))
+    context.workers.append(worker)
+    token = pipe._TOOL_CONTEXT.set(context)
+    try:
+        await pipe._streaming_handler._run_streaming_loop(
+            body,
+            valves,
+            emitter,
+            metadata={"model": {"id": "sandbox"}, "chat_id": "chat-1", "message_id": "msg-1"},
+            tools={"lookup": {"type": "function", "spec": {"name": "lookup"}, "callable": mock_tool_callable}},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+    finally:
+        await context.queue.put(None)
+        await worker
+        pipe._TOOL_CONTEXT.reset(token)
+
+    completion_events = [event for event in emitted if event.get("type") == "chat:completion"]
+    terminal = [event for event in completion_events if event["data"].get("done") is True]
+    assert len(terminal) == 1, f"Expected exactly one terminal chat:completion, got {terminal}"
+    usage = terminal[0]["data"]["usage"]
+    assert usage["prompt_tokens"] == 30
+    assert usage["completion_tokens"] == 4
+    assert usage["input_tokens"] == 130
+    assert usage["output_tokens"] == 24
+    assert usage["cost"] == 3
+    assert usage["turn_count"] == 2
+    assert usage["function_call_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_round_without_token_counts_never_becomes_the_counted_round(monkeypatch, pipe_instance_async):
+    pipe = pipe_instance_async
+    body = ResponsesBody(model="openrouter/test", input=[], stream=True)
+    valves = pipe.valves
+
+    ModelFamily.set_dynamic_specs({"openrouter.test": {"features": {"function_calling": True}}})
+
+    rounds = [
+        [
+            {
+                "type": "response.completed",
+                "response": {
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "Checking."}],
+                        },
+                        {
+                            "type": "function_call",
+                            "id": "call-1",
+                            "call_id": "call-1",
+                            "name": "lookup",
+                            "arguments": '{"foo": 1}',
+                        },
+                    ],
+                    "usage": {"input_tokens": 100, "output_tokens": 20},
+                },
+            }
+        ],
+        [
+            {"type": "response.output_text.delta", "delta": "Done."},
+            {
+                "type": "response.completed",
+                "response": {"output": [], "usage": {"incomplete_usage": True}},
+            },
+        ],
+    ]
+    served: list[int] = []
+
+    async def fake_stream(self, session, request_body, **_kwargs):
+        index = len(served)
+        served.append(index)
+        for event in rounds[index]:
+            yield event
+
+    monkeypatch.setattr(Pipe, "send_openai_responses_streaming_request", fake_stream)
+
+    async def mock_tool_callable(**kwargs):
+        return "ok"
+
+    emitted: list[dict] = []
+
+    async def emitter(event):
+        emitted.append(event)
+
+    context = _ToolExecutionContext(
+        queue=asyncio.Queue(),
+        per_request_semaphore=asyncio.Semaphore(1),
+        global_semaphore=None,
+        timeout=5.0,
+        batch_timeout=None,
+        idle_timeout=None,
+        user_id="user-123",
+        event_emitter=emitter,
+        batch_cap=4,
+    )
+    executor = pipe._ensure_tool_executor()
+    worker = asyncio.create_task(executor._tool_worker_loop(context))
+    context.workers.append(worker)
+    token = pipe._TOOL_CONTEXT.set(context)
+    try:
+        await pipe._streaming_handler._run_streaming_loop(
+            body,
+            valves,
+            emitter,
+            metadata={"model": {"id": "sandbox"}, "chat_id": "chat-1", "message_id": "msg-1"},
+            tools={"lookup": {"type": "function", "spec": {"name": "lookup"}, "callable": mock_tool_callable}},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+    finally:
+        await context.queue.put(None)
+        await worker
+        pipe._TOOL_CONTEXT.reset(token)
+
+    completion_events = [event for event in emitted if event.get("type") == "chat:completion"]
+    terminal = [event for event in completion_events if event["data"].get("done") is True]
+    assert len(terminal) == 1, f"Expected exactly one terminal chat:completion, got {terminal}"
+    usage = terminal[0]["data"]["usage"]
+    assert usage["prompt_tokens"] == 100
+    assert usage["completion_tokens"] == 20
+    assert usage["input_tokens"] == 100
+    assert usage["turn_count"] == 2
+    assert usage["incomplete_usage"] is True
 
 
 @pytest.mark.asyncio
