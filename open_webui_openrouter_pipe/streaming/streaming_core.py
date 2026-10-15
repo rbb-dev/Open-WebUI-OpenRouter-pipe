@@ -225,7 +225,11 @@ from ..tools.citation_harvester import (
     UNCITED_TOOLS,
     harvest_tool_citations,
 )
-from ..tools.tool_registry import OWUI_OWNS_KEY, open_webui_runs_the_calls
+from ..tools.tool_registry import (
+    OWUI_OWNS_KEY,
+    ask_approval_handoff,
+    open_webui_runs_the_calls,
+)
 from .constants import (
     _REPLAY_DROPPED_OPENING,
     DEFERRED_REASONING_FLUSH,
@@ -3873,7 +3877,11 @@ class StreamingHandler:
                     spent = counts[reply_key] = min(
                         counts.get(reply_key, 0) + 1, valves.MAX_FUNCTION_CALL_LOOPS + 1
                     )
-                    if spent > valves.MAX_FUNCTION_CALL_LOOPS and not _open_webui_owns_the_round(call_items):
+                    if (
+                        spent > valves.MAX_FUNCTION_CALL_LOOPS
+                        and not _open_webui_owns_the_round(call_items)
+                        and not ask_approval_handoff(metadata)
+                    ):
                         hand_back = False
                         self.logger.debug(
                             "Hand-back cap reached for this reply (%d); answering in the loop instead",

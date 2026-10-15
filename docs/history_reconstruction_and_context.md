@@ -239,7 +239,8 @@ and a request that belongs to no chat message -- a call that carries no `chat_id
 keeps its copy in memory for the length of that request only, keyed on the request id, and never writes it to the
 database; the request ends and it is gone, and no marker line is added to the caller's response, so such a call's
 records last for the request, not the conversation. A temporary chat
-keeps nothing, so with tool cards off its rounds reach no later request. (In Open-WebUI tool mode the rounds of a
+keeps nothing, so with tool cards off its rounds reach no later request. (In Open-WebUI tool mode, or under `ask` tool approval in
+either mode, the rounds of a
 temporary chat's reply are held in memory until that reply ends or the provider refuses a call-back the pipe was waiting for, so Open WebUI's calls back after each round of tool
 calls still hand them to the model. A reply dropped under the pool's byte ceiling is reported as holding none of the rows it was
 offered in that flush, so no marker is written for a round that is no longer in memory and that round is not replayed; see [Persistence](persistence_encryption_and_storage.md).) The calls are written when
@@ -324,9 +325,10 @@ only through the card Open WebUI keeps for it in the browser, and none with card
   under the name the pipe handed back and that name is the bare one. A record is readable only through its marker
   line on the assistant message and a store that answers, so a round whose rows are gone is judged by the request's
   tool set as before. The identity is read from the registry **as this request received it**, even on a turn that
-  withheld the built-in from the model before the model ever saw it -- ask approval, and `function_calling: "legacy"`,
-  both empty the registry on their way to the model, and neither of them changes what a name in it is. The set
-  those two record is also what the hand-back predicate consults, which is why the fix can read it: a round of
+  withheld the built-in from the model before the model ever saw it -- ask approval on a reply that is not streamed in a
+  saved or temporary chat, a Fusion member's request under `ask` however the reply streams, and `function_calling: "legacy"`,
+  all three empty the registry on their way to the model, and none of them changes what a name in it is. The set
+  those emptyings record is also what the hand-back predicate consults, which is why the fix can read it: a round of
   names Open WebUI alone can run is a round the pipe cannot be the judge of, so a streamed reply hands it back
   rather than answering it, and only a reply that could have been handed back and spent its budget is told the
   budget is what stopped it.

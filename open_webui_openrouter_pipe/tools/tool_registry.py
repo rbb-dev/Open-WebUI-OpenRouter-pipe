@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..core.config import _EMPTY_TOOL_SCHEMA, _PIPE_METADATA_KEY
 from ..core.timing_logger import timed
-from ..storage.owui_files import is_linkable_chat
+from ..storage.owui_files import is_linkable_chat, is_temporary_chat
 
 # Import tool schema functions
 from .tool_schema import (
@@ -46,19 +46,26 @@ _module_logger = logging.getLogger(__name__)
 
 
 
-def open_webui_runs_the_calls(valves: Pipe.Valves, metadata: Any, *, stream: bool) -> bool:
+def ask_approval_handoff(metadata: Any) -> bool:
     meta = metadata if isinstance(metadata, dict) else {}
     pipe_meta = meta.get(_PIPE_METADATA_KEY)
     if isinstance(pipe_meta, dict) and pipe_meta.get("fusion_inner"):
         return False
     params = meta.get("params")
-    approval_mode = params.get("tool_approval_mode") if isinstance(params, dict) else None
-    if (
-        approval_mode == "ask"
-        and is_linkable_chat(meta.get("chat_id"))
-        and meta.get("message_id")
-        and stream
-    ):
+    if not (isinstance(params, dict) and params.get("tool_approval_mode") == "ask"):
+        return False
+    if not meta.get("message_id"):
+        return False
+    chat_id = meta.get("chat_id")
+    return is_linkable_chat(chat_id) or is_temporary_chat(chat_id)
+
+
+def open_webui_runs_the_calls(valves: Pipe.Valves, metadata: Any, *, stream: bool) -> bool:
+    meta = metadata if isinstance(metadata, dict) else {}
+    pipe_meta = meta.get(_PIPE_METADATA_KEY)
+    if isinstance(pipe_meta, dict) and pipe_meta.get("fusion_inner"):
+        return False
+    if ask_approval_handoff(meta) and stream:
         return True
     return valves.TOOL_EXECUTION_MODE == "Open-WebUI" and bool(stream)
 

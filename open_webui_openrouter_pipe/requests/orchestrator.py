@@ -93,7 +93,6 @@ from ..storage.owui_files import (
     get_file_by_id,
     index_referenced_file_payloads,
     infer_file_mime_type,
-    is_linkable_chat,
     is_temporary_chat,
     is_temporary_metadata,
 )
@@ -102,6 +101,7 @@ from ..streaming.constants import _REPLAY_DROPPED_OPENING, DEFERRED_REASONING_FL
 from ..tools.tool_registry import (
     _advertised_names_for_replayed_calls,
     _build_collision_safe_tool_specs_and_registry,
+    ask_approval_handoff,
     open_webui_runs_the_calls,
 )
 from .fusion_engine import (
@@ -1529,8 +1529,8 @@ class RequestOrchestrator:
                 and (
                     fusion_inner
                     or (
-                        is_linkable_chat(__metadata__.get("chat_id"))
-                        and __metadata__.get("message_id")
+                        ask_approval_handoff(__metadata__)
+                        and not completions_body.stream
                     )
                 )
             )

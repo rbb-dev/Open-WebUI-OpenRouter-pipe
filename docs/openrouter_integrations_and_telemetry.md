@@ -459,7 +459,7 @@ Operational guidance:
     object, and Open WebUI's built-in `ask_user` is one, so strict mode is opt-in.
   - When `ENABLE_STRICT_TOOL_CALLING=True`, the pipe strictifies tool schemas for more predictable function calling.
   - When `ENABLE_STRICT_TOOL_CALLING=True` and the pipe runs the tool (not `Open-WebUI` mode,
-    and not under `ask` approval in a saved chat), the tools it advertises on the Responses route
+    and not under `ask` approval on a streamed reply in a saved or temporary chat), the tools it advertises on the Responses route
     carry `strict: true`. A tool the pipe does not strictify is sent there with an explicit
     `strict: false`, which is insurance rather than a workaround: measured on 2026-10-02 against
     OpenRouter's own `/responses`, a function tool with no `strict` key is treated as non-strict
