@@ -1724,3 +1724,102 @@ async def test_a_round_hands_back_its_results_in_call_order_however_the_calls_fi
 # allowance, so the wait for results is one bounded wait for the round either way.
 
 
+# A synchronous tool reaches the pipe wrapped in Open WebUI's async shell, so the pipe sees an async
+# function and its body ran on the event loop, freezing every chat the worker serves while the body
+# blocked. `Synchronous tools on threads` routes that shell through the pool like a plain function:
+# the worker plants a per-call stand-in loop so the body's own asyncio use still works, and the
+# body-raised check unwraps the shell before comparing code objects.
+
+
+@pytest.mark.asyncio
+async def test_a_wrapped_synchronous_tool_body_runs_on_a_pool_thread_and_leaves_the_loop_live(
+    pipe_instance_async,
+):
+    loop_ident = threading.get_ident()
+    started: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    seen: dict[str, Any] = {}
+
+    def body(**_kwargs):
+        seen["thread"] = threading.get_ident()
+        started.set()
+        release.wait(2)
+        return "ran off the loop"
+
+    shell = await _open_webui_tool_wrapper()(body, {})
+    task = asyncio.ensure_future(pipe_instance_async._call_tool_callable(shell, {}))
+    for _ in range(20000):
+        if started.is_set():
+            break
+        await asyncio.sleep(0)
+    assert started.is_set()
+    assert seen["thread"] != loop_ident
+    assert not task.done()
+    release.set()
+    assert await task == "ran off the loop"
+
+
+@pytest.mark.asyncio
+async def test_a_threaded_tool_body_reaches_the_main_loop_only_through_thread_safe_entries(
+    pipe_instance_async,
+):
+    main_ident = threading.get_ident()
+    seen: list[tuple[int, str]] = []
+
+    async def delivered():
+        seen.append((threading.get_ident(), "delivered"))
+
+    def _run_async(coro):
+        """Fire an async event-emitter coroutine from sync code, tolerating both a
+        running loop (OWUI) and none."""
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(coro)
+            else:
+                loop.run_until_complete(coro)
+        except Exception:
+            pass
+
+    def body(**_kwargs):
+        _run_async(delivered())
+
+    asyncio.get_running_loop().set_debug(True)
+    shell = await _open_webui_tool_wrapper()(body, {})
+    try:
+        await pipe_instance_async._call_tool_callable(shell, {})
+    finally:
+        asyncio.get_running_loop().set_debug(False)
+    for _ in range(1000):
+        if seen:
+            break
+        await asyncio.sleep(0)
+    assert seen == [(main_ident, "delivered")]
+
+
+@pytest.mark.asyncio
+async def test_the_synchronous_tools_switch_places_a_wrapped_body_on_the_pool_or_the_loop(
+    pipe_instance_async, monkeypatch
+):
+    loop_ident = threading.get_ident()
+    seen: dict[str, Any] = {}
+
+    def body(**_kwargs):
+        seen["thread"] = threading.get_ident()
+        return "ok"
+
+    shell = await _open_webui_tool_wrapper()(body, {})
+    registry = {"render": _entry(shell, tool_type="function", name="render")}
+
+    await _run_job(pipe_instance_async, monkeypatch, registry, [_call("c1", "render")])
+    assert seen["thread"] != loop_ident
+
+    seen.clear()
+    await _run_job(
+        pipe_instance_async,
+        monkeypatch,
+        registry,
+        [_call("c2", "render")],
+        SYNC_TOOLS_ON_THREADS=False,
+    )
+    assert seen["thread"] == loop_ident

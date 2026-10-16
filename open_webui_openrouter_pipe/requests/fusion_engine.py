@@ -268,6 +268,7 @@ async def run_fusion_member(
             tool_call_budget=max_tool_calls,
             messages=outer_ctx.messages,
             parallel_tools=invocation.valves.MAX_PARALLEL_TOOLS_PER_REQUEST,
+            sync_tools_on_threads=outer_ctx.sync_tools_on_threads,
             address_verdicts=outer_ctx.address_verdicts,
             address_budget=outer_ctx.address_budget,
         )

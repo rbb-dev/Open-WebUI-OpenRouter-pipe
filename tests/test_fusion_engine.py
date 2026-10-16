@@ -1055,9 +1055,12 @@ class TestMemberFileCaptureRobustness:
 
         _orchestrator, pipe = orchestrator_and_pipe
 
+        inner_contexts: list = []
+
         class _Orch:
             async def process_request(self, body, *args, **kwargs):
                 ctx = pipe._TOOL_CONTEXT.get()
+                inner_contexts.append(ctx)
                 await ctx.event_emitter({"type": "files"})
                 await ctx.event_emitter({"type": "files", "data": "x"})
                 await ctx.event_emitter({"type": "files", "data": {"files": "x"}})
@@ -1079,6 +1082,7 @@ class TestMemberFileCaptureRobustness:
             user_id="u1",
             event_emitter=None,
             batch_cap=1,
+            sync_tools_on_threads=False,
         )
         token = pipe._TOOL_CONTEXT.set(outer_ctx)
         try:
@@ -1093,6 +1097,7 @@ class TestMemberFileCaptureRobustness:
         assert result.failed is False
         assert "![tool image](http://x/ok.png)" in result.content
         assert result.content.count("](") == 1
+        assert inner_contexts[0].sync_tools_on_threads is False
 
     @pytest.mark.asyncio
     async def test_data_urls_excluded_from_member_content(self, orchestrator_and_pipe):

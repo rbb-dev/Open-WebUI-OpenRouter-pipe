@@ -254,6 +254,7 @@ class _ToolExecutionContext:
     terminal_files_inline: bool = False
     messages: list[dict[str, Any]] = field(default_factory=list)
     parallel_tools: int = 0
+    sync_tools_on_threads: bool = True
     address_verdicts: dict[str, bool | None] = field(default_factory=dict)
     address_budget: _AddressBudget | None = None
 

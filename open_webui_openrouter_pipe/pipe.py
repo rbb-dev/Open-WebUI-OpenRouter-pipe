@@ -698,11 +698,64 @@ def _get_process_limits() -> _ProcessLimitsHolder:
     return cast(_ProcessLimitsHolder, _upgrade_process_state(_LIMITS_HOLDER_KEY, _ProcessLimitsHolder))
 
 
-def _tool_body_raised(exc: BaseException, fn: Any) -> bool:
+def _tool_body_raised_by_name(exc: BaseException, fn: Any) -> bool:
     name = getattr(fn, "__name__", None)
     if not isinstance(name, str):
         return True
     return any(frame.name == name for frame in traceback.extract_tb(exc.__traceback__))
+
+
+def _tool_body_raised(exc: BaseException, fn: Any) -> bool:
+    inner = getattr(fn, "__function__", None)
+    target = inner if callable(inner) else fn
+    try:
+        target = inspect.unwrap(target)
+    except ValueError:
+        return _tool_body_raised_by_name(exc, fn)
+    code = getattr(getattr(target, "__func__", target), "__code__", None)
+    if code is None:
+        return _tool_body_raised_by_name(exc, fn)
+    tb = exc.__traceback__
+    while tb is not None:
+        if tb.tb_frame.f_code is code:
+            return True
+        tb = tb.tb_next
+    return False
+
+
+class _ToolThreadLoop(asyncio.AbstractEventLoop):
+    def __init__(self, main: asyncio.AbstractEventLoop) -> None:
+        self._main = main
+        self._main_thread = threading.get_ident()
+
+    def is_running(self) -> bool:
+        return True
+
+    def is_closed(self) -> bool:
+        return self._main.is_closed()
+
+    def get_debug(self) -> bool:
+        return False
+
+    def time(self) -> float:
+        return self._main.time()
+
+    def call_soon_threadsafe(self, callback, *args, context=None):
+        return self._main.call_soon_threadsafe(callback, *args, context=context)
+
+    def call_soon(self, callback, *args, context=None):
+        return self._main.call_soon_threadsafe(callback, *args, context=context)
+
+    def create_task(self, coro: Any, *, name: Any = None, context: Any = None) -> Any:
+        if threading.get_ident() == self._main_thread:
+            return self._main.create_task(coro, name=name, context=context)
+        return asyncio.run_coroutine_threadsafe(coro, self._main)
+
+    def create_future(self):
+        return self._main.create_future()
+
+    def run_until_complete(self, future):
+        raise RuntimeError("This event loop is already running")
 
 
 _warned_plugin_dispatch: set[str] = set()
@@ -1662,14 +1715,29 @@ class Pipe:
     async def _run_sync_tool(
         self, fn: Any, args: dict[str, Any], on_enter: Callable[[], None] | None = None
     ) -> Any:
+        loop = asyncio.get_running_loop()
         ctx = contextvars.copy_context()
+        thread_loop = _ToolThreadLoop(loop)
 
         def _invoke() -> Any:
             if on_enter is not None:
                 on_enter()
-            return fn(**args)
+            asyncio.set_event_loop(thread_loop)
+            inner = getattr(fn, "__function__", None)
+            if not (callable(inner) and not inspect.iscoroutinefunction(inner)):
+                return fn(**args)
+            coro = fn(**args)
+            try:
+                coro.send(None)
+            except StopIteration as completed:
+                return completed.value
+            coro.close()
+            name = getattr(inner, "__name__", None) or getattr(fn, "__name__", None) or "<unnamed>"
+            raise RuntimeError(
+                f"Tool body suspended instead of returning after its first step ({name})."
+            )
 
-        return await asyncio.get_running_loop().run_in_executor(
+        return await loop.run_in_executor(
             self._ensure_tool_pool(), functools.partial(ctx.run, _invoke)
         )
 
@@ -3846,6 +3914,7 @@ class Pipe:
                     request_id=job.request_id,
                     messages=job.body.get("messages") or [],
                     parallel_tools=job.valves.MAX_PARALLEL_TOOLS_PER_REQUEST,
+                    sync_tools_on_threads=bool(job.valves.SYNC_TOOLS_ON_THREADS),
                 )
                 tool_token = self._TOOL_CONTEXT.set(tool_context)
                 try:
@@ -5048,6 +5117,7 @@ class Pipe:
                     await self._ensure_tool_executor()._with_current_chat(fn_to_call, item.tool_cfg, context),
                     call_args,
                     on_enter=_mark_entered,
+                    on_threads=context.sync_tools_on_threads,
                 )
             tool_raised = False
             unreachable = _reports_transport_failure(result)
@@ -5065,6 +5135,7 @@ class Pipe:
             if isinstance(exc, asyncio.CancelledError):
                 raise
             timed_out = isinstance(exc, TimeoutError) and deadline.expired()
+            never_started = timed_out and not item.holds_slot
             mcp_disconnected = (
                 tool_type == "mcp"
                 and isinstance(exc, RuntimeError)
@@ -5074,6 +5145,7 @@ class Pipe:
             process_control = tool_raised and self._ensure_tool_executor().is_process_control(exc)
             if (breaker is not None and not mcp_disconnected
                     and not (timed_out and ask_user_window is not None)
+                    and not never_started
                     and not argument_binding_failure
                     and not process_control):
                 breaker.record_tool_failure(
@@ -5088,6 +5160,11 @@ class Pipe:
             timing_mark(f"tool_run:{tool_name}:failed")
             if mcp_disconnected:
                 failure = f"Tool '{tool_name}' is no longer available in this session."
+            elif timed_out and never_started:
+                failure = (
+                    f"Tool '{tool_name}' was not started: it was still waiting for a tool worker or a "
+                    f"free slot when its {timeout:.0f}s call limit ended (call timeout)."
+                )
             elif timed_out:
                 failure = f"Tool '{tool_name}' timed out after {timeout:.0f}s."
             else:
@@ -5099,9 +5176,16 @@ class Pipe:
 
     @timed
     async def _call_tool_callable(
-        self, fn: ToolCallable, args: dict[str, Any], on_enter: Callable[[], None] | None = None
+        self,
+        fn: ToolCallable,
+        args: dict[str, Any],
+        on_enter: Callable[[], None] | None = None,
+        on_threads: bool = True,
     ) -> Any:
         """Call a tool callable (sync or async)."""
+        inner = getattr(fn, "__function__", None)
+        if on_threads and callable(inner) and not inspect.iscoroutinefunction(inner):
+            return await self._run_sync_tool(fn, args, on_enter=on_enter)
         if inspect.iscoroutinefunction(fn):
             if on_enter is not None:
                 on_enter()
