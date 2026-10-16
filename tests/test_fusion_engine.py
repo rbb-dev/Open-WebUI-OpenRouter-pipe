@@ -1138,6 +1138,8 @@ class TestMemberFileCaptureRobustness:
 
 
 _OPEN_WEBUI_ASK_USER = "Open WebUI's ask_user"
+_OPEN_WEBUI_SEARCH_TOOLS = "Open WebUI's search_tools"
+_OPEN_WEBUI_CALL_TOOL = "Open WebUI's call_tool dispatcher"
 
 
 def _is_first_request(request_body: dict) -> bool:
@@ -1181,7 +1183,9 @@ async def test_no_model_in_a_fusion_turn_is_offered_or_runs_open_webuis_ask_user
     orchestrator_and_pipe, monkeypatch, renamed, outer_names_in_metadata
 ):
     # Panel models run at the same time and the browser shows one ask_user dialog at a time, so no model inside a
-    # Fusion turn is offered ask_user (the user's decision, 2026-09-15). Every other tool stays.
+    # Fusion turn is offered ask_user (the user's decision, 2026-09-15), nor Open WebUI's search_tools and call_tool,
+    # whose descriptions describe a manifest and a dispatcher the member is never given (the user's decision,
+    # 2026-10-16). Every other tool stays.
     from open_webui_openrouter_pipe import _ToolExecutionContext
     from open_webui_openrouter_pipe.models.registry import ModelFamily
     from open_webui_openrouter_pipe.tools.tool_registry import _build_collision_safe_tool_specs_and_registry
@@ -1202,12 +1206,21 @@ async def test_no_model_in_a_fusion_turn_is_offered_or_runs_open_webuis_ask_user
     async def lookup(**_kwargs):
         return "found"
 
+    async def search_tools(**_kwargs):
+        return "[]"
+
     no_parameters = {"type": "object", "properties": {}}
     open_webui_tools = {
         "ask_user": {"tool_id": "builtin:ask_user", "type": "builtin", "callable": ask_user,
                      "spec": {"name": "ask_user", "description": _OPEN_WEBUI_ASK_USER, "parameters": no_parameters}},
         "lookup": {"tool_id": "local_lookup", "callable": lookup,
                    "spec": {"name": "lookup", "description": "Look it up", "parameters": no_parameters}},
+        "search_tools": {"tool_id": "builtin:search_tools", "type": "builtin", "callable": search_tools,
+                         "spec": {"name": "search_tools", "description": _OPEN_WEBUI_SEARCH_TOOLS,
+                                  "parameters": no_parameters}},
+        "call_tool": {"tool_id": "builtin:call_tool", "type": "builtin",
+                      "spec": {"name": "call_tool", "description": _OPEN_WEBUI_CALL_TOOL,
+                               "parameters": no_parameters}},
     }
     direct = {"ask_user": {"direct": True, "callable": lookup,
                            "spec": {"name": "ask_user", "description": "A tool server's own ask_user",
@@ -1246,6 +1259,8 @@ async def test_no_model_in_a_fusion_turn_is_offered_or_runs_open_webuis_ask_user
     for body in first_requests:
         offered = [tool.get("description") for tool in body.get("tools") or [] if tool.get("type") == "function"]
         assert _OPEN_WEBUI_ASK_USER not in offered, offered
+        assert _OPEN_WEBUI_SEARCH_TOOLS not in offered, offered
+        assert _OPEN_WEBUI_CALL_TOOL not in offered, offered
         assert "Look it up" in offered, offered
         assert ("A tool server's own ask_user" in offered) is renamed, offered
 
@@ -1267,3 +1282,137 @@ def _outer_tool_context(pipe):
         event_emitter=None,
         batch_cap=1,
     )
+
+
+@pytest.mark.asyncio
+async def test_the_tool_search_offer_filter_and_the_member_manifest_and_dispatchers(
+    orchestrator_and_pipe, monkeypatch
+):
+    """Under the Tool Search gate the held-back specs leave the offer but stay runnable, in both modes, and a
+    Fusion member's input carries its panel prompt alone with neither dispatcher.
+
+    The member arm runs the real member path: its history holds a manifest-only system message, and the
+    strip must remove the item outright -- an emptied message left behind would satisfy a weaker
+    manifest-free check but not the equal one.
+    """
+    import open_webui_openrouter_pipe.requests.orchestrator as orchestrator_mod
+    from open_webui_openrouter_pipe import _ToolExecutionContext
+    from open_webui_openrouter_pipe.tools.tool_registry import (
+        CALL_TOOL_TOOL_ID,
+        OWUI_OWNS_KEY,
+        _build_collision_safe_tool_specs_and_registry,
+    )
+    from tests.test_pipe_resolves_call_tool import _open_webui_tool_search_functions
+
+    functions = _open_webui_tool_search_functions()
+    monkeypatch.setattr(
+        orchestrator_mod, "strip_deferred_tools_manifest", functions["strip_deferred_tools_manifest"], raising=False
+    )
+
+    async def runs(**_kwargs):
+        return "ok"
+
+    no_parameters = {"type": "object", "properties": {}}
+    deferred = {"tool_id": "local_big", "callable": runs,
+                "spec": {"name": "big_tool", "description": "Big tool.", "parameters": no_parameters}}
+    dispatcher = {"tool_id": CALL_TOOL_TOOL_ID, "type": "builtin",
+                  "spec": {"name": "call_tool", "description": _OPEN_WEBUI_CALL_TOOL, "parameters": no_parameters}}
+    dispatcher_spec = {
+        "type": "function",
+        "name": "call_tool",
+        "description": _OPEN_WEBUI_CALL_TOOL,
+        "parameters": no_parameters,
+    }
+    for passthrough in (False, True):
+        tools, exec_registry, exposed_to_origin = _build_collision_safe_tool_specs_and_registry(
+            request_tool_specs=[dict(dispatcher_spec)],
+            owui_registry={"big_tool": dict(deferred), "call_tool": dict(dispatcher)},
+            direct_registry=None,
+            builtin_registry=None,
+            extra_tools=None,
+            strictify=False,
+            owui_tool_passthrough=passthrough,
+            logger=None,
+            deferred_tool_names=frozenset({"big_tool"}),
+            register_call_tool_runner=True,
+        )
+        offered = [tool.get("name") for tool in tools]
+        assert "big_tool" not in offered, (passthrough, offered)
+        assert "call_tool" in offered, (passthrough, offered)
+        assert "big_tool" in exec_registry and "big_tool" in exposed_to_origin, (passthrough, exec_registry)
+        if passthrough:
+            assert "call_tool" not in exec_registry, exec_registry
+        else:
+            assert exec_registry["call_tool"].get(OWUI_OWNS_KEY) is not True, exec_registry["call_tool"]
+            assert callable(exec_registry["big_tool"]["callable"]), exec_registry["big_tool"]
+
+    orchestrator, pipe = orchestrator_and_pipe
+    _prepare_pipe(pipe)
+    from open_webui_openrouter_pipe.models.registry import ModelFamily
+
+    monkeypatch.setattr(ModelFamily, "supports", classmethod(lambda cls, cap, m: cap == "function_calling"))
+    captured: list[dict] = []
+
+    async def member_stream(self, session, request_body, **_kwargs):
+        captured.append(copy.deepcopy(request_body))
+        yield {"type": "response.output_text.delta", "delta": "member answer"}
+        yield {"type": "response.completed", "response": {"output": [], "usage": {}}}
+
+    monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", member_stream)
+
+    async def lookup(**_kwargs):
+        return "found"
+
+    member_tools = {
+        "lookup": {"tool_id": "local_lookup", "callable": lookup,
+                   "spec": {"name": "lookup", "description": "Look it up", "parameters": no_parameters}},
+        "search_tools": {"tool_id": "builtin:search_tools", "type": "builtin", "callable": lookup,
+                         "spec": {"name": "search_tools", "description": _OPEN_WEBUI_SEARCH_TOOLS,
+                                  "parameters": no_parameters}},
+        "call_tool": {"tool_id": "builtin:call_tool", "type": "builtin",
+                      "spec": {"name": "call_tool", "description": _OPEN_WEBUI_CALL_TOOL,
+                               "parameters": no_parameters}},
+    }
+    _, outer_registry, _ = _build_collision_safe_tool_specs_and_registry(
+        request_tool_specs=None, owui_registry=copy.deepcopy(member_tools), direct_registry=None,
+        builtin_registry=None, extra_tools=None, strictify=False, owui_tool_passthrough=False, logger=None,
+    )
+    invocation = _invocation(
+        orchestrator, pipe, Valves(),
+        messages=[
+            {"role": "system", "content": (
+                "<available_tools>\n<tool>\n<name>big_tool</name>\n"
+                "<description>Big tool.</description>\n</tool>\n</available_tools>"
+            )},
+            {"role": "user", "content": "What is OpenRouter?"},
+        ],
+    )
+    invocation.tools = outer_registry
+    invocation.metadata = {"chat_id": "outer-chat", "message_id": "outer-msg", "tools": member_tools}
+    outer_context = _ToolExecutionContext(
+        queue=asyncio.Queue(maxsize=50), per_request_semaphore=asyncio.Semaphore(5), global_semaphore=None,
+        timeout=30.0, batch_timeout=60.0, idle_timeout=None, user_id="u1", event_emitter=None, batch_cap=4,
+    )
+    token = pipe._TOOL_CONTEXT.set(outer_context)
+    try:
+        result = await run_fusion_member(
+            pipe, invocation, model="openai/gpt-5", messages=invocation.messages,
+            system_prompt="PANEL PROMPT", max_tool_calls=4, live_queue=None, server_tools_config=({}, []),
+        )
+    finally:
+        pipe._TOOL_CONTEXT.reset(token)
+
+    assert result.failed is False, result
+    assert len(captured) == 1, captured
+    body = captured[0]
+    system_texts = [
+        part.get("text")
+        for item in body.get("input") or []
+        if isinstance(item, dict) and item.get("role") in {"system", "developer"}
+        for part in (item.get("content") or [])
+        if isinstance(part, dict) and part.get("type") in {"text", "input_text"}
+    ]
+    assert system_texts == ["PANEL PROMPT"], system_texts
+    offered = [tool.get("description") for tool in body.get("tools") or [] if tool.get("type") == "function"]
+    assert "Look it up" in offered, offered
+    assert _OPEN_WEBUI_SEARCH_TOOLS not in offered, offered

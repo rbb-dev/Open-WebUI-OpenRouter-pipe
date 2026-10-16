@@ -230,6 +230,10 @@ def _advertised_names_for_replayed_calls(items: Any, exposed_to_origin: dict[str
 
 
 OWUI_OWNS_KEY = "owui_owns"
+CALL_TOOL_NAME = "call_tool"
+SEARCH_TOOL_TOOL_ID = "builtin:search_tools"
+CALL_TOOL_TOOL_ID = f"builtin:{CALL_TOOL_NAME}"
+RESOLVER_ERROR_KEY = "resolver_error"
 
 
 def _owui_owned_entry(origin_source: str, origin_name: str, exposed_name: str) -> dict[str, Any]:
@@ -253,6 +257,8 @@ def _build_collision_safe_tool_specs_and_registry(
     owui_tool_passthrough: bool,
     logger: logging.Logger | None,
     builtin_ask_user_names: set[str] | None = None,
+    deferred_tool_names: frozenset[str] | None = None,
+    register_call_tool_runner: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], dict[str, str]]:
     """Build collision-safe tool specs and an execution registry.
 
@@ -269,6 +275,7 @@ def _build_collision_safe_tool_specs_and_registry(
     owui_registry = owui_registry or {}
     direct_registry = direct_registry or {}
     builtin_registry = builtin_registry or {}
+    deferred_tool_names = deferred_tool_names or frozenset()
 
     # Normalize all registries into lists so we can preserve collisions.
     owui_entries: list[tuple[str, dict[str, Any]]] = [
@@ -503,12 +510,25 @@ def _build_collision_safe_tool_specs_and_registry(
             spec["strict"] = True
         elif not c.get("handed_back") and "strict" not in spec:
             spec["strict"] = False
-        tools_out.append(spec)
+        if origin_name not in deferred_tool_names:
+            tools_out.append(spec)
         exposed_to_origin[exposed_name] = origin_name
         if builtin_ask_user_names is not None and is_builtin_ask_user(c.get("tool_cfg")):
             builtin_ask_user_names.add(exposed_name)
 
         tool_cfg = c.get("tool_cfg")
+        if (
+            register_call_tool_runner
+            and not owui_tool_passthrough
+            and isinstance(tool_cfg, dict)
+            and tool_cfg.get("tool_id") == CALL_TOOL_TOOL_ID
+        ):
+            runner = dict(tool_cfg)
+            runner["origin_source"] = c["origin_source"]
+            runner["origin_name"] = origin_name
+            runner["exposed_name"] = exposed_name
+            runner["source"] = tool_cfg.get("source", tool_cfg)
+            exec_registry[exposed_name] = runner
         if not isinstance(tool_cfg, dict) or tool_cfg.get("callable") is None:
             continue
         if owui_tool_passthrough and (tool_cfg.get("direct") is True or is_owui_builtin(tool_cfg)):
@@ -519,6 +539,7 @@ def _build_collision_safe_tool_specs_and_registry(
         cfg["origin_source"] = c["origin_source"]
         cfg["origin_name"] = origin_name
         cfg["exposed_name"] = exposed_name
+        cfg["source"] = tool_cfg.get("source", tool_cfg)
         cfg["declared_params"] = _declared_parameter_names(spec.get("parameters"))
         cfg_spec = cfg.get("spec")
         if not _advertised_wire_is_admissible(cfg_spec, c["spec"].get("parameters"), spec) and isinstance(cfg_spec, dict):

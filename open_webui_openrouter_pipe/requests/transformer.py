@@ -114,6 +114,7 @@ from ..storage.owui_files import (
 
 # Import from persistence
 from ..storage.persistence import generate_item_id, normalize_persisted_item
+from ..tools.tool_registry import CALL_TOOL_NAME
 from ..tools.tool_schema import (
     _classify_function_call_artifacts,
 )
@@ -161,6 +162,21 @@ def _server_round(
 _NOT_A_TOOL_ROUND = frozenset({"message", "reasoning"})
 
 
+def _withheld_call_arguments(name: str, arguments: Any) -> str:
+    if name != CALL_TOOL_NAME:
+        return "{}"
+    try:
+        parsed = json.loads(arguments) if isinstance(arguments, str) else None
+    except (ValueError, RecursionError):
+        return "{}"
+    if not isinstance(parsed, dict) or set(parsed) != {"tool_name", "params"}:
+        return "{}"
+    tool_name = parsed.get("tool_name")
+    if not isinstance(tool_name, str):
+        return "{}"
+    return json.dumps({"tool_name": tool_name, "params": "{}"})
+
+
 def _withheld_provider_round(item: dict[str, Any]) -> list[dict[str, Any]]:
     item_type = str(item.get("type") or "")
     call_id = str(item.get("call_id") or item.get("id") or "")
@@ -186,6 +202,26 @@ def _as_replayed(item: dict[str, Any], fallback_id: Any = None) -> list[dict[str
         recorded_tool_text(server_tool_result_text(item), server_tool_status(item)),
         fallback_id,
     )
+
+
+def _restored_call_tool_replay(item: dict[str, Any]) -> dict[str, Any]:
+    provider_function = item.get("provider_function")
+    if not isinstance(provider_function, dict):
+        return item
+    restored = dict(item)
+    name = provider_function.get("name")
+    if isinstance(name, str) and name.strip():
+        restored["name"] = name
+    arguments = provider_function.get("arguments")
+    if isinstance(arguments, str):
+        restored["arguments"] = arguments
+    elif arguments is not None:
+        try:
+            restored["arguments"] = json.dumps(arguments)
+        except (TypeError, ValueError):
+            restored["arguments"] = str(arguments)
+    restored.pop("provider_function", None)
+    return restored
 
 
 def _round_own_stamp(item: dict[str, Any]) -> Any:
@@ -263,7 +299,7 @@ def _without_tool_result(
         exempt = _round_keeps_its_ask_user_answer(
             item.get("call_id"), name, ask_user_names, own_stamp
         )
-        return None if exempt else [{**item, "arguments": "{}"}]
+        return None if exempt else [{**item, "arguments": _withheld_call_arguments(name, item.get("arguments"))}]
     if item_type == "function_call_output":
         if _round_keeps_its_ask_user_answer(
             item.get("call_id"), name, ask_user_names, own_stamp
@@ -1765,7 +1801,10 @@ async def transform_messages_to_input(
         def _normalized_row(row: Any) -> Any:
             key = id(row)
             if key not in normalized_rows:
-                normalized_rows[key] = normalize_persisted_item(row)
+                normalized = normalize_persisted_item(row)
+                normalized_rows[key] = (
+                    _restored_call_tool_replay(normalized) if isinstance(normalized, dict) else normalized
+                )
             return normalized_rows[key]
 
         ask_user_round_stamps: dict[tuple[str | None, str], list[Any]] = {}
@@ -3706,7 +3745,7 @@ async def transform_messages_to_input(
                         tool_call_id, name, ask_user_names,
                         _chat_round_stamp(msg_id, tool_call_id, live_ordinal),
                     ):
-                        args_text = "{}"
+                        args_text = _withheld_call_arguments(name, args_text)
 
                     openai_input.append(
                         {

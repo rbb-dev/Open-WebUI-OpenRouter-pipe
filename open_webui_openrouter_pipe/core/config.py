@@ -1785,7 +1785,10 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "Open WebUI "
             "cannot pause it to ask. A Fusion member under 'ask' is offered none of Open WebUI's tools, streamed or "
             "not. With legacy function calling, no "
-            "Open WebUI tool is offered. A model the catalogue rules out for tool use is sent none of the tools Open WebUI or this pipe added; a tool the request itself declared is the caller's and goes out as sent, with its `tool_choice` beside it."
+            "Open WebUI tool is offered. A model the catalogue rules out for tool use is sent none of the tools Open WebUI or this pipe added; a tool the request itself declared is the caller's and goes out as sent, with its `tool_choice` beside it. "
+            "With Open WebUI's Tool Search on, from 0.12.2 the pipe holds back the same tool definitions Open WebUI does, "
+            "in either mode, and resolves and runs a `call_tool` call on a round it runs itself; on 0.12.0 and 0.12.1, "
+            "which have no `call_tool`, every tool is sent in full."
         ),
     )
     SHOW_TOOL_CARDS: bool = Field(

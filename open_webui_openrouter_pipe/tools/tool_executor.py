@@ -45,7 +45,7 @@ from ..storage.owui_files import (
     owui_file_content_url,
 )
 from ..storage.persistence import generate_item_id
-from .tool_registry import OWUI_OWNS_KEY
+from .tool_registry import OWUI_OWNS_KEY, RESOLVER_ERROR_KEY
 from .tool_schema import _advertised_root_params, _declared_parameter_names
 
 if TYPE_CHECKING:
@@ -744,6 +744,10 @@ class ToolExecutor:
             )
 
         for index, call in enumerate(calls):
+            carried_refusal = call.get(RESOLVER_ERROR_KEY)
+            if isinstance(carried_refusal, str) and carried_refusal:
+                await _refuse(index, call, carried_refusal)
+                continue
             tool_name = resolved_tool_name(call)
             tool_cfg = tools.get(tool_name)
             if ask_user_refusal and self._is_builtin_ask_user(tool_cfg):
@@ -1067,6 +1071,7 @@ class ToolExecutor:
                         "server": server_payload,
                         "callable": _browser_call(allowed_params, raw_name, server_payload, event_call),
                         "origin_key": origin_key,
+                        "source": entry,
                     }
                 except Exception:
                     self.logger.debug("Skipping malformed direct tool spec", exc_info=True)

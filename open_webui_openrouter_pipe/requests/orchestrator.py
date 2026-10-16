@@ -99,6 +99,9 @@ from ..storage.owui_files import (
 from ..storage.users import get_user_by_id
 from ..streaming.constants import _REPLAY_DROPPED_OPENING, DEFERRED_REASONING_FLUSH
 from ..tools.tool_registry import (
+    CALL_TOOL_NAME,
+    CALL_TOOL_TOOL_ID,
+    SEARCH_TOOL_TOOL_ID,
     _advertised_names_for_replayed_calls,
     _build_collision_safe_tool_specs_and_registry,
     ask_approval_handoff,
@@ -114,6 +117,65 @@ from .fusion_engine import (
 from .sanitizer import _sanitize_request_input
 from .task_model_adapter import TaskModelAdapter
 from .transformer import _tool_picture_verdicts_for_input
+
+try:
+    from open_webui.utils.tool_search import (
+        strip_deferred_tools_manifest,  # type: ignore[import-not-found]
+    )
+except ImportError:
+    strip_deferred_tools_manifest = None  # type: ignore
+except Exception:
+    logging.getLogger(__name__).warning(
+        "open_webui.utils.tool_search failed to import for a reason other than absence; "
+        "deferred-tool manifest stripping is now disabled",
+        exc_info=True,
+    )
+    strip_deferred_tools_manifest = None  # type: ignore
+
+try:
+    from open_webui.utils.tool_search import (
+        resolve_tool_call,  # type: ignore[import-not-found]
+    )
+except ImportError:
+    resolve_tool_call = None  # type: ignore
+except Exception:
+    logging.getLogger(__name__).warning(
+        "open_webui.utils.tool_search failed to import for a reason other than absence; "
+        "pipe-run call_tool dispatch is now disabled",
+        exc_info=True,
+    )
+    resolve_tool_call = None  # type: ignore
+
+
+def _strip_deferred_tool_manifests(input_items: Any) -> Any:
+    if not isinstance(input_items, list) or strip_deferred_tools_manifest is None:
+        return input_items
+    rebuilt: list[Any] = []
+    for item in input_items:
+        content = item.get("content") if isinstance(item, dict) else None
+        if not isinstance(content, list) or item.get("role") not in {"system", "developer"}:
+            rebuilt.append(item)
+            continue
+        parts: list[Any] = []
+        changed = False
+        for part in content:
+            text = part.get("text") if isinstance(part, dict) else None
+            if not isinstance(text, str) or part.get("type") != "input_text":
+                parts.append(part)
+                continue
+            stripped = strip_deferred_tools_manifest(text)
+            if stripped == text:
+                parts.append(part)
+                continue
+            changed = True
+            if stripped:
+                parts.append({**part, "text": stripped})
+        if not changed:
+            rebuilt.append(item)
+            continue
+        if parts:
+            rebuilt.append({**item, "content": parts})
+    return rebuilt
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -1518,7 +1580,13 @@ class RequestOrchestrator:
 
         is_builtin_ask_user = self._pipe._ensure_tool_executor()._is_builtin_ask_user
         if fusion_inner:
-            owui_registry = {name: cfg for name, cfg in owui_registry.items() if not is_builtin_ask_user(cfg)}
+            owui_registry = {
+                name: cfg for name, cfg in owui_registry.items()
+                if not is_builtin_ask_user(cfg)
+                and not (
+                    isinstance(cfg, dict) and cfg.get("tool_id") in {SEARCH_TOOL_TOOL_ID, CALL_TOOL_TOOL_ID}
+                )
+            }
 
         request_params = __metadata__.get("params")
         request_params = request_params if isinstance(request_params, dict) else {}
@@ -1560,6 +1628,25 @@ class RequestOrchestrator:
             ]
             merged_extra_tools.clear()
 
+        deferred_tool_names: frozenset[str] = frozenset()
+        call_tool_gate_on = False
+        if (
+            not fusion_inner
+            and resolve_tool_call is not None
+            and isinstance(__metadata__, dict)
+            and isinstance(__metadata__.get("tools"), dict)
+        ):
+            call_tool_entry = __metadata__["tools"].get(CALL_TOOL_NAME)
+            call_tool_gate_on = (
+                isinstance(call_tool_entry, dict) and call_tool_entry.get("tool_id") == CALL_TOOL_TOOL_ID
+            )
+            if call_tool_gate_on:
+                raw_deferred = __metadata__.get("deferred_tools")
+                if isinstance(raw_deferred, list):
+                    deferred_tool_names = frozenset(
+                        name for name in raw_deferred if isinstance(name, str) and name
+                    )
+
         builtin_ask_user_names: set[str] = set(ask_user_origin_names)
         if not use_task_model_adapter:
             tools, exec_registry, exposed_to_origin = _build_collision_safe_tool_specs_and_registry(
@@ -1572,6 +1659,8 @@ class RequestOrchestrator:
                 owui_tool_passthrough=owui_tool_passthrough,
                 logger=self.logger,
                 builtin_ask_user_names=builtin_ask_user_names,
+                deferred_tool_names=deferred_tool_names,
+                register_call_tool_runner=call_tool_gate_on,
             )
         else:
             tools, exec_registry, exposed_to_origin = [], {}, {}
@@ -2370,6 +2459,9 @@ class RequestOrchestrator:
                 responses_body.tool_choice = None
                 responses_body.parallel_tool_calls = None
                 responses_body.stop_server_tools_when = None
+
+        if withhold_owui_tools or tool_use_ruled_out or fusion_inner:
+            responses_body.input = _strip_deferred_tool_manifests(responses_body.input)
 
         _reconcile_tool_fields(responses_body)
 

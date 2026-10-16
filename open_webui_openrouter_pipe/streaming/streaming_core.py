@@ -226,7 +226,9 @@ from ..tools.citation_harvester import (
     harvest_tool_citations,
 )
 from ..tools.tool_registry import (
+    CALL_TOOL_NAME,
     OWUI_OWNS_KEY,
+    RESOLVER_ERROR_KEY,
     ask_approval_handoff,
     open_webui_runs_the_calls,
 )
@@ -257,6 +259,20 @@ except Exception:
         exc_info=True,
     )
     Chats = None  # type: ignore
+
+try:
+    from open_webui.utils.tool_search import (
+        resolve_tool_call,  # type: ignore[import-not-found]
+    )
+except ImportError:
+    resolve_tool_call = None  # type: ignore
+except Exception:
+    logging.getLogger(__name__).warning(
+        "open_webui.utils.tool_search failed to import for a reason other than absence; "
+        "pipe-run call_tool dispatch is now disabled",
+        exc_info=True,
+    )
+    resolve_tool_call = None  # type: ignore
 
 
 async def _chats_message(chat_id: Any, message_id: Any) -> dict[str, Any] | None:
@@ -727,6 +743,49 @@ class StreamingHandler:
 
         def _cites_as_owui_builtin(exposed_name: str, origin_name: str) -> bool:
             return origin_name in BUILTIN_CITATION_TOOLS and _is_owui_builtin_tool(exposed_name)
+
+        def _exposed_runner_for(entry: Any) -> str | None:
+            for exposed, cfg in tool_registry.items():
+                if isinstance(cfg, dict) and cfg.get("source") is entry:
+                    return exposed
+            return None
+
+        def _rebind_call_tool_round(call_items: list[dict[str, Any]]) -> None:
+            if resolve_tool_call is None:
+                return
+            owui_tools = metadata.get("tools") if isinstance(metadata, dict) else None
+            if not isinstance(owui_tools, dict):
+                return
+            for index, call in enumerate(call_items):
+                exposed_name = str(call.get("name") or "").strip()
+                if not exposed_name or _origin_tool_name(exposed_name) != CALL_TOOL_NAME:
+                    continue
+                entry = tool_registry.get(exposed_name)
+                if not (isinstance(entry, dict) and entry.get(OWUI_OWNS_KEY) is not True):
+                    continue
+                wrapper: dict[str, Any] = {"function": {"name": CALL_TOOL_NAME, "arguments": call.get("arguments")}}
+                try:
+                    failure = resolve_tool_call(wrapper, owui_tools)
+                except RecursionError:
+                    continue
+                if failure is not None:
+                    call_items[index] = {**call, RESOLVER_ERROR_KEY: failure}
+                    continue
+                provider_function = wrapper.get("provider_function")
+                if not isinstance(provider_function, dict):
+                    continue
+                resolved = wrapper.get("function")
+                target_origin = str(resolved.get("name") or "") if isinstance(resolved, dict) else ""
+                target_exposed = _exposed_runner_for(owui_tools.get(target_origin)) if target_origin else None
+                if target_exposed:
+                    call_items[index] = {
+                        **call,
+                        "name": target_exposed,
+                        "arguments": resolved.get("arguments"),
+                        "provider_function": provider_function,
+                    }
+                else:
+                    call_items[index] = {**call, "provider_function": provider_function}
 
         tool_call_item_ids: dict[str, str] = {}
         streamed_tool_call_args: dict[str, _ReasoningTextBox] = {}
@@ -1473,6 +1532,7 @@ class StreamingHandler:
                 status: str = "in_progress",
                 current_text: str,
                 model_call: bool = True,
+                provider_function: dict[str, Any] | None = None,
             ) -> str:
                 """Emit a function_call tool card. Returns the effective call_id (UUID-generated if input was empty).
 
@@ -1499,6 +1559,8 @@ class StreamingHandler:
                     "arguments": arguments,
                     "status": status,
                 }
+                if isinstance(provider_function, dict) and provider_function:
+                    call_item["provider_function"] = provider_function
                 call_index = await _place_item(call_item, current_text)
                 await event_emitter({
                     "type": "response.output_item.added",
@@ -3893,6 +3955,8 @@ class StreamingHandler:
                     if continuation_input_items:
                         body.input.extend(continuation_input_items)
                         input_is_sanitized = False
+                    if call_items:
+                        _rebind_call_tool_round(call_items)
                     if reasoning_count:
                         self.logger.debug(
                             "🧠 Preserving %d reasoning item(s) with encrypted_content for tool continuation",
@@ -4086,12 +4150,18 @@ class StreamingHandler:
                                         if isinstance(raw_args, str)
                                         else json.dumps(raw_args, ensure_ascii=False)
                                     )
+                                    resolved_provider_function = call.get("provider_function")
                                     await _emit_tool_start(
                                         call_id=call_id,
                                         name=tool_name,
                                         arguments=args_text,
                                         status="in_progress" if _origin_tool_name(tool_name) == "ask_user" else "completed",
                                         current_text=assistant_message,
+                                        provider_function=(
+                                            resolved_provider_function
+                                            if isinstance(resolved_provider_function, dict)
+                                            else None
+                                        ),
                                     )
                             except Exception as exc:
                                 self.logger.warning("Failed to emit in-progress tool cards: %s", exc, exc_info=True)
