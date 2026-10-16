@@ -2903,7 +2903,10 @@ class ArtifactStore:
             self.logger.error(
                 "Artifact flush blocked: this worker has no usable artifact store, so buffered "
                 "artifacts stay in the Redis pending queue (key=%s) instead of being written. "
-                "Nothing is lost; a worker with a healthy store will drain the queue.",
+                "Nothing is lost: the entries remain in that Redis list. A worker running "
+                "this same function id with a usable store drains them; if no worker serves "
+                "that id any more, after a rename or a removal, the backlog waits until the "
+                "key is drained or dropped by hand.",
                 self._redis_pending_key,
             )
         else:
