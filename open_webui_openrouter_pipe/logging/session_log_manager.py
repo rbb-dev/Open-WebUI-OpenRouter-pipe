@@ -699,25 +699,14 @@ class SessionLogManager:
         self.logger.log(level, message, *args)
 
     async def _caller_may_stage(self, chat_id: str, user_id: str) -> bool:
+        from ..storage.owui_files import chat_write_allowed
+
         memo = SESSION_LOG_OWNERSHIP_MEMO.get()
-        if memo is None:
-            return await self._caller_owns_chat(chat_id, user_id) or await self._caller_is_admin(
-                user_id
-            )
         memo_key = (str(chat_id), str(user_id))
-        if memo_key in memo:
+        if memo is not None and memo_key in memo:
             return memo[memo_key]
-        allowed = await self._caller_owns_chat(chat_id, user_id) or await self._caller_is_admin(
-            user_id
-        )
-        memo[memo_key] = allowed
-        return allowed
-
-    async def _caller_owns_chat(self, chat_id: str, user_id: str) -> bool:
         try:
-            from open_webui.models.chats import Chats
-
-            return bool(await Chats.is_chat_owner(chat_id, user_id))
+            allowed = await chat_write_allowed(chat_id, user_id)
         except Exception:
             _truncate_latch(self._ownership_skips, _MAX_DRAIN_LATCH_KEYS - 1)
             self.logger.log(
@@ -726,26 +715,17 @@ class SessionLogManager:
                     f"session_log_ownership_unreadable:{chat_id}:{user_id}",
                     cooldown_s=3600.0,
                 ),
-                "Session log segment not staged: Open WebUI's chat ownership check is "
+                "Session log segment not staged: Open WebUI's chat write check is "
                 "unavailable, so the archive path cannot be trusted (user_id=%s "
                 "chat_id=%s). Refusing rather than writing under an unverified id.",
                 user_id,
                 chat_id,
                 exc_info=True,
             )
-            return False
-
-    async def _caller_is_admin(self, user_id: str) -> bool:
-        try:
-            from open_webui.models.users import Users
-
-            user = await Users.get_user_by_id(user_id)
-            return getattr(user, "role", None) == "admin"
-        except Exception:
-            self.logger.debug(
-                "Session log admin bypass lookup failed for user_id=%s", user_id, exc_info=True,
-            )
-            return False
+            allowed = False
+        if memo is not None:
+            memo[memo_key] = allowed
+        return allowed
 
     def _latch_ownership_skip(
         self, user_id: str, chat_id: str, message_id: str, request_id: str
@@ -757,8 +737,8 @@ class SessionLogManager:
                 f"session_log_not_owned:{chat_id}:{user_id}",
                 cooldown_s=3600.0,
             ),
-            "Session log segment not staged (Open WebUI did not confirm the chat is the "
-            "caller's): user_id=%s chat_id=%s message_id=%s request_id=%s",
+            "Session log segment not staged (Open WebUI did not confirm the caller may write "
+            "in the chat): user_id=%s chat_id=%s message_id=%s request_id=%s",
             user_id,
             chat_id,
             message_id,

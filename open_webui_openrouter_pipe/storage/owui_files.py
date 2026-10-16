@@ -420,33 +420,37 @@ def is_temporary_chat(chat_id: Any) -> bool:
 _warned_chat_write_ownership: OrderedDict[str, None] = OrderedDict()
 
 
-async def caller_may_write_chat(chat_id: Any, user_id: Any) -> bool:
+async def chat_write_allowed(chat_id: Any, user_id: Any) -> bool:
     if not is_linkable_chat(chat_id):
         return False
     principal = str(user_id or "")
     if not principal:
         return False
-    try:
-        from open_webui.models.chats import Chats
-        from open_webui.models.users import Users
+    from open_webui.models.chats import Chats
+    from open_webui.models.users import Users
 
-        if await Chats.is_chat_owner(chat_id, principal):
-            return True
-        user = await Users.get_user_by_id(principal)
-        if getattr(user, "role", None) == "admin":
-            return True
-        get_accessible_chat = getattr(Chats, "get_accessible_chat_by_id", None)
-        if get_accessible_chat is None or user is None:
-            return False
-        chat = await get_accessible_chat(chat_id, user, permission="write")
-        return chat is not None
+    if await Chats.is_chat_owner(chat_id, principal):
+        return True
+    user = await Users.get_user_by_id(principal)
+    if getattr(user, "role", None) == "admin":
+        return True
+    get_accessible_chat = getattr(Chats, "get_accessible_chat_by_id", None)
+    if get_accessible_chat is None or user is None:
+        return False
+    chat = await get_accessible_chat(chat_id, user, permission="write")
+    return chat is not None
+
+
+async def caller_may_write_chat(chat_id: Any, user_id: Any) -> bool:
+    try:
+        return await chat_write_allowed(chat_id, user_id)
     except Exception as exc:
         logging.getLogger(__name__).log(
             bounded_warn_level(_warned_chat_write_ownership, type(exc).__name__, 16),
             "Chat message write refused: Open WebUI's chat ownership check is unavailable "
             "(chat_id=%s user_id=%s). Refusing rather than writing under an unverified id.",
             chat_id,
-            principal,
+            str(user_id or ""),
             exc_info=True,
         )
         return False

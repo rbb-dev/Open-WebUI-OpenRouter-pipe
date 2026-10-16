@@ -7119,6 +7119,73 @@ async def test_persist_session_log_segment_to_db_handles_exception():
         await pipe.close()
 
 
+@pytest.mark.asyncio
+async def test_persist_session_log_stages_participant_turns_by_the_chat_write_rule(monkeypatch):
+    from open_webui.models.chats import Chats as ChatsStub
+    from open_webui.models.users import Users as UsersStub
+
+    pipe = Pipe()
+    pipe.valves.SESSION_LOG_STORE_ENABLED = True
+    pipe.valves.SESSION_LOG_DIR = "/tmp/test_logs"
+    pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("password123")
+
+    async def _not_owner(chat_id, user_id, db=None):
+        return False
+
+    async def _plain_user(user_id):
+        return SimpleNamespace(id=user_id, role="user")
+
+    async def _write_access(chat_id, user, db=None, *, permission="read", chat=None):
+        return SimpleNamespace(id=chat_id) if permission == "write" else None
+
+    async def _no_write_access(chat_id, user, db=None, *, permission="read", chat=None):
+        return None
+
+    try:
+        pipe._artifact_store._db_persist = AsyncMock(return_value=["id1"])
+        pipe._session_log_manager.start_workers = Mock()
+        pipe._session_log_manager.start_assembler_worker = Mock()
+
+        monkeypatch.setattr(ChatsStub, "is_chat_owner", staticmethod(_not_owner))
+        monkeypatch.setattr(UsersStub, "get_user_by_id", staticmethod(_plain_user))
+        monkeypatch.setattr(
+            ChatsStub, "get_accessible_chat_by_id", staticmethod(_write_access), raising=False
+        )
+        await pipe._session_log_manager.persist_segment_to_db(
+            user_id="participant1",
+            session_id="sess1",
+            chat_id="chat1",
+            message_id="msg1",
+            request_id="req-participant",
+            log_events=[{"event": "test", "created": time.time()}],
+            terminal=True,
+            status="success",
+            valves=pipe.valves,
+        )
+        pipe._artifact_store._db_persist.assert_called_once()
+
+        pipe._artifact_store._db_persist = AsyncMock(return_value=["id1"])
+        monkeypatch.setattr(ChatsStub, "get_accessible_chat_by_id", staticmethod(_no_write_access))
+        await pipe._session_log_manager.persist_segment_to_db(
+            user_id="outsider1",
+            session_id="sess1",
+            chat_id="chat1",
+            message_id="msg1",
+            request_id="req-outsider",
+            log_events=[{"event": "test", "created": time.time()}],
+            terminal=True,
+            status="success",
+            valves=pipe.valves,
+        )
+        pipe._artifact_store._db_persist.assert_not_called()
+        assert (
+            "session_log_not_owned:chat1:outsider1"
+            in pipe._session_log_manager._ownership_skips
+        )
+    finally:
+        await pipe.close()
+
+
 # =============================================================================
 # ADDITIONAL COVERAGE TESTS - Breaker and Tool Failure Tracking
 # =============================================================================

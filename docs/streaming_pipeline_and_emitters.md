@@ -251,7 +251,7 @@ and a task route builds its metadata from the request's own `chat_id` without an
 on the path. The same predicate now governs all three of those writes — this end-of-turn merge, the
 Fusion terminal snapshot and the tool-loop-limit note — and it is applied inside the one accessor all three
 of them write through, `_chats_upsert`, which takes the caller's user id as a required argument: there is
-one implementation of the predicate (`caller_may_write_chat`, in `storage/owui_files.py`), and no shape of
+one implementation of the predicate (`chat_write_allowed`, in `storage/owui_files.py`, reached through its logging wrapper `caller_may_write_chat`), and no shape of
 the write that reaches the store without a user to check. A refused write is silent to the person and latched
 in the operator's log; the note and the panel still reach them. The four reads named above are gated on
 linkability only, and a read on a chat whose write is refused is the accepted cost of that split: a read
