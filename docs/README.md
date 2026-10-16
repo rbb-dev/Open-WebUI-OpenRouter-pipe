@@ -70,6 +70,7 @@ See: [Model Variants & Presets](model_variants_and_presets.md).
 - Confirm the pipe is configured with a valid API key (valve or `OPENROUTER_API_KEY` environment variable).
 - If your deployment blocks outbound internet access, ensure it can reach the OpenRouter API endpoint configured by `BASE_URL`.
   - The model list is populated by refreshing the OpenRouter catalog; when the refresh fails and no cached catalog exists, Open WebUI will show no models until connectivity and credentials are fixed.
+- Open WebUI's `ENABLE_PLUGINS` environment variable is on by default; set to `false`, it turns every function off, this pipe included, and from Open WebUI 0.12 `ENABLE_FUNCTIONS=false` does the same. No pipe model is listed and **Admin → Functions** shows an empty list. On 0.12 and later, loading the pipe's code also fails with `Functions are disabled by ENABLE_PLUGINS or ENABLE_FUNCTIONS`.
 
 ### Authentication errors (401/403) or “invalid API key”
 - Validate the configured key and confirm it is being provided where you expect (valves vs environment variables).
