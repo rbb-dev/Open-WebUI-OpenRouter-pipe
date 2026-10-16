@@ -153,7 +153,8 @@ def test_bearer_missing_header_401(monkeypatch):
 def test_bearer_cookie_ignored_401(monkeypatch):
     """The header guard is the whole of the header-only property, now."""
     client, _ = _auth_probe(monkeypatch)
-    resp = client.get("/probe", cookies={"token": "abc"})
+    client.cookies.set("token", "abc")
+    resp = client.get("/probe")
     assert resp.status_code == 401, resp.text
 
 
