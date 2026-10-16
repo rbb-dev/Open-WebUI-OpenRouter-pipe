@@ -31,6 +31,7 @@ from typing import Any
 
 from ...core.config import _application_secret
 from ...storage.owui_files import is_temporary_chat
+from ...storage.redis_client import mget_many
 from ._collectors import (
     PROCESS_START,
     collect_concurrency,
@@ -428,7 +429,7 @@ async def _scan_worker_slices(client: Any, namespace: str) -> list[dict[str, Any
                 keys.append(key)
     if not keys:
         return []
-    values = await _redis_op(client.mget(*keys))
+    values = await _redis_op(mget_many(client, keys))
     payloads = []
     for raw in values:
         if raw is None:

@@ -538,6 +538,8 @@ Payload fields include:
 
 Snapshots an earlier release wrote for a temporary chat are not rewritten; they expire after `COSTS_REDIS_TTL_SECONDS`.
 
+Reading the snapshots on Sentinel and Cluster deployments: the writes go through the pipe's own Redis client, which follows `REDIS_SENTINEL_HOSTS` and `REDIS_CLUSTER`, so snapshots exist on those deployments under the same `costs:` keys. A consumer that connects with a plain single-node client sees only part of them: on a cluster, each key lives on the primary owning its slot, and a plain client pointed at one node follows no redirection, so its scan reaches about one primary's share of the keys; against a Sentinel, the master-name form of `REDIS_URL` is not a plain host, and the consumer needs a resolvable address to connect at all. The repository's sample consumer is such a plain client; its per-deployment behaviour is documented beside its code.
+
 Privacy guidance:
 - These snapshots include user identity fields (email/name) from Open WebUI. Treat Redis access as sensitive, apply TTLs, and avoid using this feature if you do not need per-user cost attribution.
 

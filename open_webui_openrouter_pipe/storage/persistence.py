@@ -69,6 +69,7 @@ from ..core.utils import (
 )
 from ..core.warn_latch import warn_level
 from .owui_files import is_temporary_chat, loggable_chat_id, temporary_chat_prefixes
+from .redis_client import mget_many
 
 # Optional dependencies
 try:
@@ -3183,7 +3184,7 @@ class ArtifactStore:
         if not keys:
             return {}
         try:
-            values = await _await_if_needed(self._redis_client.mget(keys))
+            values = await _await_if_needed(mget_many(self._redis_client, keys))
         except Exception as exc:
             self.logger.warning("Redis read of cached artifact owners failed (best-effort): %s", exc, exc_info=True)
             return {}
@@ -3208,7 +3209,7 @@ class ArtifactStore:
             return []
         try:
             markers = await _await_if_needed(
-                self._redis_client.mget([self._redis_deleted_key(row_id) for row_id in row_ids])
+                mget_many(self._redis_client, [self._redis_deleted_key(row_id) for row_id in row_ids])
             )
             owners = {row.get("id"): row.get("message_id") for row in rows if row.get("id")}
             deleted = [
@@ -3374,7 +3375,7 @@ class ArtifactStore:
         if not keys:
             return {}
         try:
-            values = await _await_if_needed(self._redis_client.mget(keys))
+            values = await _await_if_needed(mget_many(self._redis_client, keys))
         except Exception as exc:
             self.logger.warning("Redis read failed, falling back to DB: %s", exc, exc_info=True)
             return {}

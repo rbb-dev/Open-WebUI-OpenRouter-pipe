@@ -10,6 +10,11 @@ Behavior overview:
       and inserts a user_usage_records row (mirroring app/api/v1/outlet)
     * Deletes the Redis key only after a successful Postgres transaction
     * On failures, extends the key TTL so data can be retried later
+    * On a Redis Cluster the plain client scans only the node `REDIS_URL` points at: one run
+      drains that node's keys and the other primaries' expire by TTL, so point `REDIS_URL`
+      at each primary in turn or accept the loss
+    * On Redis Sentinel the master-name form of `REDIS_URL` is not a plain host, and the
+      script needs a resolvable address to connect at all
 Note: this is a working example, not production ready
 """
 

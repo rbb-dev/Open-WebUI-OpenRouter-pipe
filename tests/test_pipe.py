@@ -6498,6 +6498,53 @@ async def test_init_redis_client_failure_disables_cache(monkeypatch, pipe_instan
     assert pipe._redis_enabled is False  # Pipe's own state
     assert pipe._redis_client is None  # Pipe's own state
 
+
+@pytest.mark.asyncio
+async def test_init_redis_client_refuses_rediss_with_sentinel_hosts(monkeypatch, pipe_instance_async, caplog) -> None:
+    pipe = pipe_instance_async
+    pipe._redis_candidate = True
+    pipe._redis_enabled = False
+    pipe._artifact_store._redis_enabled = False
+    pipe._artifact_store._redis_client = None
+    pipe._redis_url = "rediss://redisuser9:redispw9@redishost9:6399/1"
+
+    calls: list = []
+
+    class RecordingModule:
+        def from_url(self, *_args, **_kwargs):
+            calls.append((_args, _kwargs))
+            return _FakeRedis()
+
+    monkeypatch.setattr(pipe_mod, "aioredis", RecordingModule())
+    monkeypatch.setenv("REDIS_SENTINEL_HOSTS", "sentinel-a, sentinel-b")
+    monkeypatch.setenv("REDIS_SENTINEL_PORT", "26379")
+    monkeypatch.delenv("REDIS_CLUSTER", raising=False)
+
+    async def _noop_listener() -> None:
+        return None
+
+    async def _noop_flusher() -> None:
+        return None
+
+    monkeypatch.setattr(pipe._artifact_store, "_redis_pubsub_listener", _noop_listener)
+    monkeypatch.setattr(pipe._artifact_store, "_redis_periodic_flusher", _noop_flusher)
+
+    with caplog.at_level(logging.WARNING):
+        await pipe._init_redis_client()
+
+    records = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert records
+
+    assert calls == []
+    assert pipe._redis_client is None
+    assert pipe._redis_enabled is False
+    assert pipe._redis_retry_at > time.monotonic()
+    assert pipe._artifact_store._redis_client is None
+    assert pipe._artifact_store._redis_enabled is False
+    assert "redisuser9" not in caplog.text
+    assert "redispw9" not in caplog.text
+    assert "rediss://redisuser9:redispw9@redishost9:6399/1" not in caplog.text
+
 # ===== From test_metadata_features.py =====
 
 from open_webui_openrouter_pipe import _extract_feature_flags

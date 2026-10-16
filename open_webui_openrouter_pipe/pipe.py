@@ -118,6 +118,7 @@ from .storage.persistence import (
     _RedisClient,
     _valve_column_decode_verdict,
 )
+from .storage.redis_client import build_redis_client, parse_redis_target
 
 try:
     import pyzipper  # pyright: ignore[reportMissingImports]
@@ -1520,16 +1521,20 @@ class Pipe:
             return
         client: _RedisClient | None = None
         try:
-            client = aioredis.from_url(
-                self._redis_url,
-                encoding="utf-8",
-                decode_responses=True,
-                health_check_interval=30,
-            )
+            sentinel_hosts = os.getenv("REDIS_SENTINEL_HOSTS")
+            sentinel_port = os.getenv("REDIS_SENTINEL_PORT")
+            cluster = os.getenv("REDIS_CLUSTER", "False").lower() == "true"
+            target = parse_redis_target(self._redis_url, sentinel_hosts, sentinel_port, cluster)
+            client = build_redis_client(target, aioredis)
             if client is None:
                 self.logger.warning("Redis client initialization returned None; Redis cache remains disabled.")
                 return
             await _await_if_needed(client.ping(), timeout=5.0)
+        except asyncio.CancelledError:
+            if client is not None:
+                with contextlib.suppress(Exception):
+                    await client.aclose()
+            raise
         except Exception as exc:
             if client is not None:
                 with contextlib.suppress(Exception):
