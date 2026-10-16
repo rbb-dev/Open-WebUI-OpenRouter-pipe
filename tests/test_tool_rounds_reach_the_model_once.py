@@ -62,21 +62,23 @@ def _open_webui_streaming_handler() -> dict[str, Any]:
     from pathlib import Path
     from uuid import uuid4
 
-    source = Path(sysconfig.get_paths()["purelib"]) / "open_webui" / "utils" / "middleware.py"
-    text = source.read_text(encoding="utf-8")
+    utils = Path(sysconfig.get_paths()["purelib"]) / "open_webui" / "utils"
     wanted = {"handle_responses_streaming_event", "deep_merge", "output_id"}
-    segments = [
-        ast.get_source_segment(text, node) or ""
-        for node in ast.parse(text).body
-        if isinstance(node, ast.FunctionDef) and node.name in wanted
-    ]
+    segments: list[str] = []
+    for module in ("middleware.py", "response.py"):
+        text = (utils / module).read_text(encoding="utf-8")
+        segments += [
+            ast.get_source_segment(text, node) or ""
+            for node in ast.parse(text).body
+            if isinstance(node, ast.FunctionDef) and node.name in wanted
+        ]
     assert len(segments) == len(wanted)
     code = "\n\n".join(segments)
     assert "existing.get('type') == item.get('type')" in code, (
         "the installed Open WebUI no longer matches a published item to an earlier one by type and call id"
     )
     namespace: dict[str, Any] = {"uuid4": uuid4}
-    exec(compile(code, str(source), "exec", flags=__future__.annotations.compiler_flag, dont_inherit=True), namespace)
+    exec(compile(code, str(utils), "exec", flags=__future__.annotations.compiler_flag, dont_inherit=True), namespace)
     return namespace
 
 

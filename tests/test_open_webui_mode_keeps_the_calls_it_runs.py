@@ -28,13 +28,16 @@ from tests.test_reasoning_skeleton_replay import MODEL, _stage_a, _valves
 
 def _open_webui_streaming_handler() -> dict[str, Any]:
     """Open WebUI's own `handle_responses_streaming_event`, compiled from the installed release."""
-    source = Path(sysconfig.get_paths()["purelib"]) / "open_webui" / "utils" / "middleware.py"
-    text = source.read_text(encoding="utf-8")
+    utils = Path(sysconfig.get_paths()["purelib"]) / "open_webui" / "utils"
     wanted = {"handle_responses_streaming_event", "deep_merge", "output_id"}
-    segments = [ast.get_source_segment(text, node) or "" for node in ast.parse(text).body
-                if isinstance(node, ast.FunctionDef) and node.name in wanted]
+    segments: list[str] = []
+    for module in ("middleware.py", "response.py"):
+        text = (utils / module).read_text(encoding="utf-8")
+        segments += [ast.get_source_segment(text, node) or "" for node in ast.parse(text).body
+                     if isinstance(node, ast.FunctionDef) and node.name in wanted]
+    assert len(segments) == len(wanted)
     namespace: dict[str, Any] = {"uuid4": uuid4}
-    exec(compile("\n\n".join(segments), str(source), "exec", flags=__future__.annotations.compiler_flag,
+    exec(compile("\n\n".join(segments), str(utils), "exec", flags=__future__.annotations.compiler_flag,
                  dont_inherit=True), namespace)
     return namespace
 
