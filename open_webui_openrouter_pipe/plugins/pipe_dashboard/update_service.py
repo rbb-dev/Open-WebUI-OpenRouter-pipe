@@ -1199,16 +1199,23 @@ class UpdateService:
     ) -> dict[str, Any]:
         await self._rev_guard(rev)
         instance, frontmatter, final, restore = await self._reload_via_loader(content)
+        repaired = False
         try:
             await self._rev_guard(rev)
             await self.snapshot_current(actor, await self._snapshot_owner(actor, actor_user))
             pipe_id = self._pipe().id
             functions = self._functions()
-            written = await functions.update_function_by_id(pipe_id, {"content": final})
+            try:
+                written = await functions.update_function_by_id(pipe_id, {"content": final})
+            except ValueError as exc:
+                if str(exc) != "Function not found":
+                    raise
+                written = None
             if written is None:
                 confirmed = await self._confirm_write_landed(pipe_id, final)
                 if confirmed is None:
                     await self._refused_write_repair(request, pipe_id, restore)
+                    repaired = True
                     raise UpdateError(
                         "write_failed",
                         "the database rejected the function-row write; the previous version remains active",
@@ -1216,6 +1223,8 @@ class UpdateService:
                 written = confirmed
         except BaseException as exc:
             restore()
+            if isinstance(exc, Exception) and not repaired:
+                await self._refused_write_repair(request, self._pipe().id, restore)
             logger.warning(
                 "update: restored the pre-attempt module after the commit failed (%s)",
                 getattr(exc, "code", type(exc).__name__),
@@ -1273,10 +1282,8 @@ class UpdateService:
         except UpdateError:
             logger.warning(
                 "update: the store did not confirm the function-row write and the row "
-                "could not be read back, so the write is unconfirmed rather than "
-                "refused; Open WebUI's own update_function_by_id commits at "
-                "models/functions.py:411 and reads the row back at :412 under one "
-                "except Exception at :414-415, so None answers for both"
+                "could not be read back, so the write is left unconfirmed and is "
+                "handled as not landed"
             )
             return None
         if (getattr(row, "content", "") or "") != final:

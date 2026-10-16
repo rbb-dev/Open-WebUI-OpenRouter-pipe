@@ -17,7 +17,7 @@ import logging
 import sys
 import time
 import types
-from functools import lru_cache, partial
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -115,6 +115,8 @@ class _FakeFunctions:
         self.valves_row: dict | None = {}
         self.fail_content_write = False
         self.fail_meta_merge = False
+        self.raises_not_found = False
+        self.raises_content_error = False
 
     async def get_function_valves_by_id(self, fid, db=None):
         return self.valves_row
@@ -123,6 +125,10 @@ class _FakeFunctions:
         return self.row if fid == PID else None
 
     async def update_function_by_id(self, fid, updated, db=None):
+        if self.raises_not_found and "content" in updated:
+            raise ValueError("Function not found")
+        if self.raises_content_error and "content" in updated:
+            raise RuntimeError("the content write failed")
         if self.fail_content_write and "content" in updated:
             return None
         self.updates.append(dict(updated))
@@ -2256,12 +2262,39 @@ async def test_commit_content_write_refusal_fails_update(svc, wired):
     assert "database rejected" in exc.value.message
     # The old assertion here was `assert not hasattr(req.app.state, "FUNCTIONS")`. It
     # held only because the cache writes sat AFTER the raise, so it could not see the
-    # defect from either side of the fix; what the property wants is the identity of
-    # the cached entry, which
-    # `test_a_refused_content_write_replaces_the_cached_instance` now asserts. This
-    # fixture's loader never touches `sys.modules`, so there is no pre-attempt module
-    # to revive and the entry stays absent rather than being seeded.
+    # defect from either side of the fix; the revived entry's identity is asserted by
+    # `test_commit_error_after_loader_revives_the_cached_instance`, on the error arm
+    # of the same revival this path runs. This fixture's loader never touches
+    # `sys.modules`, so there is no pre-attempt module to revive and the entry stays
+    # absent rather than being seeded.
     assert PID not in getattr(req.app.state, "FUNCTIONS", {})
+    await _wait_for(lambda: not svc._commit_inflight)
+    assert svc._commit_inflight is False
+
+
+@pytest.mark.asyncio
+async def test_commit_function_not_found_refusal_takes_the_refused_write_path(svc, wired):
+    wired.functions.raises_not_found = True
+    rev = wired.functions.row.updated_at
+    with pytest.raises(us.UpdateError) as exc:
+        await svc.apply({"rev": rev}, actor="admin", actor_id="u1", request=_request())
+    assert exc.value.code == "write_failed"
+    await _wait_for(lambda: not svc._commit_inflight)
+    assert svc._commit_inflight is False
+
+
+@pytest.mark.asyncio
+async def test_commit_error_after_loader_revives_the_cached_instance(svc, wired, monkeypatch):
+    serving, _, req = _serving_pipe(monkeypatch)
+    wired.functions.raises_content_error = True
+    rev = wired.functions.row.updated_at
+    with pytest.raises(RuntimeError, match="the content write failed"):
+        await svc.apply({"rev": rev}, actor="admin", actor_id="u1", request=req)
+    import open_webui.utils.plugin as owp
+
+    cached = owp.get_functions_cache(req)[PID]
+    assert cached is not serving
+    assert cached.pipe()["ok"] is True
     await _wait_for(lambda: not svc._commit_inflight)
     assert svc._commit_inflight is False
 
@@ -2958,8 +2991,7 @@ class _LivablePipe:
     difference between that fix and a plain `revived.valves = <the row's dict>`:
     `_FakeFunctions.valves_row` defaults to `None`, so the branch that binds is never
     taken and the revived instance keeps the `SimpleNamespace` this constructor built.
-    The nodes that set `valves_row` are the ones that see it, and they stand this class
-    up beside `_valved_old_module`'s, which declares a real model.
+    The nodes that set `valves_row` are the ones that see it.
     """
 
     _next_serial = 0
@@ -3033,54 +3065,3 @@ class _BundledModuleFinder:
 
     def find_spec(self, fullname, path=None, target=None):
         return None
-
-
-@lru_cache(maxsize=1)
-def _b358_revived_valves() -> Any:
-    """A subclass of the pipe's own (plugin-extended) valve model, plus one row-only field."""
-    from open_webui_openrouter_pipe.pipe import Pipe
-
-    class _RevivedValves(Pipe.Valves):
-        B358_ROW_ONLY: int = 5
-
-    return _RevivedValves
-
-
-def _valved_old_module(monkeypatch, *, in_cache=True):
-    """The pre-attempt module, whose `Pipe` declares the extended `Valves` class.
-
-    Same shape as `_serving_pipe`: the cache-hit early return applies no valves, so the
-    revival under test is a construction and the stand-in has to be a class whose
-    `__init__` really builds its valve model.
-    """
-    valves_cls = _b358_revived_valves()
-    serving = _LivablePipe(marker="serving")
-
-    class _ValvedPipe:
-        Valves = valves_cls
-
-        def __init__(self, marker="revived"):
-            self.id = PID
-            self.marker = marker
-            self.valves = self.Valves()
-            self.served = 0
-
-        def pipe(self, *a, **kw):
-            self.served += 1
-            return {"ok": True, "marker": self.marker}
-
-    def _Pipe():
-        revived = _ValvedPipe()
-        serving._draining = True
-        return revived
-
-    old_module = types.ModuleType(f"function_{PID}")
-    setattr(old_module, "Pipe", _Pipe)
-    monkeypatch.setitem(sys.modules, f"function_{PID}", old_module)
-    req = _request()
-    if in_cache:
-        import open_webui.utils.plugin as owp
-
-        owp.get_functions_cache(req)[PID] = serving
-        owp.get_function_contents_cache(req)[PID] = INSTALLED_CONTENT
-    return serving, req, valves_cls
