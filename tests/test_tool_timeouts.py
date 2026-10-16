@@ -1823,3 +1823,47 @@ async def test_the_synchronous_tools_switch_places_a_wrapped_body_on_the_pool_or
         SYNC_TOOLS_ON_THREADS=False,
     )
     assert seen["thread"] == loop_ident
+
+
+@pytest.mark.asyncio
+async def test_a_threaded_tool_body_can_start_a_task_and_ask_for_the_running_loop(pipe_instance_async):
+    main_ident = threading.get_ident()
+    seen: list[tuple[str, int]] = []
+
+    async def delivered(label: str) -> str:
+        seen.append((label, threading.get_ident()))
+        return label
+
+    def body(**_kwargs):
+        loop = asyncio.get_running_loop()
+        started: list[Any] = [asyncio.create_task(delivered("module")), loop.create_task(delivered("loop"))]
+        return [future.result(5) for future in started]
+
+    shell = await _open_webui_tool_wrapper()(body, {})
+    assert await pipe_instance_async._call_tool_callable(shell, {}) == ["module", "loop"]
+    assert seen == [("module", main_ident), ("loop", main_ident)]
+
+
+@pytest.mark.asyncio
+async def test_a_threaded_tool_body_timer_fires_on_the_main_loop_unless_the_body_cancelled_it(
+    pipe_instance_async,
+):
+    main_ident = threading.get_ident()
+    fired: list[tuple[str, int]] = []
+    body_done = threading.Event()
+
+    def body(**_kwargs):
+        try:
+            loop = asyncio.get_event_loop()
+            loop.call_later(5, lambda: fired.append(("kept", threading.get_ident())))
+            loop.call_later(5, lambda: fired.append(("dropped", threading.get_ident()))).cancel()
+        finally:
+            body_done.set()
+
+    shell = await _open_webui_tool_wrapper()(body, {})
+    call = asyncio.ensure_future(pipe_instance_async._call_tool_callable(shell, {}))
+    await asyncio.sleep(0)
+    assert body_done.wait(5)
+    await call
+    await asyncio.sleep(10)
+    assert fired == [("kept", main_ident)]

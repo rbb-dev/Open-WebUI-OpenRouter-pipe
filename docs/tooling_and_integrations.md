@@ -201,7 +201,7 @@ Tools are executed via a per-request worker pool backed by a bounded queue:
 - Per-request semaphore: limits concurrent tool executions per request.
 - Global semaphore: `MAX_PARALLEL_TOOLS_GLOBAL` limits tool executions across all requests.
 - Plain-function thread pool: a tool whose body runs synchronously — a plain function, including one Open WebUI hands the pipe wrapped in its async shell — is offloaded to a pool the pipe owns, `min(MAX_PARALLEL_TOOLS_GLOBAL, 8)` threads wide, while `Synchronous tools on threads` is on; with it off, the wrapped body runs on the event loop as before. The semaphores above are the gate that decides which calls are admitted; the pool is the isolation boundary that keeps an admitted blocking tool from taking the threads Open WebUI's own requests and this pipe's storage work use. Raising the valve above 8 therefore admits more calls without adding threads.
-- A synchronous tool body reaches the async model layer only via `run_coroutine_threadsafe(...).result()` against the loop it left; the same `.result()` on the loop thread deadlocks.
+- A synchronous tool body waits for an async result with `.result()` on the future that `run_coroutine_threadsafe(...)` returns, or, in a body Open WebUI wrapped in its async shell, that `asyncio.create_task(...)` returns; the coroutine runs on the loop the body left, and the same `.result()` on the loop thread deadlocks.
 - Open WebUI's built-in `ask_user` takes no slot from either semaphore, because it waits on a person rather than doing work.
 
 Batching behavior:

@@ -723,6 +723,52 @@ def _tool_body_raised(exc: BaseException, fn: Any) -> bool:
     return False
 
 
+class _ForwardedTimer:
+    def __init__(
+        self,
+        main: asyncio.AbstractEventLoop,
+        when: float,
+        callback: Callable[..., Any],
+        args: tuple[Any, ...],
+        context: contextvars.Context | None,
+    ) -> None:
+        self._main = main
+        self._when = when
+        self._lock = threading.Lock()
+        self._handle: asyncio.TimerHandle | None = None
+        self._cancelled = False
+        main.call_soon_threadsafe(self._arm, callback, args, context)
+
+    def _arm(
+        self,
+        callback: Callable[..., Any],
+        args: tuple[Any, ...],
+        context: contextvars.Context | None,
+    ) -> None:
+        with self._lock:
+            if self._cancelled:
+                return
+            self._handle = self._main.call_at(self._when, self._fire, callback, args, context=context)
+
+    def _fire(self, callback: Callable[..., Any], args: tuple[Any, ...]) -> None:
+        if not self._cancelled:
+            callback(*args)
+
+    def cancel(self) -> None:
+        with self._lock:
+            self._cancelled = True
+            handle = self._handle
+        if handle is not None:
+            with contextlib.suppress(RuntimeError):
+                self._main.call_soon_threadsafe(handle.cancel)
+
+    def cancelled(self) -> bool:
+        return self._cancelled
+
+    def when(self) -> float:
+        return self._when
+
+
 class _ToolThreadLoop(asyncio.AbstractEventLoop):
     def __init__(self, main: asyncio.AbstractEventLoop) -> None:
         self._main = main
@@ -745,6 +791,15 @@ class _ToolThreadLoop(asyncio.AbstractEventLoop):
 
     def call_soon(self, callback, *args, context=None):
         return self._main.call_soon_threadsafe(callback, *args, context=context)
+
+    def call_at(self, when, callback, *args, context=None) -> Any:
+        return _ForwardedTimer(self._main, when, callback, args, context)
+
+    def call_later(self, delay, callback, *args, context=None) -> Any:
+        return self.call_at(self._main.time() + delay, callback, *args, context=context)
+
+    def call_exception_handler(self, context):
+        self._main.call_soon_threadsafe(self._main.call_exception_handler, context)
 
     def create_task(self, coro: Any, *, name: Any = None, context: Any = None) -> Any:
         if threading.get_ident() == self._main_thread:
@@ -1722,20 +1777,27 @@ class Pipe:
         def _invoke() -> Any:
             if on_enter is not None:
                 on_enter()
-            asyncio.set_event_loop(thread_loop)
             inner = getattr(fn, "__function__", None)
-            if not (callable(inner) and not inspect.iscoroutinefunction(inner)):
-                return fn(**args)
-            coro = fn(**args)
+            wrapped_shell = callable(inner) and not inspect.iscoroutinefunction(inner)
+            asyncio.set_event_loop(thread_loop)
             try:
-                coro.send(None)
-            except StopIteration as completed:
-                return completed.value
-            coro.close()
-            name = getattr(inner, "__name__", None) or getattr(fn, "__name__", None) or "<unnamed>"
-            raise RuntimeError(
-                f"Tool body suspended instead of returning after its first step ({name})."
-            )
+                if not wrapped_shell:
+                    return fn(**args)
+                asyncio._set_running_loop(thread_loop)
+                coro = fn(**args)
+                try:
+                    coro.send(None)
+                except StopIteration as completed:
+                    return completed.value
+                coro.close()
+                name = getattr(inner, "__name__", None) or getattr(fn, "__name__", None) or "<unnamed>"
+                raise RuntimeError(
+                    f"Tool body suspended instead of returning after its first step ({name})."
+                )
+            finally:
+                if wrapped_shell:
+                    asyncio._set_running_loop(None)
+                asyncio.set_event_loop(None)
 
         return await loop.run_in_executor(
             self._ensure_tool_pool(), functools.partial(ctx.run, _invoke)
