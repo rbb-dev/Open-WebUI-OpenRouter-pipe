@@ -990,3 +990,109 @@ async def test_a_decoded_valve_row_is_never_reported_unreadable():
         "host with valve encryption on that is every user who has ever saved a valve, "
         "and each of them is then refused every non-ZDR model."
     )
+
+
+@pytest.mark.asyncio
+async def test_an_undecodable_chat_owner_valve_blob_enforces_zdr(monkeypatch):
+    """The owner's stored row is classified by the same blob evidence as the sender's.
+
+    Open WebUI answers `{}` both for "never saved" and for "saved but undecodable", so the
+    row alone cannot tell them apart; the still-encrypted blob on the user's settings does.
+    The owner reaches the reader as a bare id today, which carries no settings, so a
+    rotated key makes the owner's saved answer read as "never saved" and the participant's
+    reply goes out with no Zero Data Retention despite the owner asking for it.
+    """
+    import open_webui.models.functions as owf
+    import open_webui.models.users as owu
+    from aioresponses import aioresponses
+
+    from open_webui_openrouter_pipe import Pipe
+    from open_webui_openrouter_pipe.core.config import EncryptedStr
+
+    from tests.test_request_orchestrator import _chat_owned_by
+
+    async def rows(_id, user_id, db=None):
+        return {} if str(user_id) == "owner_1" else {"REQUEST_ZDR": False}
+
+    monkeypatch.setattr(owf.Functions, "get_user_valves_by_id_and_user_id", staticmethod(rows))
+
+    _chat_owned_by(monkeypatch, "owner_1")
+
+    class _OwnerRow:
+        def __init__(self, settings):
+            self._settings = settings
+
+        def model_dump(self):
+            return {"id": "owner_1", "settings": self._settings}
+
+    holder: dict = {}
+
+    async def owner_row(user_id, db=None):
+        return _OwnerRow(holder["settings"])
+
+    monkeypatch.setattr(owu.Users, "get_user_by_id", staticmethod(owner_row), raising=False)
+
+    pipe = Pipe()
+    try:
+        holder["settings"] = {"functions": {"valves": {}}}
+        pipe.valves.API_KEY = EncryptedStr("test-api-key")
+        pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
+        pipe.valves.ZDR_ENFORCE = False
+        pipe.valves.ALLOW_USER_ZDR_OVERRIDE = True
+        holder["settings"]["functions"]["valves"][pipe.id] = "gAAAAAB_undecodable"
+
+        captured_payloads: list[dict] = []
+        callback = _smart_callback(captured_payloads, "Response")
+
+        async def event_emitter(event):
+            pass
+
+        with aioresponses() as mock_http:
+            mock_http.post(
+                "https://openrouter.ai/api/v1/responses",
+                callback=callback,
+                repeat=True,
+            )
+            mock_http.get(
+                "https://openrouter.ai/api/v1/models",
+                payload={"data": [{"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini"}]},
+                repeat=True,
+            )
+            mock_http.get(
+                "https://openrouter.ai/api/v1/endpoints/zdr",
+                payload={"data": [{"model_id": "openai/gpt-4o-mini"}]},
+                repeat=True,
+            )
+
+            body = {
+                "model": "openai/gpt-4o-mini",
+                "messages": [{"role": "user", "content": "test"}],
+                "stream": True,
+            }
+
+            result = await pipe.pipe(
+                body=body,
+                __user__={"id": "user_123"},
+                __request__=None,
+                __event_emitter__=event_emitter,
+                __event_call__=None,
+                __metadata__={
+                    "model": {"id": "openai/gpt-4o-mini"},
+                    "chat_id": "shared_chat_owner",
+                },
+                __tools__=None,
+                __task__=None,
+                __task_body__=None,
+            )
+
+            await _consume_stream(result)
+
+        assert captured_payloads, "Expected a request payload to be captured"
+        provider = captured_payloads[-1].get("provider") or {}
+        assert provider.get("zdr") is True, (
+            f"an undecodable owner blob produced provider.zdr={provider.get('zdr')!r}: "
+            "the owner's saved answer must be classified from the blob evidence, not "
+            "read as never-saved."
+        )
+    finally:
+        await pipe.close()

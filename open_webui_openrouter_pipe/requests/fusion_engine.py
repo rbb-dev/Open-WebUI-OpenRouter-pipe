@@ -175,6 +175,7 @@ class FusionInnerInvocation:
     # could leave one panel member routing with ZDR and another without it, in one turn.
     user_valves: Any = None
     rejected_user_valves: list = field(default_factory=list)
+    user_zdr_decision: Any = None
     user_model: Any = _UNSET
     user_model_resolved: bool = False
     attachment_bytes: dict = field(default_factory=dict)
@@ -296,6 +297,7 @@ async def run_fusion_member(
             outcome_sink=sink,
             user_valves=invocation.user_valves,
             rejected_user_valves=list(invocation.rejected_user_valves),
+            user_zdr_decision=invocation.user_zdr_decision,
             resolved_user_model=invocation.user_model,
             resolved_user_done=invocation.user_model_resolved,
             attachment_bytes=invocation.attachment_bytes,

@@ -94,6 +94,16 @@ def _install_open_webui_stubs() -> None:
             # caller owns what it names. A test about the refusal overrides this.
             return True
 
+        @staticmethod
+        async def get_chat_by_id(chat_id, db=None):
+            # The row the request path's chat-owner check reads. A single-principal
+            # process has no other owner to consult, so the row names no owner and the
+            # caller's own answer stands; a test of that check overrides this.
+            class _ChatRow:
+                user_id = ""
+
+            return _ChatRow()
+
         _chat_files: dict[tuple, list] = {}
 
         @staticmethod

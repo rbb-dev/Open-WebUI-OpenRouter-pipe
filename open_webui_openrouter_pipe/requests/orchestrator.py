@@ -93,6 +93,7 @@ from ..storage.owui_files import (
     get_file_by_id,
     index_referenced_file_payloads,
     infer_file_mime_type,
+    is_linkable_chat,
     is_temporary_chat,
     is_temporary_metadata,
 )
@@ -215,6 +216,62 @@ async def _resolve_user_model(
                 user_id,
             )
     return row, resolved
+
+
+async def _chat_owner_zdr_override(
+    pipe: Any, sender_id: str, metadata: dict[str, Any], logger: logging.Logger
+) -> tuple[bool, str]:
+    chat_id = (metadata or {}).get("chat_id")
+    if not is_linkable_chat(chat_id):
+        return False, "REQUEST_ZDR"
+    try:
+        from open_webui.models.chats import Chats
+        from open_webui.models.users import Users
+
+        if await Chats.is_chat_owner(str(chat_id), sender_id):
+            return False, "REQUEST_ZDR"
+        chat = await Chats.get_chat_by_id(str(chat_id))
+        if chat is None:
+            logger.warning(
+                "The chat row for the Zero Data Retention owner check did not resolve; "
+                "enforcing ZDR rather than routing without it"
+            )
+            return True, "OWNER_ZDR_UNDETERMINABLE"
+        owner_id = str(getattr(chat, "user_id", "") or "")
+        if not owner_id or owner_id == sender_id:
+            return False, "REQUEST_ZDR"
+        try:
+            owner = await Users.get_user_by_id(owner_id)
+            if owner is None:
+                logger.warning(
+                    "The chat owner's user row for the Zero Data Retention owner check did "
+                    "not resolve; enforcing ZDR rather than routing without it"
+                )
+                return True, "OWNER_ZDR_PREFERENCE_UNREADABLE"
+            owner_valves, owner_rejected = await pipe._read_user_valves(owner.model_dump())
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "The chat owner's saved answer for the Zero Data Retention owner check could "
+                "not be read; enforcing ZDR rather than routing without it",
+                exc_info=True,
+            )
+            return True, "OWNER_ZDR_PREFERENCE_UNREADABLE"
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "The chat ownership answer for the Zero Data Retention owner check could "
+            "not be read; enforcing ZDR rather than routing without it",
+            exc_info=True,
+        )
+        return True, "OWNER_ZDR_UNDETERMINABLE"
+    if "REQUEST_ZDR" in (owner_rejected or []):
+        logger.warning(
+            "The chat owner's Zero Data Retention preference could not be read; "
+            "enforcing ZDR rather than routing without it"
+        )
+        return True, "OWNER_ZDR_PREFERENCE_UNREADABLE"
+    if owner_valves.REQUEST_ZDR:
+        return True, "OWNER_REQUEST_ZDR"
+    return False, "REQUEST_ZDR"
 
 
 async def _read_attachment(
@@ -898,6 +955,7 @@ class RequestOrchestrator:
         outcome_sink: dict[str, Any] | None = None,
         user_valves: Any = None,
         rejected_user_valves: list[str] | None = None,
+        user_zdr_decision: tuple | None = None,
         resolved_user_model: Any = _UNSET,
         resolved_user_done: bool = False,
         attachment_bytes: dict[Any, Any] | None = None,
@@ -1790,7 +1848,9 @@ class RequestOrchestrator:
         allow_user_zdr = valves.ALLOW_USER_ZDR_OVERRIDE
         user_requests_zdr = False
         zdr_reason = "REQUEST_ZDR"
-        if allow_user_zdr and not admin_enforce_zdr:
+        if user_zdr_decision is not None:
+            user_requests_zdr, zdr_reason = user_zdr_decision
+        elif allow_user_zdr and not admin_enforce_zdr:
             # Read once per request, at the entry point, and carried here on the job.
             # Re-reading cost a second full user-row fetch and produced a SECOND
             # snapshot: a valve saved between the two reads left the request honouring
@@ -1810,6 +1870,10 @@ class RequestOrchestrator:
                 zdr_reason = "ZDR_PREFERENCE_UNREADABLE"
             else:
                 user_requests_zdr = user_valves.REQUEST_ZDR
+                if not user_requests_zdr:
+                    user_requests_zdr, zdr_reason = await _chat_owner_zdr_override(
+                        self._pipe, user_id, __metadata__, self.logger
+                    )
         enforce_zdr = admin_enforce_zdr or user_requests_zdr
         if admin_enforce_zdr:
             zdr_reason = "ZDR_ENFORCE"
@@ -2575,6 +2639,7 @@ class RequestOrchestrator:
                     orchestrator=self,
                     user_valves=user_valves,
                     rejected_user_valves=list(rejected_user_valves or []),
+                    user_zdr_decision=(user_requests_zdr, zdr_reason),
                     messages=list(body.get("messages") or []) if isinstance(body, dict) else [],
                     outer_model_id=responses_body.model,
                     user=__user__,

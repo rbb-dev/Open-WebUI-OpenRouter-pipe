@@ -1573,7 +1573,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         title="Allow user ZDR override",
         description=(
             "When enabled, users can toggle 'Request ZDR' per chat. "
-            "If Enforce ZDR routing is enabled, user overrides are ignored. The list is per credential: the pipe re-reads whenever the credential that produced the list in force is not the credential in hand, so a different account sees no list rather than another's, and is refused while Enforce ZDR routing is on until its own read succeeds."
+            "If Enforce ZDR routing is enabled, user overrides are ignored. A reply a user sends in a chat another user owns also honours that chat owner's saved answer: the request is routed with Zero Data Retention when either the sender or the chat's owner asked for it. The list is per credential: the pipe re-reads whenever the credential that produced the list in force is not the credential in hand, so a different account sees no list rather than another's, and is refused while Enforce ZDR routing is on until its own read succeeds."
         ),
     )
     VARIANT_MODELS: str = Field(
@@ -3503,7 +3503,7 @@ class UserValves(BaseModel):
     REQUEST_ZDR: bool = Field(
         default=False,
         title="Request ZDR",
-        description="Request Zero Data Retention routing for this chat.",
+        description="Request Zero Data Retention routing for this chat. When you reply in a chat another user owns, the chat owner's saved answer counts too: the request is routed with Zero Data Retention when either you or the chat's owner asked for it.",
     )
 
 

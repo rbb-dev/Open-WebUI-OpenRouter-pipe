@@ -5287,6 +5287,201 @@ async def test_zdr_user_valve_injects_provider_preference(monkeypatch, source, r
         await pipe.close()
 
 
+def _stored_valves_per_user(monkeypatch, rows: dict) -> None:
+    """Per-user stored valves rows; the chat owner's row is read beside the sender's."""
+    import open_webui.models.functions as owf
+
+    async def reader(_id, user_id, db=None):
+        return dict(rows[str(user_id)])
+
+    monkeypatch.setattr(owf.Functions, "get_user_valves_by_id_and_user_id", staticmethod(reader))
+
+
+def _chat_owned_by(monkeypatch, owner_id: str) -> None:
+    """The chat row resolves, and its owner is the one fact the owner check reads."""
+    import open_webui.models.chats as owc
+    import open_webui.models.users as owu
+
+    class _ChatRow:
+        user_id = owner_id
+
+    async def reader(chat_id, db=None):
+        return _ChatRow()
+
+    monkeypatch.setattr(owc.Chats, "get_chat_by_id", staticmethod(reader), raising=False)
+
+    async def not_owner(chat_id, user_id, db=None):
+        return False
+
+    monkeypatch.setattr(owc.Chats, "is_chat_owner", staticmethod(not_owner), raising=False)
+
+    class _OwnerUser:
+        def model_dump(self):
+            return {"id": owner_id}
+
+    async def owner_user(user_id, db=None):
+        return _OwnerUser()
+
+    monkeypatch.setattr(owu.Users, "get_user_by_id", staticmethod(owner_user), raising=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "owner_opted_in", [True, False], ids=["owner-opted-in", "owner-opted-out"]
+)
+async def test_a_reply_in_a_chat_the_sender_does_not_own_honours_the_chat_owner_zdr_too(
+    monkeypatch, owner_opted_in
+):
+    """A participant's reply is routed by the stricter of the sender's and the chat owner's ZDR answers."""
+    _stored_valves_per_user(
+        monkeypatch,
+        {"user_123": {"REQUEST_ZDR": False}, "owner_1": {"REQUEST_ZDR": owner_opted_in}},
+    )
+    _chat_owned_by(monkeypatch, "owner_1")
+    pipe = Pipe()
+
+    try:
+        pipe.valves.API_KEY = EncryptedStr("test-api-key")
+        pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
+        pipe.valves.ZDR_ENFORCE = False
+        pipe.valves.ALLOW_USER_ZDR_OVERRIDE = True
+
+        captured_payloads: list[dict] = []
+        callback = _smart_callback(captured_payloads, "Response")
+
+        async def event_emitter(event):
+            pass
+
+        with aioresponses() as mock_http:
+            mock_http.post(
+                "https://openrouter.ai/api/v1/responses",
+                callback=callback,
+                repeat=True,
+            )
+            mock_http.get(
+                "https://openrouter.ai/api/v1/models",
+                payload={"data": [{"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini"}]},
+                repeat=True,
+            )
+            mock_http.get(
+                "https://openrouter.ai/api/v1/endpoints/zdr",
+                payload={"data": [{"model_id": "openai/gpt-4o-mini"}]},
+                repeat=True,
+            )
+
+            body = {
+                "model": "openai/gpt-4o-mini",
+                "messages": [{"role": "user", "content": "test"}],
+                "stream": True,
+            }
+
+            result = await pipe.pipe(
+                body=body,
+                __user__={"id": "user_123"},
+                __request__=None,
+                __event_emitter__=event_emitter,
+                __event_call__=None,
+                __metadata__={
+                    "model": {"id": "openai/gpt-4o-mini"},
+                    "chat_id": "shared_chat_owner",
+                },
+                __tools__=None,
+                __task__=None,
+                __task_body__=None,
+            )
+
+            await _consume_stream(result)
+
+        assert captured_payloads, "Expected a request payload to be captured"
+        provider = captured_payloads[-1].get("provider") or {}
+        assert provider.get("zdr") is (True if owner_opted_in else None), (
+            f"sender off with the owner's REQUEST_ZDR={owner_opted_in} produced "
+            f"provider.zdr={provider.get('zdr')!r}: a reply in a chat the sender does not "
+            "own is routed by the stricter of the two Zero Data Retention answers."
+        )
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_chat_owner_zdr_answer_enforces_zdr(monkeypatch):
+    """When the chat owner's stored answer cannot be read, the reply still routes under ZDR."""
+    import open_webui.models.functions as owf
+
+    async def owner_unreadable(_id, user_id, db=None):
+        if str(user_id) == "owner_1":
+            raise RuntimeError("the database is unavailable")
+        return {"REQUEST_ZDR": False}
+
+    monkeypatch.setattr(
+        owf.Functions, "get_user_valves_by_id_and_user_id", staticmethod(owner_unreadable)
+    )
+    _chat_owned_by(monkeypatch, "owner_1")
+
+    pipe = Pipe()
+
+    try:
+        pipe.valves.API_KEY = EncryptedStr("test-api-key")
+        pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
+        pipe.valves.ZDR_ENFORCE = False
+        pipe.valves.ALLOW_USER_ZDR_OVERRIDE = True
+
+        captured_payloads: list[dict] = []
+        callback = _smart_callback(captured_payloads, "Response")
+
+        async def event_emitter(event):
+            pass
+
+        with aioresponses() as mock_http:
+            mock_http.post(
+                "https://openrouter.ai/api/v1/responses",
+                callback=callback,
+                repeat=True,
+            )
+            mock_http.get(
+                "https://openrouter.ai/api/v1/models",
+                payload={"data": [{"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini"}]},
+                repeat=True,
+            )
+            mock_http.get(
+                "https://openrouter.ai/api/v1/endpoints/zdr",
+                payload={"data": [{"model_id": "openai/gpt-4o-mini"}]},
+                repeat=True,
+            )
+
+            body = {
+                "model": "openai/gpt-4o-mini",
+                "messages": [{"role": "user", "content": "test"}],
+                "stream": True,
+            }
+
+            result = await pipe.pipe(
+                body=body,
+                __user__={"id": "user_123"},
+                __request__=None,
+                __event_emitter__=event_emitter,
+                __event_call__=None,
+                __metadata__={
+                    "model": {"id": "openai/gpt-4o-mini"},
+                    "chat_id": "shared_chat_owner",
+                },
+                __tools__=None,
+                __task__=None,
+                __task_body__=None,
+            )
+
+            await _consume_stream(result)
+
+        assert captured_payloads, "Expected a request payload to be captured"
+        provider = captured_payloads[-1].get("provider") or {}
+        assert provider.get("zdr") is True, (
+            f"an unreadable owner answer produced provider.zdr={provider.get('zdr')!r}: "
+            "an unknown Zero Data Retention preference is honoured, not dropped."
+        )
+    finally:
+        await pipe.close()
+
+
 @pytest.mark.asyncio
 async def test_zdr_enforce_rejects_non_zdr_model():
     """ZDR enforcement should reject models that are not ZDR-capable."""

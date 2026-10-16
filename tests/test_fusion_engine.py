@@ -1416,3 +1416,121 @@ async def test_the_tool_search_offer_filter_and_the_member_manifest_and_dispatch
     offered = [tool.get("description") for tool in body.get("tools") or [] if tool.get("type") == "function"]
     assert "Look it up" in offered, offered
     assert _OPEN_WEBUI_SEARCH_TOOLS not in offered, offered
+
+
+@pytest.mark.asyncio
+async def test_one_fusion_turn_reads_the_chat_row_once_for_the_owner_check(
+    orchestrator_and_pipe, monkeypatch
+):
+    """The outer call resolves the chat owner once; every inner stage carries the verdict.
+
+    The outer call, each panel member, the judge and the synthesis all re-enter the request
+    path, and without a carried verdict each one repeated the ownership probe, the whole
+    chat-row read and the owner's saved-answer read -- and an owner answer saved mid-turn
+    could split one reply across two different privacy decisions.
+    """
+    import aiohttp
+    import open_webui.models.chats as owc
+    import open_webui.models.functions as owf
+    import open_webui.models.users as owu
+    from aioresponses import aioresponses
+
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+    from tests.test_request_orchestrator import _consume_stream, _smart_callback
+
+    _orchestrator, pipe = orchestrator_and_pipe
+    reads = {"owner_row": 0}
+
+    async def valve_rows(_id, user_id, db=None):
+        return {"REQUEST_ZDR": False}
+
+    monkeypatch.setattr(owf.Functions, "get_user_valves_by_id_and_user_id", staticmethod(valve_rows))
+
+    class _ChatRow:
+        user_id = "owner_1"
+
+    async def counted_chat(chat_id, db=None):
+        reads["owner_row"] += 1
+        return _ChatRow()
+
+    async def not_owner(chat_id, user_id, db=None):
+        return False
+
+    class _OwnerUser:
+        def model_dump(self):
+            return {"id": "owner_1"}
+
+    async def owner_user(user_id, db=None):
+        return _OwnerUser()
+
+    monkeypatch.setattr(owc.Chats, "get_chat_by_id", staticmethod(counted_chat), raising=False)
+    monkeypatch.setattr(owc.Chats, "is_chat_owner", staticmethod(not_owner), raising=False)
+    monkeypatch.setattr(owu.Users, "get_user_by_id", staticmethod(owner_user), raising=False)
+    monkeypatch.setattr(
+        FilterManager, "collect_installed_web_tools_config", AsyncMock(return_value=None)
+    )
+
+    pipe.valves.ENABLE_OPENROUTER_FUSION = True
+    pipe.valves.FUSION_BACKEND = "internal"
+    pipe.valves.ZDR_ENFORCE = False
+    pipe.valves.ALLOW_USER_ZDR_OVERRIDE = True
+    pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
+
+    captured: list[dict] = []
+
+    async def emitter(event):
+        return None
+
+    with aioresponses() as http:
+        http.post(
+            "https://openrouter.ai/api/v1/responses",
+            callback=_smart_callback(captured, "Response"),
+            repeat=True,
+        )
+        http.get(
+            "https://openrouter.ai/api/v1/models",
+            payload={"data": [{"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini"}]},
+            repeat=True,
+        )
+        http.get(
+            "https://openrouter.ai/api/v1/endpoints/zdr",
+            payload={"data": [{"model_id": "openai/gpt-4o-mini"}]},
+            repeat=True,
+        )
+
+        async with aiohttp.ClientSession() as session:
+            result = await _orchestrator.process_request(
+                body={
+                    "model": "openrouter/fusion",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                },
+                __user__={"id": "user_123"},
+                __request__=None,
+                __event_emitter__=emitter,
+                __event_call__=None,
+                __metadata__={
+                    "model": {"id": "openrouter/fusion"},
+                    "chat_id": "fusion-owner-check",
+                },
+                __tools__=None,
+                __task__=None,
+                __task_body__=None,
+                valves=pipe.valves,
+                session=session,
+                openwebui_model_id="openrouter/fusion",
+                pipe_identifier="test-pipe",
+                allowlist_norm_ids=set(),
+                enforced_norm_ids=set(),
+                catalog_norm_ids=set(),
+                features={},
+            )
+
+            await _consume_stream(result)
+
+    assert reads["owner_row"] == 1, (
+        f"the chat row was read {reads['owner_row']} times for the owner check in one "
+        "fusion turn: the outer call resolves it once and every inner stage must carry "
+        "that verdict instead of looking again."
+    )
+    assert captured, "no model call happened, so the count proves nothing about the stages"

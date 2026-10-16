@@ -388,6 +388,12 @@ _RESTRICTION_REASON_PHRASES: dict[str, str] = {
 _RESTRICTION_REASON_USER_VALVES: dict[str, tuple[str, str]] = {
     "REQUEST_ZDR": ("REQUEST_ZDR", ""),
     "ZDR_PREFERENCE_UNREADABLE": ("REQUEST_ZDR", "your saved answer could not be read"),
+    "OWNER_REQUEST_ZDR": ("REQUEST_ZDR", "the chat owner's saved answer asks for it"),
+    "OWNER_ZDR_PREFERENCE_UNREADABLE": (
+        "REQUEST_ZDR",
+        "the chat owner's saved answer could not be read",
+    ),
+    "OWNER_ZDR_UNDETERMINABLE": ("REQUEST_ZDR", "the chat's owner could not be determined"),
 }
 
 _RESTRICTION_REASON_FALLBACK = "a restriction configured for this pipe"
