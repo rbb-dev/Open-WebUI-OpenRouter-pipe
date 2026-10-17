@@ -1624,8 +1624,8 @@ class FilterManager:
         if enable_web_search:
             valves_fields.extend([
                 ('        WEB_SEARCH_ENGINE: Literal["auto", "native", "exa", "firecrawl", "parallel", "perplexity"] = Field(\n'
-                '            default="auto",\n'
-                '            description="Web search backend. auto lets OpenRouter choose, native uses the model provider, others use specific engines.",\n'
+                '            default="exa",\n'
+                '            description="Web search backend. exa returns an excerpt for every result, which the pipe shows on the search card and keeps for later turns; OpenRouter bills a fee per search. auto lets OpenRouter choose the model provider\'s own search where it has one, otherwise Exa; Anthropic\'s own search returns an excerpt only for the pages its answer cites, so the other results reach later turns as links. native prefers the provider\'s own search. parallel and perplexity return an excerpt for every result. firecrawl needs your own key. Engine behaviour was measured through OpenRouter on 2026-10-16 with Claude Haiku 5.5, one search on each engine.",\n'
                 '        )'),
                 ('        WEB_SEARCH_MAX_RESULTS: int = Field(\n'
                 '            default=5,\n'

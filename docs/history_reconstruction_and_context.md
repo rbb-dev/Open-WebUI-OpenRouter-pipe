@@ -320,7 +320,7 @@ adapter, which never sees the tool round. The copy above is untouched, so a late
 result.
 
 The copy carries the call's arguments and its result in full, pictures included, whatever `PERSIST_TOOL_RESULTS`
-says, as a shown card does in the message Open WebUI saves, except a web search, which keeps its query, its links and the excerpts the engine returned, within the record caps;
+says, as a shown card does in the message Open WebUI saves, except a web search, which keeps its query, its links and the excerpts the engine returned within the record caps, and a fetched page, which is cut at 150,000 characters with a note saying how much;
 that setting decides what later turns receive, not whether the round is stored (see below). A call that
 did not complete keeps its failure text; where that text alone would not read as a failure, it opens with
 `Error: the tool call did not complete.` With no `ARTIFACT_ENCRYPTION_KEY` set, or with `ENCRYPT_ALL` off, the copy

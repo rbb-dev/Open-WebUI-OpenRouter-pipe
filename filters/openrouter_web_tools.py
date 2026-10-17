@@ -74,8 +74,8 @@ class Filter:
             description="Priority level for the filter operations.",
         )
         WEB_SEARCH_ENGINE: Literal["auto", "native", "exa", "firecrawl", "parallel", "perplexity"] = Field(
-            default="auto",
-            description="Web search backend. auto lets OpenRouter choose, native uses the model provider, others use specific engines.",
+            default="exa",
+            description="Web search backend. exa returns an excerpt for every result, which the pipe shows on the search card and keeps for later turns; OpenRouter bills a fee per search. auto lets OpenRouter choose the model provider's own search where it has one, otherwise Exa; Anthropic's own search returns an excerpt only for the pages its answer cites, so the other results reach later turns as links. native prefers the provider's own search. parallel and perplexity return an excerpt for every result. firecrawl needs your own key. Engine behaviour was measured through OpenRouter on 2026-10-16 with Claude Haiku 5.5, one search on each engine.",
         )
         WEB_SEARCH_MAX_RESULTS: int = Field(
             default=5,

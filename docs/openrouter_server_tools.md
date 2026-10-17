@@ -102,7 +102,7 @@ These are configured on the companion filter functions themselves (Open WebUI Ad
 | Valve | Type | Default | Purpose |
 | --- | --- | --- | --- |
 | `priority` | `int` | `0` | Priority level for the filter operations. |
-| `WEB_SEARCH_ENGINE` | `Literal["auto","native","exa","firecrawl","parallel","perplexity"]` | `auto` | Web search backend. `auto` lets OpenRouter choose, `native` uses the model provider, others use specific engines. |
+| `WEB_SEARCH_ENGINE` | `Literal["auto","native","exa","firecrawl","parallel","perplexity"]` | `exa` | Web search backend. `exa` returns an excerpt for every result, which the pipe shows on the search card and keeps for later turns. `auto` lets OpenRouter choose the model provider's own search where it has one, otherwise Exa; Anthropic's own search returns an excerpt only for the pages its answer cites (Claude Haiku 5.5, 2026-10-16, one search). See "Web search: engines, cost and what later turns keep" below. |
 | `WEB_SEARCH_MAX_RESULTS` | `int` | `5` | Maximum number of search results per query (1-25). |
 | `WEB_SEARCH_MAX_TOTAL_RESULTS` | `int` | `0` | Cap on total search results across all queries in one request. 0 means no cap. |
 | `WEB_SEARCH_MAX_CHARACTERS` | `int` | `0` | Max characters of content per search result (1-100000). 0 means no cap. Takes precedence over context size when set. |
@@ -302,6 +302,41 @@ The pipe's request orchestrator:
 3. The tools array is sent alongside any Open WebUI registry tools or Direct Tool Server tools. A card for one of these tools is published where the tool's own item closes, in the middle of the round, so a thinking box the provider listed before that item is published above the card and one it listed after it stays below; a card for the model's own call is published after the round instead, so a server card always reads first in a round that has both.
 4. If the chat asked for a web tool whose gate is now off, it schedules a background repair of the Web Tools filters, so the filter stops offering a switched-off tool without waiting for the next model-list refresh. The repair runs at most once every five minutes: a pass that could not reach a verdict -- the function store could not be imported or listed, or the auto-install raised -- leaves that window unarmed and is retried on the next request rather than waiting one out, while a pass that ran to its end consumes the window whether or not the write was accepted, so a standing refusal costs one write attempt per window and not one per request. Because an unarmed window means an *unbounded* number of retries, three consecutive passes that reached no verdict put a separate 30-second floor under the next one, so a store that never becomes readable costs one pass at most every 30 seconds rather than one per request; a pass that reaches a verdict clears that count, so the next blip is retried at once and only a standing fault ever pays the floor.
 
+### Web search: engines, cost and what later turns keep
+
+`WEB_SEARCH_ENGINE` (default `exa`) chooses who runs the search. It is set on the filter in Open WebUI Admin > Functions > the Web Tools filter > Valves.
+
+**Existing installs.** With `AUTO_INSTALL_WEB_TOOLS_FILTER` on, the pipe rewrites the installed filter at the next model-list refresh and keeps its settings, so an engine an admin has set to a custom value (`auto` included) stays as set and a valve left on `Default` takes `exa`. With it off, the installed filter keeps `auto` until it is updated by hand from `filters/openrouter_web_tools.py`.
+
+**What each engine shows and keeps.**
+
+| Engine | Card | Kept for later turns | Notes |
+| --- | --- | --- | --- |
+| `exa` (default) | Yes | The query, the links and an excerpt for every result | OpenRouter's documentation lists $0.007 per search with up to 10 results, then $0.001 for each further result. |
+| `auto` | Yes | Where the provider has its own search, what that search returns; otherwise as `exa` | Anthropic's own search returns an excerpt only for the pages its answer cites (153 characters each in the recorded run), so the other results are links. OpenAI's own search is a different item (`web_search_call`) that the pipe does not keep as a round. OpenRouter passes the provider's own price through. |
+| `native` | As `auto` | As `auto` | Prefers the provider's own search and falls back to Exa where the provider has none. |
+| `parallel` | Yes | The query, the links and an excerpt for every result | OpenRouter's documentation lists $0.005 per search in the default `basic` mode with up to 10 results, then $0.001 for each further result. |
+| `perplexity` | Yes | The query, the links and an excerpt for every result | OpenRouter's documentation lists $0.005 per search. |
+| `firecrawl` | Yes | In the one recorded run the search listed no links and the answer carried no citations, so the record read `The search reported no sources.` | Uses your own Firecrawl key, set in your OpenRouter settings and billed by Firecrawl. OpenRouter rejects it when zero data retention is enforced. |
+
+These behaviours were measured through OpenRouter's Responses API on 2026-10-16: Claude Haiku 5.5 on each engine (one search each, five results asked for) and GPT-5-mini for OpenAI's own search (one search). The prices are those in OpenRouter's server-tools documentation (the copy of 2026-10-08), charged on top of the tokens the results cost; check current rates on OpenRouter.
+
+**Search depth.** The filter sends a depth with every search: `medium` unless the person sets `WEB_SEARCH_CONTEXT_SIZE` to `low` or `high` in their own settings, and there is no setting that leaves it out. OpenRouter's documentation says that for Exa a depth pins the characters returned for each result (5,000, 15,000 or 30,000) and that Exa chooses adaptively when none is sent. An admin can cap the characters of each result with `WEB_SEARCH_MAX_CHARACTERS` (0, the default, means no cap), which takes precedence over the depth. Measured through OpenRouter's Responses API on 2026-10-17 with a test key, on Claude Haiku 5.5 and GPT-5-mini, with two questions that needed a search, five results and one search for each request (each cell gives the two questions):
+
+| Engine and depth | Model | Excerpt text in the citations (characters) | Input tokens | Cost per search |
+| --- | --- | --- | --- | --- |
+| `exa`, `medium` (the default) | Claude Haiku 5.5 | 2,322 and 15,409 | 3,489 and 8,829 | $0.0074 and $0.0081 |
+| `exa`, `medium` (the default) | GPT-5-mini | 6,778 and 15,462 | 3,587 and 6,480 | $0.0084 and $0.0092 |
+| `exa`, no depth sent | Claude Haiku 5.5 | 2,309 and 10,498 | 3,511 and 6,647 | $0.0073 and $0.0077 |
+| `exa`, no depth sent | GPT-5-mini | 2,058 and 10,243 | 1,910 and 3,767 | $0.0079 and $0.0087 |
+| `auto` (Claude's own search), `medium` | Claude Haiku 5.5 | 0 and 431 | 12,765 and 13,985 | $0.0114 and $0.0118 |
+
+The excerpt text is what OpenRouter returned in the answer's citations, the input tokens are what the model was billed for reading, and the cost is for one search with the model's tokens: the $0.007 Exa fee is in the Exa rows only, and Claude's own search is billed at the provider's price. Claude's own search read more than its citations show, as its input tokens, the largest in the table, say, and it cost more per search. In the four Exa searches at the default depth the most excerpt text in one search was about 15,500 characters, far below five results at the documented per-result figure. The "no depth sent" rows are a reference only, because the filter always sends a depth: on the larger question Exa then returned about a third less excerpt text and the search cost $0.0004 to $0.0005 less. Two questions for each model is a small sample. The record keeps at most 1,600 characters of any excerpt and 8,000 per search whichever depth is set, so these figures are about the turn that ran the search and the record limits are about what a later turn is handed.
+
+**Why Exa is the default.** Exa returns an excerpt for every result, so the card shows them and a later turn can answer from them. On `auto`, Claude's own search returns an excerpt only for the pages its answer cites, so most results reach later turns as links and the answer is the only record of the rest. Where the provider has no search of its own, `auto` already meant Exa, so the default changes what happens for models whose provider has one, such as Anthropic's.
+
+**Privacy.** Under `exa` OpenRouter sends the search query to Exa, as it already did under `auto` for models whose provider has no search of its own. OpenRouter documents that every engine except `firecrawl` applies its own backend retention policy. If the OpenRouter workspace limits the search engines on its Server Tools page and Exa is not on the list, OpenRouter documents that a request naming `exa` is rejected with a 403; set `WEB_SEARCH_ENGINE` to `auto` or an allowed engine.
+
 ### What a web search leaves for later turns
 
 The item OpenRouter closes for a web search carries the query and the links the engine found; the page excerpts come back as citations on the answer. The pipe puts the pieces together into one round, so a later turn sees what was searched for and what the search returned.
@@ -332,9 +367,9 @@ Web fetch reads a page or a PDF the user names. Two admin valves on the Web Tool
 | `parallel` | Yes | The page text | OpenRouter documents a fee of $1 per 1,000 fetches. It returned 203,603 characters for the long page, against 53,387 from Exa. |
 | `firecrawl` | Yes | The page text | Uses your own Firecrawl key, set in your OpenRouter settings and billed by Firecrawl; without a key the fetch fails. OpenRouter rejects it when zero data retention is enforced. |
 
-These engine behaviours were measured through OpenRouter's Responses API on 2026-10-17 with Claude Haiku 5.5, on one PDF and one very long web page, with no page limit. Reading the long page cost about 20,800 input tokens ($0.0031) through Exa, 96,800 ($0.0125) through Parallel, 69,600 ($0.0074) through Anthropic's own fetch and 596,200 ($0.374) through the `openrouter` engine; check current rates on OpenRouter.
+These engine behaviours were measured through OpenRouter's Responses API on 2026-10-17 with Claude Haiku 5.5, on one PDF and one very long web page, with no page limit. Reading the long page took about 20,800 input tokens through Exa, 96,800 through Parallel, 69,600 through Anthropic's own fetch and 596,200 through the `openrouter` engine. The fees named in the table are those in OpenRouter's server-tools documentation (the copy of 2026-10-08), charged on top of the tokens the page costs; check current rates on OpenRouter.
 
-**Why Exa is the default.** Exa read both the PDF and the long page at the lowest cost of the engines measured, and it leaves a card and a record, which Anthropic's own fetch (what `auto` uses on a Claude model) does not. `openrouter` refused the PDF and returned the raw page, and `parallel` cost about four times as much as Exa for the long page. Where the provider has no fetch of its own, `auto` already meant Exa, so the default changes what happens for models whose provider has one, such as Anthropic's.
+**Why Exa is the default.** Exa read both the PDF and the long page, took the fewest input tokens of the engines measured, and leaves a card and a record, which Anthropic's own fetch (what `auto` uses on a Claude model) does not. `openrouter` refused the PDF and returned the raw page, and `parallel` took about four and a half times as many input tokens as Exa for the long page. Where the provider has no fetch of its own, `auto` already meant Exa, so the default changes what happens for models whose provider has one, such as Anthropic's.
 
 **Privacy.** Under `exa` OpenRouter sends the page address to Exa, as it already did under `auto` for models whose provider has no fetch of its own. OpenRouter documents that every engine except `firecrawl` applies its own backend retention policy. If the OpenRouter workspace limits the fetch engines on its Server Tools page and Exa is not on the list, OpenRouter documents that a request naming `exa` is rejected with a 403; set `WEB_FETCH_ENGINE` to `auto` or an allowed engine.
 
@@ -436,6 +471,10 @@ Set `ENABLE_IMAGE_GENERATION=False`. The Image Generation filter will not be gen
 ### Web search opt-in (lower cost)
 
 Set `AUTO_DEFAULT_WEB_TOOLS_FILTER=False`. The Web Tools toggle remains available on models, but will not be enabled by default, and a default the pipe had already seeded for one of them is released on the next sync, including one seeded under an id the panel no longer resolves. Users must manually enable it per chat.
+
+### Keep the model provider's own search
+
+Set the Web Tools filter's admin valve `WEB_SEARCH_ENGINE` to `auto`, which was the default before Exa. Where the model's provider has its own search, that search runs and OpenRouter passes the provider's price through; where it has none, Exa runs. On Claude models a later turn then sees an excerpt only for the pages the answer cited, and links for the rest.
 
 ### Restrict search domains
 
