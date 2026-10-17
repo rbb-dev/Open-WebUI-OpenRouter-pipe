@@ -5,6 +5,9 @@ of every dispatch surface."""
 from __future__ import annotations
 
 import asyncio
+import selectors
+import threading
+import time
 from types import MethodType, SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
@@ -252,3 +255,69 @@ async def test_sync_shutdown_cancels_cleanup_task():
         await task
     pipe._cleanup_task = None
     await pipe.close()
+
+
+class _SignalsWhenIdle(selectors.DefaultSelector):
+    def __init__(self, idle: threading.Event) -> None:
+        super().__init__()
+        self._idle = idle
+
+    def select(self, timeout: float | None = None) -> list[tuple[selectors.SelectorKey, int]]:
+        if timeout is None or timeout > 1:
+            self._idle.set()
+        return super().select(timeout)
+
+
+class _TaskParkedOnItsOwnLoop:
+    def __init__(self) -> None:
+        self.idle = threading.Event()
+        self.cancelled = threading.Event()
+        self.loop = asyncio.SelectorEventLoop(_SignalsWhenIdle(self.idle))
+        self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
+        self.thread.start()
+        self.idle.clear()
+        self.task = asyncio.run_coroutine_threadsafe(self._arm(), self.loop).result(5)
+        assert self.idle.wait(5)
+
+    async def _parked(self) -> None:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+
+    async def _arm(self) -> asyncio.Task:
+        task = self.loop.create_task(self._parked())
+        await asyncio.sleep(0)
+        return task
+
+    def stop(self) -> None:
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.thread.join(5)
+        self.loop.close()
+
+
+def test_a_pipe_collected_off_the_loop_thread_cancels_its_tasks_at_once(pipe_instance):
+    pipe = pipe_instance
+    assert pipe._log_queue_loop is None
+    cleanup = _TaskParkedOnItsOwnLoop()
+    handed_back = _TaskParkedOnItsOwnLoop()
+    try:
+        plugin = Mock()
+        plugin.plugin_id = "parked"
+        plugin.on_shutdown = lambda **_kwargs: handed_back.task
+        registry = PluginRegistry()
+        registry._plugins = [plugin]
+        pipe._plugin_registry = registry
+        pipe._cleanup_task = cleanup.task
+
+        pipe.__del__()
+
+        deadline = time.monotonic() + 0.5
+        assert cleanup.cancelled.wait(max(0.0, deadline - time.monotonic())), "cleanup task"
+        assert handed_back.cancelled.wait(max(0.0, deadline - time.monotonic())), "plugin task"
+    finally:
+        pipe._cleanup_task = None
+        pipe._plugin_registry = None
+        cleanup.stop()
+        handed_back.stop()

@@ -796,19 +796,21 @@ class PipeDashboardPlugin(PluginBase):
             logger.debug("pipe_dashboard module-global teardown failed", exc_info=True)
 
     def on_shutdown(self, **kwargs: Any) -> Any:
+        from ...pipe import _drop_task
+
         self._clear_module_registrations()
         pending: list[Any] = []
         task = self._publisher_task
         if task is not None and not task.done():
-            task.cancel()
+            _drop_task(task)
             pending.append(task)
         auto_task = self._auto_update_task
         if auto_task is not None and not auto_task.done():
-            auto_task.cancel()
+            _drop_task(auto_task)
             pending.append(auto_task)
         sweep_task = self._sweep_task
         if sweep_task is not None and not sweep_task.done():
-            sweep_task.cancel()
+            _drop_task(sweep_task)
             pending.append(sweep_task)
         writer_running = getattr(self._usage_store, "writer_alive", False)
         joined_inline = False

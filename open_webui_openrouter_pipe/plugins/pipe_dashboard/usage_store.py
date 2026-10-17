@@ -1034,7 +1034,9 @@ class UsageStore:
         task = self._purge_task
         self._purge_task = None
         if task is not None and not task.done():
-            task.cancel()
+            from ...pipe import _drop_task
+
+            _drop_task(task)
             return task
         return None
 

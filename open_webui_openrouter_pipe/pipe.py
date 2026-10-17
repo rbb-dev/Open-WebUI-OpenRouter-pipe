@@ -3411,9 +3411,7 @@ class Pipe:
         plugin_registry = getattr(self, "_plugin_registry", None)
         if plugin_registry is not None:
             pending = plugin_registry.dispatch_on_shutdown()
-        cleanup_task = getattr(self, "_cleanup_task", None)
-        if cleanup_task is not None and not cleanup_task.done():
-            cleanup_task.cancel()
+        _drop_task(getattr(self, "_cleanup_task", None))
         artifact_store = getattr(self, "_artifact_store", None)
         if artifact_store:
             artifact_store.close()
@@ -3774,7 +3772,7 @@ class Pipe:
                     if callable(closer):
                         closer()
                     else:
-                        pending.cancel()
+                        _drop_task(pending)
         self._schedule_close()
 
     # UTILITY METHODS
