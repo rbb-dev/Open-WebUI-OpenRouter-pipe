@@ -51,7 +51,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy import inspect as sa_inspect
-from sqlalchemy.exc import IdentifierError, SQLAlchemyError
+from sqlalchemy.exc import DataError, IdentifierError, IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 from tenacity import (
     AsyncRetrying,
@@ -109,6 +109,16 @@ _PAYLOAD_HEADER_SIZE = 1
 _REDIS_FLUSH_CHANNEL = "db-flush"
 
 _REDIS_DELETE_MARKER_TTL_SECONDS = 86400
+
+_FLUSH_COUNTER_TTL_SECONDS = 3600
+
+_FLUSH_DEAD_LETTER_CAP = 10000
+
+_FLUSH_COUNTED_MAX = 1000
+
+_REJECTION_REASON_CHARS = 200
+
+_REJECTED_IDS_LOGGED = 20
 
 _REDIS_DELETE_MARKER_ALL = "owui:dropped:all"
 _REDIS_DELETE_MARKER_KEEP = "owui:dropped:keep:"
@@ -343,6 +353,12 @@ def _committed_after_failure(rows: list[dict[str, Any]]) -> set[str]:
         for row in rows
         if row.get("_persisted") and row.get("id")
     }
+
+
+def _rejection_reason(exc: BaseException) -> str:
+    lines = str(getattr(exc, "orig", None) or exc).strip().splitlines()
+    first = lines[0] if lines else ""
+    return f"{type(exc).__name__}: {first[:_REJECTION_REASON_CHARS]}"
 
 
 def _detect_redis_config(valves: Any, logger: logging.Logger) -> tuple[str, str, str, bool]:
@@ -939,6 +955,7 @@ class ArtifactStore:
         self._redis_enabled = False
         self._redis_client: _RedisClient | None = None
         self._flush_blocked_cycles: int = 0
+        self._flushfail_counted: set[str] = set()
         self._redis_listener_task: asyncio.Task | None = None
         self._redis_flush_task: asyncio.Task | None = None
         self._redis_ready_task: asyncio.Task | None = None
@@ -1939,7 +1956,9 @@ class ArtifactStore:
                     ulids.append(identifier)
 
             batch_size = self.valves.DB_BATCH_SIZE
-            pending_rows = [row for row in rows if not row.get("_persisted")]
+            pending_rows = [
+                row for row in rows if not row.get("_persisted") and not row.get("_rejected")
+            ]
             if not pending_rows:
                 if ulids:
                     self.logger.debug(
@@ -1998,23 +2017,14 @@ class ArtifactStore:
                 if not instances:
                     continue
 
-                statement = self._conflict_tolerant_insert(instances)
-                if statement is None:
-                    with _db_session(self._session_factory) as session:
-                        session.add_all(instances)
-                        session.commit()
-                else:
-                    with _db_session(self._session_factory) as session:
-                        result = session.execute(statement)
-                        session.commit()
-                    rowcount = getattr(result, "rowcount", -1)
-                    if rowcount < len(instances):
-                        self.logger.warning(
-                            "Artifact persist: %d of %d row(s) were already in the artifact "
-                            "table and were not written again.",
-                            len(instances) - rowcount,
-                            len(instances),
-                        )
+                try:
+                    self._insert_instances(instances)
+                except (DataError, IntegrityError) as exc:
+                    if self._is_duplicate_key_error(exc):
+                        raise
+                    chunk_ulids, persisted_rows = self._insert_rows_singly(
+                        chunk_ulids, persisted_rows, instances, exc
+                    )
 
                 for row in persisted_rows:
                     row["_persisted"] = True
@@ -2032,6 +2042,53 @@ class ArtifactStore:
             if cleanup_rows:
                 for row in rows:
                     row.pop("_persisted", None)
+
+    def _insert_instances(self, instances: list[Any]) -> None:
+        factory = self._session_factory
+        if factory is None:
+            raise ArtifactStoreUnavailable("artifact store was torn down mid-flight")
+        statement = self._conflict_tolerant_insert(instances)
+        if statement is None:
+            with _db_session(factory) as session:
+                session.add_all(instances)
+                session.commit()
+            return
+        with _db_session(factory) as session:
+            result = session.execute(statement)
+            session.commit()
+        rowcount = getattr(result, "rowcount", -1)
+        if rowcount < len(instances):
+            self.logger.warning(
+                "Artifact persist: %d of %d row(s) were already in the artifact "
+                "table and were not written again.",
+                len(instances) - rowcount,
+                len(instances),
+            )
+
+    def _insert_rows_singly(
+        self,
+        ulids: list[str],
+        rows: list[dict[str, Any]],
+        instances: list[Any],
+        batch_failure: Exception,
+    ) -> tuple[list[str], list[dict[str, Any]]]:
+        written_ulids: list[str] = []
+        written_rows: list[dict[str, Any]] = []
+        for ulid, row, instance in zip(ulids, rows, instances):
+            failure = batch_failure
+            if len(instances) > 1:
+                try:
+                    self._insert_instances([instance])
+                except (DataError, IntegrityError) as single_failure:
+                    if self._is_duplicate_key_error(single_failure):
+                        raise
+                    failure = single_failure
+                else:
+                    written_ulids.append(ulid)
+                    written_rows.append(row)
+                    continue
+            row["_rejected"] = _rejection_reason(failure)
+        return written_ulids, written_rows
 
     @timed
     def _try_acquire_lock_sync(self, lock_row: dict[str, Any]) -> bool:
@@ -2178,8 +2235,11 @@ class ArtifactStore:
             if self._redis_active():
                 queued = await self._redis_enqueue_rows(rows)
                 self._reset_db_failure(user_id)
+                await self._report_rejected_rows(rows, context)
                 return queued
-            return await self._db_persist_direct(rows, user_id=user_id)
+            persisted = await self._db_persist_direct(rows, user_id=user_id)
+            await self._report_rejected_rows(rows, context)
+            return persisted
         except Exception:
             self._record_db_failure(user_id)
             self.logger.exception(
@@ -2189,6 +2249,21 @@ class ArtifactStore:
             )
             await self._note_write_loss(context, _PERSIST_LOSS_NOTICE)
             return []
+
+    async def _report_rejected_rows(self, rows: list[dict[str, Any]], context: Any) -> None:
+        rejected = [row for row in rows if row.get("_rejected")]
+        if not rejected:
+            return
+        for row in rejected:
+            row.pop("_rejected", None)
+        self.logger.warning(
+            "The database rejected %d artifact row(s) that were being written directly; "
+            "they are dropped and the rest of the write stands (types=%s, ids=%s).",
+            len(rejected),
+            sorted({str(row.get("item_type")) for row in rejected}),
+            sorted(str(row.get("id")) for row in rejected)[:_REJECTED_IDS_LOGGED],
+        )
+        await self._note_write_loss(context, _PERSIST_LOSS_NOTICE)
 
     @timed
     async def _ack_rows_present_after_duplicate(
@@ -2282,7 +2357,7 @@ class ArtifactStore:
                         return await self._ack_rows_present_after_duplicate(rows, loop)
                     raise
                 if self._redis_active():
-                    await self._redis_cache_rows(rows)
+                    await self._redis_cache_rows([row for row in rows if not row.get("_rejected")])
                 self._reset_db_failure(user_id)
                 return ulids
         return []
@@ -2977,6 +3052,7 @@ class ArtifactStore:
             entries_by_row: list[tuple[str, dict[str, Any]]] = []
             rows: list[dict[str, Any]] = []
             committed: set[str] = set()
+            dead_lettered: set[str] = set()
             returned_to_queue = False
             try:
                 malformed = 0
@@ -3067,11 +3143,33 @@ class ArtifactStore:
                                     exc, exc_info=True,
                                 )
 
+                if committed and self._flushfail_counted:
+                    await self._clear_flush_counters(committed)
+
+                rejected_rows = [
+                    (entry, row)
+                    for entry, row in entries_by_row
+                    if row.get("_rejected") and row.get("id") not in committed
+                ]
+                rejected_ids = {row.get("id") for _entry, row in rejected_rows}
+                if rejected_rows:
+                    dead_lettered = await self._account_rejected_rows(rejected_rows)
+
                 unrecoverable = [row for _entry, row in entries_by_row if row.get("payload") is None]
                 uncommitted = [
                     entry
                     for entry, row in entries_by_row
-                    if row.get("payload") is not None and row.get("id") not in committed
+                    if row.get("payload") is not None
+                    and row.get("id") not in committed
+                    and row.get("id") not in dead_lettered
+                ]
+                unexplained = [
+                    row
+                    for _entry, row in entries_by_row
+                    if row.get("payload") is not None
+                    and row.get("id") not in committed
+                    and row.get("id") not in dead_lettered
+                    and row.get("id") not in rejected_ids
                 ]
                 if unrecoverable:
                     self.logger.error(
@@ -3081,7 +3179,7 @@ class ArtifactStore:
                         sorted(str(row.get("id")) for row in unrecoverable),
                     )
                 if uncommitted:
-                    if not failure:
+                    if not failure and unexplained:
                         self.logger.error(
                             "DB flush reported no error but committed only %d of %d artifact(s); "
                             "returning %d to the pending queue.",
@@ -3095,7 +3193,7 @@ class ArtifactStore:
                         self.logger.debug(
                             "Re-queued %d artifact(s) after an incomplete flush (reason=%s)",
                             len(uncommitted),
-                            failure or "uncommitted",
+                            failure or ("rejected" if rejected_ids else "uncommitted"),
                         )
                     except Exception as requeue_exc:  # pragma: no cover - defensive
                         self.logger.critical(
@@ -3105,14 +3203,15 @@ class ArtifactStore:
                             requeue_exc,
                             exc_info=True,
                         )
-                elif not failure:
+                elif not failure and not dead_lettered:
                     self.logger.debug("✅ Successfully flushed %d artifacts to DB", len(rows))
                 if failure:
                     raise RuntimeError(failure) from None
             except BaseException:
                 if not returned_to_queue:
                     await self._return_popped_entries_on_cancel(
-                        entries_by_row, committed or _committed_after_failure(rows)
+                        entries_by_row,
+                        (committed or _committed_after_failure(rows)) | dead_lettered,
                     )
                 raise
         finally:
@@ -3144,6 +3243,118 @@ class ArtifactStore:
                 except Exception:
                     self.logger.debug("Failed to release Redis flush lock", exc_info=True)
 
+    async def _account_rejected_rows(
+        self, rejected: list[tuple[str, dict[str, Any]]]
+    ) -> set[str]:
+        client = self._redis_client
+        if client is None:
+            return set()
+        limit = int(self.valves.REDIS_FLUSH_REJECT_LIMIT)
+        ids = [str(row.get("id")) for _entry, row in rejected]
+        try:
+            pipe = client.pipeline()
+            for row_id in ids:
+                key = self._redis_flushfail_key(row_id)
+                pipe.incr(key)
+                pipe.expire(key, _FLUSH_COUNTER_TTL_SECONDS)
+            replies = await _await_if_needed(pipe.execute())
+            counts = [int(replies[position * 2]) for position in range(len(ids))]
+        except Exception as exc:
+            self.logger.warning(
+                "Counting the artifacts the database rejected failed; they stay queued "
+                "and are counted again on the next flush: %s",
+                exc,
+                exc_info=True,
+            )
+            return set()
+        if len(self._flushfail_counted) > _FLUSH_COUNTED_MAX:
+            self._flushfail_counted.clear()
+        self._flushfail_counted.update(ids)
+        due: list[tuple[str, str, str]] = []
+        for (entry, row), row_id, count in zip(rejected, ids, counts):
+            reason = str(row.get("_rejected"))
+            if count == 1:
+                self.logger.info(
+                    "The database rejected artifact id=%s (%s); it stays queued and is set "
+                    "aside after %d rejected flushes in a row.",
+                    row_id,
+                    reason,
+                    limit,
+                )
+            else:
+                self.logger.debug(
+                    "The database rejected artifact id=%s again (%s); rejected flush %d of %d.",
+                    row_id,
+                    reason,
+                    count,
+                    limit,
+                )
+            if count >= limit:
+                due.append((entry, row_id, reason))
+        if not due:
+            return set()
+        try:
+            pipe = client.pipeline()
+            for entry, row_id, _reason in due:
+                pipe.rpush(self._redis_dead_key(), entry)
+                pipe.delete(self._redis_flushfail_key(row_id))
+            pipe.ltrim(self._redis_dead_key(), -_FLUSH_DEAD_LETTER_CAP, -1)
+            replies = await _await_if_needed(pipe.execute())
+        except Exception as exc:
+            self.logger.warning(
+                "Setting aside the artifacts the database rejected failed; they stay "
+                "queued: %s",
+                exc,
+                exc_info=True,
+            )
+            return set()
+        set_aside = {row_id for _entry, row_id, _reason in due}
+        try:
+            dropped = int(replies[2 * (len(due) - 1)]) - _FLUSH_DEAD_LETTER_CAP
+        except (TypeError, ValueError, IndexError):
+            dropped = 0
+        if dropped > 0:
+            self.logger.warning(
+                "The Redis list %s holds the artifacts the database rejected and is at its "
+                "limit of %d entries, so %d of its oldest entries were dropped to make room. "
+                "Nothing else removes entries from it.",
+                self._redis_dead_key(),
+                _FLUSH_DEAD_LETTER_CAP,
+                dropped,
+            )
+        self._flushfail_counted.difference_update(set_aside)
+        shown = sorted(set_aside)[:_REJECTED_IDS_LOGGED]
+        self.logger.warning(
+            "Set aside %d artifact(s) the database rejected on %d flushes in a row. They "
+            "are not in the database; they wait in the Redis list %s until someone moves "
+            "them back after the cause is fixed. ids=%s%s; first error: %s",
+            len(due),
+            limit,
+            self._redis_dead_key(),
+            shown,
+            " and more" if len(set_aside) > len(shown) else "",
+            due[0][2],
+        )
+        return set_aside
+
+    async def _clear_flush_counters(self, committed: set[str]) -> None:
+        client = self._redis_client
+        cleared = self._flushfail_counted & committed
+        if client is None or not cleared:
+            return
+        try:
+            pipe = client.pipeline()
+            for row_id in cleared:
+                pipe.delete(self._redis_flushfail_key(row_id))
+            await _await_if_needed(pipe.execute())
+        except Exception as exc:
+            self.logger.debug(
+                "Clearing the rejection counters of flushed artifacts failed (they expire): %s",
+                exc,
+                exc_info=True,
+            )
+        self._flushfail_counted.difference_update(cleared)
+
     def _redis_cache_key(self, chat_id: str | None, row_id: str | None) -> str | None:
         if not (chat_id and row_id):
             return None
@@ -3151,6 +3362,12 @@ class ArtifactStore:
 
     def _redis_deleted_key(self, row_id: str) -> str:
         return f"{self._redis_namespace}:deleted:{row_id}"
+
+    def _redis_dead_key(self) -> str:
+        return f"{self._redis_namespace}:dead"
+
+    def _redis_flushfail_key(self, row_id: str) -> str:
+        return f"{self._redis_namespace}:flushfail:{row_id}"
 
     def _redis_active(self) -> bool:
         return bool(self._redis_enabled and self.valves.ENABLE_REDIS_CACHE)

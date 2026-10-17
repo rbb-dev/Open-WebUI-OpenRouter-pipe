@@ -2619,7 +2619,23 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=5,
         ge=1,
         le=50,
-        description="Log a critical alert after this many consecutive flush failures - a flush that fails, in the database or in Redis, because taking the lock, reading the queue depth, popping a batch and releasing the lock are all part of the same pass. Buffering is not disabled: the pipe waits longer between attempts and keeps retrying, resuming when writes succeed. New writes keep queueing meanwhile and only bypass Redis if the enqueue itself fails. A flush interrupted by a cancellation (worker shutdown, hot reload, valve flip) also puts its uncommitted batch back on the queue rather than dropping it.",
+        description="Log a critical alert after this many consecutive flush failures - a flush that fails, in the database or in Redis, because taking the lock, reading the queue depth, popping a batch and releasing the lock are all part of the same pass. A database write that fails as a whole counts; a row the database rejects for its own content does not (see REDIS_FLUSH_REJECT_LIMIT). Buffering is not disabled: the pipe waits longer between attempts and keeps retrying, resuming when writes succeed. New writes keep queueing meanwhile and only bypass Redis if the enqueue itself fails. A flush interrupted by a cancellation (worker shutdown, hot reload, valve flip) also puts its uncommitted batch back on the queue rather than dropping it.",
+    )
+    REDIS_FLUSH_REJECT_LIMIT: int = Field(
+        default=10,
+        ge=1,
+        le=1000,
+        title="Rejected write attempt limit",
+        description=(
+            "Flushes in a row that the database may reject the same queued artifact before the pipe sets it aside. "
+            "A row the database refuses for its own content (a value the table cannot hold, or a constraint it "
+            "violates) is written alone while the rest of its batch is saved, goes back to the front of the queue and "
+            "is counted once per flush. When the count reaches this value the entry moves to the Redis list named "
+            "after the function id and ending in :dead (newest last, the oldest dropped beyond 10,000 with a WARNING, "
+            "and no expiry), one WARNING names the entry, and the flusher carries on. A count expires after an hour without a rejection. A database "
+            "outage never counts, and a flush that only met rejected rows does not count as a failed flush. Nothing "
+            "moves back by itself: an administrator re-drives set-aside entries by hand once the cause is fixed."
+        ),
     )
     COSTS_REDIS_DUMP: bool = Field(
         default=False,

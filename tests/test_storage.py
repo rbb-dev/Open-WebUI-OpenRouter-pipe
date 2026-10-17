@@ -762,10 +762,24 @@ class _QueueRedis:
     def __init__(self, key, entries):
         self.storage = {}
         self.lists = {key: list(entries)}
+        self.counters = {}
 
     def lpop(self, key):
         values = self.lists.get(key, [])
         return values.pop(0) if values else None
+
+    def llen(self, key):
+        return len(self.lists.get(key, []))
+
+    def mget(self, keys):
+        return [self.storage.get(key) for key in keys]
+
+    def delete(self, *keys):
+        for key in keys:
+            self.storage.pop(key, None)
+            self.lists.pop(key, None)
+            self.counters.pop(key, None)
+        return len(keys)
 
     def set(self, key, value, nx=False, ex=None):
         self.storage[key] = value
@@ -779,12 +793,39 @@ class _QueueRedis:
         outer = self
 
         class _Pipe:
+            def __init__(self):
+                self.replies = []
+
             def lpush(self, key, value):
                 outer.lists.setdefault(key, []).insert(0, value)
                 return self
 
+            def rpush(self, key, value):
+                values = outer.lists.setdefault(key, [])
+                values.append(value)
+                self.replies.append(len(values))
+                return self
+
+            def incr(self, key):
+                outer.counters[key] = outer.counters.get(key, 0) + 1
+                self.replies.append(outer.counters[key])
+                return self
+
+            def expire(self, key, seconds):
+                self.replies.append(True)
+                return self
+
+            def ltrim(self, key, start, stop):
+                outer.lists[key] = outer.lists.get(key, [])[start:]
+                self.replies.append(True)
+                return self
+
+            def delete(self, *keys):
+                self.replies.append(outer.delete(*keys))
+                return self
+
             def execute(self):
-                return []
+                return self.replies
 
         return _Pipe()
 
@@ -3260,6 +3301,141 @@ async def test_redis_periodic_flusher_critical_fires_once(monkeypatch, pipe_inst
         "the alert fires once at the threshold, but every failure still has to be "
         f"reported; {len(errors)} of {store._redis_client.calls} were"
     )
+
+
+POISONED_ROW = "row-03"
+HEALTHY_ROWS = [f"row-{number:02d}" for number in range(25) if f"row-{number:02d}" != POISONED_ROW]
+OUTAGE_INSERTS = 6
+LAST_FLUSH_CYCLE = 14
+
+
+class _FlushRecords(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+    def errors(self) -> int:
+        return sum(1 for record in self.records if record.levelno >= logging.ERROR)
+
+
+class _FlushCycleRedis(_QueueRedis):
+    def __init__(self, store, entries, records: _FlushRecords) -> None:
+        super().__init__(store._redis_pending_key, entries)
+        self.dead_key = f"{store._redis_namespace}:dead"
+        self.records = records
+        self.cycles = 0
+        self.at_cycle_start: list[tuple[dict[str, int], list[str]]] = []
+        self.errors_at_cycle_start: list[int] = []
+        self.finished = asyncio.Event()
+
+    def set(self, key, value, nx=False, ex=None):
+        self.cycles += 1
+        self.at_cycle_start.append((dict(self.counters), list(self.lists.get(self.dead_key, []))))
+        self.errors_at_cycle_start.append(self.records.errors())
+        if self.cycles > LAST_FLUSH_CYCLE:
+            self.finished.set()
+        return True
+
+    def pipeline(self):
+        pipe = super().pipeline()
+        execute = pipe.execute
+
+        def run():
+            replies = execute()
+            if self.lists.get(self.dead_key):
+                self.finished.set()
+            return replies
+
+        pipe.execute = run
+        return pipe
+
+
+@pytest.mark.asyncio
+async def test_a_row_the_database_rejects_is_set_aside_and_the_flusher_keeps_its_pace(pipe_instance, monkeypatch):
+    from sqlalchemy import event
+    from sqlalchemy.exc import OperationalError
+    from sqlalchemy.pool import StaticPool
+
+    real_sleep = asyncio.sleep
+    flusher_pauses: list[float] = []
+
+    async def recording_sleep(delay, *args, **kwargs):
+        if delay >= 10:
+            flusher_pauses.append(delay)
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", recording_sleep)
+    entries = [
+        json.dumps(
+            {
+                "id": identifier,
+                "chat_id": "chat",
+                "message_id": "message",
+                "model_id": "model",
+                "item_type": "function_call",
+                "payload": {"n": number},
+            }
+        )
+        for number, identifier in enumerate(sorted([POISONED_ROW, *HEALTHY_ROWS]))
+    ]
+    poison_entry = entries[int(POISONED_ROW.split("-")[1])]
+    store = pipe_instance._artifact_store
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    with _install_internal_db(engine):
+        store._init_artifact_store(pipe_identifier="pipe", table_fragment="pipe")
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    f'CREATE TRIGGER reject_one BEFORE INSERT ON "{store._artifact_table_name}" '
+                    f"WHEN NEW.id = '{POISONED_ROW}' BEGIN SELECT RAISE(ABORT, 'rejected by the table'); END"
+                )
+            )
+        inserts_by_cycle: dict[int, int] = {}
+        seen = {"inserts": 0}
+        records = _FlushRecords()
+        redis = _FlushCycleRedis(store, entries, records)
+
+        @event.listens_for(engine, "before_cursor_execute")
+        def outage(connection, cursor, statement, parameters, context, executemany):
+            if not statement.lstrip().upper().startswith("INSERT"):
+                return
+            inserts_by_cycle[redis.cycles] = inserts_by_cycle.get(redis.cycles, 0) + 1
+            seen["inserts"] += 1
+            if seen["inserts"] <= OUTAGE_INSERTS:
+                raise OperationalError("INSERT", {}, Exception("database is unavailable"))
+
+        store._redis_enabled = True
+        store._redis_client = redis
+        store.logger.addHandler(records)
+        flusher = asyncio.get_running_loop().create_task(store._redis_periodic_flusher())
+        try:
+            await asyncio.wait_for(redis.finished.wait(), 5)
+        finally:
+            flusher.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await flusher
+            store.logger.removeHandler(records)
+
+        with store._session_factory() as session:
+            stored = {row.id for row in session.query(store._item_model).all()}
+    finally:
+        engine.dispose()
+
+    assert inserts_by_cycle[1] == 3 and inserts_by_cycle[2] == 3
+    assert redis.at_cycle_start[2] == ({}, [])
+    assert flusher_pauses[:2] == [10, 20]
+    assert len(flusher_pauses) > 2 and set(flusher_pauses[2:]) == {10}
+    assert records.errors() == redis.errors_at_cycle_start[2] > 0
+    named = [r for r in records.records if r.levelno >= logging.WARNING and POISONED_ROW in r.getMessage()]
+    assert len(named) == 1
+    assert redis.lists[redis.dead_key] == [poison_entry]
+    assert redis.lists[store._redis_pending_key] == []
+    assert redis.counters == {}
+    assert stored == set(HEALTHY_ROWS)
 
 
 @pytest.mark.asyncio
