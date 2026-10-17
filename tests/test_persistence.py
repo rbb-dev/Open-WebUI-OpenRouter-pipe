@@ -1588,7 +1588,10 @@ def test_try_acquire_lock_sync_success_postgresql(pipe_instance):
         dialect = _FakeDialect()
 
     class _FakeResult:
-        rowcount = 1
+        rowcount = -1
+
+        def scalar(self):
+            return "test-lock-id"
 
     class _FakeSession:
         def execute(self, stmt):
@@ -1636,7 +1639,10 @@ def test_try_acquire_lock_sync_conflict_postgresql(pipe_instance):
         dialect = _FakeDialect()
 
     class _FakeResult:
-        rowcount = 0
+        rowcount = -1
+
+        def scalar(self):
+            return None
 
     class _FakeSession:
         def execute(self, stmt):
@@ -1849,7 +1855,10 @@ def test_try_acquire_lock_sync_payload_serialization(pipe_instance):
         dialect = _FakeDialect()
 
     class _FakeResult:
-        rowcount = 1
+        rowcount = -1
+
+        def scalar(self):
+            return "test-lock-id"
 
     class _FakeSession:
         def execute(self, stmt):

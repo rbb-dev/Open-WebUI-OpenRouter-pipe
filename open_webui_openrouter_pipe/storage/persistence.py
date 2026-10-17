@@ -1930,7 +1930,12 @@ class ArtifactStore:
         if dialect_name == "postgresql":
             from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-            return pg_insert(table).values(values).on_conflict_do_nothing(index_elements=["id"])
+            return (
+                pg_insert(table)
+                .values(values)
+                .on_conflict_do_nothing(index_elements=["id"])
+                .returning(table.c.id)
+            )
         from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
         return sqlite_insert(table).values(values).on_conflict_do_nothing(index_elements=["id"])
@@ -2053,15 +2058,19 @@ class ArtifactStore:
                 session.add_all(instances)
                 session.commit()
             return
+        engine = self._engine
         with _db_session(factory) as session:
             result = session.execute(statement)
+            if engine is not None and engine.dialect.name == "postgresql":
+                written = len(result.all())
+            else:
+                written = getattr(result, "rowcount", -1)
             session.commit()
-        rowcount = getattr(result, "rowcount", -1)
-        if rowcount < len(instances):
+        if written < len(instances):
             self.logger.warning(
                 "Artifact persist: %d of %d row(s) were already in the artifact "
                 "table and were not written again.",
-                len(instances) - rowcount,
+                len(instances) - written,
                 len(instances),
             )
 
@@ -2140,7 +2149,7 @@ class ArtifactStore:
             if dialect_name == "postgresql":
                 from sqlalchemy.dialects.postgresql import insert as pg_insert
                 stmt = pg_insert(self._item_model.__table__).values(**values)
-                stmt = stmt.on_conflict_do_nothing(index_elements=["id"])
+                stmt = stmt.on_conflict_do_nothing(index_elements=["id"]).returning(stmt.table.c.id)
             elif dialect_name == "sqlite":
                 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
                 stmt = sqlite_insert(self._item_model.__table__).values(**values)
@@ -2160,9 +2169,13 @@ class ArtifactStore:
                     raise
 
             result = session.execute(stmt)
+            if dialect_name == "postgresql":
+                acquired = result.scalar() is not None
+            else:
+                acquired = getattr(result, "rowcount", 0) == 1
             session.commit()
 
-            return getattr(result, "rowcount", 0) == 1
+            return acquired
 
     @timed
     async def _db_persist(self, rows: list[dict[str, Any]]) -> list[str]:
