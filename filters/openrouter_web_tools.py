@@ -103,8 +103,8 @@ class Filter:
             description="Comma-separated list of domains to exclude from search results.",
         )
         WEB_FETCH_ENGINE: Literal["auto", "native", "exa", "openrouter", "firecrawl", "parallel"] = Field(
-            default="auto",
-            description="Web fetch backend. auto lets OpenRouter choose the best engine for each URL.",
+            default="exa",
+            description="Web fetch backend. exa reads web pages and PDFs and returns readable text that the pipe shows as a card and keeps as a record for later turns; OpenRouter bills a small fee per fetch. auto lets OpenRouter choose the model provider's own fetch where it has one, otherwise Exa; Anthropic's own fetch returns nothing for the pipe to show or keep, so it leaves no card and no record for later turns. native prefers the provider's own fetch. openrouter fetches the page directly; it returned raw HTML and refused a PDF. firecrawl needs your own key. parallel uses Parallel. Engine behaviour was measured through OpenRouter on 2026-10-17 with Claude Haiku 5.5, on one PDF and one very long web page.",
         )
         WEB_FETCH_MAX_USES: int = Field(
             default=0,
@@ -112,9 +112,9 @@ class Filter:
             description="Maximum number of URL fetches per request. 0 means no limit.",
         )
         WEB_FETCH_MAX_CONTENT_TOKENS: int = Field(
-            default=0,
+            default=30000,
             ge=0,
-            description="Maximum tokens of fetched content to return per URL. 0 means no limit.",
+            description="Maximum tokens of one fetched page to return to the model; a longer page is cut at its end. 0 means no limit. OpenRouter documents that the exa, parallel, firecrawl and openrouter engines apply it and that the provider's own fetch does not. A very low limit makes the model fetch the same page again to find what it needs (seen with a limit of 5000). Whatever this is set to, the pipe keeps at most 150000 characters of any page in the card and in its own copy.",
         )
         WEB_FETCH_ALLOWED_DOMAINS: str = Field(
             default="",

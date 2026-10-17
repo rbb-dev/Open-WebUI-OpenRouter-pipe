@@ -118,6 +118,14 @@ from ..core.utils import (
     tool_output_text_and_pictures,
     wrap_code_block,
 )
+from ..core.web_fetch_record import bound_fetch_record
+from ..core.web_search_record import (
+    attribute_search_citations,
+    merge_search_citations,
+    render_search_args,
+    render_search_result,
+    search_source_urls,
+)
 
 # Import Anthropic integration
 from ..integrations.anthropic import _maybe_apply_anthropic_prompt_caching
@@ -839,6 +847,8 @@ class StreamingHandler:
         assistant_len_before_tool_loops = len(assistant_message)
         pending_ulids: list[str] = []
         pending_items: list[dict[str, Any]] = []
+        pending_searches: dict[str, dict[str, Any]] = {}
+        search_citation_ledger: list[Any] = []
         reasoning_anchor_state: dict[str, Any] = {
             "seq": 0,
             "calls_seen": earlier_turn_calls,
@@ -1672,6 +1682,18 @@ class StreamingHandler:
                     recorded = recorded_tool_text(recorded, output.get("status"))
                 return _tool_rows([{**output, "output": recorded}], cid)
 
+            def _server_tool_round_rows(
+                call_id: str, name: str, status: str, *, arguments: str, result_text: str
+            ) -> list[dict[str, Any]]:
+                return _tool_rows(
+                    [
+                        {"type": "function_call", "call_id": call_id, "name": name, "arguments": arguments},
+                        {"type": "function_call_output", "call_id": call_id, "status": status,
+                         "output": recorded_tool_text(result_text, status)},
+                    ],
+                    call_id,
+                )
+
             async def _commit_server_tool_round(
                 call_id: str, name: str, status: str, *, item_type: str, result_text: str, arguments: str = "{}",
                 raw_item: dict[str, Any] | None = None, current_text: str,
@@ -1687,13 +1709,8 @@ class StreamingHandler:
                     )
                     rows = [row] if row else []
                 else:
-                    rows = _tool_rows(
-                        [
-                            {"type": "function_call", "call_id": call_id, "name": name, "arguments": arguments},
-                            {"type": "function_call_output", "call_id": call_id, "status": status,
-                             "output": recorded_tool_text(result_text, status)},
-                        ],
-                        call_id,
+                    rows = _server_tool_round_rows(
+                        call_id, name, status, arguments=arguments, result_text=result_text
                     )
                 ulids = await _persist_rows(rows, "server_tool") if rows else []
                 if ulids and not api_hold_key:
@@ -2201,6 +2218,7 @@ class StreamingHandler:
                 await _notify_unhandled_citations(raw_annotations)
                 if not isinstance(raw_annotations, list) or not raw_annotations:
                     return
+                search_citation_ledger.extend(raw_annotations)
                 for url, title, content in _parse_url_citation_annotations(raw_annotations):
                     url = url.removesuffix("?utm_source=openai")
                     if url in ordinal_by_url:
@@ -2264,6 +2282,76 @@ class StreamingHandler:
                     if isinstance(raw_reasoning_details, list) and raw_reasoning_details:
                         out_reasoning_details.extend(raw_reasoning_details)
                 return out_annotations, out_reasoning_details
+
+            async def _hold_search_round(
+                call_id: str, item: dict[str, Any], *, args_text: str, result_text: str, status: str,
+                current_text: str,
+            ) -> str:
+                if call_id in pending_searches:
+                    return current_text
+                rows: list[dict[str, Any]] = []
+                if message_id or api_hold_key:
+                    rows = _server_tool_round_rows(
+                        call_id, "web_search", status, arguments=args_text, result_text=result_text
+                    )
+                for row in rows:
+                    row["id"] = generate_item_id()
+                pending_searches[call_id] = {
+                    "item": item, "published": result_text, "status": status, "rows": rows,
+                }
+                if rows and not api_hold_key:
+                    current_text = await _append_assistant_hidden_markers(
+                        current_text, [_serialize_marker(row["id"]) for row in rows]
+                    )
+                return current_text
+
+            async def _settle_search_rounds(current_text: str, *, as_published: bool = False) -> None:
+                if not pending_searches:
+                    return
+                held = list(pending_searches.items())
+                citations: list[dict[str, str]] = []
+                if not as_published:
+                    citations = merge_search_citations(
+                        _parse_url_citation_annotations([*round_annotations, *search_citation_ledger])
+                    )
+                owned = attribute_search_citations([entry["item"] for _call_id, entry in held], citations)
+                for (call_id, entry), cited in zip(held, owned):
+                    final_text = (
+                        entry["published"] if as_published else render_search_result(entry["item"], cited)
+                    )
+                    if final_text != entry["published"]:
+                        entry["published"] = final_text
+                        for row in entry["rows"]:
+                            payload = row.get("payload")
+                            if isinstance(payload, dict) and payload.get("type") == "function_call_output":
+                                payload["output"] = recorded_tool_text(final_text, entry["status"])
+                        card = next(
+                            (candidate for candidate in emitted_output_items
+                             if candidate.get("type") == "function_call_output"
+                             and candidate.get("call_id") == call_id),
+                            None,
+                        )
+                        if card is not None:
+                            refreshed = copy.deepcopy(card)
+                            refreshed["output"] = picture_output(recorded_tool_text(final_text, entry["status"]), [])
+                            try:
+                                await _record_output_item(refreshed, current_text)
+                                await event_emitter({
+                                    "type": "response.output_item.added",
+                                    "output_index": _output_index(refreshed),
+                                    "item": refreshed,
+                                })
+                            except Exception:
+                                self.logger.warning("Could not refresh the web search card", exc_info=True)
+                    if entry["rows"]:
+                        await _persist_rows(entry["rows"], "server_tool")
+                    pending_searches.pop(call_id, None)
+
+            async def _settle_search_rounds_reporting(current_text: str, *, as_published: bool = False) -> None:
+                try:
+                    await _settle_search_rounds(current_text, as_published=as_published)
+                except Exception:
+                    self.logger.warning("Could not write the turn's web search rounds", exc_info=True)
 
             def _record_outcome() -> None:
                 if outcome_sink is None:
@@ -2820,6 +2908,7 @@ class StreamingHandler:
 
                     if etype == "response.output_text.annotation.added":
                         ann = event.get("annotation") or {}
+                        search_citation_ledger.append(ann)
                         await _notify_unhandled_citations([ann])
                         if ann.get("type") == "url_citation":
                             payload = ann.get("url_citation") if isinstance(ann.get("url_citation"), dict) else ann
@@ -3283,41 +3372,31 @@ class StreamingHandler:
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
                         elif item_type == "openrouter:web_search":
                             title = None
-                            result_text = (
-                                "Search completed. Sources available in the citations panel below."
-                                if server_tool_status(item) == "completed"
-                                else "Search did not complete."
-                            )
+                            search_status = server_tool_status(item)
+                            search_args = render_search_args(item)
+                            search_result = render_search_result(item, [])
                             effective_id = server_tool_call_id(item.get("id"))
                             if emitter_supplied:
                                 await _publish_open_reasoning_before_a_card(assistant_message)
                                 effective_id = await _emit_tool_start(
                                     call_id=effective_id,
                                     name="web_search",
-                                    arguments="{}",
-                                    status=server_tool_status(item),
+                                    arguments=search_args,
+                                    status=search_status,
                                     current_text=assistant_message,
                                     model_call=False,
                                 )
                                 await _emit_tool_result(
                                     call_id=effective_id,
-                                    result_text=result_text,
-                                    status=server_tool_status(item),
+                                    result_text=search_result,
+                                    status=search_status,
                                     current_text=assistant_message,
                                 )
-                            assistant_message = await _commit_server_tool_round(
-                                effective_id, "web_search", server_tool_status(item),
-                                item_type=item_type, result_text=result_text, arguments="{}", current_text=assistant_message,
+                            assistant_message = await _hold_search_round(
+                                effective_id, item, args_text=search_args, result_text=search_result,
+                                status=search_status, current_text=assistant_message,
                             )
-                            action = item.get("action") if isinstance(item.get("action"), dict) else {}
-                            search_urls: list[str] = []
-                            for u in (action.get("sources") or []):
-                                if isinstance(u, dict):
-                                    href = u.get("url")
-                                    if isinstance(href, str) and href:
-                                        search_urls.append(href)
-                                elif isinstance(u, str) and u:
-                                    search_urls.append(u)
+                            search_urls = search_source_urls(item)
                             if search_urls and event_emitter:
                                 await event_emitter({"type": "status", "data": {
                                     "action": "web_search",
@@ -3338,6 +3417,7 @@ class StreamingHandler:
                             else:
                                 http_status = item.get("httpStatus")
                                 result_text = f"Fetch failed (HTTP {http_status})" if http_status else "Fetch failed or returned no content."
+                            result_text = bound_fetch_record(result_text)
                             args_text = json.dumps({"url": fetch_url}, ensure_ascii=False) if fetch_url else "{}"
                             effective_id = server_tool_call_id(item.get("id"))
                             if emitter_supplied:
@@ -4706,6 +4786,15 @@ class StreamingHandler:
 
             if fusion_no_usable_member:
                 session_log_reason = _FUSION_PANEL_FAILURE_REASON
+
+            if pending_searches and not handed_back_for_retry:
+                try:
+                    await asyncio.shield(
+                        _settle_search_rounds_reporting(assistant_message, as_published=was_cancelled)
+                    )
+                except asyncio.CancelledError as _exc:
+                    if not was_cancelled:
+                        _finalise_cancelled = _finalise_cancelled or _exc
 
             terminal = bool(was_cancelled or error_occurred or not handed_back) and not handed_back_for_retry
 

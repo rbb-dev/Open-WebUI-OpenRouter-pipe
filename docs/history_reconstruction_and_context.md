@@ -234,17 +234,17 @@ Every tool round the pipe runs itself, and every round of an OpenRouter server t
 call and its output as a pair, behind a hidden marker placed in the answer where the round happened. Four exceptions:
 with results kept, a server tool whose own item OpenRouter takes back unchanged -- the advisor, the subagent, model
 search -- is stored as that item instead, while every other server tool, including one the pipe does not know, keeps
-the pair; image generation, whose picture is already part of the answer, is not stored; a
-and a request that belongs to no chat message -- a call that carries no `chat_id`, the plain API route --
-keeps its copy in memory for the length of that request only, keyed on the request id, and never writes it to the
-database; the request ends and it is gone, and no marker line is added to the caller's response, so such a call's
-records last for the request, not the conversation. A temporary chat
-keeps nothing, so with tool cards off its rounds reach no later request. (In Open-WebUI tool mode, or under `ask` tool approval in
-either mode, the rounds of a
-temporary chat's reply are held in memory until that reply ends or the provider refuses a call-back the pipe was waiting for, so Open WebUI's calls back after each round of tool
+the pair; image generation, whose picture is already part of the answer, is not stored; a request that belongs to no
+chat message -- a call that carries no `chat_id`, the plain API route -- keeps its copy in memory for the length of that
+request only, keyed on the request id, and never writes it to the database (the request ends and it is gone, and no
+marker line is added to the caller's response, so such a call's records last for the request, not the conversation);
+and a temporary chat keeps nothing, so with tool cards off its rounds reach no later request. (In Open-WebUI tool mode,
+or under `ask` tool approval in either mode, the rounds of a temporary chat's reply are held in memory until that reply
+ends or the provider refuses a call-back the pipe was waiting for, so Open WebUI's calls back after each round of tool
 calls still hand them to the model. A reply dropped under the pool's byte ceiling is reported as holding none of the rows it was
 offered in that flush, so no marker is written for a round that is no longer in memory and that round is not replayed; see [Persistence](persistence_encryption_and_storage.md).) The calls are written when
-the round starts and each result when its call returns, and the round comes back to the model in call order on that turn. So in a streamed
+the round starts and each result when its call returns (a web search round is the exception: it is written
+when the turn ends, see below), and the round comes back to the model in call order on that turn. So in a streamed
 reply, Stop keeps a round's calls before the first one still running. When the model reaches a tool through Open WebUI's
 Tool Search and the pipe runs it, the stored round names the tool that ran and also keeps the model's original
 `call_tool` call. Later turns replay that original call, from the pipe's own stored copy or from Open WebUI's stored
@@ -266,15 +266,62 @@ retained. The raw native item is never what is replayed, and never what is store
 non-replayable set (§5.1), so a `shell_call` the caller echoes back into a request is stripped before it reaches the
 provider, and the pair behind its marker is what stands in its place.
 
+A **web search round** (OpenRouter's `web_search` server tool) is kept in the same place and in the same shape, but it
+is written differently, because the item OpenRouter closes for a search carries only the query and the links the
+engine found. The page excerpts arrive in the `url_citation` annotations of the answer: before its first word on most
+engines and between its words on Anthropic's own search (streamed requests of 2026-10-16 on Claude Haiku 5.5, one
+search on each engine), and only in the finished message on a reply that is not streamed. So the round is marked when
+the search item closes and written when the turn ends -- the turn being the whole reply to one message, however many
+responses the model's tool calls split it into, so a citation of a later response counts too. When the item closes,
+the pipe publishes the card with the query and the links, reserves the ids of the round's two rows and places their
+markers where the search happened, ahead of the answer text. When the turn ends, the pipe renders the round once and
+gives that one text to both copies: it replaces the card in place -- in the pipe's own record first, so the reply's
+final list carries it -- and it fills in the two rows, which are then written, once. Open WebUI therefore hands back
+the same round whether the card is shown (the saved card is handed back and the pipe's copy is dropped as a duplicate)
+or hidden (the pipe's copy is used).
+
+The call's arguments are `{"query": ...}`. The result is a JSON list shaped like the result of Open WebUI's own
+`search_web` tool, `[{"title", "link", "snippet"}]`, with a key left out when the engine gave nothing for it: one
+entry per link the search listed, with the title and the excerpt of the answer's citation that names that link. A
+citation attaches to every search of the turn whose list holds its link (the comparison ignores the scheme, the host's
+letter case, a trailing slash and a fragment); a citation that no search lists stays in the sources panel only. At
+most 25 results, 1,600 characters of any one excerpt and 8,000 characters of excerpts per search are kept (once fewer
+than 100 characters of that budget are left, the remaining excerpts are left out whole rather than cut to a fragment),
+and a trailing `{"note": ...}` entry says how many results or excerpts were left out or shortened. A search that
+listed no links reads `The search reported no sources.`; one that did not finish reads `Search did not complete.`,
+followed by the engine's error when it gave one. A later turn gets as much text as the engine returned: engines that
+answer with page excerpts give one for each cited page, and Anthropic's own search returns short passages only for the
+pages its answer cites (measured on Claude Haiku 5.5 through OpenRouter on 2026-10-16, one search), so the other pages
+are links.
+
+If the reply is stopped before the turn ends, the rows hold the text the card last showed (the query and the links),
+with tool cards on or off, so what the model learns never depends on the card switch; the excerpts that had arrived are
+not added. A reply that fails after something has reached the chat is written from the citations seen so far, and the
+card shows the same text. A reply handed back for a retry before anything reached the chat writes no rows. Because the
+markers are placed before the rows are written, a store that refuses the write leaves two markers that address nothing:
+the next turn logs the missing artifacts, and with tool cards on the saved card still carries the round. A temporary
+chat keeps no rows past the reply, so its card, which holds the final text, is the only carrier on later turns. A chat
+saved before this behaviour keeps the older text, an empty call and a sentence that pointed at the citations panel,
+because its saved cards and rows already hold it. With `PERSIST_TOOL_RESULTS` off the round reaches the model as the
+usual placeholder.
+
+A search that the model follows with a call to one of the pipe's own tools, before it has written any answer, is
+written with the query and the links only: OpenRouter had sent no excerpt when that response ended, and the
+follow-up request inside the turn carries the tool's call and result but not the search round, so the model's
+answer cannot cite its pages. A citation that a later response of the turn does bring for one of the search's links
+is added to it, and the card and both rows then carry the same text. In Open-WebUI tool mode, where Open WebUI runs
+the tool and calls the pipe again, the continuation is a separate request to the pipe, so the search keeps what it
+had when the first request ended and the continuation's citations stay in the sources panel.
+
 A call can also be kept in this copy and still be withheld from one request: when the replay budget is applied to that
 turn, the result is replaced in `input` with a model-visible stub, and the tools whose results were replaced are named to
 the person in a warning notification — once per call id, on every path that applies the budget except the task-model
 adapter, which never sees the tool round. The copy above is untouched, so a later turn that fits still replays the full
 result.
 
-The copy carries the call's arguments and its full result, pictures included, whatever `PERSIST_TOOL_RESULTS`
-says, as a shown card does in the message Open WebUI saves; that setting decides what later turns receive, not
-whether the round is stored (see below). A call that
+The copy carries the call's arguments and its result in full, pictures included, whatever `PERSIST_TOOL_RESULTS`
+says, as a shown card does in the message Open WebUI saves, except a web search, which keeps its query, its links and the excerpts the engine returned, within the record caps;
+that setting decides what later turns receive, not whether the round is stored (see below). A call that
 did not complete keeps its failure text; where that text alone would not read as a failure, it opens with
 `Error: the tool call did not complete.` With no `ARTIFACT_ENCRYPTION_KEY` set, or with `ENCRYPT_ALL` off, the copy
 is stored as plain JSON.

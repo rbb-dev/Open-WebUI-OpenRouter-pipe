@@ -34,7 +34,10 @@ from typing import Any, cast
 import pytest
 
 from open_webui_openrouter_pipe import Pipe, ResponsesBody
+from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
 from open_webui_openrouter_pipe.streaming import streaming_core
+from tests.test_continue_reasoning_order import _real_artifact_store
+from tests.test_continue_stores_once import _open_webui_convert_output_to_messages
 from tests.test_tool_rounds_reach_the_model_once import _open_webui_streaming_handler
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -288,10 +291,6 @@ class TestReplayCaseA:
         assert fco["type"] == "function_call_output"
         assert fco["call_id"] == "srv-ws-1"
         assert fco["status"] == "completed"
-        assert fco["output"] == [
-            {"type": "input_text",
-             "text": "Search completed. Sources available in the citations panel below."}
-        ]
         for card in (fc, fco):
             assert "summary" not in card
             assert "duration" not in card
@@ -422,3 +421,151 @@ class TestReplayCaseC:
         assert len(messages) == 1
         assert _message_text(messages[0]) == answer
         assert "<think>not real</think>" in _message_text(messages[0])
+
+
+SEARCH_MODEL = "anthropic/claude-haiku-5.5"
+SEARCH_ANSWER = "Dana Example is the chair of Northwind Gadgets."
+SEARCH_PAGES = [
+    {
+        "url": "https://www.example.com/northwind-gadgets/about",
+        "title": "About Northwind Gadgets",
+        "content": (
+            "Northwind Gadgets builds pocket-sized weather stations and ships them from one warehouse in Exampleton"
+            "\n\n...\n\nBoard of directors: the chair is Dana Example. Dana has led the board since 2021 and studied"
+            " hydrology at the Example Institute."
+        ),
+    },
+    {
+        "url": "https://www.example.org/news/northwind-gadgets-new-chair",
+        "title": "Northwind Gadgets names a new chair",
+        "content": "Minutes of the March meeting. Present: the chair, Dana Example, and six other directors.",
+    },
+]
+SEARCH_ITEM = {
+    "id": "st_tmp_1", "type": "openrouter:web_search", "status": "completed",
+    "action": {
+        "type": "search", "query": "current chair of Northwind Gadgets",
+        "sources": [{"type": "url", "url": page["url"]} for page in SEARCH_PAGES],
+    },
+}
+SEARCH_CITATIONS = [
+    {"type": "url_citation", "start_index": 0, "end_index": len(SEARCH_ANSWER), **page} for page in SEARCH_PAGES
+]
+SEARCH_REASONING = {
+    "id": "rs_1", "type": "reasoning", "status": "completed", "summary": [],
+    "encrypted_content": "gAAAAA-short", "format": "openai-responses-v1",
+}
+SEARCH_MESSAGE = {
+    "id": "msg_1", "type": "message", "status": "completed", "role": "assistant",
+    "content": [{"type": "output_text", "text": SEARCH_ANSWER, "annotations": SEARCH_CITATIONS}],
+}
+
+
+def _search_opens(item: dict, index: int) -> list[dict]:
+    return [
+        {"type": "response.output_item.added", "output_index": index,
+         "item": {"id": item["id"], "type": item["type"], "status": "in_progress"}},
+        {"type": "response.output_item.done", "output_index": index, "item": item},
+    ]
+
+
+def _search_answer_events(*, with_search_item: bool) -> list[dict]:
+    output = [SEARCH_REASONING, *([SEARCH_ITEM] if with_search_item else []), SEARCH_MESSAGE]
+    return [
+        {"type": "response.output_item.done", "output_index": 0, "item": SEARCH_REASONING},
+        *(_search_opens(SEARCH_ITEM, 1) if with_search_item else []),
+        *({"type": "response.output_text.annotation.added", "annotation": citation} for citation in SEARCH_CITATIONS),
+        {"type": "response.output_text.delta", "delta": SEARCH_ANSWER},
+        {"type": "response.output_item.done", "output_index": 2, "item": SEARCH_MESSAGE},
+        {"type": "response.completed", "response": {"output": output, "usage": {}}},
+    ]
+
+
+async def _replays_after_a_search_turn(
+    pipe: Any, monkeypatch: Any, responses: list[list[dict]], valves: Any, *, tools: dict | None = None
+) -> tuple[list[dict], list[dict]]:
+    queue = iter(responses)
+
+    async def stream(self, session, request_body, **_kwargs):
+        for event in next(queue):
+            yield copy.deepcopy(event)
+
+    monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", stream)
+    emitted: list[dict] = []
+
+    async def emitter(event):
+        emitted.append(copy.deepcopy(event))
+
+    with _real_artifact_store(pipe) as store:
+        await pipe._streaming_handler._run_streaming_loop(
+            ResponsesBody(model=SEARCH_MODEL, input=[], stream=True), valves, emitter,
+            metadata={"model": {"id": SEARCH_MODEL}, "chat_id": "c1", "message_id": "m1"},
+            tools=tools or {}, session=cast(Any, object()), user_id="u1",
+        )
+        saved = await owui_assemble(emitted)
+        answer = _open_webui_convert_output_to_messages()(saved, raw=True, flatten_tool_images=True)
+        history = [{"role": "user", "content": "q1"}, *answer, {"role": "user", "content": "q2"}]
+
+        async def replay(replay_valves: Any) -> list[dict]:
+            return await transform_messages_to_input(
+                pipe, history, chat_id="c1", openwebui_model_id="owui", artifact_loader=store._db_fetch,
+                model_id=SEARCH_MODEL, valves=replay_valves,
+            )
+
+        return await replay(valves), await replay(valves.model_copy(update={"PERSIST_TOOL_RESULTS": False}))
+
+
+class TestReplayWebSearch:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cards", [True, False], ids=["cards-on", "cards-off"])
+    async def test_the_next_turn_gets_the_query_and_the_results_of_the_search_the_model_ran(
+        self, monkeypatch, pipe_instance_async, cards
+    ):
+        pipe = pipe_instance_async
+        valves = pipe.valves.model_copy(update={"PERSIST_TOOL_RESULTS": True, "SHOW_TOOL_CARDS": cards})
+
+        kept, _ = await _replays_after_a_search_turn(
+            pipe, monkeypatch, [_search_answer_events(with_search_item=True)], valves
+        )
+
+        assert [i["role"] if i["type"] == "message" else i["type"] for i in kept] == [
+            "user", "reasoning", "function_call", "function_call_output", "assistant", "user",
+        ]
+        (call,) = [i for i in kept if i["type"] == "function_call"]
+        (result,) = [i for i in kept if i["type"] == "function_call_output"]
+        assert call["call_id"] == result["call_id"]
+        assert SEARCH_ITEM["action"]["query"] in call["arguments"]
+        for page in SEARCH_PAGES:
+            assert page["url"] in result["output"]
+        assert SEARCH_PAGES[0]["content"][:60] in result["output"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cards", [True, False], ids=["cards-on", "cards-off"])
+    async def test_a_search_followed_by_a_tool_call_takes_the_citations_the_answer_brings(
+        self, monkeypatch, pipe_instance_async, cards
+    ):
+        pipe = pipe_instance_async
+        call = {
+            "type": "function_call", "id": "fc_1", "call_id": "call_lookup_1", "name": "lookup",
+            "arguments": "{}", "status": "completed",
+        }
+        first = [
+            *_search_opens(SEARCH_ITEM, 0),
+            {"type": "response.output_item.added", "output_index": 1, "item": {**call, "arguments": "", "status": "in_progress"}},
+            {"type": "response.output_item.done", "output_index": 1, "item": call},
+            {"type": "response.completed", "response": {"output": [SEARCH_ITEM, call], "usage": {}}},
+        ]
+
+        async def run_tool(calls, registry):
+            return [{"type": "function_call_output", "call_id": c["call_id"], "output": "ok"} for c in calls]
+
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", run_tool)
+        valves = pipe.valves.model_copy(update={"PERSIST_TOOL_RESULTS": True, "SHOW_TOOL_CARDS": cards})
+
+        kept, _ = await _replays_after_a_search_turn(
+            pipe, monkeypatch, [first, _search_answer_events(with_search_item=False)], valves,
+            tools={"lookup": {"callable": lambda **_k: "ok"}},
+        )
+
+        result = next(i for i in kept if i["type"] == "function_call_output" and i["call_id"].startswith("srv-"))
+        assert SEARCH_PAGES[0]["content"][:60] in result["output"]

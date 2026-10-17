@@ -12398,6 +12398,50 @@ class TestOpenRouterServerToolCards:
         assert "page text content" in function_outputs[0]["item"]["output"][0]["text"]
 
     @pytest.mark.asyncio
+    async def test_openrouter_web_fetch_page_longer_than_the_record_cap_is_cut_in_the_card_and_the_pipes_copy(
+        self, monkeypatch, pipe_instance_async
+    ):
+        from open_webui_openrouter_pipe.core.web_fetch_record import FETCH_RECORD_MAX_CHARS
+        from tests.test_continue_reasoning_order import _real_artifact_store
+        from tests.test_reasoning_owui_replay import owui_assemble
+
+        pipe = pipe_instance_async
+        page = "<html>" + "a" * (FETCH_RECORD_MAX_CHARS + 25_000) + "END-OF-PAGE"
+        events = [
+            {"type": "response.output_item.added", "item": {"type": "openrouter:web_fetch", "id": "wf-1", "status": "in_progress"}},
+            {"type": "response.output_item.done", "item": {
+                "type": "openrouter:web_fetch", "id": "wf-1", "status": "completed",
+                "url": "https://www.example.com/long-page", "content": page}},
+            {"type": "response.completed", "response": {"output": [], "usage": {}}},
+        ]
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(event)
+
+        with _real_artifact_store(pipe) as store:
+            await pipe._streaming_handler._run_streaming_loop(
+                ResponsesBody(model="test/model", input=[], stream=True), pipe.valves, emitter,
+                metadata={"model": {"id": "test"}, "chat_id": "c1", "message_id": "m1"}, tools={},
+                session=cast(Any, object()), user_id="user-123",
+            )
+            with store._session_factory() as session:
+                ids = [row.id for row in session.query(store._item_model).filter(store._item_model.message_id == "m1")]
+            stored = await store._db_fetch("c1", "m1", ids)
+
+        saved = await owui_assemble(emitted)
+        card = next(item for item in saved if item["type"] == "function_call_output")
+        card_text = "".join(part["text"] for part in card["output"])
+        (row,) = [payload for payload in stored.values() if payload["type"] == "function_call_output"]
+        omitted = len(page) - FETCH_RECORD_MAX_CHARS
+
+        assert card_text == row["output"]
+        assert card_text.startswith(page[:FETCH_RECORD_MAX_CHARS])
+        assert str(omitted) in card_text[FETCH_RECORD_MAX_CHARS:]
+        assert "END-OF-PAGE" not in card_text
+
+    @pytest.mark.asyncio
     async def test_openrouter_web_search_url_extraction(self, monkeypatch, pipe_instance_async):
         """web_search emits status event with extracted URLs (status event NOT gated by SHOW_TOOL_CARDS)."""
         pipe = pipe_instance_async
@@ -12465,39 +12509,6 @@ class TestOpenRouterServerToolCards:
                        and e.get("item", {}).get("call_id") == "srv-dt-dup"]
         assert len(fc_for_dup) == 1, "Dedup failed: function_call emitted twice"
         assert len(fco_for_dup) == 1, "Dedup failed: function_call_output emitted twice"
-
-    @pytest.mark.asyncio
-    async def test_openrouter_web_search_card_shows_citation_pointer(self, monkeypatch, pipe_instance_async):
-        """web_search card body points users to citations panel (per OpenRouter spec, the
-        OutputWebSearchServerToolItem has no result field; data is in url_citation annotations)."""
-        pipe = pipe_instance_async
-        pipe.valves.SHOW_TOOL_CARDS = True
-        body = ResponsesBody(model="test/model", input=[], stream=True)
-
-        events = [
-            {"type": "response.output_item.done", "item": {
-                "type": "openrouter:web_search", "id": "ws-empty", "status": "completed"}},
-            {"type": "response.completed", "response": {"output": [], "usage": {}}},
-        ]
-        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
-        emitted: list[dict] = []
-        async def emitter(event):
-            emitted.append(event)
-
-        await pipe._streaming_handler._run_streaming_loop(
-            body, pipe.valves, emitter,
-            metadata={"model": {"id": "test"}}, tools={},
-            session=cast(Any, object()), user_id="user-123",
-        )
-
-        function_outputs = [e for e in emitted
-                            if e.get("type") == "response.output_item.added"
-                            and e.get("item", {}).get("type") == "function_call_output"
-                            and e.get("item", {}).get("call_id") == "srv-ws-empty"]
-        assert len(function_outputs) == 1
-        result_text = function_outputs[0]["item"]["output"][0]["text"]
-        assert "citations panel" in result_text
-        assert "Search completed" in result_text
 
     @pytest.mark.asyncio
     async def test_no_unmatched_warning_when_pair_emits_normally(self, monkeypatch, pipe_instance_async, caplog):

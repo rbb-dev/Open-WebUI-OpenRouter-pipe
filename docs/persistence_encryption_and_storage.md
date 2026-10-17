@@ -14,7 +14,8 @@ Persisted artifacts include (at least):
 - Reasoning items (as long as `PERSIST_REASONING_TOKENS` permits retention).
 - The pipe's own copy of each tool round (see [History Reconstruction & Context Replay](history_reconstruction_and_context.md),
   which lists the rounds that are stored differently or not at all):
-  the call and its output, with the full arguments and result, pictures included, whatever `PERSIST_TOOL_RESULTS`
+  the call and its output, with the arguments and result in full, pictures included (a web search keeps
+  its query, its links and the excerpts the engine returned, within the record caps), whatever `PERSIST_TOOL_RESULTS`
   says. That setting decides what later turns receive; tool results are stored even while it is off. They are
   encrypted at rest only when `ARTIFACT_ENCRYPTION_KEY` is set and `ENCRYPT_ALL` is on at write time; a row written
   while it was on stays encrypted, in the table and in the replay cache, including the buffered flush.
