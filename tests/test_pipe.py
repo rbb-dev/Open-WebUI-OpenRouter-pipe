@@ -6624,6 +6624,127 @@ def test_staging_splits_long_logs_into_ordered_terminal_last_pieces(pipe_instanc
     assert len(set(ids)) == len(ids)
 
 
+def test_a_pass_that_a_key_change_moves_to_another_table_removes_its_own_rows_from_the_old_one(
+    pipe_instance, tmp_path, monkeypatch
+):
+    pipe = pipe_instance
+    _session_log_store_for_assembly(pipe, tmp_path)
+    store = cast(Any, pipe._artifact_store)
+    del store._ensure_artifact_store
+    store._ensure_db_handle = lambda: (store._engine, None)
+    valves = pipe.valves
+    valves.SESSION_LOG_STORE_ENABLED = True
+    valves.ENCRYPT_ALL = True
+    valves.ARTIFACT_ENCRYPTION_KEY = EncryptedStr("first-key")
+    store._ensure_artifact_store(valves, "session-log-move")
+    old_model = store._item_model
+    _stage_one_terminal_turn(pipe, "chat-move", "msg-move")
+    manager = pipe._session_log_manager
+    ingest = manager._ingest_row
+
+    def ingest_after_the_key_changed(*args, **kwargs):
+        valves.ARTIFACT_ENCRYPTION_KEY = EncryptedStr("second-key")
+        store._ensure_artifact_store(valves, "session-log-move")
+        return ingest(*args, **kwargs)
+
+    monkeypatch.setattr(manager, "_ingest_row", ingest_after_the_key_changed)
+
+    result = manager._assemble_and_write_bundle(
+        "chat-move",
+        "msg-move",
+        terminal=True,
+        archive_settings=(str(tmp_path), b"pw", "stored", None),
+    )
+
+    assert result is False
+    session = store._session_factory()
+    try:
+        left = session.query(old_model.item_type).filter(old_model.chat_id == "chat-move").all()
+    finally:
+        session.close()
+    assert sorted(row[0] for row in left) == ["session_log_segment_terminal"]
+
+
+def test_assembly_drops_a_turn_after_three_unreturned_passes(pipe_instance, tmp_path, caplog):
+    pipe = pipe_instance
+    _install_real_session_log_store(pipe, tmp_path)
+    store_any = cast(Any, pipe._artifact_store)
+    if store_any._db_executor is None:
+        store_any._db_executor = ThreadPoolExecutor(max_workers=1)
+    store_any._artifact_table_name = "response_items_test"
+    monkeypatch_stub = lambda valves, marker: None
+    pipe._artifact_store._ensure_artifact_store = monkeypatch_stub  # type: ignore[method-assign]
+    pipe.valves.SESSION_LOG_STORE_ENABLED = True
+    pipe.valves.SESSION_LOG_DIR = str(tmp_path)
+    pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("drop-archive-pass")
+
+    chat_id = "chat-drop"
+    message_id = "msg-drop"
+
+    def _row(item_type: str, events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {"type": item_type}
+        if events is not None:
+            payload.update(
+                {
+                    "status": "complete",
+                    "user_id": "user-drop",
+                    "session_id": "sess-drop",
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "request_id": "req-drop",
+                    "created_at": 1.0,
+                    "events": events,
+                }
+            )
+        return {
+            "id": generate_item_id(),
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "model_id": None,
+            "item_type": item_type,
+            "payload": payload,
+        }
+
+    staged = _row("session_log_segment_terminal", [{"created": 1.0, "message": "hello"}])
+    attempts = [_row("session_log_attempt") for _ in range(3)]
+    assert pipe._artifact_store._db_persist_sync([staged, *attempts]) == [
+        row["id"] for row in [staged, *attempts]
+    ]
+
+    writes: list[Any] = []
+    pipe._session_log_manager._write_archive = writes.append  # type: ignore[method-assign]
+
+    with caplog.at_level(logging.WARNING, logger="open_webui_openrouter_pipe.logging.session_log_manager"):
+        result = pipe._session_log_manager._assemble_and_write_bundle(
+            chat_id,
+            message_id,
+            terminal=True,
+            archive_settings=(str(tmp_path), b"pw", "stored", None),
+        )
+
+    assert result is False
+    assert writes == []
+    check_session = pipe._artifact_store._session_factory()  # type: ignore[call-arg]
+    model = pipe._artifact_store._item_model
+    try:
+        left = (
+            check_session.query(model.id)
+            .filter(model.chat_id == chat_id)
+            .filter(model.message_id == message_id)
+            .count()
+        )
+    finally:
+        check_session.close()
+    assert left == 0
+    dropped = [
+        record
+        for record in caplog.records
+        if record.levelno == logging.WARNING and "Session log turn dropped" in record.getMessage()
+    ]
+    assert len(dropped) == 1
+    assert chat_id in dropped[0].getMessage() and message_id in dropped[0].getMessage()
+
+
 def test_run_session_log_assembler_once_handles_terminal_and_stale(pipe_instance, tmp_path):
     """Exercises the fake harness's `group_by`/`order_by`/`having` plumbing, nothing more.
 

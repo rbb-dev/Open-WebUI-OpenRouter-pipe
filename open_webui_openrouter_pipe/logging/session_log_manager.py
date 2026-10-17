@@ -53,9 +53,10 @@ from ..integrations.video_intent_prompts import INTENT_SCHEMA_NAME
 from ..storage.payload_stream import (
     StoredPayloadUnavailable,
     StoredPayloadUnreadable,
+    stored_sizes,
     stream_row,
 )
-from ..storage.persistence import _db_session
+from ..storage.persistence import _db_session, generate_item_id
 
 logger = logging.getLogger(__name__)
 
@@ -259,6 +260,10 @@ _UNREADABLE_ARCHIVE_CAPTURE_AFTER = 3
 _SEGMENT_MAX_EVENTS = 1000
 
 _SEGMENT_ROW_TYPES = ("session_log_segment", "session_log_segment_terminal")
+
+_ATTEMPT_ROW_TYPE = "session_log_attempt"
+
+_MAX_UNRETURNED_ATTEMPTS = 3
 
 _ORPHAN_WRITE_MIN_AGE_SECONDS = 3600.0
 
@@ -1556,7 +1561,7 @@ class SessionLogManager:
                 rows = (
                     session.query(model.id, model.chat_id, model.message_id)  # type: ignore[attr-defined]
                     .filter(  # type: ignore[attr-defined]
-                        model.item_type.in_(["session_log_segment", "session_log_segment_terminal"])
+                        model.item_type.in_([*_SEGMENT_ROW_TYPES, _ATTEMPT_ROW_TYPE])
                     )
                     .filter(model.created_at < cutoff)  # type: ignore[attr-defined]
                     .limit(500)
@@ -2026,6 +2031,42 @@ class SessionLogManager:
         )
         return True
 
+    def _attempt_row_ids(
+        self, model: Any, session_factory: Any, chat_id: str, message_id: str
+    ) -> list[str]:
+        with _db_session(session_factory) as session:
+            rows = (
+                session.query(model.id)  # type: ignore[attr-defined]
+                .filter(model.item_type == _ATTEMPT_ROW_TYPE)  # type: ignore[attr-defined]
+                .filter(model.chat_id == chat_id)  # type: ignore[attr-defined]
+                .filter(model.message_id == message_id)  # type: ignore[attr-defined]
+                .all()
+            )
+        return [row[0] for row in rows if row and isinstance(row[0], str)]
+
+    def _drop_turn(
+        self, chat_id: str, message_id: str, lock_id: str, row_ids: list[str], attempt_ids: list[str]
+    ) -> bool:
+        stored = 0
+        with contextlib.suppress(Exception):
+            stored = sum(stored_sizes(self._artifact_store, chat_id, message_id, row_ids).values())
+        self._artifact_store._delete_artifacts_sync([*row_ids, *attempt_ids, lock_id])  # type: ignore[union-attr]
+        with self._lock:
+            self._unreadable_archive_attempts.pop(f"{chat_id}:{message_id}", None)
+            self._rescue_pending.pop((chat_id, message_id), None)
+        self.logger.warning(
+            "Session log turn dropped: chat_id=%s message_id=%s. Assembly was started %d times and never "
+            "returned: the worker died or hung during the pass, for example when the process ran out of "
+            "memory. Deleted from the database: %d staged segment row(s), about %.1f MB. No archive is "
+            "written from that data; an archive that an earlier pass already wrote for this turn stays on disk.",
+            chat_id,
+            message_id,
+            len(attempt_ids),
+            len(row_ids),
+            stored / 1_000_000,
+        )
+        return False
+
     def _store_table_moved(self, model: Any) -> bool:
         current = getattr(self._artifact_store, "_item_model", None)
         return current is None or current.__table__.name != model.__table__.name
@@ -2040,8 +2081,11 @@ class SessionLogManager:
     def _refuse_turn(
         self, chat_id: str, message_id: str, lock_id: str, row_ids: list[str], exc: Exception
     ) -> None:
+        earlier = self._attempt_row_ids(
+            self._artifact_store._item_model, self._artifact_store._session_factory, chat_id, message_id  # type: ignore[union-attr]
+        )
         try:
-            self._artifact_store._delete_artifacts_sync([*row_ids, lock_id])  # type: ignore[union-attr]
+            self._artifact_store._delete_artifacts_sync([*row_ids, *earlier, lock_id])  # type: ignore[union-attr]
         except Exception:
             self.logger.warning(
                 "Staged session log rows for chat_id=%s message_id=%s failed the signature or structure check "
@@ -2064,6 +2108,20 @@ class SessionLogManager:
             message_id,
             exc,
         )
+
+    def _release_pass_rows(self, model: Any, session_factory: Any, ids: list[str]) -> None:
+        if not ids:
+            return
+        if not self._store_table_moved(model):
+            self._artifact_store._delete_artifacts_sync(ids)  # type: ignore[union-attr]
+            return
+        with _db_session(session_factory) as session:
+            session.query(model).filter(model.id.in_(ids)).delete(synchronize_session=False)  # type: ignore[attr-defined]
+            session.commit()
+
+    def _release_pass_lock(self, model: Any, session_factory: Any, lock_id: str) -> None:
+        with contextlib.suppress(Exception):
+            self._release_pass_rows(model, session_factory, [lock_id])
 
     def _release_assembly_lock(
         self,
@@ -2176,6 +2234,7 @@ class SessionLogManager:
         ids: list[str] = []
         sealed: dict[str, bool] = {}
         sorter: _EventSorter | None = None
+        attempt_ids: list[str] = []
         try:
             # Fetch all segment ids for this message (including any terminal markers).
             with _db_session(session_factory) as session:
@@ -2191,7 +2250,7 @@ class SessionLogManager:
                 sealed = {row[0]: bool(row[1]) for row in rows if row and isinstance(row[0], str)}
 
             if not ids:
-                self._release_assembly_lock(lock_id)
+                self._release_pass_lock(model, session_factory, lock_id)
                 return False
 
             settings = archive_settings or self.resolve_archive_settings(self.valves)
@@ -2208,9 +2267,26 @@ class SessionLogManager:
                     chat_id,
                     message_id,
                 )
-                self._release_assembly_lock(lock_id)
+                self._release_pass_lock(model, session_factory, lock_id)
                 return False
             base_dir, zip_password, zip_compression, zip_compresslevel = settings
+
+            earlier = self._attempt_row_ids(model, session_factory, chat_id, message_id)
+            if len(earlier) >= _MAX_UNRETURNED_ATTEMPTS:
+                self._drop_turn(chat_id, message_id, lock_id, ids, earlier)
+                return False
+            attempt_row = {
+                "id": generate_item_id(),
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "model_id": None,
+                "item_type": _ATTEMPT_ROW_TYPE,
+                "payload": {"type": _ATTEMPT_ROW_TYPE, "started_at": time.time(), "pid": os.getpid()},
+            }
+            if not self._artifact_store._try_acquire_lock_sync(attempt_row):
+                self._release_pass_lock(model, session_factory, lock_id)
+                return False
+            attempt_ids = [attempt_row["id"]]
 
             def progress() -> None:
                 return None
@@ -2254,7 +2330,7 @@ class SessionLogManager:
                     message_id,
                     exc_info=True,
                 )
-                self._release_assembly_lock(lock_id)
+                self._release_pass_lock(model, session_factory, lock_id)
                 return False
 
             if len(readable_ids) != len(ids):
@@ -2272,7 +2348,7 @@ class SessionLogManager:
                     chat_id,
                     message_id,
                 )
-                self._release_assembly_lock(lock_id)
+                self._release_pass_lock(model, session_factory, lock_id)
                 return False
 
             distinct_user_ids = sorted({
@@ -2549,7 +2625,7 @@ class SessionLogManager:
 
             if published == len(groups):
                 try:
-                    self._artifact_store._delete_artifacts_sync(ids + [lock_id])  # type: ignore[union-attr]
+                    self._release_pass_rows(model, session_factory, ids + [lock_id])
                 except Exception:
                     _truncate_latch(self._unreadable_archive_warnings, _MAX_DRAIN_LATCH_KEYS)
                     self.logger.log(
@@ -2566,6 +2642,7 @@ class SessionLogManager:
                         message_id,
                         exc_info=True,
                     )
+                attempt_ids.extend(earlier)
                 return True
 
             if contended:
@@ -2582,10 +2659,10 @@ class SessionLogManager:
                     chat_id, message_id,
                 )
                 return _LOCK_CONTENDED
-            self._release_assembly_lock(lock_id)
+            self._release_pass_lock(model, session_factory, lock_id)
             return False
         except _PassInterrupted as exc:
-            self._release_assembly_lock(lock_id)
+            self._release_pass_lock(model, session_factory, lock_id)
             self.logger.log(
                 warn_level(
                     self._unreadable_archive_warnings,
@@ -2600,11 +2677,23 @@ class SessionLogManager:
             )
             return False
         except BaseException:
-            self._release_assembly_lock(lock_id)
+            self._release_pass_lock(model, session_factory, lock_id)
             raise
         finally:
             if sorter is not None:
                 sorter.close()
+            if attempt_ids:
+                try:
+                    self._release_pass_rows(model, session_factory, attempt_ids)
+                except Exception:
+                    self.logger.warning(
+                        "The assembly attempt row(s) of chat_id=%s message_id=%s could not be deleted after "
+                        "the pass returned; the next pass will count them as a pass that never returned, so "
+                        "repeated failures to clean them can drop the turn as a dead pass.",
+                        chat_id,
+                        message_id,
+                        exc_info=True,
+                    )
 
     def _load_prior_events(
         self,

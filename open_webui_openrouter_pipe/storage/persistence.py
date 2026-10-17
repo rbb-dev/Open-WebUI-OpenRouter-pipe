@@ -199,6 +199,7 @@ _PIPE_OWNED_ROW_TYPES = frozenset({
     "session_log_segment",
     "session_log_segment_terminal",
     "session_log_lock",
+    "session_log_attempt",
     "dashboard_purge_lock",
 })
 
