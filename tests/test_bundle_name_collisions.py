@@ -62,9 +62,17 @@ def _resolve(origin: str, name: str) -> tuple[bool, Any]:
         return False, None
 
 
-def test_deduped_header_names_are_the_same_object(tmp_path):
+@pytest.fixture(scope="module")
+def flat_build(tmp_path_factory) -> Any:
     bundler = _bundler()
-    bundler.bundle(output_path=tmp_path / "built.py", compressed=False)
+    bundler.bundle(
+        output_path=tmp_path_factory.mktemp("flat_build") / "built.py", compressed=False
+    )
+    return bundler
+
+
+def test_deduped_header_names_are_the_same_object(flat_build):
+    bundler = flat_build
 
     unproven: list[str] = []
     for name, kept, dropped in bundler.NAME_COLLISIONS:

@@ -19,6 +19,7 @@ package or against a bundle, never comparing the two.
 from __future__ import annotations
 
 import ast
+from collections import deque
 from functools import lru_cache
 import os
 from pathlib import Path
@@ -44,8 +45,17 @@ def _assign_targets(node: ast.AST) -> list[ast.expr]:
     return []
 
 
-def _artifact_source(path: Path) -> tuple[str, bool]:
-    """The artifact's Python, plus whether it carries its modules separately.
+def _statements(tree: ast.AST):
+    pending = deque([tree])
+    while pending:
+        for child in ast.iter_child_nodes(pending.popleft()):
+            if isinstance(child, ast.stmt | ast.excepthandler | ast.match_case):
+                pending.append(child)
+                yield child
+
+
+def _artifact_strings(path: Path) -> tuple[set[str], bool]:
+    """Every string the artifact assigns, plus whether it carries its modules separately.
 
     A compressed bundle stores each module as `zlib(base64(...))` in
     `_BUNDLED_SOURCES_Z`, so parsing the file alone finds none of the package's string
@@ -58,14 +68,14 @@ def _artifact_source(path: Path) -> tuple[str, bool]:
     import base64
     import zlib
 
-    text = path.read_text(encoding="utf-8")
     try:
-        tree = ast.parse(text)
+        tree = ast.parse(path.read_text(encoding="utf-8"))
     except SyntaxError:
-        return text, False
+        return set(), False
 
-    parts = [text]
-    for node in ast.walk(tree):
+    bundled = {value for _, value in _assigned_strings_in(tree)}
+    carried = False
+    for node in _statements(tree):
         if not (isinstance(node, ast.Assign) and len(node.targets) == 1):
             continue
         target = node.targets[0]
@@ -87,10 +97,12 @@ def _artifact_source(path: Path) -> tuple[str, bool]:
         if not isinstance(blob, str):
             continue
         try:
-            parts.append(zlib.decompress(base64.b64decode(blob)).decode("utf-8"))
+            module_source = zlib.decompress(base64.b64decode(blob)).decode("utf-8")
         except Exception:
             continue
-    return "\n".join(parts), len(parts) > 1
+        carried = True
+        bundled.update(value for _, value in _assigned_strings(module_source))
+    return bundled, carried
 
 
 @lru_cache(maxsize=None)
@@ -110,12 +122,15 @@ def _assigned_strings(source: str) -> tuple[tuple[str, str], ...]:
     (`msg`, `reason`), and keying by name keeps only the last -- which silently drops
     most values from the comparison on both sides.
     """
-    out: list[tuple[str, str]] = []
     try:
-        tree = ast.parse(source)
+        return _assigned_strings_in(ast.parse(source))
     except SyntaxError:
         return ()
-    for node in ast.walk(tree):
+
+
+def _assigned_strings_in(tree: ast.AST) -> tuple[tuple[str, str], ...]:
+    out: list[tuple[str, str]] = []
+    for node in _statements(tree):
         targets = _assign_targets(node)
         value = getattr(node, "value", None)
         names = [t.id for t in targets if isinstance(t, ast.Name)]
@@ -153,8 +168,16 @@ def _package_strings(*, package_machinery: bool = True) -> dict[str, str]:
     return found
 
 
+@pytest.fixture(scope="module")
+def package_strings() -> dict[bool, dict[str, str]]:
+    return {
+        True: _package_strings(package_machinery=True),
+        False: _package_strings(package_machinery=False),
+    }
+
+
 @pytest.mark.parametrize("artifact", BUNDLES)
-def test_no_bundled_string_constant_differs_from_the_package(artifact):
+def test_no_bundled_string_constant_differs_from_the_package(package_strings, artifact):
     """Compared by VALUE, so a renamed or relocated constant still matches."""
     path = PROJECT_ROOT / artifact
     if not path.exists():
@@ -165,8 +188,8 @@ def test_no_bundled_string_constant_differs_from_the_package(artifact):
             "this file; skipping made the guarantee conditional on build order."
         )
 
-    source, carries_module_sources = _artifact_source(path)
-    pkg = _package_strings(package_machinery=carries_module_sources)
+    bundled, carries_module_sources = _artifact_strings(path)
+    pkg = package_strings[carries_module_sources]
     assert pkg, "no module-level string constants found; this test is comparing nothing"
 
     # The --no-plugins artifacts omit plugins/ by design, so their constants are
@@ -175,7 +198,6 @@ def test_no_bundled_string_constant_differs_from_the_package(artifact):
         pkg = {k: v for k, v in pkg.items() if not k.startswith("plugins/")}
         assert pkg, "excluding plugins/ left nothing to compare"
 
-    bundled = {v for _, v in _assigned_strings(source)}
     missing = sorted(k for k, v in pkg.items() if v not in bundled)
 
     assert not missing, (

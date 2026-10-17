@@ -2645,8 +2645,6 @@ _CONSOLE_CASES = [
     ("none|PROBE-MESSAGE|warning|WARNING", None),
 ]
 
-_CONSOLE_RESULTS: dict[str, dict] = {}
-
 
 def _run_console_script(cases: list) -> dict:
     import json
@@ -2681,7 +2679,17 @@ def _run_console_script(cases: list) -> dict:
     return payload["results"]
 
 
+@pytest.fixture(scope="module")
+def console_results() -> dict[str, dict]:
+    batch = [
+        (k, dict(zip(("host_handler", "message", "emit_level", "threshold"), k.split("|"))))
+        for k, _ in _CONSOLE_CASES
+    ]
+    return _run_console_script(batch)
+
+
 def _console_probe(
+    results: dict[str, dict],
     *,
     host_handler: str,
     message: str = "PROBE-MESSAGE",
@@ -2708,20 +2716,16 @@ def _console_probe(
         "emit_level": emit_level,
         "threshold": threshold,
     }
-    if key not in _CONSOLE_RESULTS:
-        batch = [(k, dict(zip(("host_handler", "message", "emit_level", "threshold"), k.split("|"))))
-                 for k, _ in _CONSOLE_CASES]
-        if key not in {k for k, _ in _CONSOLE_CASES}:
-            batch = [(key, spec)]
-        _CONSOLE_RESULTS.update(_run_console_script(batch))
-    outcome = _CONSOLE_RESULTS[key]
+    if key not in results:
+        results.update(_run_console_script([(key, spec)]))
+    outcome = results[key]
     assert outcome["ok"], f"console probe case {key!r} raised: {outcome['out']}"
     return outcome["out"]
 
 
 @pytest.mark.timeout(600)
 @pytest.mark.parametrize("host_handler", ["plain", "none"], ids=["host-prints", "host-silent"])
-def test_a_record_reaches_the_console_exactly_once(host_handler):
+def test_a_record_reaches_the_console_exactly_once(console_results, host_handler):
     """One line per record, whether or not the host configured a sink.
 
     The pipe used to write its own formatted line to stdout AND forward the record to the
@@ -2734,7 +2738,7 @@ def test_a_record_reaches_the_console_exactly_once(host_handler):
     makes the pipe invisible to an operator's configured sinks. Only one of the two can
     own the console, and which one depends on whether an ancestor handler exists.
     """
-    output = _console_probe(host_handler=host_handler)
+    output = _console_probe(console_results, host_handler=host_handler)
     assert output.count("PROBE-MESSAGE") == 1, (
         f"with host_handler={host_handler!r} the record appeared "
         f"{output.count('PROBE-MESSAGE')} times:\n{output}"
@@ -2742,14 +2746,14 @@ def test_a_record_reaches_the_console_exactly_once(host_handler):
 
 
 @pytest.mark.timeout(600)
-def test_the_console_does_not_corrupt_a_json_log_stream():
+def test_the_console_does_not_corrupt_a_json_log_stream(console_results):
     """LOG_FORMAT=json is a supported Open WebUI setting, and it must stay parseable.
 
     The private stdout write emitted the pipe's own text format regardless of how the
     operator had configured logging, so every pipe record put a non-JSON line into a JSON
     stream and broke structured log parsing for the whole deployment.
     """
-    output = _console_probe(host_handler="json")
+    output = _console_probe(console_results, host_handler="json")
     lines = [ln for ln in output.splitlines() if "PROBE-MESSAGE" in ln]
     assert len(lines) == 1, f"expected one line, got {len(lines)}:\n{output}"
     import json as _json
@@ -2764,7 +2768,9 @@ def test_the_console_does_not_corrupt_a_json_log_stream():
     [("info", 0), ("warning", 1)],
     ids=["below-2", "at"],
 )
-def test_the_console_honours_the_configured_threshold(host_handler, emit_level, expected):
+def test_the_console_honours_the_configured_threshold(
+    console_results, host_handler, emit_level, expected
+):
     """LOG_LEVEL governs BOTH console sinks, not just the forwarder.
 
     The fallback handler was attached with no level and no filter while the package
@@ -2781,7 +2787,7 @@ def test_the_console_honours_the_configured_threshold(host_handler, emit_level, 
     to print everything and one hardwired to print nothing each satisfy one arm.
     """
     output = _console_probe(
-        host_handler=host_handler, emit_level=emit_level, threshold="WARNING"
+        console_results, host_handler=host_handler, emit_level=emit_level, threshold="WARNING"
     )
     assert output.count("PROBE-MESSAGE") == expected, (
         f"with host_handler={host_handler!r}, LOG_LEVEL=WARNING and a {emit_level.upper()} "

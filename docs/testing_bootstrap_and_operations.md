@@ -123,6 +123,8 @@ PYTHONPATH=. .venv/bin/pytest tests/test_multimodal_inputs.py -q
 PYTHONPATH=. .venv/bin/pytest tests -q
 ```
 
+`scripts/gate.sh batch` and `release` hold every package-suite test to two seconds for its call: a test over that is re-run alone, and fails the gate only when it is still over. Fixture setup is not limited. Work that costs seconds and serves several tests -- a subprocess, an Open WebUI load, a bundle build -- belongs in one module-scoped fixture, which the gate lists with its time; a wait belongs on the simulated clock in `tests/_jumping_clock.py`.
+
 When a test fakes a *dashboard worker other than this one*, derive that worker's pid
 from `os.getpid()` (offset it, e.g. `os.getpid() + 1_000_003`), never a literal such as
 `111`. A literal can collide with a real pytest worker's own pid, which suppresses the

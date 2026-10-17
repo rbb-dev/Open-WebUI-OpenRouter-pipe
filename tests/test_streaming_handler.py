@@ -34,6 +34,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
+from conftest import _TimeTravelPolicy
 from open_webui_openrouter_pipe import EncryptedStr, Pipe, ResponsesBody, _ToolExecutionContext
 from open_webui_openrouter_pipe.core.config import EncryptedStr
 from open_webui_openrouter_pipe.core.errors import (
@@ -11644,22 +11645,29 @@ class TestAppendOutputBlockEmptySnippet:
 class TestLaterTimeoutWithDelayedStream:
     """Tests for _later timeout path with delayed model response (lines 551-555)."""
 
+    @pytest.fixture
+    def event_loop_policy(self):
+        return _TimeTravelPolicy()
+
     @pytest.mark.asyncio
     async def test_later_timeout_fires_before_model_started(self, monkeypatch, pipe_instance_async):
         """Test _later fires thinking status when model takes time (lines 551-555)."""
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
+        loop = asyncio.get_running_loop()
+        stamped: list[tuple[float, dict]] = []
+        before_the_model_started: list[tuple[float, dict]] = []
 
         async def delayed_stream(self, session, request_body, **_kwargs):
             await asyncio.sleep(2.0)
+            before_the_model_started.extend(stamped)
             yield {"type": "response.output_text.delta", "delta": "Hello"}
             yield {"type": "response.completed", "response": {"output": [], "usage": {}}}
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", delayed_stream)
 
-        emitted: list[dict] = []
         async def emitter(event):
-            emitted.append(event)
+            stamped.append((loop.time(), event))
 
         result = await pipe._streaming_handler._run_streaming_loop(
             body,
@@ -11672,12 +11680,13 @@ class TestLaterTimeoutWithDelayedStream:
         )
 
         assert result == "Hello"
-        status_descriptions = [
-            e.get("data", {}).get("description", "")
-            for e in emitted if e.get("type") == "status"
+        status_times = [
+            at for at, e in before_the_model_started if e.get("type") == "status"
         ]
-        thinking_statuses = [d for d in status_descriptions if "think" in d.lower() or "read" in d.lower() or "gather" in d.lower()]
-        assert len(thinking_statuses) >= 1
+        assert any(at - status_times[0] >= 1.0 for at in status_times[1:]), (
+            "no status followed the opening one while the model was silent, so the "
+            f"delayed status never fired; status times were {status_times}"
+        )
 
 
 class TestToolCallsPayloadDebugLogging:

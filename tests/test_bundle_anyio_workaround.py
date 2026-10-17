@@ -12,6 +12,7 @@ The guarantee belongs here instead, where the source is always present.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -61,16 +62,23 @@ def test_absent_source_degrades_instead_of_failing_the_build(tmp_path, capsys):
     assert "without the anyio #1111 workaround" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("compressed", [False, True])
-def test_a_freshly_built_bundle_carries_the_workaround(tmp_path, compressed):
-    """Builds from source, so it holds even in a checkout with no artifacts yet."""
+@pytest.fixture(scope="module")
+def built_bundles(tmp_path_factory) -> tuple[str, dict[bool, str]]:
     bundler = _bundler()
-    output = tmp_path / "built.py"
+    directory = tmp_path_factory.mktemp("built_bundles")
+    texts: dict[bool, str] = {}
+    for compressed in (False, True):
+        output = directory / f"built-{'compressed' if compressed else 'flat'}.py"
+        bundler.bundle(output_path=output, compressed=compressed)
+        texts[compressed] = output.read_text(encoding="utf-8", errors="replace")
+    return bundler.ANYIO_WORKAROUND_MARKER, texts
 
-    bundler.bundle(output_path=output, compressed=compressed)
 
-    text = output.read_text(encoding="utf-8", errors="replace")
-    marker = bundler.ANYIO_WORKAROUND_MARKER
+@pytest.mark.parametrize("compressed", [False, True])
+def test_a_freshly_built_bundle_carries_the_workaround(built_bundles, compressed):
+    """Builds from source, so it holds even in a checkout with no artifacts yet."""
+    marker, built = built_bundles
+    text = built[compressed]
     shape = "compressed" if compressed else "flat"
 
     assert f"def {marker}(" in text, f"{shape} bundle does not define {marker}()"
@@ -157,28 +165,61 @@ def test_the_version_gate_applies_the_workaround_below_the_fixed_version():
 
 
 _GATE_PROBE = r'''
-import importlib.metadata, importlib.util, sys
-importlib.metadata.version = lambda name: FAKE_VERSION if name == "anyio" else "0"
-spec = importlib.util.spec_from_file_location("_anyio_probe", WORKAROUND)
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
+import importlib.metadata, importlib.util, json
+
+
+def _fake_version(fake):
+    return lambda name: fake if name == "anyio" else "0"
+
+
+importlib.metadata.version = _fake_version(VERSIONS[0])
 from anyio._backends._asyncio import CancelScope
-patched = getattr(CancelScope, "_deliver_cancellation", None)
-print("APPLIED" if getattr(patched, "_anyio_1111_workaround_applied", False) else "SKIPPED")
+
+original = CancelScope._deliver_cancellation
+outcomes = {}
+for fake in VERSIONS:
+    CancelScope._deliver_cancellation = original
+    importlib.metadata.version = _fake_version(fake)
+    spec = importlib.util.spec_from_file_location("_anyio_probe", WORKAROUND)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    patched = getattr(CancelScope, "_deliver_cancellation", None)
+    applied = getattr(patched, "_anyio_1111_workaround_applied", False)
+    outcomes[fake] = "APPLIED" if applied else "SKIPPED"
+print(json.dumps(outcomes))
 '''
 
+_GATE_CASES = [
+    ("4.12.1", "APPLIED"),
+    ("4.14.1", "APPLIED"),
+    ("4.14.2", "SKIPPED"),
+    ("4.20.0", "SKIPPED"),
+    ("5.0.0", "SKIPPED"),
+]
 
-@pytest.mark.parametrize(
-    ("installed", "expected"),
-    [
-        ("4.12.1", "APPLIED"),
-        ("4.14.1", "APPLIED"),
-        ("4.14.2", "SKIPPED"),
-        ("4.20.0", "SKIPPED"),
-        ("5.0.0", "SKIPPED"),
-    ],
-)
-def test_the_gate_decides_whether_cancelscope_is_actually_patched(installed, expected):
+
+@pytest.fixture(scope="module")
+def gate_probe_run():
+    import subprocess
+
+    workaround = PROJECT_ROOT / "scripts" / "anyio_1111_workaround.py"
+    probe = (
+        f"VERSIONS = {[installed for installed, _ in _GATE_CASES]!r}\n"
+        f"WORKAROUND = {str(workaround)!r}\n" + _GATE_PROBE
+    )
+    return subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        cwd=str(PROJECT_ROOT),
+        timeout=120,
+    )
+
+
+@pytest.mark.parametrize(("installed", "expected"), _GATE_CASES)
+def test_the_gate_decides_whether_cancelscope_is_actually_patched(
+    gate_probe_run, installed, expected
+):
     """Run the real gate and look at CancelScope, not at the comparator.
 
     The sibling test execs `_before_fix` standalone, so inverting its *call site*
@@ -190,21 +231,10 @@ def test_the_gate_decides_whether_cancelscope_is_actually_patched(installed, exp
     Importing the module *is* the exercise: it self-invokes and then deletes the
     symbol, which is exactly what the bundle head does.
     """
-    import subprocess
-
-    workaround = PROJECT_ROOT / "scripts" / "anyio_1111_workaround.py"
-    probe = (
-        f"FAKE_VERSION = {installed!r}\nWORKAROUND = {str(workaround)!r}\n" + _GATE_PROBE
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", probe],
-        capture_output=True,
-        text=True,
-        cwd=str(PROJECT_ROOT),
-        timeout=120,
-    )
+    result = gate_probe_run
     assert result.returncode == 0, f"probe failed:\n{result.stdout}\n{result.stderr}"
-    assert result.stdout.strip().endswith(expected), (
-        f"anyio {installed} should be {expected}, got {result.stdout.strip()!r}. "
+    outcome = json.loads(result.stdout.strip().splitlines()[-1])[installed]
+    assert outcome == expected, (
+        f"anyio {installed} should be {expected}, got {outcome!r}. "
         "The version gate is not deciding what actually happens to CancelScope."
     )

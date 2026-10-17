@@ -57,12 +57,22 @@ def _import_pipe_module():
     return importlib.import_module("open_webui_openrouter_pipe.pipe")
 
 
-def _exec_bundle_as_module(bundle_path: Path, module_name: str) -> types.ModuleType:
-    source = bundle_path.read_text(encoding="utf-8")
+@pytest.fixture(scope="module")
+def compiled_bundles() -> dict[Path, types.CodeType]:
+    return {
+        path: compile(path.read_text(encoding="utf-8"), str(path), "exec")
+        for path in (READABLE_BUNDLE, COMPRESSED_BUNDLE)
+        if path.exists()
+    }
+
+
+def _exec_bundle_as_module(
+    bundle_path: Path, module_name: str, code: types.CodeType
+) -> types.ModuleType:
     module = types.ModuleType(module_name)
     module.__file__ = str(bundle_path)
     sys.modules[module_name] = module
-    exec(compile(source, str(bundle_path), "exec"), module.__dict__)
+    exec(code, module.__dict__)
     return module
 
 
@@ -299,17 +309,18 @@ def test_multi_update_chain_drains_each_generation(fresh_registry):
 
 
 @pytest.mark.skipif(not READABLE_BUNDLE.exists(), reason="readable bundle not built")
-def test_readable_bundle_hot_reload_uses_new_code(isolated_sys_modules):
+def test_readable_bundle_hot_reload_uses_new_code(isolated_sys_modules, compiled_bundles):
     module_name = "function_test_pipe_readable"
     for k in list(sys.modules):
         if k == module_name or k.startswith("open_webui_openrouter_pipe"):
             sys.modules.pop(k, None)
     sys.modules.pop(LIFECYCLE_REGISTRY_KEY, None)
 
-    mod1 = _exec_bundle_as_module(READABLE_BUNDLE, module_name)
+    code = compiled_bundles[READABLE_BUNDLE]
+    mod1 = _exec_bundle_as_module(READABLE_BUNDLE, module_name, code)
     pipe1_class = mod1.Pipe
 
-    mod2 = _exec_bundle_as_module(READABLE_BUNDLE, module_name)
+    mod2 = _exec_bundle_as_module(READABLE_BUNDLE, module_name, code)
     pipe2_class = mod2.Pipe
 
     assert pipe1_class is not pipe2_class
@@ -431,7 +442,7 @@ async def test_supersession_emits_visible_lifecycle_messages(fresh_registry, cap
 
 
 @pytest.mark.skipif(not COMPRESSED_BUNDLE.exists(), reason="compressed bundle not built")
-def test_compressed_bundle_hot_reload_uses_new_code(isolated_sys_modules):
+def test_compressed_bundle_hot_reload_uses_new_code(isolated_sys_modules, compiled_bundles):
     module_name = "function_test_pipe_compressed"
     for k in list(sys.modules):
         if k == module_name or k.startswith("open_webui_openrouter_pipe"):
@@ -442,10 +453,11 @@ def test_compressed_bundle_hot_reload_uses_new_code(isolated_sys_modules):
     ]
     sys.modules.pop(LIFECYCLE_REGISTRY_KEY, None)
 
-    mod1 = _exec_bundle_as_module(COMPRESSED_BUNDLE, module_name)
+    code = compiled_bundles[COMPRESSED_BUNDLE]
+    mod1 = _exec_bundle_as_module(COMPRESSED_BUNDLE, module_name, code)
     pipe1_class = mod1.Pipe
 
-    mod2 = _exec_bundle_as_module(COMPRESSED_BUNDLE, module_name)
+    mod2 = _exec_bundle_as_module(COMPRESSED_BUNDLE, module_name, code)
     pipe2_class = mod2.Pipe
 
     assert pipe1_class is not pipe2_class

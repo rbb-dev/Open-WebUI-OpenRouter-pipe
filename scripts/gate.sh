@@ -25,6 +25,7 @@ BUNDLES=(open_webui_openrouter_pipe_bundled.py
 rc=0
 ARGV=("$@")
 MODE="${1:-}"
+CALL_LIMIT_SECONDS=2.0
 
 # A bundled suite costs ~7 minutes each and answers a question that only matters once the work is
 # finished. Asking for one mid-work is almost always a reflex, so it has to be said out loud.
@@ -79,6 +80,21 @@ build_bundles() {
     [ -f "$b" ] && [ "$(stat -c %Y "$b")" -ge "$newest" ] || { echo "gate: STALE OR MISSING $b"; stale=1; }
   done
   [ $stale -eq 0 ] || rc=1
+}
+
+package_suite() {
+  step "package suite"
+  local log
+  log=$(mktemp)
+  run_pytest python -m pytest tests/ -q --durations=0 --durations-min=1.0 2>&1 | tee "$log"
+  if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+    rc=1
+    echo "call limit not checked: the package suite failed"
+  else
+    step "call limit (${CALL_LIMIT_SECONDS}s per test, re-timed alone before it fails)"
+    keep python scripts/check_slow_tests.py "$log" --limit "$CALL_LIMIT_SECONDS"
+  fi
+  rm -f "$log"
 }
 
 # The batch tier is otherwise blind to a test module that cannot IMPORT under a smaller
@@ -143,7 +159,7 @@ case "${1:-}" in
   batch)
     [ "${2:-}" = "--flat" ] && require_deliberate_bundle_run "the flat bundled suite" "7 minutes" "$@"
     build_bundles
-    step "package suite"; keep run_pytest python -m pytest tests/ -q --durations=25
+    package_suite
     static_checks
     collect_no_plugins
     if [ "${2:-}" = "--flat" ]; then
@@ -161,7 +177,7 @@ case "${1:-}" in
     require_deliberate_bundle_run "the release tier, which runs all four bundled suites" "25 minutes" "$@"
     export STRICT_PRESCRIPTIONS=1
     build_bundles
-    step "package suite"; keep run_pytest python -m pytest tests/ -q
+    package_suite
     static_checks
     for b in "${BUNDLES[@]}"; do
       step "bundled suite: $b"

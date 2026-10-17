@@ -1,6 +1,7 @@
 """Exec both bundles via OWUI's loader pattern in a subprocess and check schemas."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from uuid import uuid4
 
@@ -17,15 +18,29 @@ BUNDLES = [
 ]
 
 
-# Whichever consumer of bundle_probe runs first pays the load; the rest read the
-# cache. A budget on only one of them makes the suite's verdict depend on
-# collection order, and this file sorts first.
+@pytest.fixture(scope="module")
+def bundle_loads() -> dict[str, dict]:
+    def _load(path: Path) -> dict:
+        return probe(
+            path,
+            module_name=f"function_open_webui_openrouter_pipe_{uuid4().hex}",
+            pop_module=True,
+        )
+
+    present = {name: path for name, path in BUNDLES if path.exists()}
+    with ThreadPoolExecutor(max_workers=max(len(present), 1)) as pool:
+        pending = {name: pool.submit(_load, path) for name, path in present.items()}
+        return {name: future.result() for name, future in pending.items()}
+
+
 @pytest.mark.timeout(600)
 @pytest.mark.parametrize("name,bundle_path", BUNDLES, ids=[b[0] for b in BUNDLES])
-def test_bundle_loads_via_owui_faithful_loader(name: str, bundle_path: Path) -> None:
+def test_bundle_loads_via_owui_faithful_loader(
+    name: str, bundle_path: Path, bundle_loads: dict[str, dict]
+) -> None:
     if not bundle_path.exists():
         pytest.skip(f"{name} bundle not built (run scripts/bundle_v2.py first)")
-    data = probe(bundle_path)
+    data = bundle_loads[name]
     assert data["ok"], f"{name}: bundle exec failed -- {data['error']}"
     assert data["schema"]["valves"] > 0, (
         f"{name}: Pipe.Valves schema has no properties, so the artifact exposes no "
@@ -39,15 +54,14 @@ def test_bundle_loads_via_owui_faithful_loader(name: str, bundle_path: Path) -> 
 
 @pytest.mark.timeout(600)
 @pytest.mark.parametrize("name,bundle_path", BUNDLES, ids=[b[0] for b in BUNDLES])
-def test_bundle_id_survives_a_per_load_module_name(name: str, bundle_path: Path) -> None:
+def test_bundle_id_survives_a_per_load_module_name(
+    name: str, bundle_path: Path, bundle_loads: dict[str, dict]
+) -> None:
     """Open WebUI 0.12 execs the artifact as ``function_<id>_<32hex>`` and drops it from
     ``sys.modules`` on return; the id the bundle publishes must still be the admin's."""
     if not bundle_path.exists():
         pytest.skip(f"{name} bundle not built (run scripts/bundle_v2.py first)")
-    data = probe(
-        bundle_path,
-        module_name=f"function_open_webui_openrouter_pipe_{uuid4().hex}",
-    )
+    data = bundle_loads[name]
     assert data["ok"], f"{name}: bundle exec failed -- {data['error']}"
     assert data["pipe_id"] == "open_webui_openrouter_pipe", data["pipe_id"]
     assert (
@@ -59,7 +73,9 @@ def test_bundle_id_survives_a_per_load_module_name(name: str, bundle_path: Path)
 
 
 @pytest.mark.timeout(600)
-def test_bundle_submodule_alias_survives_a_dropped_module() -> None:
+def test_bundle_submodule_alias_survives_a_dropped_module(
+    bundle_loads: dict[str, dict],
+) -> None:
     """0.12's loader pops the module from ``sys.modules`` on return; the PEP 562 fallback
     the readable flat bundle installs for submodule names must not consult the registry
     then. The compressed artifact carries no such shim -- its import hook answers from
@@ -67,11 +83,7 @@ def test_bundle_submodule_alias_survives_a_dropped_module() -> None:
     bundle_path = ROOT / "open_webui_openrouter_pipe_bundled.py"
     if not bundle_path.exists():
         pytest.skip("readable bundle not built (run scripts/bundle_v2.py first)")
-    data = probe(
-        bundle_path,
-        module_name=f"function_open_webui_openrouter_pipe_{uuid4().hex}",
-        pop_module=True,
-    )
+    data = bundle_loads["readable"]
     assert data["ok"], f"bundle exec failed -- {data['error']}"
     assert data["alias_probe_attr"], "no unbound submodule name to probe the alias with"
     assert data["alias_resolves"] is True, data["alias_resolves"]

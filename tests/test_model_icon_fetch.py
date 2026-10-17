@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
 import io
 import logging
 import threading
@@ -188,6 +189,7 @@ def icon_handler(pipe_instance_async):
     return pipe_instance_async._multimodal_handler
 
 
+@functools.lru_cache(maxsize=None)
 def _png(side: int) -> bytes:
     from PIL import Image
 
@@ -743,12 +745,12 @@ async def test_converting_icons_does_not_stall_the_event_loop(icon_handler):
     """Ten budget-sized icons held the loop for 2.9s, so nothing else in the worker ran.
 
     The threshold is calibrated in-test against one decode rather than hard-coded: the
-    same conversion is timed synchronously first, and the loop's worst stall across ten
+    same conversion is timed synchronously first, and the loop's worst stall across two
     of them must come in under half of that. On this tree a single decode is ~0.26s and
     the worst stall drops from ~0.28s to ~0.014s, so the margin is twenty-fold -- but a
     machine slow enough to change the decode time changes the bound with it.
 
-    The ten conversions are measured up to three times, each run starting without a decode
+    The two conversions are measured up to three times, each run starting without a decode
     pool. A conversion held on the loop stalls it in every run, while one unrelated pause
     of the machine (seen once, a 0.16s stall against a 0.27s decode) spoils only the run it
     lands in.
@@ -777,7 +779,7 @@ async def test_converting_icons_does_not_stall_the_event_loop(icon_handler):
         await asyncio.sleep(0.05)
         stalls.clear()
         try:
-            for _ in range(10):
+            for _ in range(2):
                 session = _Session(
                     _Response(_LiteralBody(payload), {"Content-Type": "image/png"})
                 )

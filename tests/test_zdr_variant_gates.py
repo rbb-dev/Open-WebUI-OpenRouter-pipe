@@ -194,7 +194,14 @@ _ZDR_GATES = {
 }
 
 
-def test_no_gate_compares_a_zdr_id_without_stripping_the_variant():
+@pytest.fixture(scope="module")
+def package_trees():
+    from tests.package_sources import parsed_sources
+
+    return parsed_sources("open_webui_openrouter_pipe")
+
+
+def test_no_gate_compares_a_zdr_id_without_stripping_the_variant(package_trees):
     """The rule lives in one place, so the gates cannot drift apart again.
 
     v2.7.1 stripped at the ZDR_ENFORCE call site and left two others comparing full ids.
@@ -203,8 +210,6 @@ def test_no_gate_compares_a_zdr_id_without_stripping_the_variant():
     """
     import ast
     import pathlib
-
-    from tests.package_sources import parsed_sources
 
     package = pathlib.Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
     seen, offenders = set(), []
@@ -222,7 +227,7 @@ def test_no_gate_compares_a_zdr_id_without_stripping_the_variant():
         for child in ast.iter_child_nodes(node):
             _visit(child, rel, owner)
 
-    for path, _source, tree in parsed_sources("open_webui_openrouter_pipe"):
+    for path, _source, tree in package_trees:
         _visit(tree, path.relative_to(package.parent).as_posix(), None)
 
     assert seen == _ZDR_GATES, (
@@ -876,7 +881,7 @@ async def test_an_undecodable_user_valve_blob_enforces_zdr(settings, expect_refu
         assert (captured[-1].get("provider") or {}).get("zdr") is not True
 
 
-def test_the_stored_valve_row_is_classified_in_exactly_one_place():
+def test_the_stored_valve_row_is_classified_in_exactly_one_place(package_trees):
     """One caller, so the undecodable-blob rule cannot be forgotten by a new one.
 
     The classification lives in `Pipe._read_user_valves`, not at the call sites: a
@@ -887,8 +892,6 @@ def test_the_stored_valve_row_is_classified_in_exactly_one_place():
     """
     import ast
     import pathlib
-
-    from tests.package_sources import parsed_sources
 
     package = pathlib.Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
     callers = set()
@@ -903,7 +906,7 @@ def test_the_stored_valve_row_is_classified_in_exactly_one_place():
         for child in ast.iter_child_nodes(node):
             _visit(child, rel, owner)
 
-    for path, _source, tree in parsed_sources("open_webui_openrouter_pipe"):
+    for path, _source, tree in package_trees:
         _visit(tree, path.relative_to(package.parent).as_posix(), None)
 
     assert callers == {("open_webui_openrouter_pipe/pipe.py", "_read_user_valves")}, (

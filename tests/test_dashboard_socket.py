@@ -1160,6 +1160,126 @@ class TestConfigChangeNotification:
         payload = await _build_emit_payload(pipe, None, "ns", "wk", 0, {})
         assert payload["cfgRev"] == 555
 
+
+_READ_CONFIG_REVS = [1717171717]
+
+_READ_CONFIG_REV_CASES = """
+def case_returns_the_rows_updated_at(rev):
+    async def main():
+        engine = await _build([("openrouter", rev), ("other", 9999)])
+        try:
+            got, _digest = await ds.read_config_rev("openrouter")
+        finally:
+            await engine.dispose()
+        assert got == rev, (
+            "the row's own updated_at is not what the tab was told"
+        )
+        assert len(emitted) == 1, f"expected one statement, got {emitted!r}"
+        statement, parameters = emitted[0]
+        assert "openrouter" in str(parameters), (
+            f"the revision read for the wrong pipe id: {statement!r} "
+            f"with {parameters!r}"
+        )
+        assert "9999" not in str(parameters), (
+            f"another function's revision was read: {parameters!r}"
+        )
+        assert _projection(statement) == "function.updated_at, function.valves", (
+            f"the read selected {_projection(statement)!r} rather than the two "
+            f"columns it needs: {statement!r}"
+        )
+
+    asyncio.run(main())
+
+
+def case_is_none_when_the_row_is_missing():
+    async def main():
+        engine = await _build([("other", 9999)])
+        try:
+            assert await ds.read_config_rev("openrouter") == (None, None)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(main())
+
+
+def case_is_none_when_the_lookup_raises():
+    async def main():
+        async with _raising():
+            assert await ds.read_config_rev("openrouter") == (None, None)
+
+    asyncio.run(main())
+"""
+
+_READ_CONFIG_REV_DRIVER = """
+import json, tempfile, traceback
+
+root = os.environ["ORPIPE_PROBE_TMPDIR"]
+cases = [
+    (f"returns_the_rows_updated_at[{rev}]", lambda rev=rev: case_returns_the_rows_updated_at(rev))
+    for rev in __REVS__
+]
+cases += [
+    ("is_none_when_the_row_is_missing", case_is_none_when_the_row_is_missing),
+    ("is_none_when_the_lookup_raises", case_is_none_when_the_lookup_raises),
+]
+results = {}
+for key, run in cases:
+    emitted.clear()
+    os.environ["ORPIPE_PROBE_TMPDIR"] = tempfile.mkdtemp(dir=root)
+    try:
+        run()
+        results[key] = None
+    except BaseException:
+        results[key] = traceback.format_exc()
+print("READ_CONFIG_REV_JSON:" + json.dumps(results))
+"""
+
+
+@pytest.fixture(scope="module")
+def read_config_rev_run(tmp_path_factory) -> tuple[dict[str, str | None], str | None]:
+    import json
+    import subprocess
+    from pathlib import Path
+
+    project_root = Path(__file__).resolve().parents[1]
+    script = "\n".join(
+        (
+            _READ_CONFIG_REV_HARNESS,
+            _READ_CONFIG_REV_CASES,
+            _READ_CONFIG_REV_DRIVER.replace("__REVS__", repr(_READ_CONFIG_REVS)),
+        )
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=str(project_root),
+        env={
+            **os.environ,
+            "PYTHONPATH": str(project_root),
+            "WEBUI_SECRET_KEY": "probe",
+            "ORPIPE_PROBE_TMPDIR": str(tmp_path_factory.mktemp("read_config_rev")),
+        },
+        timeout=300,
+        check=False,
+    )
+    line = next(
+        (ln for ln in proc.stdout.splitlines() if ln.startswith("READ_CONFIG_REV_JSON:")),
+        None,
+    )
+    if proc.returncode != 0 or line is None:
+        return {}, (
+            f"probe failed (rc={proc.returncode})\n--- stdout ---\n{proc.stdout}\n"
+            f"--- stderr ---\n{proc.stderr}"
+        )
+    return json.loads(line[len("READ_CONFIG_REV_JSON:") :]), None
+
+
+def _read_config_rev_failure(run: tuple[dict[str, str | None], str | None], key: str) -> str | None:
+    results, probe_failure = run
+    return probe_failure if probe_failure is not None else results[key]
+
+
 class TestReadConfigRev:
     """The config revision the whole config tab notices changes by.
 
@@ -1181,90 +1301,20 @@ class TestReadConfigRev:
     `sys.modules` entries, and neither is undone by restoring the mapping.
     """
 
-    @staticmethod
-    def _run(tmp_path, body: str) -> None:
-        import os
-        import subprocess
-        import textwrap
-        from pathlib import Path
-
-        project_root = Path(__file__).resolve().parents[1]
-        script = textwrap.dedent(_READ_CONFIG_REV_HARNESS) + "\n" + textwrap.dedent(body)
-        proc = subprocess.run(
-            [sys.executable, "-c", script],
-            capture_output=True,
-            text=True,
-            cwd=str(project_root),
-            env={**os.environ, "PYTHONPATH": str(project_root), "WEBUI_SECRET_KEY": "probe",
-                 "ORPIPE_PROBE_TMPDIR": str(tmp_path)},
-            timeout=300,
-            check=False,
-        )
-        assert proc.returncode == 0, (
-            f"probe failed (rc={proc.returncode})\n--- stdout ---\n{proc.stdout}\n"
-            f"--- stderr ---\n{proc.stderr}"
-        )
-
-    @pytest.mark.parametrize("rev", [1717171717])
-    def test_it_returns_the_rows_updated_at(self, tmp_path, rev):
+    @pytest.mark.parametrize("rev", _READ_CONFIG_REVS)
+    def test_it_returns_the_rows_updated_at(self, read_config_rev_run, rev):
         """The single-statement assertion is what makes this the read's own: Open WebUI's `get_function_by_id` issues a
         whole-row select, so the wide path fails here on the column list rather than on the value, which is the
         point.
         """
-        self._run(
-            tmp_path,
-            f"""
-            async def main():
-                engine = await _build([("openrouter", {rev}), ("other", 9999)])
-                try:
-                    got, _digest = await ds.read_config_rev("openrouter")
-                finally:
-                    await engine.dispose()
-                assert got == {rev}, (
-                    "the row's own updated_at is not what the tab was told"
-                )
-                assert len(emitted) == 1, f"expected one statement, got {{emitted!r}}"
-                statement, parameters = emitted[0]
-                assert "openrouter" in str(parameters), (
-                    f"the revision read for the wrong pipe id: {{statement!r}} "
-                    f"with {{parameters!r}}"
-                )
-                assert "9999" not in str(parameters), (
-                    f"another function's revision was read: {{parameters!r}}"
-                )
-                assert _projection(statement) == "function.updated_at, function.valves", (
-                    f"the read selected {{_projection(statement)!r}} rather than the two "
-                    f"columns it needs: {{statement!r}}"
-                )
+        failure = _read_config_rev_failure(read_config_rev_run, f"returns_the_rows_updated_at[{rev}]")
+        assert failure is None, failure
 
-            asyncio.run(main())
-            """
-        )
-
-    def test_it_is_none_when_the_row_is_missing(self, tmp_path):
+    def test_it_is_none_when_the_row_is_missing(self, read_config_rev_run):
         """Needed alongside the case above: alone, either is satisfied by a constant."""
-        self._run(
-            tmp_path,
-            """
-            async def main():
-                engine = await _build([("other", 9999)])
-                try:
-                    assert await ds.read_config_rev("openrouter") == (None, None)
-                finally:
-                    await engine.dispose()
+        failure = _read_config_rev_failure(read_config_rev_run, "is_none_when_the_row_is_missing")
+        assert failure is None, failure
 
-            asyncio.run(main())
-            """
-        )
-
-    def test_it_is_none_when_the_lookup_raises(self, tmp_path):
-        self._run(
-            tmp_path,
-            """
-            async def main():
-                async with _raising():
-                    assert await ds.read_config_rev("openrouter") == (None, None)
-
-            asyncio.run(main())
-            """
-        )
+    def test_it_is_none_when_the_lookup_raises(self, read_config_rev_run):
+        failure = _read_config_rev_failure(read_config_rev_run, "is_none_when_the_lookup_raises")
+        assert failure is None, failure
