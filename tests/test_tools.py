@@ -362,9 +362,9 @@ async def test_execute_function_calls_with_context_idle_timeout():
 async def test_idle_timeout_returns_failed_output_and_continues():
     """Idle timeout returns failed outputs for all timed-out tools (no exception).
 
-    Both workers must DEQUEUE and START both calls before the idle limit can be what cut
-    them: a call that never started is answered "was not started ... (idle wait)" -- a
-    different message and a different subject. So two things hold this together.
+    Both workers must DEQUEUE and START both calls for the idle limit to be what ends
+    them: the limit counts from a call's own start and never ends a call that has not
+    started. So two things hold this together.
 
     The limit is a second, not milliseconds. Measured on an idle box both tools hold their
     slot ~1.3 ms after the enqueue, and pinned to one core under contention the same figure
@@ -420,9 +420,6 @@ async def test_idle_timeout_returns_failed_output_and_continues():
                 {"type": "function_call", "call_id": "c2", "name": "tool_b", "arguments": "{}"},
             ]
 
-            # Two calls, so two workers and two slots: with the one-slot context the second
-            # call would never be dequeued and this would measure the never-started path
-            # rather than the idle limit its name is about.
             context.per_request_semaphore = asyncio.Semaphore(2)
             executor = pipe._ensure_tool_executor()
             for _ in range(2):
@@ -431,9 +428,6 @@ async def test_idle_timeout_returns_failed_output_and_continues():
             outputs = await executor._execute_function_calls(calls, tools)
 
             assert len(outputs) == 2
-            # The non-vacuity this row rests on: both calls reached their tool body, so
-            # "timed out" below is the idle limit cutting two running tools and not the
-            # never-started path answering for two calls that never left the queue.
             assert started_a.is_set() and started_b.is_set(), (
                 "a tool never started, so this row measured the queue wait rather than "
                 f"the idle limit: tool_a={started_a.is_set()} tool_b={started_b.is_set()}"

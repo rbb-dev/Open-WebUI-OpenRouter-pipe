@@ -412,6 +412,12 @@ _VALVE_DRAIN_MAX_FLUSHES = 64
 
 _TOOL_THREAD_CAP: int = 8
 
+_TOOL_THREAD_RESERVE: int = 2
+
+_TOOL_POOL_WARN_EVERY_S: float = 300.0
+
+_TOOL_WAIT_WARN_AFTER_S: float = 300.0
+
 _TOOL_CANCEL_GRACE_SECONDS: float = 5.0
 
 _PERSIST_DRAIN_SECONDS: float = 5.0
@@ -428,6 +434,17 @@ def _tool_thread_workers(handler: Any) -> int:
     except (TypeError, ValueError):
         bound = 200
     return max(1, min(_TOOL_THREAD_CAP, bound))
+
+
+def _tool_thread_share(handler: Any, width: int) -> int:
+    limit: Any = getattr(
+        getattr(handler, "valves", None), "MAX_PARALLEL_TOOLS_PER_REQUEST", None
+    )
+    try:
+        per_request = max(1, int(limit))
+    except (TypeError, ValueError):
+        per_request = 5
+    return max(width - _TOOL_THREAD_RESERVE, min(width, per_request))
 
 
 def _task_visible_channel_emitter(
@@ -599,7 +616,7 @@ def _limit_named_message(text: str, *, effective: float | None, ceiling: float |
     if effective and ceiling and effective > ceiling:
         return (
             f"{text[:-1]}; that limit is Open WebUI's ask_user question window, "
-            f"not this round's batch ceiling ({ceiling:.0f}s)."
+            f"not TOOL_BATCH_TIMEOUT_SECONDS ({ceiling:.0f}s)."
         )
     return text
 
@@ -813,6 +830,213 @@ class _ToolThreadLoop(asyncio.AbstractEventLoop):
         raise RuntimeError("This event loop is already running")
 
 
+class _ToolWithdrawn(Exception):
+    pass
+
+
+class _ToolPoolFull(Exception):
+    def __init__(self, book: _ToolThreadBook, key: str, name: str) -> None:
+        super().__init__(key)
+        self.book = book
+        self.key = key
+        self.name = name
+
+
+_PARKED_TOOL_RESULT: tuple[str, str, list[dict[str, Any]], list[str], list[str]] = ("parked", "", [], [], [])
+
+
+@dataclass(slots=True)
+class _ToolThreadPermit:
+    key: str
+    name: str
+    running: bool = False
+    returned: bool = False
+
+
+@dataclass(slots=True, eq=False)
+class _ToolWaiter:
+    key: str
+    name: str
+    since: float
+    future: asyncio.Future[None]
+
+
+class _ToolThreadBook:
+    def __init__(
+        self, width: int, cap: int, loop: asyncio.AbstractEventLoop, logger: logging.Logger
+    ) -> None:
+        self.width = width
+        self.cap = cap
+        self.loop = loop
+        self.logger = logger
+        self._permits: dict[str, int] = {}
+        self._running: Counter[str] = Counter()
+        self._total = 0
+        self._waiters: list[_ToolWaiter] = []
+        self._warned_at: dict[str, float] = {}
+        self._timer: asyncio.TimerHandle | None = None
+        self._timer_due: float | None = None
+        self._lock = threading.Lock()
+
+    def try_admit(self, key: str, name: str) -> _ToolThreadPermit | None:
+        if self._total >= self.width or self._permits.get(key, 0) >= self.cap:
+            return None
+        self._permits[key] = self._permits.get(key, 0) + 1
+        self._total += 1
+        return _ToolThreadPermit(key, name)
+
+    def register(self, key: str, name: str, since: float) -> _ToolWaiter:
+        waiter = _ToolWaiter(key, name, since, self.loop.create_future())
+        self._waiters.append(waiter)
+        waiter.future.add_done_callback(lambda _future: self._forget_waiter(waiter))
+        due = max(since, self._warned_at.get(key, since)) + _TOOL_WAIT_WARN_AFTER_S
+        if self._timer_due is None or due < self._timer_due:
+            self._arm_wait_warning()
+        return waiter
+
+    def entered(self, permit: _ToolThreadPermit) -> None:
+        with self._lock:
+            permit.running = True
+            self._running[permit.key] += 1
+
+    def returned(self, permit: _ToolThreadPermit) -> None:
+        with self._lock:
+            if permit.returned:
+                return
+            permit.returned = True
+            if permit.running:
+                self._running[permit.key] -= 1
+                if self._running[permit.key] <= 0:
+                    self._running.pop(permit.key, None)
+        remaining = self._permits.get(permit.key, 0) - 1
+        if remaining > 0:
+            self._permits[permit.key] = remaining
+        else:
+            self._permits.pop(permit.key, None)
+        self._total -= 1
+        self.wake()
+
+    def held(self, key: str) -> int:
+        with self._lock:
+            return self._running[key]
+
+    def waiting(self, key: str) -> int:
+        return sum(1 for waiter in self._waiters if waiter.key == key and not waiter.future.done())
+
+    def idle(self) -> bool:
+        return not self._permits and not self._waiters
+
+    def supersede(self) -> None:
+        self.close()
+        if self.loop.is_closed():
+            return
+        for waiter in list(self._waiters):
+            if not waiter.future.done():
+                with contextlib.suppress(RuntimeError):
+                    waiter.future.set_result(None)
+
+    def close(self) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+            self._timer_due = None
+
+    def wake(self) -> None:
+        free = self.width - self._total
+        if free <= 0 or not self._waiters:
+            return
+        room: dict[str, int] = {}
+        for waiter in sorted(self._waiters, key=lambda candidate: candidate.since):
+            if free <= 0:
+                break
+            if waiter.future.done():
+                continue
+            left = room.get(waiter.key)
+            if left is None:
+                left = self.cap - self._permits.get(waiter.key, 0)
+            if left > 0:
+                waiter.future.set_result(None)
+                free -= 1
+                left -= 1
+            room[waiter.key] = left
+
+    def _forget_waiter(self, waiter: _ToolWaiter) -> None:
+        with contextlib.suppress(ValueError):
+            self._waiters.remove(waiter)
+        if not self._waiters:
+            self.close()
+
+    def _oldest_waiters(self) -> dict[str, _ToolWaiter]:
+        oldest: dict[str, _ToolWaiter] = {}
+        for waiter in self._waiters:
+            if waiter.future.done():
+                continue
+            current = oldest.get(waiter.key)
+            if current is None or waiter.since < current.since:
+                oldest[waiter.key] = waiter
+        return oldest
+
+    def _wait_warning_due(self, key: str, since: float) -> float:
+        return max(since, self._warned_at.get(key, since)) + _TOOL_WAIT_WARN_AFTER_S
+
+    def _arm_wait_warning(self) -> None:
+        due = min(
+            (self._wait_warning_due(key, waiter.since) for key, waiter in self._oldest_waiters().items()),
+            default=None,
+        )
+        if due is None:
+            return
+        if self._timer is not None:
+            if self._timer_due is not None and self._timer_due <= due:
+                return
+            self._timer.cancel()
+        self._timer_due = due
+        self._timer = self.loop.call_at(max(due, self.loop.time()), self._warn_about_long_waits)
+
+    def _warn_about_long_waits(self) -> None:
+        self._timer = None
+        self._timer_due = None
+        now = self.loop.time()
+        oldest = self._oldest_waiters()
+        for key, waiter in oldest.items():
+            if now < self._wait_warning_due(key, waiter.since) - 0.001:
+                continue
+            self._warned_at[key] = now
+            self.logger.log(
+                warn_level(_warned_tool_wait, key, cooldown_s=_TOOL_WAIT_WARN_AFTER_S / 2),
+                "Tool '%s' (Tools file %s): %d call(s) are waiting for a tool thread, the oldest for %d "
+                "minute(s). %s A waiting call holds no tool slot, and nothing ends it but its request ending.",
+                waiter.name,
+                key,
+                self.waiting(key),
+                int((now - waiter.since) // 60),
+                self._wait_cause(key),
+            )
+        for key in [key for key in self._warned_at if key not in oldest]:
+            del self._warned_at[key]
+        self._arm_wait_warning()
+
+    def _wait_cause(self, key: str) -> str:
+        held = self._permits.get(key, 0)
+        if held >= self.cap:
+            return (
+                f"The file holds {held} of the {self.width} tool threads (one Tools file may hold at most "
+                f"{self.cap}), and a waiting call starts when one of those bodies returns."
+            )
+        if self._total >= self.width:
+            holders = ", ".join(
+                f"{holder} holding {count}"
+                for holder, count in sorted(self._permits.items(), key=lambda entry: (-entry[1], entry[0]))[:3]
+            )
+            return (
+                f"All {self.width} tool threads are held (the most by {holders}), and a waiting call starts "
+                "when one of those bodies returns."
+            )
+        return "A tool thread is free, but the calls ahead of this one have not taken it yet."
+
+
+_warned_tool_pool: dict[str, float] = {}
+_warned_tool_wait: dict[str, float] = {}
 _warned_plugin_dispatch: set[str] = set()
 _warned_pipes_maintenance: set[str] = set()
 
@@ -966,6 +1190,7 @@ class Pipe:
         default=None,
     )
     _tool_pool: concurrent.futures.ThreadPoolExecutor | None = None
+    _tool_book: _ToolThreadBook | None = None
     _enforcement_memo: tuple[
         tuple[Any, ...],
         frozenset[str],
@@ -1767,16 +1992,38 @@ class Pipe:
         self._tool_pool = pool
         return pool
 
+    def _ensure_tool_book(self, width: int) -> _ToolThreadBook:
+        loop = asyncio.get_running_loop()
+        cap = _tool_thread_share(self, width)
+        book = self._tool_book
+        if book is None or book.width != width or book.loop is not loop or (book.cap != cap and book.idle()):
+            if book is not None:
+                book.supersede()
+            book = self._tool_book = _ToolThreadBook(width, cap, loop, self.logger)
+        return book
+
     async def _run_sync_tool(
-        self, fn: Any, args: dict[str, Any], on_enter: Callable[[], None] | None = None
+        self,
+        fn: Any,
+        args: dict[str, Any],
+        on_enter: Callable[[], bool] | None = None,
+        pool_key: str = "",
+        tool_name: str = "",
+        limit_ended: Callable[[], bool] | None = None,
     ) -> Any:
         loop = asyncio.get_running_loop()
         ctx = contextvars.copy_context()
         thread_loop = _ToolThreadLoop(loop)
+        book = self._ensure_tool_book(_tool_thread_workers(self))
+        key = pool_key or tool_name or "unnamed"
+        permit = book.try_admit(key, tool_name)
+        if permit is None:
+            raise _ToolPoolFull(book, key, tool_name)
 
         def _invoke() -> Any:
-            if on_enter is not None:
-                on_enter()
+            if on_enter is not None and not on_enter():
+                raise _ToolWithdrawn()
+            book.entered(permit)
             inner = getattr(fn, "__function__", None)
             wrapped_shell = callable(inner) and not inspect.iscoroutinefunction(inner)
             asyncio.set_event_loop(thread_loop)
@@ -1799,12 +2046,40 @@ class Pipe:
                     asyncio._set_running_loop(None)
                 asyncio.set_event_loop(None)
 
-        return await loop.run_in_executor(
-            self._ensure_tool_pool(), functools.partial(ctx.run, _invoke)
-        )
+        try:
+            future = self._ensure_tool_pool().submit(functools.partial(ctx.run, _invoke))
+        except BaseException:
+            book.returned(permit)
+            raise
+
+        def _settled(_future: concurrent.futures.Future[Any]) -> None:
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(book.returned, permit)
+
+        future.add_done_callback(_settled)
+        try:
+            return await asyncio.wrap_future(future)
+        except asyncio.CancelledError:
+            if permit.running and not future.done() and limit_ended is not None and limit_ended():
+                self.logger.log(
+                    warn_level(_warned_tool_pool, permit.key, cooldown_s=_TOOL_POOL_WARN_EVERY_S),
+                    "Tool '%s' (Tools file %s): a call's limit ended while its body still runs on a tool thread. "
+                    "A thread cannot be taken back, so the body keeps it until it returns. This Tools file holds "
+                    "%d of the %d tool threads; one Tools file may hold at most %d, and a further call of it waits "
+                    "until a body returns.",
+                    permit.name,
+                    permit.key,
+                    book.held(permit.key),
+                    book.width,
+                    book.cap,
+                )
+            raise
 
     def _stop_tool_pool(self) -> None:
         pool = getattr(self, "_tool_pool", None)
+        book, self._tool_book = self._tool_book, None
+        if book is not None:
+            book.close()
         if pool is None:
             return
         self._tool_pool = None
@@ -4837,6 +5112,7 @@ class Pipe:
 
     async def _shutdown_tool_context(self, context: _ToolExecutionContext) -> None:
         """Stop per-request tool workers (bounded wait, then cancel)."""
+        self._ensure_tool_executor()._withdraw_unstarted_calls(context)
 
         async def _graceful() -> None:
             active_workers = [task for task in context.workers if not task.done()]
@@ -4909,52 +5185,86 @@ class Pipe:
         if batch_timeout and open_windows:
             batch_timeout = max(float(batch_timeout), *open_windows)
         tasks = [asyncio.ensure_future(self._invoke_tool_call(item, context)) for item in batch]
+        for item, task in zip(batch, tasks):
+            item.task = task
         breaker = self._ensure_tool_executor()._tool_breaker(context)
+        drivers = [
+            asyncio.ensure_future(
+                self._settle_batch_call(item, task, ask_user_window, context, breaker, batch_timeout, batch_ceiling)
+            )
+            for item, task, ask_user_window in zip(batch, tasks, ask_user_windows)
+        ]
         try:
-            async with asyncio.timeout(batch_timeout or None):
-                running = set(tasks)
-                while running:
-                    finished, running = await asyncio.wait(running, return_when=asyncio.FIRST_COMPLETED)
-                    for item, task, ask_user_window in zip(batch, tasks, ask_user_windows):
-                        if task in finished and not item.future.done():
-                            self._count_self_cancelled_tool(item, task, context, breaker, ask_user_window)
-                            await self._hand_back_tool_result(item, context, *self._finished_tool_output(item, task))
-        except TimeoutError:
-            pass
+            await asyncio.gather(*drivers)
         except BaseException:
+            for driver in drivers:
+                driver.cancel()
             for task in tasks:
                 task.cancel()
             raise
-        pending = [task for task in tasks if not task.done()]
+        batch[:] = [item for item, task in zip(batch, tasks) if not self._parked_task(task)]
+
+    @staticmethod
+    def _parked_task(task: asyncio.Task[Any]) -> bool:
+        return (
+            task.done()
+            and not task.cancelled()
+            and task.exception() is None
+            and task.result() is _PARKED_TOOL_RESULT
+        )
+
+    @staticmethod
+    async def _round_clock(item: _QueuedToolCall, limit: float) -> None:
+        await item.entered.wait()
+        loop = asyncio.get_running_loop()
+        begun_at = item.entered_at if item.entered_at is not None else loop.time()
+        await asyncio.sleep(max(0.0, begun_at + limit - loop.time()))
+
+    async def _settle_batch_call(
+        self,
+        item: _QueuedToolCall,
+        task: asyncio.Task[tuple[str, str, list[dict[str, Any]], list[str], list[str]]],
+        ask_user_window: float | None,
+        context: _ToolExecutionContext,
+        breaker: Any,
+        batch_timeout: float | None,
+        batch_ceiling: float | None,
+    ) -> None:
+        clock = asyncio.ensure_future(self._round_clock(item, batch_timeout)) if batch_timeout else None
         message = ""
-        if pending:
-            await self._settle_cancelled_tool_tasks(pending)
-            message = (
-                _limit_named_message(
-                    f"Tool batch '{batch[0].call.get('name')}' exceeded {batch_timeout:.0f}s and was cancelled.",
+        try:
+            await asyncio.wait(
+                {task} if clock is None else {task, clock}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if not task.done():
+                item.limit_hit = True
+                await self._settle_cancelled_tool_tasks([task])
+                message = _limit_named_message(
+                    f"Tool '{item.call.get('name')}' exceeded {batch_timeout:.0f}s and was cancelled.",
                     effective=batch_timeout,
                     ceiling=batch_ceiling,
                 )
-                if batch_timeout
-                else "Tool batch timed out."
-            )
-            self.logger.warning("%s", message)
-        for item, task, ask_user_window in zip(batch, tasks, ask_user_windows):
-            if item.future.done():
-                continue
-            if task in pending and not (task.done() and not task.cancelled()):
-                if item.holds_slot and breaker is not None and ask_user_window is None:
-                    breaker.record_tool_failure(
-                        context.user_id,
-                        (item.tool_cfg.get("type") or "function").lower(),
-                        resolved_tool_name(item.call),
-                    )
-                payload = self._ensure_tool_executor()._build_tool_output(item.call, message, status="failed")
-                resolved_status = "failed"
-            else:
-                self._count_self_cancelled_tool(item, task, context, breaker, ask_user_window)
-                payload, resolved_status = self._finished_tool_output(item, task)
-            await self._hand_back_tool_result(item, context, payload, resolved_status)
+                self.logger.warning("%s", message)
+        finally:
+            if clock is not None:
+                clock.cancel()
+        if item.future.done():
+            return
+        if self._parked_task(task):
+            return
+        if message and not (task.done() and not task.cancelled()):
+            if item.holds_slot and breaker is not None and ask_user_window is None:
+                breaker.record_tool_failure(
+                    context.user_id,
+                    (item.tool_cfg.get("type") or "function").lower(),
+                    resolved_tool_name(item.call),
+                )
+            payload = self._ensure_tool_executor()._build_tool_output(item.call, message, status="failed")
+            resolved_status = "failed"
+        else:
+            self._count_self_cancelled_tool(item, task, context, breaker, ask_user_window)
+            payload, resolved_status = self._finished_tool_output(item, task)
+        await self._hand_back_tool_result(item, context, payload, resolved_status)
 
     @timed
     def _count_self_cancelled_tool(
@@ -5033,11 +5343,48 @@ class Pipe:
         gate_name = resolved_tool_name(item.call)
         if self._ensure_tool_executor()._ask_user_window(item.tool_cfg, item.args) is not None:
             return await self._run_tool_unless_breaker_open(item, context, tool_type, gate_name)
-        async with context.per_request_semaphore:
-            if context.global_semaphore is not None:
-                async with self._acquire_tool_global(context.global_semaphore, item.call.get("name")):
-                    return await self._run_tool_unless_breaker_open(item, context, tool_type, gate_name)
-            return await self._run_tool_unless_breaker_open(item, context, tool_type, gate_name)
+        try:
+            async with context.per_request_semaphore:
+                if context.global_semaphore is not None:
+                    async with self._acquire_tool_global(context.global_semaphore, item.call.get("name")):
+                        return await self._run_tool_unless_breaker_open(item, context, tool_type, gate_name)
+                return await self._run_tool_unless_breaker_open(item, context, tool_type, gate_name)
+        except _ToolPoolFull as full:
+            self._park_unstarted_call(item, full, context)
+            return _PARKED_TOOL_RESULT
+        finally:
+            if item.parked_since is not None and not item.holds_slot and not self._call_is_parked(item):
+                self._wake_tool_book()
+
+    def _wake_tool_book(self) -> None:
+        book = self._tool_book
+        if book is not None:
+            book.wake()
+
+    @staticmethod
+    def _call_is_parked(item: _QueuedToolCall) -> bool:
+        return item.parked is not None and not item.parked.done()
+
+    def _park_unstarted_call(
+        self,
+        item: _QueuedToolCall,
+        full: _ToolPoolFull,
+        context: _ToolExecutionContext,
+    ) -> None:
+        item.past_breaker = True
+        if item.parked_since is None:
+            item.parked_since = asyncio.get_running_loop().time()
+        waiter = full.book.register(full.key, full.name, item.parked_since)
+        item.parked = asyncio.ensure_future(self._requeue_when_room(item, waiter, context))
+
+    @staticmethod
+    async def _requeue_when_room(
+        item: _QueuedToolCall,
+        waiter: _ToolWaiter,
+        context: _ToolExecutionContext,
+    ) -> None:
+        await waiter.future
+        await context.queue.put([item])
 
     @timed
     async def _run_tool_unless_breaker_open(
@@ -5047,19 +5394,28 @@ class Pipe:
         tool_type: str,
         gate_name: str,
     ) -> tuple[str, str, list[dict[str, Any]], list[str], list[str]]:
-        if item.future.done():
+        if item.future.done() or item.withdrawn:
             return (
                 "skipped",
-                f"Tool '{item.call.get('name')}' was not started: its result was no longer awaited.",
+                f"Tool '{item.call.get('name')}' was not started: the request ended first.",
                 [],
                 [],
                 [],
             )
         breaker = self._ensure_tool_executor()._tool_breaker(context)
-        if breaker is not None and not breaker.tool_allows(
+        if breaker is not None and not item.past_breaker and not breaker.tool_allows(
             context.user_id, tool_type, gate_name
         ):
-            await self._ensure_tool_executor()._notify_tool_breaker(context, tool_type, gate_name)
+            try:
+                async with asyncio.timeout(context.batch_timeout or None):
+                    await self._ensure_tool_executor()._notify_tool_breaker(context, tool_type, gate_name)
+            except TimeoutError:
+                self.logger.warning(
+                    "The tool breaker's out-of-service notice did not reach the chat inside its "
+                    "TOOL_BATCH_TIMEOUT_SECONDS bound; the model was still told why the call was skipped "
+                    "(request_id=%s).",
+                    context.request_id,
+                )
             return (
                 "skipped",
                 f"Tool '{item.call.get('name')}' temporarily disabled due to repeated errors.",
@@ -5165,11 +5521,29 @@ class Pipe:
                 self.logger.debug("Result processing failed for '%s': %s", tool_name, proc_exc, exc_info=True)
                 return _fallback_tool_text(raw_result), [], [], []
 
-        deadline = asyncio.timeout(timeout)
+        loop = asyncio.get_running_loop()
+        loop_thread = threading.get_ident()
+        deadline = asyncio.timeout(None)
         tool_raised = False
 
-        def _mark_entered() -> None:
-            item.holds_slot = True
+        def _started() -> None:
+            item.entered_at = loop.time()
+            item.entered.set()
+            with contextlib.suppress(RuntimeError):
+                deadline.reschedule(item.entered_at + timeout)
+
+        def _mark_entered() -> bool:
+            if not item.enter():
+                return False
+            if threading.get_ident() == loop_thread:
+                _started()
+            else:
+                with contextlib.suppress(RuntimeError):
+                    loop.call_soon_threadsafe(_started)
+            return True
+
+        def _limit_ended() -> bool:
+            return deadline.expired() or item.limit_hit
 
         try:
             timing_mark(f"tool_run:{tool_name}:executing")
@@ -5180,6 +5554,9 @@ class Pipe:
                     call_args,
                     on_enter=_mark_entered,
                     on_threads=context.sync_tools_on_threads,
+                    pool_key=str(item.tool_cfg.get("tool_id") or breaker_key),
+                    tool_name=str(breaker_key),
+                    limit_ended=_limit_ended,
                 )
             tool_raised = False
             unreachable = _reports_transport_failure(result)
@@ -5195,9 +5572,19 @@ class Pipe:
             return ("completed", text, files, embeds, pictures)
         except BaseException as exc:
             if isinstance(exc, asyncio.CancelledError):
+                item.withdraw()
                 raise
+            if isinstance(exc, _ToolPoolFull):
+                raise
+            if isinstance(exc, _ToolWithdrawn):
+                return (
+                    "skipped",
+                    f"Tool '{tool_name}' was not started: the request ended first.",
+                    [],
+                    [],
+                    [],
+                )
             timed_out = isinstance(exc, TimeoutError) and deadline.expired()
-            never_started = timed_out and not item.holds_slot
             mcp_disconnected = (
                 tool_type == "mcp"
                 and isinstance(exc, RuntimeError)
@@ -5207,7 +5594,6 @@ class Pipe:
             process_control = tool_raised and self._ensure_tool_executor().is_process_control(exc)
             if (breaker is not None and not mcp_disconnected
                     and not (timed_out and ask_user_window is not None)
-                    and not never_started
                     and not argument_binding_failure
                     and not process_control):
                 breaker.record_tool_failure(
@@ -5222,11 +5608,6 @@ class Pipe:
             timing_mark(f"tool_run:{tool_name}:failed")
             if mcp_disconnected:
                 failure = f"Tool '{tool_name}' is no longer available in this session."
-            elif timed_out and never_started:
-                failure = (
-                    f"Tool '{tool_name}' was not started: it was still waiting for a tool worker or a "
-                    f"free slot when its {timeout:.0f}s call limit ended (call timeout)."
-                )
             elif timed_out:
                 failure = f"Tool '{tool_name}' timed out after {timeout:.0f}s."
             else:
@@ -5241,18 +5622,25 @@ class Pipe:
         self,
         fn: ToolCallable,
         args: dict[str, Any],
-        on_enter: Callable[[], None] | None = None,
+        on_enter: Callable[[], bool] | None = None,
         on_threads: bool = True,
+        pool_key: str = "",
+        tool_name: str = "",
+        limit_ended: Callable[[], bool] | None = None,
     ) -> Any:
         """Call a tool callable (sync or async)."""
         inner = getattr(fn, "__function__", None)
         if on_threads and callable(inner) and not inspect.iscoroutinefunction(inner):
-            return await self._run_sync_tool(fn, args, on_enter=on_enter)
+            return await self._run_sync_tool(
+                fn, args, on_enter=on_enter, pool_key=pool_key, tool_name=tool_name, limit_ended=limit_ended
+            )
         if inspect.iscoroutinefunction(fn):
-            if on_enter is not None:
-                on_enter()
+            if on_enter is not None and not on_enter():
+                raise _ToolWithdrawn()
             return await fn(**args)
-        result = await self._run_sync_tool(fn, args, on_enter=on_enter)
+        result = await self._run_sync_tool(
+            fn, args, on_enter=on_enter, pool_key=pool_key, tool_name=tool_name, limit_ended=limit_ended
+        )
         if inspect.isawaitable(result):
             return await result
         return result

@@ -357,6 +357,7 @@ async def run_fusion_member(
         if token is not None:
             pipe._TOOL_CONTEXT.reset(token)
         if ctx is not None:
+            pipe._ensure_tool_executor()._withdraw_unstarted_calls(ctx)
             for worker in ctx.workers:
                 worker.cancel()
             await asyncio.gather(*ctx.workers, return_exceptions=True)

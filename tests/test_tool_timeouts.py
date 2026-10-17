@@ -898,11 +898,9 @@ def _sends_email(trace: list[str]):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("slots", [1, 2])
-async def test_a_call_the_idle_limit_gave_up_on_before_it_started_never_runs_later(
+async def test_a_call_waiting_for_a_slot_past_the_idle_limit_still_runs_and_is_answered(
     pipe_instance_async, monkeypatch, slots
 ):
-    # Calls that never return hold every slot. Each later send_email is still waiting for a slot when the idle limit
-    # reports it as not started; once a slot frees, the email must not go out after all.
     trace: list[str] = []
     registry = {
         "hangs": _entry(_answers_after(NEVER, []), tool_type="function", name="hangs"),
@@ -920,9 +918,9 @@ async def test_a_call_the_idle_limit_gave_up_on_before_it_started_never_runs_lat
         TOOL_IDLE_TIMEOUT_SECONDS=30,
     )
 
-    assert "was not started" in _text(outputs["e1"]), _text(outputs["e1"])
-    assert "was not started" in _text(outputs["e2"]), _text(outputs["e2"])
-    assert trace == []
+    assert outputs["e1"]["status"] == "completed", _text(outputs["e1"])
+    assert outputs["e2"]["status"] == "completed", _text(outputs["e2"])
+    assert trace == ["email sent", "email sent"]
 
 
 @pytest.mark.asyncio
@@ -943,12 +941,9 @@ async def test_a_call_already_running_when_the_idle_limit_gives_up_finishes_once
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("slots", [1, 2])
-async def test_an_ask_user_the_idle_limit_gave_up_on_before_it_started_never_opens_its_question_later(
+async def test_an_ask_user_waiting_for_a_worker_past_the_idle_limit_still_opens_its_question(
     pipe_instance_async, monkeypatch, slots
 ):
-    # ask_user takes no tool slot, but it still needs a worker, and calls that never return keep every worker busy until
-    # the per-call limit cuts them. The idle limit reports the question as not started while it is still waiting; once
-    # a worker frees up, the question must not open after all.
     asked: list[str] = []
     registry = {
         "hangs": _entry(_answers_after(NEVER, []), tool_type="function", name="hangs"),
@@ -966,8 +961,8 @@ async def test_an_ask_user_the_idle_limit_gave_up_on_before_it_started_never_ope
         TOOL_IDLE_TIMEOUT_SECONDS=30,
     )
 
-    assert "was not started" in _text(outputs["a1"]), _text(outputs["a1"])
-    assert asked == []
+    assert outputs["a1"]["status"] == "completed", _text(outputs["a1"])
+    assert asked == ["asked", "answered"]
 
 
 # --- a call waits only for a slot ------------------------------------------------------------------------------------
@@ -1128,36 +1123,27 @@ async def test_an_ask_user_opens_at_once_while_another_request_holds_every_tool_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("threshold", [2, 3])
-async def test_a_batch_that_runs_out_of_time_keeps_the_results_of_calls_that_finished(
-    pipe_instance_async, monkeypatch, threshold
+async def test_a_batch_that_waits_longer_than_the_round_limit_still_runs_every_call(
+    pipe_instance_async, monkeypatch
 ):
-    # Twelve 250 s calls on default settings make three batches of four sharing five slots. The third batch gets two
-    # slots at 250 s and its last two at 500 s, so its 600 s limit fires while only those last two are still running.
     pipe = pipe_instance_async
-    pipe._circuit_breaker.threshold = threshold
+    pipe._circuit_breaker.threshold = 2
     trace: list[str] = []
     registry = {"render": _entry(_works_for(250, trace), tool_type="function", name="render")}
     calls = [_call(f"c{index}", "render") for index in range(1, 13)]
 
     outputs = await _run_job(pipe, monkeypatch, registry, calls)
 
-    completed = sorted(call_id for call_id, output in outputs.items() if output["status"] == "completed")
-    cut = sorted(call_id for call_id, output in outputs.items() if "exceeded 600s" in _text(output))
-    assert completed == sorted(f"c{index}" for index in range(1, 11))
-    assert cut == ["c11", "c12"]
-    # The two calls running when the limit fired were stopped, not left to finish their work.
-    assert (trace.count("started"), trace.count("finished")) == (12, 10)
-    # Only the two calls still running when the limit fired count against the tool.
-    assert pipe._circuit_breaker.tool_allows("user-1", "function", "render") is (threshold > 2)
+    assert sorted(outputs) == sorted(f"c{index}" for index in range(1, 13))
+    assert {output["status"] for output in outputs.values()} == {"completed"}
+    assert (trace.count("started"), trace.count("finished")) == (12, 12)
+    assert pipe._circuit_breaker.tool_allows("user-1", "function", "render") is True
 
 
 @pytest.mark.asyncio
-async def test_a_call_still_waiting_for_its_slot_when_the_batch_limit_fires_does_not_count_against_the_tool(
+async def test_a_call_waiting_for_its_slot_past_the_round_limit_still_runs_and_is_answered(
     pipe_instance_async, monkeypatch
 ):
-    # One slot and four 250 s calls in one batch: c1 and c2 finish, c3 is running when the 600 s limit fires and c4 is
-    # still waiting for the slot. Only c3 was running, so a threshold of 2 still allows the tool.
     pipe = pipe_instance_async
     pipe._circuit_breaker.threshold = 2
     trace: list[str] = []
@@ -1166,10 +1152,39 @@ async def test_a_call_still_waiting_for_its_slot_when_the_batch_limit_fires_does
 
     outputs = await _run_job(pipe, monkeypatch, registry, calls, MAX_PARALLEL_TOOLS_PER_REQUEST=1)
 
-    assert sorted(call_id for call_id, output in outputs.items() if output["status"] == "completed") == ["c1", "c2"]
-    assert sorted(call_id for call_id, output in outputs.items() if "exceeded 600s" in _text(output)) == ["c3", "c4"]
-    assert (trace.count("started"), trace.count("finished")) == (3, 2)
+    assert {output["status"] for output in outputs.values()} == {"completed"}
+    assert (trace.count("started"), trace.count("finished")) == (4, 4)
     assert pipe._circuit_breaker.tool_allows("user-1", "function", "render") is True
+
+
+@pytest.mark.asyncio
+async def test_the_round_limit_still_ends_a_started_call_whose_body_ignores_the_per_call_cancellation(
+    pipe_instance_async, monkeypatch
+):
+    pipe = pipe_instance_async
+    pipe._circuit_breaker.threshold = 1
+    finish = asyncio.Event()
+
+    async def stubborn(**_kwargs):
+        while not finish.is_set():
+            try:
+                await asyncio.sleep(NEVER * SCALE)
+            except asyncio.CancelledError:
+                pass
+
+    registry = {"stubborn": _entry(stubborn, tool_type="function", name="stubborn")}
+    try:
+        outputs, elapsed = await _run(
+            pipe, monkeypatch, registry, [_call("c1", "stubborn")], timeout=300.0, batch_timeout=600.0
+        )
+    finally:
+        finish.set()
+        for task in list(pipe._abandoned_tool_tasks):
+            task.cancel()
+
+    assert "exceeded 600s" in _text(outputs["c1"]), _text(outputs["c1"])
+    assert 600 <= elapsed < 620, elapsed
+    assert pipe._circuit_breaker.tool_allows("user-1", "function", "stubborn") is False
 
 
 # --- each call's result is handed back when that call finishes --------------------------------------------------------
@@ -1715,15 +1730,6 @@ async def test_a_round_hands_back_its_results_in_call_order_however_the_calls_fi
 # --- Stop during a round counts only what the tools did (round 35, tools F1) ----------------------------------------
 
 
-# --- the idle allowance starts when the round does, not when the enqueue does -----------------------
-#
-# The clock was armed after the parse/refusal loop and after the enqueue, and the parse loop's one
-# inline `await` is `_notify_tool_breaker`, a real emit to the user's browser. A slow emitter
-# therefore stretched the round past the very limit the round was supposed to be held to. The fix
-# moves the origin of the clock to the top of the round and charges the enqueue wait against the
-# allowance, so the wait for results is one bounded wait for the round either way.
-
-
 # A synchronous tool reaches the pipe wrapped in Open WebUI's async shell, so the pipe sees an async
 # function and its body ran on the event loop, freezing every chat the worker serves while the body
 # blocked. `Synchronous tools on threads` routes that shell through the pool like a plain function:
@@ -1797,6 +1803,7 @@ async def test_a_threaded_tool_body_reaches_the_main_loop_only_through_thread_sa
     assert seen == [(main_ident, "delivered")]
 
 
+@pytest.mark.real_clock
 @pytest.mark.asyncio
 async def test_the_synchronous_tools_switch_places_a_wrapped_body_on_the_pool_or_the_loop(
     pipe_instance_async, monkeypatch
@@ -1867,3 +1874,391 @@ async def test_a_threaded_tool_body_timer_fires_on_the_main_loop_unless_the_body
     await call
     await asyncio.sleep(10)
     assert fired == [("kept", main_ident)]
+
+
+async def _tool_context_with_workers(
+    pipe, *, per_request, idle_timeout=None, timeout=300.0, workers=8, global_semaphore=None
+):
+    context = _ToolExecutionContext(
+        queue=asyncio.Queue(maxsize=50),
+        per_request_semaphore=asyncio.Semaphore(per_request),
+        global_semaphore=global_semaphore,
+        timeout=timeout,
+        batch_timeout=600.0,
+        idle_timeout=idle_timeout,
+        user_id="user-1",
+        event_emitter=None,
+        batch_cap=4,
+    )
+    executor = pipe._ensure_tool_executor()
+    context.workers.extend(asyncio.create_task(executor._tool_worker_loop(context)) for _ in range(workers))
+    return executor, context
+
+
+async def _calls_in(pipe, executor, context, registry, calls):
+    token = pipe._TOOL_CONTEXT.set(context)
+    try:
+        return await executor._execute_function_calls(calls, registry)
+    finally:
+        pipe._TOOL_CONTEXT.reset(token)
+
+
+async def _stop_the_request_after(pipe, monkeypatch, registry, calls, seconds, **valve_changes):
+    from open_webui_openrouter_pipe import _PipeJob
+
+    valves = pipe.Valves(**valve_changes)
+    await pipe._ensure_concurrency_controls(valves)
+
+    async def the_model_runs_its_tools(*_args, **_kwargs):
+        try:
+            await pipe._ensure_tool_executor()._execute_function_calls(calls, registry)
+        except asyncio.CancelledError:
+            await asyncio.sleep(20 * SCALE)
+            raise
+        return "turn finished"
+
+    monkeypatch.setattr(pipe, "_handle_pipe_call", the_model_runs_its_tools)
+    job = _PipeJob(
+        pipe=pipe,
+        body={},
+        user={"id": "user-1"},
+        request=None,
+        event_emitter=None,
+        event_call=None,
+        metadata={},
+        tools=None,
+        task=None,
+        task_body=None,
+        future=asyncio.get_running_loop().create_future(),
+        valves=valves,
+    )
+    running = asyncio.ensure_future(pipe._execute_pipe_job(job))
+    await asyncio.sleep(seconds * SCALE)
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+
+
+@pytest.mark.asyncio
+async def test_a_call_waiting_for_a_pool_thread_past_every_limit_still_runs_and_is_answered(pipe_instance_async):
+    pipe = pipe_instance_async
+    pipe.valves.MAX_PARALLEL_TOOLS_GLOBAL = 1
+    holding, release, ran = threading.Event(), threading.Event(), threading.Event()
+
+    def blocker(**_kwargs):
+        holding.set()
+        release.wait(30)
+
+    def victim(**_kwargs):
+        ran.set()
+        return "victim ran"
+
+    wrap = _open_webui_tool_wrapper()
+    registry = {
+        "blocker": _entry(await wrap(blocker, {}), tool_type="function", name="blocker"),
+        "victim": _entry(await wrap(victim, {}), tool_type="function", name="victim"),
+    }
+    executor, context = await _tool_context_with_workers(pipe, per_request=5, idle_timeout=30.0, timeout=40.0)
+    try:
+        blocker_round = asyncio.ensure_future(_calls_in(pipe, executor, context, registry, [_call("b1", "blocker")]))
+        while not holding.is_set():
+            await asyncio.sleep(0)
+        victim_round = asyncio.ensure_future(_calls_in(pipe, executor, context, registry, [_call("v1", "victim")]))
+        await asyncio.sleep(700)
+        assert not victim_round.done()
+        release.set()
+        while not victim_round.done():
+            await asyncio.sleep(0)
+        outputs = victim_round.result()
+        await blocker_round
+    finally:
+        release.set()
+        for worker in context.workers:
+            worker.cancel()
+        await asyncio.gather(*context.workers, return_exceptions=True)
+
+    assert ran.is_set()
+    assert outputs[0]["status"] == "completed", _text(outputs[0])
+
+
+@pytest.mark.asyncio
+async def test_a_call_still_in_the_queue_when_the_request_is_stopped_never_starts_even_while_the_request_unwinds(
+    pipe_instance_async, monkeypatch
+):
+    trace: list[str] = []
+
+    def tool(name: str, seconds: float):
+        async def run(**_kwargs):
+            trace.append(f"{name} started")
+            await asyncio.sleep(seconds * SCALE)
+            trace.append(f"{name} finished")
+            return name
+
+        return run
+
+    registry = {
+        "long": _entry(tool("long", 53), tool_type="function", name="long"),
+        "later": _entry(tool("later", 1), tool_type="function", name="later"),
+    }
+
+    await _stop_the_request_after(
+        pipe_instance_async,
+        monkeypatch,
+        registry,
+        [_call("c1", "long"), _call("c2", "later")],
+        50,
+        MAX_PARALLEL_TOOLS_PER_REQUEST=1,
+    )
+
+    assert trace == ["long started", "long finished"], trace
+
+
+@pytest.mark.real_clock
+@pytest.mark.asyncio
+async def test_one_tools_file_whose_calls_hang_leaves_threads_for_other_tools(pipe_instance_async):
+    pipe = pipe_instance_async
+    pipe.valves.MAX_PARALLEL_TOOLS_GLOBAL = 8
+    release = threading.Event()
+    entered: list[int] = []
+
+    def hangs(**_kwargs):
+        entered.append(1)
+        release.wait(30)
+
+    def quick(**_kwargs):
+        return "quick done"
+
+    wrap = _open_webui_tool_wrapper()
+    hanging = _entry(await wrap(hangs, {}), tool_type="function", name="hangs")
+    hanging["tool_id"] = "tools:backend"
+    other = _entry(await wrap(quick, {}), tool_type="function", name="quick")
+    other["tool_id"] = "tools:other"
+    registry = {"hangs": hanging, "quick": other}
+    executor, hung_context = await _tool_context_with_workers(pipe, per_request=8)
+    _, quick_context = await _tool_context_with_workers(pipe, per_request=5)
+
+    hung_round = asyncio.ensure_future(
+        _calls_in(pipe, executor, hung_context, registry, [_call(f"h{index}", "hangs") for index in range(8)])
+    )
+    try:
+        for _ in range(500):
+            if len(entered) >= 6:
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+        held = len(entered)
+        outputs = await asyncio.wait_for(
+            _calls_in(pipe, executor, quick_context, registry, [_call("q1", "quick")]), 5
+        )
+    finally:
+        release.set()
+        for worker in hung_context.workers + quick_context.workers:
+            worker.cancel()
+        await asyncio.gather(hung_round, *hung_context.workers, *quick_context.workers, return_exceptions=True)
+
+    assert held == 6, held
+    assert outputs[0]["status"] == "completed", _text(outputs[0])
+
+
+@pytest.mark.real_clock
+@pytest.mark.asyncio
+async def test_calls_waiting_for_a_hung_tools_file_hold_no_slot_so_a_healthy_call_still_runs(pipe_instance_async):
+    pipe = pipe_instance_async
+    pipe.valves.MAX_PARALLEL_TOOLS_GLOBAL = 8
+    release = threading.Event()
+    entered: list[int] = []
+
+    def hangs(**_kwargs):
+        entered.append(1)
+        release.wait(30)
+
+    def quick(**_kwargs):
+        return "quick done"
+
+    wrap = _open_webui_tool_wrapper()
+    hanging = _entry(await wrap(hangs, {}), tool_type="function", name="hangs")
+    hanging["tool_id"] = "tools:backend"
+    healthy = _entry(await wrap(quick, {}), tool_type="function", name="quick")
+    healthy["tool_id"] = "tools:other"
+    registry = {"hangs": hanging, "quick": healthy}
+    process_slots = asyncio.Semaphore(7)
+    executor, first = await _tool_context_with_workers(pipe, per_request=5, global_semaphore=process_slots)
+    _, second = await _tool_context_with_workers(pipe, per_request=5, global_semaphore=process_slots)
+    _, third = await _tool_context_with_workers(pipe, per_request=5, global_semaphore=process_slots)
+    contexts = [first, second, third]
+
+    hung_rounds = [
+        asyncio.ensure_future(_calls_in(pipe, executor, first, registry, [_call(f"a{i}", "hangs") for i in range(5)])),
+        asyncio.ensure_future(_calls_in(pipe, executor, second, registry, [_call(f"b{i}", "hangs") for i in range(5)])),
+    ]
+    try:
+        for _ in range(500):
+            if len(entered) >= 6:
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+        held = len(entered)
+        same_request = await asyncio.wait_for(_calls_in(pipe, executor, second, registry, [_call("q1", "quick")]), 5)
+        other_request = await asyncio.wait_for(_calls_in(pipe, executor, third, registry, [_call("q2", "quick")]), 5)
+    finally:
+        release.set()
+        await asyncio.wait(hung_rounds, timeout=10)
+        workers = [worker for context in contexts for worker in context.workers]
+        for worker in workers:
+            worker.cancel()
+        await asyncio.gather(*hung_rounds, *workers, return_exceptions=True)
+
+    assert held == 6, held
+    assert same_request[0]["status"] == "completed", _text(same_request[0])
+    assert other_request[0]["status"] == "completed", _text(other_request[0])
+
+
+@pytest.mark.real_clock
+@pytest.mark.asyncio
+async def test_a_valve_change_that_replaces_the_pool_keeps_a_tools_file_within_its_share_and_loses_no_waiting_call(
+    pipe_instance_async,
+):
+    pipe = pipe_instance_async
+    pipe.valves.MAX_PARALLEL_TOOLS_PER_REQUEST = 5
+    pipe.valves.MAX_PARALLEL_TOOLS_GLOBAL = 4
+    old_labels = [f"old{i}" for i in range(6)]
+    new_labels = [f"new{i}" for i in range(6)]
+    gates = {label: threading.Event() for label in old_labels + new_labels}
+    lock = threading.Lock()
+    entered: list[str] = []
+    in_new_pool: set[str] = set()
+    peak = [0]
+
+    def hold(label="", **_kwargs):
+        with lock:
+            entered.append(label)
+            if label in new_labels or label in ("old4", "old5"):
+                in_new_pool.add(label)
+                peak[0] = max(peak[0], len(in_new_pool))
+        gates[label].wait(30)
+        with lock:
+            in_new_pool.discard(label)
+        return label
+
+    def quick(**_kwargs):
+        return "quick done"
+
+    wrap = _open_webui_tool_wrapper()
+    shared = _entry(await wrap(hold, {}), tool_type="function", name="hold")
+    shared["tool_id"] = "tools:shared"
+    other = _entry(await wrap(quick, {}), tool_type="function", name="quick")
+    other["tool_id"] = "tools:other"
+    registry = {"hold": shared, "quick": other}
+    executor, old_context = await _tool_context_with_workers(pipe, per_request=10, workers=10)
+    _, new_context = await _tool_context_with_workers(pipe, per_request=10, workers=10)
+    _, other_context = await _tool_context_with_workers(pipe, per_request=5)
+    contexts = [old_context, new_context, other_context]
+
+    def calls_for(labels):
+        return [_call(label, "hold", json.dumps({"label": label})) for label in labels]
+
+    old_round = asyncio.ensure_future(_calls_in(pipe, executor, old_context, registry, calls_for(old_labels)))
+    new_round = None
+    try:
+        for _ in range(500):
+            if len([label for label in entered if label.startswith("old")]) >= 4:
+                break
+            await asyncio.sleep(0.01)
+        pipe.valves.MAX_PARALLEL_TOOLS_GLOBAL = 8
+        new_round = asyncio.ensure_future(_calls_in(pipe, executor, new_context, registry, calls_for(new_labels)))
+        for _ in range(500):
+            if len(in_new_pool) >= 6:
+                break
+            await asyncio.sleep(0.01)
+        gates["old0"].set()
+        gates["old1"].set()
+        await asyncio.sleep(0.15)
+        assert peak[0] == 6, peak[0]
+        answer = await asyncio.wait_for(_calls_in(pipe, executor, other_context, registry, [_call("q", "quick")]), 5)
+        for gate in gates.values():
+            gate.set()
+        old_outputs = await asyncio.wait_for(old_round, 10)
+        new_outputs = await asyncio.wait_for(new_round, 10)
+    finally:
+        for gate in gates.values():
+            gate.set()
+        rounds = [old_round, *([new_round] if new_round else [])]
+        await asyncio.wait(rounds, timeout=10)
+        workers = [worker for context in contexts for worker in context.workers]
+        for worker in workers:
+            worker.cancel()
+        await asyncio.gather(*rounds, *workers, return_exceptions=True)
+
+    assert answer[0]["status"] == "completed", _text(answer[0])
+    assert [output["status"] for output in old_outputs + new_outputs] == ["completed"] * 12
+
+
+@pytest.mark.real_clock
+@pytest.mark.asyncio
+async def test_a_parked_call_still_starts_when_the_call_woken_ahead_of_it_is_withdrawn_before_it_reached_a_thread(
+    pipe_instance_async,
+):
+    pipe = pipe_instance_async
+    labels = [f"a{i}" for i in range(5)] + ["b0", "w1", "w2"]
+    gates = {label: threading.Event() for label in labels}
+    entered: list[str] = []
+    busy_started = asyncio.Event()
+
+    def hangs(label="", **_kwargs):
+        entered.append(label)
+        gates[label].wait(30)
+        return label
+
+    async def busy(**_kwargs):
+        busy_started.set()
+        await asyncio.sleep(30)
+
+    wrap = _open_webui_tool_wrapper()
+    hanging = _entry(await wrap(hangs, {}), tool_type="function", name="hangs")
+    hanging["tool_id"] = "tools:backend"
+    registry = {"hangs": hanging, "busy": _entry(busy, tool_type="function", name="busy")}
+    executor, holders_one = await _tool_context_with_workers(pipe, per_request=5)
+    _, holders_two = await _tool_context_with_workers(pipe, per_request=5)
+    _, stopped_context = await _tool_context_with_workers(pipe, per_request=1, workers=1)
+    _, waiting_context = await _tool_context_with_workers(pipe, per_request=5)
+    contexts = [holders_one, holders_two, stopped_context, waiting_context]
+
+    def hung_calls(*names):
+        return [_call(name, "hangs", json.dumps({"label": name})) for name in names]
+
+    rounds = [
+        asyncio.ensure_future(_calls_in(pipe, executor, holders_one, registry, hung_calls(*labels[:5]))),
+        asyncio.ensure_future(_calls_in(pipe, executor, holders_two, registry, hung_calls("b0"))),
+    ]
+    try:
+        for _ in range(500):
+            if len(entered) >= 6:
+                break
+            await asyncio.sleep(0.01)
+        stopped = asyncio.ensure_future(
+            _calls_in(pipe, executor, stopped_context, registry, [*hung_calls("w1"), _call("z", "busy")])
+        )
+        await asyncio.wait_for(busy_started.wait(), 5)
+        rounds.append(
+            asyncio.ensure_future(_calls_in(pipe, executor, waiting_context, registry, hung_calls("w2")))
+        )
+        await asyncio.sleep(0.05)
+        gates["a0"].set()
+        await asyncio.sleep(0.05)
+        stopped.cancel()
+        await asyncio.gather(stopped, return_exceptions=True)
+        for _ in range(100):
+            if "w2" in entered:
+                break
+            await asyncio.sleep(0.01)
+        seen = list(entered)
+    finally:
+        for gate in gates.values():
+            gate.set()
+        await asyncio.wait(rounds, timeout=10)
+        workers = [worker for context in contexts for worker in context.workers]
+        for worker in workers:
+            worker.cancel()
+        await asyncio.gather(*rounds, *workers, return_exceptions=True)
+
+    assert "w2" in seen, seen

@@ -3201,11 +3201,13 @@ class TestToolExecution:
                 pipe._circuit_breaker.record_tool_failure(user_id, tool_type, "blocked_tool_func")
 
             # Create mock item
-            item = Mock(spec=_QueuedToolCall)
-            item.call = {"name": "blocked_tool_func", "call_id": "call_1"}
-            item.tool_cfg = {"type": tool_type}
-            item.args = {}
-            item.future = asyncio.get_event_loop().create_future()
+            item = _QueuedToolCall(
+                call={"name": "blocked_tool_func", "call_id": "call_1"},
+                tool_cfg={"type": tool_type},
+                args={},
+                future=asyncio.get_event_loop().create_future(),
+                allow_batch=True,
+            )
 
             # Create minimal context
             context = Mock(spec=_ToolExecutionContext)
@@ -3214,6 +3216,7 @@ class TestToolExecution:
             context.fusion_inner = False
             context.per_request_semaphore = asyncio.Semaphore(1)
             context.global_semaphore = None
+            context.batch_timeout = 600.0
 
             status, text, files, embeds, _pictures = await pipe._invoke_tool_call(item, context)
 
@@ -3236,11 +3239,13 @@ class TestToolExecution:
                 calls["count"] += 1
                 raise ValueError("tool exploded")
 
-            item = Mock(spec=_QueuedToolCall)
-            item.call = {"name": "boomtool", "call_id": "call_1"}
-            item.tool_cfg = {"type": "function", "callable": boom}
-            item.args = {}
-            item.future = asyncio.get_running_loop().create_future()
+            item = _QueuedToolCall(
+                call={"name": "boomtool", "call_id": "call_1"},
+                tool_cfg={"type": "function", "callable": boom},
+                args={},
+                future=asyncio.get_running_loop().create_future(),
+                allow_batch=True,
+            )
             context = Mock(spec=_ToolExecutionContext)
             context.carded_calls = set()
             context.user_id = "test_user_single_shot"
@@ -3266,11 +3271,13 @@ class TestToolExecution:
             async def gone(**kwargs):
                 raise RuntimeError("MCP client is not connected.")
 
-            item = Mock(spec=_QueuedToolCall)
-            item.call = {"name": "srv_lookup", "call_id": "call_1"}
-            item.tool_cfg = {"type": "mcp", "callable": gone}
-            item.args = {}
-            item.future = asyncio.get_running_loop().create_future()
+            item = _QueuedToolCall(
+                call={"name": "srv_lookup", "call_id": "call_1"},
+                tool_cfg={"type": "mcp", "callable": gone},
+                args={},
+                future=asyncio.get_running_loop().create_future(),
+                allow_batch=True,
+            )
             context = Mock(spec=_ToolExecutionContext)
             context.carded_calls = set()
             context.user_id = "test_user_mcp_gone"
@@ -3303,11 +3310,13 @@ class TestToolExecution:
                 raise ValueError("bad tool")
 
             def make_item():
-                item = Mock(spec=_QueuedToolCall)
-                item.call = {"call_id": "call_1"}
-                item.tool_cfg = {"type": "function", "callable": boom}
-                item.args = {}
-                item.future = asyncio.get_running_loop().create_future()
+                item = _QueuedToolCall(
+                    call={"call_id": "call_1"},
+                    tool_cfg={"type": "function", "callable": boom},
+                    args={},
+                    future=asyncio.get_running_loop().create_future(),
+                    allow_batch=True,
+                )
                 return item
 
             context = Mock(spec=_ToolExecutionContext)
@@ -3318,6 +3327,7 @@ class TestToolExecution:
             context.per_request_semaphore = asyncio.Semaphore(1)
             context.global_semaphore = None
             context.timeout = 5.0
+            context.batch_timeout = 600.0
             context.event_emitter = None
 
             for _ in range(pipe._circuit_breaker.threshold):
@@ -3341,11 +3351,13 @@ class TestToolExecution:
             async def down(**kwargs):
                 raise RuntimeError("db not connected")
 
-            item = Mock(spec=_QueuedToolCall)
-            item.call = {"name": "db_query", "call_id": "call_1"}
-            item.tool_cfg = {"type": "function", "callable": down}
-            item.args = {}
-            item.future = asyncio.get_running_loop().create_future()
+            item = _QueuedToolCall(
+                call={"name": "db_query", "call_id": "call_1"},
+                tool_cfg={"type": "function", "callable": down},
+                args={},
+                future=asyncio.get_running_loop().create_future(),
+                allow_batch=True,
+            )
             context = Mock(spec=_ToolExecutionContext)
             context.carded_calls = set()
             context.user_id = "test_user_db_down"
@@ -3377,11 +3389,13 @@ class TestToolExecution:
                 calls["count"] += 1
                 raise ValueError("mcp tool exploded")
 
-            item = Mock(spec=_QueuedToolCall)
-            item.call = {"name": "srv_thing", "call_id": "call_1"}
-            item.tool_cfg = {"type": "mcp", "callable": broken}
-            item.args = {}
-            item.future = asyncio.get_running_loop().create_future()
+            item = _QueuedToolCall(
+                call={"name": "srv_thing", "call_id": "call_1"},
+                tool_cfg={"type": "mcp", "callable": broken},
+                args={},
+                future=asyncio.get_running_loop().create_future(),
+                allow_batch=True,
+            )
             context = Mock(spec=_ToolExecutionContext)
             context.carded_calls = set()
             context.user_id = "test_user_mcp_raise"
@@ -3415,11 +3429,13 @@ class TestToolExecution:
             async def mcp_tool(**kwargs):
                 return blocks
 
-            item = Mock(spec=_QueuedToolCall)
-            item.call = {"name": "srv_tool", "call_id": "c1"}
-            item.tool_cfg = {"type": "mcp", "callable": mcp_tool}
-            item.args = {}
-            item.future = asyncio.get_running_loop().create_future()
+            item = _QueuedToolCall(
+                call={"name": "srv_tool", "call_id": "c1"},
+                tool_cfg={"type": "mcp", "callable": mcp_tool},
+                args={},
+                future=asyncio.get_running_loop().create_future(),
+                allow_batch=True,
+            )
             context = Mock(spec=_ToolExecutionContext)
             context.carded_calls = set()
             context.user_id = "u-fallback"
@@ -3456,11 +3472,13 @@ class TestToolExecution:
             async def mcp_tool(**kwargs):
                 return _Result()
 
-            item = Mock(spec=_QueuedToolCall)
-            item.call = {"name": "srv_obj", "call_id": "c1"}
-            item.tool_cfg = {"type": "mcp", "callable": mcp_tool}
-            item.args = {}
-            item.future = asyncio.get_running_loop().create_future()
+            item = _QueuedToolCall(
+                call={"name": "srv_obj", "call_id": "c1"},
+                tool_cfg={"type": "mcp", "callable": mcp_tool},
+                args={},
+                future=asyncio.get_running_loop().create_future(),
+                allow_batch=True,
+            )
             context = Mock(spec=_ToolExecutionContext)
             context.carded_calls = set()
             context.user_id = "u-fallback-obj"

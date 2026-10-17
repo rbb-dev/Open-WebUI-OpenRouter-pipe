@@ -16,6 +16,7 @@ import json
 import logging
 import mimetypes
 import sys
+import threading
 import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
@@ -222,6 +223,29 @@ class _QueuedToolCall:
     future: asyncio.Future
     allow_batch: bool
     holds_slot: bool = False
+    withdrawn: bool = False
+    limit_hit: bool = False
+    entered_at: float | None = None
+    entered: asyncio.Event = field(default_factory=asyncio.Event)
+    task: asyncio.Task | None = None
+    parked: asyncio.Task | None = None
+    parked_since: float | None = None
+    past_breaker: bool = False
+    entry_lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def enter(self) -> bool:
+        with self.entry_lock:
+            if self.withdrawn:
+                return False
+            self.holds_slot = True
+            return True
+
+    def withdraw(self) -> bool:
+        with self.entry_lock:
+            if self.holds_slot:
+                return False
+            self.withdrawn = True
+            return True
 
 
 @dataclass(slots=True)
@@ -249,6 +273,7 @@ class _ToolExecutionContext:
     tool_breaker: CircuitBreaker | None = None
     tool_call_budget: int | None = None
     workers: list[asyncio.Task] = field(default_factory=list)
+    calls: list[_QueuedToolCall] = field(default_factory=list)
     on_complete: Callable[[dict, dict], Awaitable[None]] | None = None
     carded_calls: set[str] = field(default_factory=set)
     terminal_files_inline: bool = False
@@ -406,17 +431,6 @@ def _idle_allowance(
             if window is not None:
                 allowance = max(allowance, window)
     return allowance
-
-
-def _idle_deadline(
-    allowance: float | None,
-    started_at: float,
-    pre_enqueue_at: float,
-    now: float,
-) -> float | None:
-    if not allowance:
-        return None
-    return now + (allowance - (pre_enqueue_at - started_at))
 
 
 def _breaker_notice_deadline(
@@ -704,6 +718,7 @@ class ToolExecutor:
 
         loop = asyncio.get_running_loop()
         started_at = loop.time()
+        context.calls[:] = [earlier for earlier in context.calls if not earlier.future.done()]
         pending: list[tuple[int, _QueuedToolCall, float | None]] = []
         batches: list[list[_QueuedToolCall]] = []
         slots: list[dict[str, Any] | None] = [None] * len(calls)
@@ -824,6 +839,7 @@ class ToolExecutor:
                 future=future,
                 allow_batch=allow_batch,
             )
+            context.calls.append(queued)
             batch = batches[-1] if batches else None
             if (
                 batch is not None
@@ -849,130 +865,67 @@ class ToolExecutor:
                 self.logger.debug("Enqueued tool %s (batch=%s)", call.get("name"), allow_batch)
             pending.append((index, queued, self._ask_user_window(tool_cfg, args)))
 
-        if batches:
-            self._ensure_tool_workers(context)
-        if breaker_skips or deferred_notifies:
-            try:
-                async with asyncio.timeout_at(started_at + context.batch_timeout) if context.batch_timeout else contextlib.nullcontext():
-                    for call, result in deferred_notifies:
-                        if _on_complete:
-                            with contextlib.suppress(Exception):
-                                await _on_complete(call, result)
-            except TimeoutError:
-                pass
-        if breaker_skips:
-            notice_bound = _breaker_notice_deadline(context, pending, started_at, loop.time())
-            try:
-                async with asyncio.timeout_at(notice_bound) if notice_bound is not None else contextlib.nullcontext():
-                    await self._notify_tool_breaker_skips(context, breaker_skips)
-            except TimeoutError:
-                self.logger.warning(
-                    "The tool breaker's out-of-service notice did not reach the chat inside its %s "
-                    "bound; the model was still told why each call was skipped (request_id=%s).",
-                    _breaker_notice_bound_name(context, pending, started_at, notice_bound),
-                    context.request_id,
-                )
-
-        pre_enqueue_at = loop.time()
-        enqueue_allowance = context.batch_timeout
-        for _index, _queued, window in pending:
-            if window is not None:
-                enqueue_allowance = max(enqueue_allowance or 0.0, window)
-        enqueue_deadline = pre_enqueue_at + enqueue_allowance if enqueue_allowance else None
-        unqueued: list[_QueuedToolCall] = []
-        for position, batch in enumerate(batches):
-            if enqueue_deadline is None:
-                await context.queue.put(batch)
-                continue
-            try:
-                async with asyncio.timeout_at(enqueue_deadline):
-                    await context.queue.put(batch)
-            except TimeoutError:
-                unqueued.extend(item for later in batches[position:] for item in later)
-                break
-        for item in unqueued:
-            if not item.future.done():
-                item.future.set_result(self._build_tool_output(
-                    item.call,
-                    f"Tool '{item.call.get('name')}' was not started: every tool worker was still "
-                    f"busy {enqueue_allowance:.0f}s after the round asked for it (queue wait).",
-                    status="failed",
-                ))
-                await _dispatch_settled(item.call, "failed")
-        if unqueued:
-            self.logger.warning("Tool queue wait: %d call(s) were never started", len(unqueued))
-
-        allowance = _idle_allowance(context, pending)
-        collected: dict[int, Any] = {}
-        notified: set[int] = set()
-        deadline = _idle_deadline(allowance, started_at, pre_enqueue_at, loop.time())
-        for pending_index, (_index, queued, _window) in enumerate(pending):
-            call = queued.call
-            future = queued.future
-            try:
-                async with asyncio.timeout_at(deadline) if deadline is not None else contextlib.nullcontext():
-                    collected[pending_index] = await future
-            except TimeoutError:
-                break
-            except Exception as exc:  # pragma: no cover - defensive
-                if self.logger.isEnabledFor(logging.DEBUG):
-                    self.logger.debug(
-                        "Tool '%s' raised while awaiting result (call_id=%s).",
-                        call.get("name"),
-                        call.get("call_id"),
-                        exc_info=True,
-                    )
-                collected[pending_index] = self._build_tool_output(
-                    call,
-                    self._tool_error_text(exc),
-                    status="failed",
-                )
-            if _on_complete:
-                with contextlib.suppress(Exception):
-                    await _on_complete(call, collected[pending_index])
-            notified.add(pending_index)
-
-        for pending_index, (index, queued, _window) in enumerate(pending):
-            call = queued.call
-            future = queued.future
-            result = collected.get(pending_index)
-            if result is None and future.done() and not future.cancelled():
+        try:
+            if batches:
+                self._ensure_tool_workers(context)
+            if breaker_skips or deferred_notifies:
                 try:
-                    result = future.result()
+                    async with asyncio.timeout_at(started_at + context.batch_timeout) if context.batch_timeout else contextlib.nullcontext():
+                        for call, result in deferred_notifies:
+                            if _on_complete:
+                                with contextlib.suppress(Exception):
+                                    await _on_complete(call, result)
+                except TimeoutError:
+                    pass
+            if breaker_skips:
+                notice_bound = _breaker_notice_deadline(context, pending, started_at, loop.time())
+                try:
+                    async with asyncio.timeout_at(notice_bound) if notice_bound is not None else contextlib.nullcontext():
+                        await self._notify_tool_breaker_skips(context, breaker_skips)
+                except TimeoutError:
+                    self.logger.warning(
+                        "The tool breaker's out-of-service notice did not reach the chat inside its %s "
+                        "bound; the model was still told why each call was skipped (request_id=%s).",
+                        _breaker_notice_bound_name(context, pending, started_at, notice_bound),
+                        context.request_id,
+                    )
+
+            for batch in batches:
+                await context.queue.put(batch)
+
+            allowance = _idle_allowance(context, pending)
+            for index, queued, _window in pending:
+                call = queued.call
+                future = queued.future
+                try:
+                    result = await self._await_call_result(queued, allowance, loop)
                 except Exception as exc:  # pragma: no cover - defensive
                     if self.logger.isEnabledFor(logging.DEBUG):
                         self.logger.debug(
-                            "Tool '%s' had already failed when the wait for results ended (call_id=%s).",
+                            "Tool '%s' raised while awaiting result (call_id=%s).",
                             call.get("name"),
                             call.get("call_id"),
                             exc_info=True,
                         )
                     result = self._build_tool_output(call, self._tool_error_text(exc), status="failed")
-            if result is None:
-                future.cancel()
-                tool_name = call.get("name")
-                if queued.holds_slot:
+                if result is None:
+                    future.cancel()
+                    tool_name = call.get("name")
                     message = (
                         f"Tool '{tool_name}' timed out after {context.idle_timeout:.0f}s (idle timeout)."
                         if allowance
                         else "Tool idle timeout exceeded."
                     )
                     self.logger.warning("Tool idle limit: %s", message)
-                else:
-                    message = (
-                        f"Tool '{tool_name}' was not started: it was still waiting for a tool "
-                        f"worker or a free slot {allowance:.0f}s after the round asked for it "
-                        f"(idle wait)."
-                        if allowance
-                        else "Tool was not started: it was still waiting for a tool worker or a free slot."
-                    )
-                    self.logger.warning("Tool never started: %s", message)
-                result = self._build_tool_output(call, message, status="failed")
-                await _dispatch_settled(call, "failed")
-            if _on_complete and pending_index not in notified:
-                with contextlib.suppress(Exception):
-                    await _on_complete(call, result)
-            slots[index] = result
+                    result = self._build_tool_output(call, message, status="failed")
+                    await _dispatch_settled(call, "failed")
+                if _on_complete:
+                    with contextlib.suppress(Exception):
+                        await _on_complete(call, result)
+                slots[index] = result
+        except BaseException:
+            self._withdraw_unstarted_calls(context)
+            raise
 
         return [result for result in slots if result is not None]
 
@@ -1335,6 +1288,47 @@ class ToolExecutor:
 
     def _cancelled_tool_output(self, call: dict[str, Any]) -> dict[str, Any]:
         return self._build_tool_output(call, "Tool execution cancelled", status="cancelled")
+
+    async def _await_call_result(
+        self,
+        queued: _QueuedToolCall,
+        allowance: float | None,
+        loop: asyncio.AbstractEventLoop,
+    ) -> Any:
+        future = queued.future
+        if not allowance:
+            return await future
+        if not queued.entered.is_set():
+            started = asyncio.ensure_future(queued.entered.wait())
+            try:
+                await asyncio.wait({future, started}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                started.cancel()
+        if future.done():
+            return future.result()
+        begun_at = queued.entered_at if queued.entered_at is not None else loop.time()
+        try:
+            async with asyncio.timeout_at(begun_at + allowance):
+                return await future
+        except TimeoutError:
+            return None
+
+    def _withdraw_unstarted_calls(self, context: _ToolExecutionContext) -> None:
+        for queued in context.calls:
+            if not queued.withdraw():
+                continue
+            for task in (queued.task, queued.parked):
+                if task is not None and not task.done():
+                    task.cancel()
+            if not queued.future.done():
+                queued.future.set_result(self._cancelled_tool_output(queued.call))
+        self._pipe._wake_tool_book()
+        while True:
+            try:
+                context.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            context.queue.task_done()
 
     def _ensure_tool_workers(self, context: _ToolExecutionContext) -> None:
         if context.workers or context.parallel_tools <= 0:
