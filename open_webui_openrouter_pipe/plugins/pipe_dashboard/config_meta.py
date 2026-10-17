@@ -825,6 +825,31 @@ CONFIG_META: dict[str, dict[str, str]] = {
         "group": "Streaming & Performance/Concurrency",
         "detail": "How many worker tasks forward the decoded frames of a single streaming reply between the reader and the emitter.\n\nThey run only on replies served over OpenRouter's `/responses` API - the usual path, chosen by `Default API endpoint` - where one task reads the network stream, parses each frame, and these workers carry the parsed frame to the emitter. Replies routed to `/chat/completions`, and all non-streaming replies, use a single decode path and ignore this entirely. Each concurrent stream spawns its own set.\n\nThey do not decode in parallel, because the parse happens once in the reader and a worker runs from its dequeue to its enqueue without yielding. More of them therefore buy no throughput and no faster decoding: each one adds an extra queue crossing per frame and a task per concurrent stream. What more of them can buy is a little overlap while the reader is waiting on the network, which is why the default suits almost every deployment.\n\n**Tip:** Rarely worth changing - raise it only if profiling shows a drain backlog that persists even when the reader is not waiting on the network."
     },
+    "STALL_ALARM_ENABLED": {
+        "title": "Stall alarm",
+        "group": "Reliability/Stall Alarm",
+        "detail": "Logs the stack of the code a blocked event loop is stuck in, and how long the whole worker stood still once it runs again.\n\nA blocked event loop freezes every chat the worker serves, and a call that holds Python's global interpreter lock for about five seconds can get the worker restarted by its supervisor with nothing in the log. A watcher thread checks once a second; a stopped worker is reported as a pause with its length, plus a thread dump when `Thread dump on a whole-process stall` is on. One alarm serves the whole process; turning it off stops the watcher and cancels any pending dump.\n\n**Tip:** Leave it on: it costs one thread waking once a second and an event-loop heartbeat every half second."
+    },
+    "STALL_ALARM_GIL_SECONDS": {
+        "title": "Whole-process stall threshold",
+        "group": "Reliability/Stall Alarm",
+        "detail": "How long the alarm's watcher thread may stand still before the pause is reported as a stall of the whole worker.\n\nThe watcher runs once a second. When it has been paused for this long, the next warning says how long the process was unresponsive, the event loop included. A pause has several causes: a long call that holds Python's global interpreter lock - a very large JSON parse or encode, a regex, a compression, a string join - memory pressure, or the host pausing the process. With `Thread dump on a whole-process stall` on, the warning also carries every thread's stack from during the pause, and this value should then be shorter than the time the worker's supervisor allows for a health check, or the worker is restarted before the dump exists. The minimum is `3` seconds, because with a one-second check a lower value would report a healthy worker."
+    },
+    "STALL_ALARM_DUMP_ENABLED": {
+        "title": "Thread dump on a whole-process stall",
+        "group": "Reliability/Stall Alarm",
+        "detail": "Takes a thread dump of every thread when the whole worker stops responding, naming the call that held it.\n\nA timer that keeps running while one long call holds Python's global interpreter lock writes every thread's stack to a file in the system temporary directory; the stall warning copies it into the log once the worker recovers, and the file survives a supervisor killing the worker first. Reading the stacks without the lock can crash the worker in rare cases, for instance when a pause from outside (the host, a debugger) fires the timer while other threads still run Python, so switch it on to hunt a freeze and off again afterwards. With it off the alarm still reports how long the process stalled. An empty file is deleted when the alarm closes or is switched off; a worker stopped by a signal can leave one behind, and a file that holds a dump is kept."
+    },
+    "STALL_ALARM_LOOP_SECONDS": {
+        "title": "Event loop stall threshold",
+        "group": "Reliability/Stall Alarm",
+        "detail": "How long this worker's event loop may go without running before the alarm logs a warning with the stack of the code it is stuck in.\n\nThe warning shows what the loop thread is doing at that moment, so a blocking call is named by where it sits; it is repeated each `Stall warning repeat interval` while the stall lasts, and one more line says when the loop ran again. A stall that also holds Python's global interpreter lock stops the alarm's own watcher, so it is reported under `Whole-process stall threshold` instead, as a pause of the watcher with its length rather than a stack. A heavily loaded worker that is slow rather than blocked can cross a low value. The minimum is `3` seconds."
+    },
+    "STALL_ALARM_REPEAT_SECONDS": {
+        "title": "Stall warning repeat interval",
+        "group": "Reliability/Stall Alarm",
+        "detail": "How long the alarm stays quiet after a warning, so a long or repeating stall does not fill the log.\n\nA stall that lasts longer than this is reported again, with the loop thread's current stack, each time the interval passes. A new stall that begins sooner than this after a warning is not warned about at all. The event loop warning and the whole-process warning keep separate clocks."
+    },
     "STREAMING_CHUNK_QUEUE_MAXSIZE": {
         "title": "Raw chunk buffer limit",
         "group": "Streaming & Performance/Streaming",

@@ -5,6 +5,8 @@ of every dispatch surface."""
 from __future__ import annotations
 
 import asyncio
+import importlib
+import os
 import selectors
 import threading
 import time
@@ -17,6 +19,10 @@ import pytest
 from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.plugins.registry import PluginRegistry
 from open_webui_openrouter_pipe.storage.persistence import ArtifactStore
+
+stall_alarm = importlib.import_module("open_webui_openrouter_pipe.core.stall_alarm")
+
+STALL_TICK = 0.02
 
 
 # ── DDL race guard ──
@@ -321,3 +327,66 @@ def test_a_pipe_collected_off_the_loop_thread_cancels_its_tasks_at_once(pipe_ins
         pipe._plugin_registry = None
         cleanup.stop()
         handed_back.stop()
+
+
+def _stall_watcher_names() -> list[str]:
+    return [t.name for t in threading.enumerate() if t.name == stall_alarm._STALL_THREAD_NAME]
+
+
+async def _wait_until(condition, seconds: float = 2.0) -> None:
+    deadline = time.monotonic() + seconds
+    while not condition() and time.monotonic() < deadline:
+        await asyncio.sleep(STALL_TICK)
+    assert condition()
+
+
+@pytest.mark.asyncio
+async def test_the_alarm_starts_only_when_the_pipe_first_serves_and_stops_everything_when_switched_off(
+    monkeypatch, pipe_instance_async
+):
+    monkeypatch.setattr(stall_alarm, "_STALL_TICK_SECONDS", STALL_TICK)
+    monkeypatch.setattr(stall_alarm, "_STALL_BEAT_SECONDS", STALL_TICK)
+    pipe = pipe_instance_async
+    attachment = pipe._stall_alarm
+    state = attachment.state
+    assert _stall_watcher_names() == [] and state.dump_path is None
+
+    pipe.valves.STALL_ALARM_ENABLED = False
+    pipe._maybe_start_stall_alarm()
+    assert _stall_watcher_names() == [] and attachment.beat_task is None and state.dump_path is None
+
+    pipe.valves.STALL_ALARM_ENABLED = True
+    pipe._maybe_start_stall_alarm()
+    assert _stall_watcher_names() == [stall_alarm._STALL_THREAD_NAME]
+    await asyncio.sleep(STALL_TICK * 5)
+    assert not attachment.beat_task.done()
+    assert state.dump_path is None and state.armed is False
+
+    pipe.valves.STALL_ALARM_DUMP_ENABLED = True
+    state.wake.set()
+    await _wait_until(lambda: state.dump_path is not None)
+    dump_path = state.dump_path
+    assert os.path.exists(dump_path) and state.armed is True
+
+    pipe.valves.STALL_ALARM_DUMP_ENABLED = False
+    state.wake.set()
+    await _wait_until(lambda: state.dump_path is None)
+    assert state.armed is False and state.dump_fd is None
+    assert not os.path.exists(dump_path)
+    assert state.watcher is not None
+
+    pipe.valves.STALL_ALARM_DUMP_ENABLED = True
+    state.wake.set()
+    await _wait_until(lambda: state.dump_path is not None)
+    dump_path = state.dump_path
+
+    pipe.valves.STALL_ALARM_ENABLED = False
+    state.wake.set()
+    await _wait_until(lambda: state.watcher is None and attachment.beat_task.done())
+
+    assert state.watcher is None
+    assert state.armed is False
+    assert state.dump_fd is None
+    assert attachment.beat_task.done()
+    assert _stall_watcher_names() == []
+    assert not os.path.exists(dump_path)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ctypes
 import gc
 import importlib
 import logging
@@ -21,6 +22,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 READABLE_BUNDLE = REPO_ROOT / "open_webui_openrouter_pipe_bundled.py"
 COMPRESSED_BUNDLE = REPO_ROOT / "open_webui_openrouter_pipe_bundled_compressed.py"
 LIFECYCLE_REGISTRY_KEY = "_openrouter_pipe_lifecycle"
+
+stall_alarm = importlib.import_module("open_webui_openrouter_pipe.core.stall_alarm")
+
+STALL_TICK = 0.02
+STALL_VALVE = 0.2
+STALL_HOLD = 0.35
 
 
 @pytest.fixture(autouse=True)
@@ -326,6 +333,9 @@ def test_readable_bundle_hot_reload_uses_new_code(isolated_sys_modules, compiled
     assert pipe1_class is not pipe2_class
     assert sys.modules.get("open_webui_openrouter_pipe") is mod2
 
+    stub = _StubPipe()
+    assert mod1.attach_stall_alarm(stub).state is mod2.attach_stall_alarm(stub).state
+
 
 def test_auto_register_chain_drains_predecessor(fresh_registry):
     pipe_mod = _import_pipe_module()
@@ -464,3 +474,160 @@ def test_compressed_bundle_hot_reload_uses_new_code(isolated_sys_modules, compil
     pkg = sys.modules.get("open_webui_openrouter_pipe")
     assert pkg is not None
     assert pipe1_class not in pipe2_class.__mro__
+
+
+class _StubPipe:
+    def __init__(
+        self,
+        logger: logging.Logger | None = None,
+        valve: float = 3,
+        loop_seconds: float = 5,
+        dump: bool = False,
+    ) -> None:
+        self.logger = logger or logging.getLogger("stall_alarm_stub")
+        self.valves = types.SimpleNamespace(
+            STALL_ALARM_ENABLED=True,
+            STALL_ALARM_LOOP_SECONDS=loop_seconds,
+            STALL_ALARM_GIL_SECONDS=valve,
+            STALL_ALARM_REPEAT_SECONDS=60,
+            STALL_ALARM_DUMP_ENABLED=dump,
+        )
+
+
+def _hold_the_interpreter_lock(seconds: float) -> None:
+    ctypes.PyDLL(None).usleep(int(seconds * 1_000_000))
+
+
+def _stall_watchers() -> list[str]:
+    return [t.name for t in threading.enumerate() if t.name == stall_alarm._STALL_THREAD_NAME]
+
+
+def _wait_until(condition, seconds: float = 2.0) -> None:
+    deadline = time.monotonic() + seconds
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(STALL_TICK)
+    assert condition()
+
+
+def test_two_loaded_copies_of_the_pipe_share_one_stall_watcher_and_a_gil_hold_is_dumped_while_it_runs(
+    monkeypatch,
+):
+    monkeypatch.setattr(stall_alarm, "_STALL_TICK_SECONDS", STALL_TICK)
+    next_generation = type("NextGenerationHolder", (stall_alarm._StallAlarmHolder,), {})
+    pipes = [_StubPipe(valve=STALL_VALVE, loop_seconds=30, dump=True) for _ in range(2)]
+    first = stall_alarm.attach_stall_alarm(pipes[0])
+    monkeypatch.setattr(stall_alarm, "_StallAlarmHolder", next_generation)
+    second = stall_alarm.attach_stall_alarm(pipes[1])
+    state = first.state
+    assert type(sys.modules[stall_alarm._STALL_ALARM_HOLDER_KEY]) is next_generation
+    assert second.state is state
+    assert _stall_watchers() == []
+
+    stall_alarm.ensure_stall_alarm(first)
+    stall_alarm.ensure_stall_alarm(second)
+    assert _stall_watchers() == [stall_alarm._STALL_THREAD_NAME]
+
+    _wait_until(lambda: state.dump_path is not None)
+    dump_path = state.dump_path
+    watcher = state.watcher
+    try:
+        time.sleep(STALL_VALVE + 2 * STALL_TICK + 0.05)
+        assert os.path.getsize(dump_path) == 0
+
+        began = time.time()
+        _hold_the_interpreter_lock(STALL_HOLD)
+        ended = time.time()
+        written = os.stat(dump_path)
+        assert written.st_size > 0 and began < written.st_mtime < ended
+        assert "_hold_the_interpreter_lock" in Path(dump_path).read_text(errors="replace")
+    finally:
+        stall_alarm.detach_stall_alarm(first)
+        stall_alarm.detach_stall_alarm(second)
+        if watcher is not None:
+            watcher.join(2)
+        with contextlib.suppress(OSError):
+            os.unlink(dump_path)
+
+
+def test_nothing_is_dumped_into_a_recycled_descriptor_after_the_last_pipe_closes(monkeypatch):
+    monkeypatch.setattr(stall_alarm, "_STALL_TICK_SECONDS", STALL_TICK)
+    pipe = _StubPipe(valve=STALL_VALVE, loop_seconds=30, dump=True)
+    attachment = stall_alarm.attach_stall_alarm(pipe)
+    stall_alarm.ensure_stall_alarm(attachment)
+    state = attachment.state
+    _wait_until(lambda: state.armed)
+    dump_path, dump_fd, watcher = state.dump_path, state.dump_fd, state.watcher
+    stall_alarm.detach_stall_alarm(attachment)
+    watcher.join(2)
+    assert _stall_watchers() == []
+
+    spare: list[int] = []
+    stray = None
+    try:
+        for _ in range(64):
+            fd = os.open(dump_path + ".stray", os.O_RDWR | os.O_CREAT, 0o600)
+            if fd == dump_fd:
+                stray = fd
+                break
+            spare.append(fd)
+            if fd > dump_fd:
+                break
+        assert stray is not None
+        _hold_the_interpreter_lock(STALL_VALVE + 2 * STALL_TICK)
+        assert os.fstat(stray).st_size == 0
+    finally:
+        for fd in spare + ([stray] if stray is not None else []):
+            os.close(fd)
+        with contextlib.suppress(OSError):
+            os.unlink(dump_path + ".stray")
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_event_loop_is_warned_about_with_its_stack_and_its_recovery_is_logged_once(
+    monkeypatch, caplog
+):
+    monkeypatch.setattr(stall_alarm, "_STALL_BEAT_SECONDS", 0.01)
+    logger = logging.getLogger("stall_alarm_loop_half")
+    pipe = _StubPipe(logger)
+    state = stall_alarm._StallAlarmState()
+    attachment = stall_alarm._StallAttachment(pipe, state)
+    state.attachments.append(attachment)
+    stall_alarm._stall_ensure_beat(attachment)
+
+    first_beat = attachment.beat_at
+    await asyncio.sleep(0.1)
+    assert attachment.beat_at > first_beat
+    assert attachment.loop_thread == threading.get_ident()
+    attachment.beat_task.cancel()
+
+    def warnings() -> list[str]:
+        return [r.getMessage() for r in caplog.records if r.name == logger.name]
+
+    def evaluate(now: float) -> None:
+        with state.lock:
+            live = stall_alarm._stall_live_locked(state)
+        stall_alarm._stall_check_loops(state, live, live[0][1], now)
+
+    attachment.beat_at = 100.0
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        evaluate(101.0)
+        assert warnings() == []
+
+        evaluate(106.0)
+        assert len(warnings()) == 1
+        assert "test_a_stalled_event_loop_is_warned_about" in warnings()[0]
+
+        evaluate(116.0)
+        assert len(warnings()) == 1
+
+        attachment.beat_at = 117.0
+        evaluate(117.2)
+        assert len(warnings()) == 2
+        assert state.stalls == {}
+
+        attachment.beat_at = 118.0
+        evaluate(125.0)
+        assert len(warnings()) == 2
+
+        evaluate(170.0)
+        assert len(warnings()) == 3

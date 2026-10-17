@@ -162,6 +162,8 @@ from .core.errors import (
     channel_safe_values,
 )
 from .core.logging_system import SessionLogger, resolve_level
+from .core.process_state import _upgrade_process_state
+from .core.stall_alarm import attach_stall_alarm, detach_stall_alarm, ensure_stall_alarm
 from .core.utils import (
     CONTINUED_REPLY,
     _await_if_needed,
@@ -688,25 +690,6 @@ def _snapshot_under_lock(source: dict[Any, Any], lock: Any) -> list[tuple[Any, A
     return list(source.items())
 
 
-_PROCESS_UPGRADE_LOCK = threading.Lock()
-
-
-def _upgrade_process_state(key: str, current_type: type[Any]) -> Any:
-    stored = sys.modules.get(key)
-    if type(stored) is current_type:
-        return stored
-    with _PROCESS_UPGRADE_LOCK:
-        stored = sys.modules.get(key)
-        if type(stored) is current_type:
-            return stored
-        replacement = current_type()
-        previous = sys.modules.get(key)
-        if previous is not None:
-            replacement.adopt_from(previous)
-        sys.modules[key] = replacement  # type: ignore[assignment]
-        return replacement
-
-
 def _get_lifecycle_registry() -> _LifecycleRegistry:
     return cast(_LifecycleRegistry, _upgrade_process_state(_LIFECYCLE_REGISTRY_KEY, _LifecycleRegistry))
 
@@ -1191,6 +1174,7 @@ class Pipe:
     )
     _tool_pool: concurrent.futures.ThreadPoolExecutor | None = None
     _tool_book: _ToolThreadBook | None = None
+    _stall_alarm: Any = None
     _enforcement_memo: tuple[
         tuple[Any, ...],
         frozenset[str],
@@ -1386,6 +1370,7 @@ class Pipe:
             "Pipe initialized (subsystem delegation: ArtifactStore, MultimodalHandler, StreamingHandler, EventEmitterHandler)"
         )
 
+        self._attach_stall_alarm()
         self._attach_to_lifecycle_registry()
 
     @timed
@@ -2574,6 +2559,7 @@ class Pipe:
         self._maybe_start_startup_checks()
         self._maybe_start_redis()
         self._maybe_start_cleanup()
+        self._maybe_start_stall_alarm()
         if getattr(self, "_closed", False):
             return self._select_model_rows(OpenRouterModelRegistry.list_models())
         session: aiohttp.ClientSession | None = None
@@ -2903,6 +2889,7 @@ class Pipe:
             self._maybe_start_redis()
             timing_mark("after_redis")
             self._maybe_start_cleanup()
+            self._maybe_start_stall_alarm()
             timing_mark("after_cleanup")
 
             if not isinstance(body, dict):
@@ -3325,6 +3312,28 @@ class Pipe:
         self._redis_retry_url = None
         self._video_active_tasks: dict[tuple[str, str], asyncio.Task] = {}
 
+    def _attach_stall_alarm(self) -> None:
+        try:
+            self._stall_alarm = attach_stall_alarm(self)
+        except Exception:
+            self._stall_alarm = None
+            self.logger.debug("Stall alarm could not attach", exc_info=True)
+
+    def _maybe_start_stall_alarm(self) -> None:
+        try:
+            ensure_stall_alarm(self._stall_alarm)
+        except Exception:
+            self.logger.debug("Stall alarm could not start", exc_info=True)
+
+    def _detach_stall_alarm(self) -> None:
+        attachment = self._stall_alarm
+        self._stall_alarm = None
+        try:
+            _drop_task(detach_stall_alarm(attachment))
+        except Exception:
+            if hasattr(self, "logger"):
+                self.logger.debug("Stall alarm could not detach", exc_info=True)
+
     def _attach_to_lifecycle_registry(self) -> None:
         registry = _get_lifecycle_registry()
         try:
@@ -3406,6 +3415,7 @@ class Pipe:
         self._schedule_close()
 
     def shutdown(self) -> list[Any]:
+        self._detach_stall_alarm()
         self._stop_tool_pool()
         pending: list[Any] = []
         plugin_registry = getattr(self, "_plugin_registry", None)

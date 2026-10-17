@@ -740,6 +740,30 @@ def _reset_process_semaphores():
     yield
 
 
+def _stop_stall_alarm() -> None:
+    from open_webui_openrouter_pipe.core.stall_alarm import _STALL_ALARM_HOLDER_KEY
+
+    holder = sys.modules.pop(_STALL_ALARM_HOLDER_KEY, None)
+    state = getattr(holder, "state", None)
+    if state is None:
+        return
+    with state.lock:
+        for attachment in state.attachments:
+            attachment.closed = True
+        state.attachments.clear()
+        watcher = state.watcher
+    state.wake.set()
+    if watcher is not None:
+        watcher.join(5)
+
+
+@pytest.fixture(autouse=True)
+def _reset_stall_alarm():
+    _stop_stall_alarm()
+    yield
+    _stop_stall_alarm()
+
+
 @pytest.fixture(autouse=True)
 def _reset_package_caches():
     """Clear every `lru_cache` the package owns, at BOTH ends of every test.

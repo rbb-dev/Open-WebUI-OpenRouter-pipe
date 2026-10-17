@@ -2484,6 +2484,77 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "Number of seconds a failure keeps counting. The request and database breakers use it as a trailing window: it is what retires a recorded request failure, at the next check. A tool's failure count clears on a success, or when the tool is next called more than this long after its last failure; inside an internal Fusion run, only a success clears the run's count for that tool."
         ),
     )
+    STALL_ALARM_ENABLED: bool = Field(
+        default=True,
+        title="Stall alarm",
+        description=(
+            "Watch this worker for stalls. On, a heartbeat task on the event loop and a watcher thread check once a "
+            "second: when the loop has not run for STALL_ALARM_LOOP_SECONDS, a WARNING shows the loop thread's current "
+            "stack, and when the watcher thread itself cannot run for STALL_ALARM_GIL_SECONDS, a WARNING reports how "
+            "long the whole process was unresponsive when the watcher runs again; with STALL_ALARM_DUMP_ENABLED on it "
+            "also carries a thread dump taken during the pause. Off, no heartbeat, watcher or timer runs, and a pending "
+            "thread dump is cancelled. The watcher starts when the pipe first lists its models or serves a request, "
+            "not when it loads, so a worker whose saved setting is off never starts one. One alarm serves the whole "
+            "process: when several pipe instances configure it differently, the first instance's values apply and one "
+            "WARNING names the difference."
+        ),
+    )
+    STALL_ALARM_LOOP_SECONDS: int = Field(
+        default=5,
+        ge=3,
+        le=3600,
+        title="Event loop stall threshold",
+        description=(
+            "Seconds the event loop may go without running its heartbeat before the stall alarm logs a WARNING that "
+            "shows the loop thread's current stack. The heartbeat runs every half second and the watcher checks every "
+            "second, so the minimum is 3. A call that holds Python's global interpreter lock for this long also stops "
+            "the watcher, and is reported through STALL_ALARM_GIL_SECONDS instead."
+        ),
+    )
+    STALL_ALARM_GIL_SECONDS: int = Field(
+        default=3,
+        ge=3,
+        le=60,
+        title="Whole-process stall threshold",
+        description=(
+            "Seconds the alarm's watcher thread may go without running before the pause is reported: the WARNING says "
+            "how long the whole process was unresponsive, the event loop included. A call that holds Python's global "
+            "interpreter lock (a very large JSON parse, a regex, a compression or a string join) stops the watcher, and "
+            "so does any other pause of the whole process. With STALL_ALARM_DUMP_ENABLED on, a thread dump of every "
+            "thread taken during the pause is written to a file and logged with the WARNING; keep this value shorter "
+            "than the time the worker's supervisor allows for a health check, or the worker is restarted before the "
+            "dump exists. The minimum is 3: with a one-second check, a lower value would report a healthy worker."
+        ),
+    )
+    STALL_ALARM_DUMP_ENABLED: bool = Field(
+        default=False,
+        title="Thread dump on a whole-process stall",
+        description=(
+            "Take a thread dump of every thread when the whole worker stops responding. Off, the stall alarm still "
+            "reports the pause and how long it lasted, but not what held the process. On, the watcher re-arms a timer "
+            "every second that runs outside Python's global interpreter lock; when the watcher has not run for "
+            "STALL_ALARM_GIL_SECONDS the timer writes every thread's stack to a file in the system temporary directory, "
+            "the stall WARNING copies it into the log when the watcher runs again, and the file exists even if the "
+            "worker's supervisor kills the worker first. The dump reads the other threads' frames without holding the "
+            "lock, so if the timer fires while they are still running Python code (it also fires when the process was "
+            "paused from outside, by the host or a debugger, rather than by one long call), it can crash the worker in "
+            "rare cases. Switch it on to hunt a freeze and off again afterwards. An empty dump file is deleted when the "
+            "alarm closes or is switched off; a worker stopped by a signal can leave one behind, and a file that holds a "
+            "dump is never deleted."
+        ),
+    )
+    STALL_ALARM_REPEAT_SECONDS: int = Field(
+        default=60,
+        ge=1,
+        le=86400,
+        title="Stall warning repeat interval",
+        description=(
+            "Seconds the stall alarm stays quiet after a warning. A stall that lasts longer is reported again, with the "
+            "loop thread's current stack, each time this interval passes, and a new stall that begins sooner than this "
+            "after a warning is not warned about. The event loop warning and the whole-process warning keep separate "
+            "clocks."
+        ),
+    )
     TOOL_BATCH_CAP: int = Field(
         default=4,
         ge=1,
