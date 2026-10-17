@@ -1471,7 +1471,9 @@ the turn whose round carries it. An entry in a generated-image reply that is
 not a picture is refused as such and does not count against that reply's
 ceiling, so a bad entry cannot displace a good one, and every entry is named
 for what it is — over the ceiling or not a picture — whatever the limit is
-set to. A blob that is not a picture is not stored
+set to. The reply that carries the pictures is itself read only up to a size
+derived from the same limit, on the plain and the streamed form of the request
+alike; see [The reply was too large to read](#the-reply-was-too-large-to-read). A blob that is not a picture is not stored
 either: the type written into the file name and the file's `content_type`
 is resolved from the bytes wherever the bytes identify themselves, the
 declaration decides only where they say nothing and the head could still be
@@ -1786,6 +1788,29 @@ delivered, the run is billed, the generation settles as a success, and
 the reason appended next to the picture names the progress channel
 rather than OpenRouter's connection. Before any image has arrived there
 is nothing to salvage, and the failure surfaces as what it is.
+
+### The reply was too large to read
+
+The answer says OpenRouter generated and billed the image, but the reply was
+more than some number of MB and was not read. The pipe reads the reply of an
+image generation only up to a size it derives from `BASE64_MAX_SIZE_MB`: that
+limit written as base64, which is a third larger than the picture itself, for
+each picture the request asked for, plus 8 MB for the rest of the reply. At the
+default 50 MB and one picture that is 74.67 MB. A reply past it is refused as it
+is read, whether or not OpenRouter announced its size first, and the pipe closes
+the connection without reading the rest. On the streamed form of the request
+(the previews described under [The picture appeared in
+stages](#the-picture-appeared-in-stages-or-the-status-line-kept-moving)) the same
+bound applies to each event of the stream: previews and the stream's total
+length are not limited, and a finished picture past the bound is refused the
+same way. The image has by then been generated and billed, but the pipe holds no
+picture from it and no usage figures for it, so nothing is delivered and the
+generation's cost is not recorded.
+
+Raise `BASE64_MAX_SIZE_MB`, ask for fewer images in one request, or ask for a
+smaller picture. A reply the per-picture limit alone would have refused still
+arrives as before when it is inside the bound: the pictures that fit are
+delivered and the rest are named in the answer.
 
 ### Image generation succeeds but no image renders inline
 

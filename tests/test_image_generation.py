@@ -718,6 +718,109 @@ async def test_image_client_list_models_handles_missing_data_field():
 
 
 @pytest.mark.asyncio
+async def test_an_image_reply_past_what_the_pipe_could_keep_is_refused_while_it_is_read():
+    import base64
+    from typing import cast
+
+    import aiohttp
+    from aiohttp import web
+
+    from open_webui_openrouter_pipe.integrations.image_client import OpenRouterImageClient
+    from open_webui_openrouter_pipe.integrations.image_types import ImageGenerationError
+    from tests.vetting_helpers import open_live_listener
+
+    ceiling_bytes = 1024 * 1024
+    under_the_cap = 5_000_000
+    over_the_cap = 12_000_000
+    picture = (
+        b"\x89PNG\r\n\x1a\n"
+        + b"\x00\x00\x00\x0dIHDR"
+        + (8).to_bytes(4, "big")
+        + (8).to_bytes(4, "big")
+        + b"\x08\x06\x00\x00\x00"
+    )
+    encoded = base64.b64encode(picture).decode()
+
+    def json_reply(padding: int) -> bytes:
+        return json.dumps(
+            {
+                "created": 1,
+                "data": [{"b64_json": encoded, "media_type": "image/png"}],
+                "provider_notes": "x" * padding,
+            }
+        ).encode()
+
+    def streamed_reply(padding: int) -> bytes:
+        events = [
+            {"type": "image_generation.partial_image", "partial_image_index": 0, "b64_json": encoded},
+            {
+                "type": "image_generation.completed",
+                "b64_json": encoded,
+                "media_type": "image/png",
+                "created": 1,
+                "provider_notes": "x" * padding,
+            },
+        ]
+        return ("".join(f"data: {json.dumps(event)}\n\n" for event in events) + "data: [DONE]\n\n").encode()
+
+    async def serve(request: web.Request) -> web.StreamResponse:
+        shape = request.match_info["shape"]
+        padding = under_the_cap if shape.endswith("under") else over_the_cap
+        if shape == "json_honest" or shape == "json_under":
+            return web.Response(body=json_reply(padding), content_type="application/json")
+        streamed = shape.startswith("sse")
+        body = streamed_reply(padding) if streamed else json_reply(padding)
+        response = web.StreamResponse(
+            headers={"Content-Type": "text/event-stream" if streamed else "application/json"}
+        )
+        response.enable_chunked_encoding()
+        await response.prepare(request)
+        try:
+            for start in range(0, len(body), 65536):
+                await response.write(body[start : start + 65536])
+            await response.write_eof()
+        except ConnectionError:
+            pass
+        return response
+
+    app = web.Application()
+    app.router.add_post("/{shape}/images", serve)
+    runner = web.AppRunner(app, shutdown_timeout=0.5)
+    await runner.setup()
+
+    async def open_site() -> tuple[web.TCPSite, Any]:
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        return site, cast(Any, site._server).sockets
+
+    site = await open_live_listener("127.0.0.1", open_site, lambda listener: listener.stop())
+    port = cast(Any, site._server).sockets[0].getsockname()[1]
+
+    async def generate(shape: str):
+        async with aiohttp.ClientSession() as session:
+            client = OpenRouterImageClient(
+                session,
+                base_url=f"http://127.0.0.1:{port}/{shape}",
+                api_key="sk-invented-for-a-test",
+                logger=logging.getLogger("tests.image-reply-bound"),
+            )
+            return await client.generate(
+                {"model": "vendor/invented-image", "prompt": "a leaf", "stream": shape.startswith("sse")},
+                max_decoded_bytes=ceiling_bytes,
+            )
+
+    try:
+        kept = [await generate("json_under"), await generate("sse_under")]
+        for shape in ("json_honest", "json_chunked", "sse_over"):
+            with pytest.raises(ImageGenerationError):
+                await generate(shape)
+    finally:
+        await runner.cleanup()
+
+    assert [[image.data for image in result.images] for result in kept] == [[picture], [picture]]
+
+
+@pytest.mark.asyncio
 async def test_image_catalog_happy_path_registers_models():
     """End-to-end: enabled + TTL expired + successful fetch → register_image_models
     is called with the response payload, last_image_attempt is bumped."""

@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-from typing import Any
+from typing import Any, NamedTuple
 
 import aiohttp
 
@@ -109,28 +109,82 @@ def _image_body_not_an_object(resp: Any, payload: Any) -> UpstreamBodyUnreadable
     )
 
 
-async def _decode_image_json_body(resp: Any, logger: Any) -> Any:
-    try:
-        return await resp.json()
-    except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError):
-        raise
-    except Exception:
-        logger.debug(
-            "OpenRouter image response was not decodable JSON; falling back to text",
-            exc_info=True,
+_IMAGE_BODY_CHUNK_BYTES = 1 << 20
+
+_IMAGE_BODY_SLACK_BYTES = 8 << 20
+
+
+class _ReplyBound(NamedTuple):
+    limit: int
+    ceiling: int
+    pictures: int
+
+    def refusal(self) -> ImageGenerationError:
+        noun = "picture" if self.pictures == 1 else "pictures"
+        return ImageGenerationError(
+            "OpenRouter generated the image and billed it, but the reply was more than "
+            f"{self.limit // (1024 * 1024)} MB, past the most this deployment reads for "
+            f"{self.pictures} requested {noun} under its {self.ceiling // (1024 * 1024)} MB "
+            "BASE64_MAX_SIZE_MB limit. The reply was not read, so no picture was delivered and "
+            "its cost could not be recorded: raise that limit, ask for fewer images, or ask for "
+            "a smaller picture."
         )
-        text = ""
-        try:
-            text = await resp.text()
-            return json.loads(text)
-        except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError):
-            raise
-        except Exception as exc:
-            raise UpstreamBodyUnreadable(
-                endpoint="/images",
-                body_excerpt=text[:_IMAGE_BODY_EXCERPT_CHARS],
-                content_type=getattr(resp, "content_type", None),
-            ) from exc
+
+
+def _reply_bound(payload: Any, max_decoded_bytes: int) -> _ReplyBound | None:
+    if max_decoded_bytes <= 0:
+        return None
+    requested = payload.get("n") if isinstance(payload, dict) else None
+    pictures = (
+        requested
+        if isinstance(requested, int) and not isinstance(requested, bool) and requested > 1
+        else 1
+    )
+    return _ReplyBound(
+        limit=(max_decoded_bytes + 2) // 3 * 4 * pictures + _IMAGE_BODY_SLACK_BYTES,
+        ceiling=max_decoded_bytes,
+        pictures=pictures,
+    )
+
+
+async def _read_image_body(resp: Any, bound: _ReplyBound | None) -> bytes | bytearray:
+    if bound is None:
+        return await resp.read()
+    declared = resp.content_length
+    if isinstance(declared, int) and declared > bound.limit:
+        raise bound.refusal()
+    body = bytearray()
+    async for chunk in resp.content.iter_chunked(_IMAGE_BODY_CHUNK_BYTES):
+        body += chunk
+        if len(body) > bound.limit:
+            raise bound.refusal()
+    return body
+
+
+async def _decode_image_json_body(
+    resp: Any, logger: Any, bound: _ReplyBound | None = None
+) -> Any:
+    try:
+        body = await _read_image_body(resp, bound)
+    except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError, ImageGenerationError):
+        raise
+    except Exception as exc:
+        raise UpstreamBodyUnreadable(
+            endpoint="/images",
+            body_excerpt="",
+            content_type=getattr(resp, "content_type", None),
+        ) from exc
+    if not body or body.isspace():
+        return None
+    try:
+        return json.loads(body)
+    except (ValueError, RecursionError) as exc:
+        logger.debug("OpenRouter image response was not decodable JSON", exc_info=True)
+        raise UpstreamBodyUnreadable(
+            endpoint="/images",
+            body_excerpt=bytes(body[:_IMAGE_BODY_EXCERPT_CHARS]).decode("utf-8", "replace"),
+            content_type=getattr(resp, "content_type", None),
+        ) from exc
 
 
 class _ProgressCallbackFailed(BaseException):
@@ -309,7 +363,11 @@ class OpenRouterImageClient:
                 raise _ProgressCallbackFailed(exc) from exc
 
     async def _read_stream_as_buffered_response(
-        self, resp: Any, on_progress: Any, state: dict[str, Any]
+        self,
+        resp: Any,
+        on_progress: Any,
+        state: dict[str, Any],
+        bound: _ReplyBound | None = None,
     ) -> dict[str, Any]:
         buffer = ""
         _utf8 = utf8_stream_decoder()
@@ -317,6 +375,8 @@ class OpenRouterImageClient:
             async for chunk in resp.content.iter_any():
                 piece = _utf8.decode(chunk)
                 buffer += piece
+                if bound is not None and len(buffer) > bound.limit:
+                    raise bound.refusal()
                 if "\n" not in piece:
                     continue
                 while "\n" in buffer:
@@ -388,10 +448,11 @@ class OpenRouterImageClient:
                 "stream_broken": False,
                 "max_decoded_bytes": max_decoded_bytes, "over_ceiling_seen": False,
             }
+            bound = _reply_bound(payload, max_decoded_bytes)
             if resp.content_type == _IMAGE_SSE_CONTENT_TYPE:
                 try:
                     data = await self._read_stream_as_buffered_response(
-                        resp, on_progress, state
+                        resp, on_progress, state, bound
                     )
                 except (ImageGenerationError, aiohttp.ClientError, TimeoutError) as exc:
                     if not state["data"]:
@@ -413,7 +474,7 @@ class OpenRouterImageClient:
                         )
                     data = {"data": state["data"], "usage": state["usage"]}
             else:
-                data = await _decode_image_json_body(resp, self._logger)
+                data = await _decode_image_json_body(resp, self._logger, bound)
         _debug_print_response(data, logger=self._logger)
         if not isinstance(data, dict):
             raise _image_body_not_an_object(resp, data)
