@@ -20,18 +20,33 @@ import os
 import queue
 import random
 import re
+import secrets
+import sqlite3
 import sys
+import tempfile
 import threading
 import time
 import weakref
-from collections.abc import Callable, Collection, MutableMapping, Sequence
+from collections.abc import (
+    Callable,
+    Collection,
+    Generator,
+    Iterator,
+    MutableMapping,
+    Sequence,
+)
 from contextvars import ContextVar
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from sqlalchemy import case, func, not_
 
-from ..core.logging_system import _prune_archive_dir
+from ..core.logging_system import (
+    ArchiveWriteInterrupted,
+    _prune_archive_dir,
+    _resolve_archive_root,
+)
 from ..core.timing_logger import timed
 from ..core.warn_latch import warn_level
 from ..integrations.video_intent_prompts import INTENT_SCHEMA_NAME
@@ -236,6 +251,12 @@ def _assembler_loop(mgr_ref: Any, stop_event: threading.Event) -> None:
 
 _UNREADABLE_ARCHIVE_CAPTURE_AFTER = 3
 
+_SEGMENT_ROW_TYPES = ("session_log_segment", "session_log_segment_terminal")
+
+_ORPHAN_WRITE_MIN_AGE_SECONDS = 3600.0
+
+_SORTER_PREFIX = ".session-log-sorter-"
+
 _WRITER_DRAIN_SECONDS = 1.0
 
 _WRITER_DRAIN_MAX_SECONDS = 30.0
@@ -312,6 +333,141 @@ def _window_rows(
         if len(offered) >= int(limit):
             break
     return offered, held
+
+
+class _PassInterrupted(ArchiveWriteInterrupted):
+    pass
+
+
+def _event_ts(evt: dict[str, Any]) -> float:
+    created = evt.get("created")
+    try:
+        return float(created) if created is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _dedupe_key(evt: dict[str, Any]) -> str:
+    created_raw = evt.get("created", 0)
+    try:
+        created_key: Any = datetime.datetime.fromtimestamp(
+            float(created_raw), tz=datetime.UTC
+        ).isoformat(timespec="milliseconds")
+    except (TypeError, ValueError, OSError, OverflowError):
+        created_key = created_raw
+    return "{}:{}:{}:{}".format(
+        created_key,
+        evt.get("request_id", ""),
+        evt.get("lineno", 0),
+        hash(str(evt.get("message", ""))),
+    )
+
+
+def _sorter_seal(key: bytes | None, src: int, pos: int, evt: dict[str, Any]) -> bytes | str:
+    data = json.dumps(evt)
+    if key is None:
+        return data
+    nonce = secrets.token_bytes(16)
+    encryptor = Cipher(algorithms.AES(key), modes.CTR(nonce)).encryptor()
+    return nonce + encryptor.update(data.encode("utf-8")) + encryptor.finalize()
+
+
+def _sorter_unseal(key: bytes | None, src: int, pos: int, data: Any) -> dict[str, Any]:
+    if key is None or not isinstance(data, bytes):
+        return json.loads(data)
+    nonce, body = data[:16], data[16:]
+    decryptor = Cipher(algorithms.AES(key), modes.CTR(nonce)).decryptor()
+    return json.loads((decryptor.update(body) + decryptor.finalize()).decode("utf-8"))
+
+
+class _EventSorter:
+    def __init__(self, directory: Path, key: bytes | None = None) -> None:
+        handle, path = tempfile.mkstemp(dir=directory, prefix=_SORTER_PREFIX)
+        os.close(handle)
+        self._conn: Any = None
+        self._path = path
+        self._key = key
+        try:
+            self._conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+            try:
+                os.unlink(path)
+                self._path = ""
+            except OSError:
+                pass
+            for pragma in ("journal_mode=OFF", "synchronous=OFF", "locking_mode=EXCLUSIVE", "cache_size=-16384"):
+                self._conn.execute(f"PRAGMA {pragma}")
+            self._conn.execute(
+                "CREATE TABLE ev (grp TEXT, created REAL, src INTEGER, pos INTEGER, k TEXT, rid TEXT, data TEXT)"
+            )
+            self._conn.execute("CREATE INDEX ev_order ON ev (grp, created, src, pos)")
+            self._conn.execute("CREATE INDEX ev_key ON ev (grp, k, src, pos)")
+            self._conn.execute("BEGIN")
+        except BaseException:
+            self.close()
+            raise
+
+    def add(self, grp: str, src: int, pos: int, evt: dict[str, Any]) -> None:
+        rid = evt.get("request_id")
+        self._conn.execute(
+            "INSERT INTO ev VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                grp,
+                _event_ts(evt),
+                src,
+                pos,
+                _dedupe_key(evt),
+                rid.strip() if isinstance(rid, str) and rid.strip() else None,
+                _sorter_seal(self._key, src, pos, evt),
+            ),
+        )
+
+    def regroup(self, grp: str, src: int | None = None) -> None:
+        if src is None:
+            self._conn.execute("UPDATE ev SET grp = ? WHERE grp = ''", (grp,))
+        else:
+            self._conn.execute("UPDATE ev SET grp = ? WHERE src = ? AND grp = ''", (grp, src))
+
+    def discard_prior(self, grp: str) -> None:
+        self._conn.execute("DELETE FROM ev WHERE grp = ? AND src = -1", (grp,))
+
+    def count(self, grp: str) -> int:
+        return int(self._conn.execute("SELECT count(*) FROM ev WHERE grp = ?", (grp,)).fetchone()[0])
+
+    def request_ids(self, grp: str) -> set[str]:
+        rows = self._conn.execute("SELECT DISTINCT rid FROM ev WHERE grp = ? AND rid IS NOT NULL", (grp,))
+        return {row[0] for row in rows}
+
+    def stream(self, grp: str, dedupe: bool) -> Iterator[dict[str, Any]]:
+        sql = "SELECT src, pos, data FROM ev e WHERE grp = :grp"
+        if dedupe:
+            sql += (
+                " AND NOT EXISTS (SELECT 1 FROM ev o WHERE o.grp = e.grp AND o.k = e.k AND ("
+                "(o.src < 0 AND e.src >= 0) OR ((o.src < 0) = (e.src < 0) AND (o.created < e.created OR "
+                "(o.created = e.created AND (o.src < e.src OR (o.src = e.src AND o.pos < e.pos)))))))"
+            )
+        rows = self._conn.execute(sql + " ORDER BY created, src, pos", {"grp": grp})
+        for src, pos, data in rows:
+            yield _sorter_unseal(self._key, src, pos, data)
+
+    def close(self) -> None:
+        with contextlib.suppress(Exception):
+            self._conn.close()
+        if self._path:
+            with contextlib.suppress(OSError):
+                os.unlink(self._path)
+
+
+class _GroupEvents:
+    def __init__(self, sorter: _EventSorter, grp: str) -> None:
+        self.sorter = sorter
+        self.grp = grp
+        self.dedupe = False
+        self.marker: dict[str, Any] | None = None
+
+    def __iter__(self) -> Iterator[dict[str, Any]]:
+        yield from self.sorter.stream(self.grp, self.dedupe)
+        if self.marker is not None:
+            yield self.marker
 
 
 class _LockContended:
@@ -1545,14 +1701,14 @@ class SessionLogManager:
         self,
         zip_path: Path,
         settings: tuple[str, bytes, str, int | None],
-    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    ) -> tuple[dict[str, Any], Generator[dict[str, Any], None, None]]:
         import pyzipper
 
         _, zip_password, _, _ = settings
         meta: dict[str, Any] = {}
-        events: list[dict[str, Any]] = []
 
-        with pyzipper.AESZipFile(zip_path, "r") as zf:
+        zf = pyzipper.AESZipFile(zip_path, "r")
+        try:
             zf.setpassword(zip_password)
             if "meta.json" in zf.namelist():
                 try:
@@ -1561,17 +1717,24 @@ class SessionLogManager:
                     loaded = None
                 if isinstance(loaded, dict):
                     meta = loaded
-            if "logs.jsonl" in zf.namelist():
-                content = zf.read("logs.jsonl").decode("utf-8")
-                for line in content.strip().split("\n"):
-                    if line.strip():
-                        try:
-                            evt = json.loads(line)
-                        except (ValueError, RecursionError):
-                            continue  # Skip malformed lines (JSONDecodeError ⊂ ValueError)
-                        if isinstance(evt, dict):
-                            events.append(self._convert_jsonl_to_internal(evt))
-        return meta, events
+        except BaseException:
+            zf.close()
+            raise
+
+        def events() -> Generator[dict[str, Any], None, None]:
+            with zf:
+                if "logs.jsonl" in zf.namelist():
+                    with zf.open("logs.jsonl") as handle:
+                        for line in handle:
+                            if line.strip():
+                                try:
+                                    evt = json.loads(line)
+                                except (ValueError, RecursionError):
+                                    continue
+                                if isinstance(evt, dict):
+                                    yield self._convert_jsonl_to_internal(evt)
+
+        return meta, events()
 
     def _convert_jsonl_to_internal(self, evt: dict[str, Any]) -> dict[str, Any]:
         """Convert JSONL archive format back to internal event format.
@@ -1587,45 +1750,6 @@ class SessionLogManager:
             except (AttributeError, TypeError, ValueError, OSError, OverflowError):
                 internal["created"] = time.time()
         return internal
-
-    def dedupe_events(
-        self,
-        events: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        """Remove duplicate events based on content signature.
-
-        Duplicates can occur when the worker writes to the archive but fails to
-        delete DB rows, then runs again and re-reads the same events.
-        """
-        seen: set[str] = set()
-        unique: list[dict[str, Any]] = []
-        for evt in events:
-            # Key: timestamp + request_id + lineno + message hash.
-            # Normalise `created` to the archive's millisecond-ISO form — the
-            # SAME serialization the writer uses (logging_system.py:
-            # isoformat(timespec="milliseconds"), which TRUNCATES to ms). DB
-            # events carry full float precision; archive-round-tripped events
-            # are ms-truncated. Re-serializing both guarantees identical keys;
-            # rounding would not (round vs truncate disagree for ~half of all
-            # timestamps), so the same event from DB and archive would fail to
-            # dedup and duplicate the log line.
-            created_raw = evt.get("created", 0)
-            try:
-                created_key: Any = datetime.datetime.fromtimestamp(
-                    float(created_raw), tz=datetime.UTC
-                ).isoformat(timespec="milliseconds")
-            except (TypeError, ValueError, OSError, OverflowError):
-                created_key = created_raw
-            key = "{}:{}:{}:{}".format(
-                created_key,
-                evt.get("request_id", ""),
-                evt.get("lineno", 0),
-                hash(str(evt.get("message", ""))),
-            )
-            if key not in seen:
-                seen.add(key)
-                unique.append(evt)
-        return unique
 
     # =========================================================================
     # Bundle Assembly
@@ -1663,6 +1787,8 @@ class SessionLogManager:
         segments: list[dict[str, Any]],
         ids: list[str] | None = None,
         group: str = "",
+        sorter: _EventSorter | None = None,
+        progress: Callable[[], None] = lambda: None,
     ) -> bool:
 
         from ..core.logging_system import _archive_file_path, _SessionLogArchiveJob
@@ -1727,7 +1853,7 @@ class SessionLogManager:
         if distinct_user_ids:
             user_id = distinct_user_ids[0]
 
-        events: list[dict[str, Any]] = []
+        grp = user_id
         request_id = _preferred_request_id(segments)
         resolved_status = ""
         resolved_reason = ""
@@ -1740,10 +1866,7 @@ class SessionLogManager:
                     resolved_status = raw_status.strip()
                     raw_reason = seg.get("reason")
                     resolved_reason = raw_reason.strip() if isinstance(raw_reason, str) else ""
-            seg_events = seg.get("events")
-            if isinstance(seg_events, list):
-                events.extend(e for e in seg_events if isinstance(e, dict))
-        if not events or not request_id:
+        if sorter is None or not sorter.count(grp) or not request_id:
             return False
 
         meta_message_id, meta_task = _split_archive_key(message_id)
@@ -1763,11 +1886,20 @@ class SessionLogManager:
                 message_id=fallback_message_id,
             ) or rescue_path
         )
+        group_events = _GroupEvents(sorter, grp)
         if prior_path.is_file():
             try:
                 prior_meta, prior_events = self.read_archive(
                     prior_path, (base_dir, zip_password, zip_compression, zip_compresslevel)
                 )
+                with contextlib.closing(prior_events):
+                    if prior_path == rescue_path or _prior_archive_belongs_to_turn(
+                        prior_meta, user_id=user_id, chat_id=chat_id, message_id=message_id
+                    ):
+                        loaded, _ = self._load_prior_events(sorter, grp, prior_events, progress, keep_markers=True)
+                        group_events.dedupe = loaded > 0
+            except _PassInterrupted:
+                raise
             except Exception:
                 self.logger.log(
                     warn_level(self._unreadable_archive_warnings,
@@ -1777,13 +1909,6 @@ class SessionLogManager:
                     "intact (path=%s).", chat_id, message_id, str(prior_path), exc_info=True,
                 )
                 return False
-            if prior_path != rescue_path and not _prior_archive_belongs_to_turn(
-                prior_meta, user_id=user_id, chat_id=chat_id, message_id=message_id
-            ):
-                prior_events = []
-            if prior_events:
-                events = self.dedupe_events(prior_events + events)
-                events.sort(key=lambda evt: float(evt.get("created") or 0.0))
         try:
             self._write_archive(
                 _SessionLogArchiveJob(
@@ -1798,14 +1923,18 @@ class SessionLogManager:
                     request_id=request_id,
                     created_at=time.time(),
                     log_format=self._resolve_log_format(segments),
-                    log_events=events,
+                    log_events=group_events,
                     meta_message_id=meta_message_id,
                     meta_task=meta_task,
                     terminal=saw_terminal_segment,
                     status=resolved_status,
                     reason=resolved_reason,
+                    request_ids=sorted(sorter.request_ids(grp)),
+                    progress=progress,
                 )
             )
+        except _PassInterrupted:
+            raise
         except Exception:
             self.logger.warning(
                 "Could not capture stranded session log turn chat_id=%s message_id=%s; "
@@ -2024,27 +2153,61 @@ class SessionLogManager:
             return held
 
         ids: list[str] = []
+        touched: list[str] = []
         stamps: dict[str, Any] = {}
+        sealed: dict[str, bool] = {}
+        sorter: _EventSorter | None = None
         try:
             # Fetch all segment ids for this message (including any terminal markers).
             with _db_session(session_factory) as session:
                 rows = (
-                    session.query(model.id, model.created_at)  # type: ignore[attr-defined]
+                    session.query(model.id, model.created_at, model.is_encrypted)  # type: ignore[attr-defined]
                     .filter(model.chat_id == chat_id)  # type: ignore[attr-defined]
                     .filter(model.message_id == message_id)  # type: ignore[attr-defined]
-                    .filter(model.item_type.in_(["session_log_segment", "session_log_segment_terminal"]))  # type: ignore[attr-defined]
-                    .order_by(model.created_at.asc())  # type: ignore[attr-defined]
+                    .filter(model.item_type.in_(_SEGMENT_ROW_TYPES))  # type: ignore[attr-defined]
+                    .order_by(model.created_at.asc(), model.id.asc())  # type: ignore[attr-defined]
                     .all()
                 )
                 ids = [row[0] for row in rows if row and isinstance(row[0], str)]
                 stamps = {row[0]: row[1] for row in rows if row and isinstance(row[0], str)}
+                sealed = {row[0]: bool(row[2]) for row in rows if row and isinstance(row[0], str)}
 
             if not ids:
                 self._release_assembly_lock(lock_id)
                 return False
 
+            settings = archive_settings or self.resolve_archive_settings(self.valves)
+            if settings is None:
+                _truncate_latch(self._unreadable_archive_warnings, _MAX_DRAIN_LATCH_KEYS)
+                self.logger.log(
+                    warn_level(
+                        self._unreadable_archive_warnings,
+                        f"session_log_settings_unresolved:{chat_id}:{message_id}",
+                        cooldown_s=3600.0,
+                    ),
+                    "Session log archive settings did not resolve for chat_id=%s message_id=%s; "
+                    "keeping staged segments for retry.",
+                    chat_id,
+                    message_id,
+                )
+                self._release_assembly_lock(lock_id)
+                return False
+            base_dir, zip_password, zip_compression, zip_compresslevel = settings
+
+            def progress() -> None:
+                return None
+
+            scratch = _resolve_archive_root(base_dir)
+            scratch.mkdir(parents=True, exist_ok=True)
+            sorter = _EventSorter(scratch, secrets.token_bytes(32) if any(sealed.values()) else None)
             try:
-                payloads = self._artifact_store._db_fetch_sync(chat_id, message_id, ids)
+                segments: list[dict[str, Any]] = []
+                readable_ids: list[str] = []
+                for rank, item_id in enumerate(ids):
+                    header = self._ingest_row(sorter, chat_id, message_id, item_id, rank, touched)
+                    if header is not None:
+                        segments.append(header)
+                        readable_ids.append(item_id)
             except Exception:
                 _truncate_latch(self._read_fault_warnings, _MAX_DRAIN_LATCH_KEYS)
                 self.logger.log(
@@ -2058,18 +2221,9 @@ class SessionLogManager:
                     message_id,
                     exc_info=True,
                 )
+                self._restore_touched_stamps(model, session_factory, stamps, list(touched), chat_id, message_id)
                 self._release_assembly_lock(lock_id)
                 return False
-
-            segments: list[dict[str, Any]] = []
-            readable_ids: list[str] = []
-            for item_id in ids:
-                payload = payloads.get(item_id) if isinstance(payloads, dict) else None
-                if not isinstance(payload, dict):
-                    continue
-                if payload.get("type") in {"session_log_segment", "session_log_segment_terminal"}:
-                    segments.append(payload)
-                    readable_ids.append(item_id)
 
             if len(readable_ids) != len(ids):
                 _truncate_latch(self._read_fault_warnings, _MAX_DRAIN_LATCH_KEYS)
@@ -2086,7 +2240,7 @@ class SessionLogManager:
                     chat_id,
                     message_id,
                 )
-                self._restore_touched_stamps(model, session_factory, stamps, list(ids), chat_id, message_id)
+                self._restore_touched_stamps(model, session_factory, stamps, list(touched), chat_id, message_id)
                 self._release_assembly_lock(lock_id)
                 return False
 
@@ -2124,25 +2278,8 @@ class SessionLogManager:
                 )
             else:
                 groups = [(distinct_user_ids[0] if distinct_user_ids else "", segments, list(ids))]
-
-            settings = archive_settings or self.resolve_archive_settings(self.valves)
-            if settings is None:
-                _truncate_latch(self._unreadable_archive_warnings, _MAX_DRAIN_LATCH_KEYS)
-                self.logger.log(
-                    warn_level(
-                        self._unreadable_archive_warnings,
-                        f"session_log_settings_unresolved:{chat_id}:{message_id}",
-                        cooldown_s=3600.0,
-                    ),
-                    "Session log archive settings did not resolve for chat_id=%s message_id=%s; "
-                    "keeping staged segments for retry.",
-                    chat_id,
-                    message_id,
-                )
-                self._restore_touched_stamps(model, session_factory, stamps, list(ids), chat_id, message_id)
-                self._release_assembly_lock(lock_id)
-                return False
-            base_dir, zip_password, zip_compression, zip_compresslevel = settings
+                if len(distinct_user_ids) == 1:
+                    sorter.regroup(distinct_user_ids[0])
 
             partitioned = len(groups) > 1
 
@@ -2156,7 +2293,7 @@ class SessionLogManager:
                 preferred_request_id = _preferred_request_id(group_segments)
                 resolved_status = ""
                 resolved_reason = ""
-                merged_events: list[dict[str, Any]] = []
+                group_events = _GroupEvents(sorter, group_principal)
                 group_terminal = terminal
 
                 for seg in group_segments:
@@ -2170,20 +2307,6 @@ class SessionLogManager:
                             resolved_status = raw_status.strip()
                             raw_reason = seg.get("reason")
                             resolved_reason = raw_reason.strip() if isinstance(raw_reason, str) else ""
-                    events = seg.get("events")
-                    if isinstance(events, list):
-                        for evt in events:
-                            if isinstance(evt, dict):
-                                merged_events.append(evt)
-
-                def _event_ts(evt: dict[str, Any]) -> float:
-                    created = evt.get("created")
-                    try:
-                        return float(created) if created is not None else 0.0
-                    except (TypeError, ValueError):
-                        return 0.0
-
-                merged_events.sort(key=_event_ts)
 
                 if not group_terminal and any(
                     seg.get("type") == "session_log_segment_terminal" for seg in group_segments
@@ -2201,7 +2324,7 @@ class SessionLogManager:
                     before_stat = out_path.stat()
 
                 # Merge with existing archive events if the zip already exists.
-                existing_raw: list[dict[str, Any]] = []
+                existing_total = existing_markers = 0
                 existing_meta: dict[str, Any] = {}
                 read_failed = False
                 merge_path = out_path
@@ -2215,42 +2338,28 @@ class SessionLogManager:
                     ) or out_path
                 if merge_path.exists():
                     try:
-                        prior_meta, prior_raw = self.read_archive(merge_path, settings)
-                        if merge_path == out_path or _prior_archive_belongs_to_turn(
-                            prior_meta,
-                            user_id=resolved_user_id,
-                            chat_id=chat_id,
-                            message_id=message_id,
-                        ):
-                            existing_meta, existing_raw = prior_meta, prior_raw
-                        else:
-                            prior_raw = []
-                            self.logger.debug(
-                                "A pre-digest archive at %s names another turn's ids; it is left "
-                                "alone and this turn is assembled on its own (chat_id=%s message_id=%s).",
-                                str(merge_path),
-                                chat_id,
-                                message_id,
-                            )
-                        existing_events = prior_raw
-                        existing_count = len(existing_events)
-                        db_count = len(merged_events)
-                        if existing_events:
-                            existing_events = [evt for evt in existing_events if not _is_incomplete_marker(evt)]
-                            if existing_events:
-                                merged_events = existing_events + merged_events
-                                merged_events = self.dedupe_events(merged_events)
-                                merged_events.sort(key=_event_ts)
-                            if self.logger.isEnabledFor(logging.DEBUG):
+                        prior_meta, prior_events = self.read_archive(merge_path, settings)
+                        with contextlib.closing(prior_events):
+                            if merge_path == out_path or _prior_archive_belongs_to_turn(
+                                prior_meta,
+                                user_id=resolved_user_id,
+                                chat_id=chat_id,
+                                message_id=message_id,
+                            ):
+                                existing_meta = prior_meta
+                                existing_total, existing_markers = self._load_prior_events(
+                                    sorter, group_principal, prior_events, progress
+                                )
+                            else:
                                 self.logger.debug(
-                                    "Merged %d existing archive events with %d DB events "
-                                    "(%d written; chat_id=%s message_id=%s)",
-                                    existing_count,
-                                    db_count,
-                                    len(merged_events),
+                                    "A pre-digest archive at %s names another turn's ids; it is left "
+                                    "alone and this turn is assembled on its own (chat_id=%s message_id=%s).",
+                                    str(merge_path),
                                     chat_id,
                                     message_id,
                                 )
+                    except _PassInterrupted:
+                        raise
                     except Exception:
                         if merge_path == out_path:
                             read_failed = True
@@ -2278,18 +2387,15 @@ class SessionLogManager:
                                 exc_info=True,
                             )
 
-                if not group_terminal and existing_raw and not any(
-                    _is_incomplete_marker(evt) for evt in existing_raw
-                ):
+                group_events.dedupe = existing_total > existing_markers
+                if not group_terminal and existing_total and not existing_markers:
                     group_terminal = True
                     if not resolved_status:
                         resolved_status = str(existing_meta.get("status") or "")
                         resolved_reason = str(existing_meta.get("reason") or "")
                 if not group_terminal and not existing_meta.get("terminal"):
-                    merged_events.append(
-                        _incomplete_marker(
-                            preferred_request_id, resolved_session_id, resolved_user_id, stale_finalize_seconds
-                        )
+                    group_events.marker = _incomplete_marker(
+                        preferred_request_id, resolved_session_id, resolved_user_id, stale_finalize_seconds
                     )
 
                 if read_failed:
@@ -2306,6 +2412,8 @@ class SessionLogManager:
                         group_segments,
                         list(group_ids),
                         group=group_principal if partitioned else "",
+                        sorter=sorter,
+                        progress=progress,
                     )
                     if not captured:
                         self._rescue_pending[(chat_id, message_id)] = time.monotonic()
@@ -2327,13 +2435,18 @@ class SessionLogManager:
                     request_id=preferred_request_id or "",
                     created_at=time.time(),
                     log_format=self._resolve_log_format(group_segments),
-                    log_events=merged_events,
+                    log_events=group_events,
                     meta_message_id=meta_message_id,
                     meta_task=meta_task,
                     terminal=group_terminal,
                     status=resolved_status,
                     reason=resolved_reason,
                     publish_guard=_publish_guard,
+                    request_ids=sorted(
+                        sorter.request_ids(group_principal)
+                        | ({group_events.marker["request_id"]} if group_events.marker and group_events.marker["request_id"] else set())
+                    ),
+                    progress=progress,
                 )
                 if not self.valves.SESSION_LOG_STORE_ENABLED:
                     self.logger.log(
@@ -2351,6 +2464,8 @@ class SessionLogManager:
                     return "failed"
                 try:
                     self._write_archive(job)
+                except _PassInterrupted:
+                    raise
                 except Exception:
                     self.logger.log(
                         warn_level(
@@ -2422,7 +2537,7 @@ class SessionLogManager:
                     )
                 return True
 
-            self._restore_touched_stamps(model, session_factory, stamps, list(ids), chat_id, message_id)
+            self._restore_touched_stamps(model, session_factory, stamps, list(touched), chat_id, message_id)
             if contended:
                 self.logger.log(
                     warn_level(
@@ -2439,10 +2554,74 @@ class SessionLogManager:
                 return _LOCK_CONTENDED
             self._release_assembly_lock(lock_id)
             return False
+        except _PassInterrupted as exc:
+            self._restore_touched_stamps(model, session_factory, stamps, list(touched), chat_id, message_id)
+            self._release_assembly_lock(lock_id)
+            self.logger.log(
+                warn_level(
+                    self._unreadable_archive_warnings,
+                    f"session_log_write_skipped_store_disabled:{chat_id}:{message_id}",
+                    cooldown_s=3600.0,
+                ),
+                "Session log archive was not written for chat_id=%s message_id=%s: the pass was "
+                "stopped (%s), so the staged segments stay in the database for a later pass.",
+                chat_id,
+                message_id,
+                exc,
+            )
+            return False
         except BaseException:
-            self._restore_touched_stamps(model, session_factory, stamps, list(ids), chat_id, message_id)
+            self._restore_touched_stamps(model, session_factory, stamps, list(touched), chat_id, message_id)
             self._release_assembly_lock(lock_id)
             raise
+        finally:
+            if sorter is not None:
+                sorter.close()
+
+    def _load_prior_events(
+        self,
+        sorter: _EventSorter,
+        grp: str,
+        events: Iterator[dict[str, Any]],
+        progress: Callable[[], None],
+        *,
+        keep_markers: bool = False,
+    ) -> tuple[int, int]:
+        total = markers = 0
+        try:
+            for evt in events:
+                total += 1
+                if _is_incomplete_marker(evt):
+                    markers += 1
+                    if not keep_markers:
+                        continue
+                sorter.add(grp, -1, total, evt)
+                if total % 512 == 0:
+                    progress()
+        except BaseException:
+            sorter.discard_prior(grp)
+            raise
+        return total, markers
+
+    def _ingest_row(
+        self,
+        sorter: _EventSorter,
+        chat_id: str,
+        message_id: str,
+        item_id: str,
+        rank: int,
+        touched: list[str],
+    ) -> dict[str, Any] | None:
+        store = self._artifact_store
+        payload = store._db_fetch_sync(chat_id, message_id, [item_id]).get(item_id) if store else None
+        touched.append(item_id)
+        if not isinstance(payload, dict) or payload.get("type") not in _SEGMENT_ROW_TYPES:
+            return None
+        grp = str(payload.get("user_id") or "").strip()
+        for pos, evt in enumerate(payload.pop("events", None) or []):
+            if isinstance(evt, dict):
+                sorter.add(grp, rank, pos, evt)
+        return payload
 
     # =========================================================================
     # Archive Cleanup
@@ -2464,18 +2643,28 @@ class SessionLogManager:
         if not dirs:
             return
         retention_days = int(self.valves.SESSION_LOG_RETENTION_DAYS)
-        cutoff = time.time() - retention_days * 86400
+        now = time.time()
+        cutoff = now - retention_days * 86400
+        orphan_cutoff = now - max(
+            _ORPHAN_WRITE_MIN_AGE_SECONDS, 2.0 * float(self.valves.SESSION_LOG_LOCK_STALE_SECONDS)
+        )
 
         for base_dir in dirs:
             base_dir = (base_dir or "").strip()
             if not base_dir:
                 continue
-            root = Path(base_dir).expanduser()
+            root = _resolve_archive_root(base_dir)
             if not root.exists():
                 continue
             try:
                 for dirpath, _dirnames, filenames in os.walk(root, topdown=False):
                     for name in filenames:
+                        if name.endswith(".zip.tmp") or name.startswith(_SORTER_PREFIX):
+                            with contextlib.suppress(Exception):
+                                orphan = Path(dirpath) / name
+                                if orphan.stat().st_mtime < orphan_cutoff:
+                                    orphan.unlink(missing_ok=True)  # type: ignore[arg-type]
+                            continue
                         if not name.endswith(".zip"):
                             continue
                         with contextlib.suppress(Exception):

@@ -26,7 +26,7 @@ import time
 import traceback
 import uuid
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
@@ -55,6 +55,8 @@ _MAX_ARCHIVE_WARNING_LATCH_KEYS = 32
 
 _ARCHIVE_CLAIM_SUFFIX = ".openrouter-writing"
 
+_ARCHIVE_CHUNK_CHARS = 262_144
+
 
 _LOG_RECORD_MAX_CHARS = 16_384
 
@@ -67,6 +69,10 @@ def bounded_log_record_text(text: str, limit: int = _LOG_RECORD_MAX_CHARS) -> st
 
 
 # Session Log Archive Job
+
+class ArchiveWriteInterrupted(Exception):
+    pass
+
 
 @dataclass(slots=True)
 class _SessionLogArchiveJob:
@@ -83,13 +89,15 @@ class _SessionLogArchiveJob:
     request_id: str
     created_at: float
     log_format: str
-    log_events: list[dict[str, Any]]
+    log_events: Iterable[dict[str, Any]]
     meta_message_id: str | None = None
     meta_task: str | None = None
     terminal: bool = False
     status: str = ""
     reason: str = ""
     publish_guard: Callable[[], bool] | None = None
+    request_ids: list[str] | None = None
+    progress: Callable[[], None] | None = None
 
 
 def _safe_message(record: logging.LogRecord) -> str:
@@ -764,6 +772,10 @@ def _archive_path_component(value: str, *, fallback: str) -> str:
     return f"{safe}-{_stable_crockford_id(text, length=10)}"
 
 
+def _resolve_archive_root(base_dir: str | None) -> Path:
+    return Path((base_dir or "").strip()).expanduser()
+
+
 def _archive_out_dir(base_dir: Path, *, user_id: str, chat_id: str) -> Path:
     return base_dir / _archive_path_component(user_id, fallback="user") / _archive_path_component(
         chat_id, fallback="chat"
@@ -968,7 +980,7 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
     All files are encrypted using AES encryption with the provided password.
     Atomic file replacement is used to prevent partial writes.
     """
-    root = Path((job.base_dir or "").strip()).expanduser()
+    root = _resolve_archive_root(job.base_dir)
     out_dir = _archive_out_dir(root, user_id=job.user_id, chat_id=job.chat_id)
     _claim_archive_dir(out_dir)
     reservation = _Reservation(out_dir)
@@ -1027,18 +1039,21 @@ def _write_session_log_archive_unclaimed(
     compression = compression_map.get((job.zip_compression or "lzma").lower(), pyzipper.ZIP_LZMA)
 
     request_ids: list[str] = []
-    try:
-        ids: set[str] = set()
-        for evt in (job.log_events or []):
-            if not isinstance(evt, dict):
-                continue
-            rid = evt.get("request_id")
-            if isinstance(rid, str) and rid.strip():
-                ids.add(rid.strip())
-        request_ids = sorted(ids)
-    except TypeError:
-        sys.stderr.write("session log archive: request-id enrichment skipped (log_events not iterable)\n")
-        request_ids = []
+    if job.request_ids is not None:
+        request_ids = list(job.request_ids)
+    else:
+        try:
+            ids: set[str] = set()
+            for evt in (job.log_events or []):
+                if not isinstance(evt, dict):
+                    continue
+                rid = evt.get("request_id")
+                if isinstance(rid, str) and rid.strip():
+                    ids.add(rid.strip())
+            request_ids = sorted(ids)
+        except TypeError:
+            sys.stderr.write("session log archive: request-id enrichment skipped (log_events not iterable)\n")
+            request_ids = []
 
     meta = {
         "created_at": datetime.datetime.fromtimestamp(job.created_at, tz=datetime.UTC).isoformat(),
@@ -1132,35 +1147,43 @@ def _write_session_log_archive_unclaimed(
             record_out["message"] = "<<unrenderable message>>"
         return record_out
 
-    logs_payload = ""
-    if write_text:
-        try:
-            text_lines = [_format_event_as_text(_coerce_event(evt)) for evt in (job.log_events or [])]
-            logs_payload = "\n".join([line.rstrip("\n") for line in text_lines])
-            if logs_payload and not logs_payload.endswith("\n"):
-                logs_payload += "\n"
-        except Exception as exc:  # noqa: BLE001 - logs.txt build net; surfaced via stderr; logging avoided in archive writer
-            sys.stderr.write(f"session log archive: logs.txt build failed: {exc}\n")
-            logs_payload = ""
+    def _text_lines() -> Iterator[str]:
+        for raw_evt in (job.log_events or []):
+            try:
+                line = _format_event_as_text(_coerce_event(raw_evt))
+            except Exception as exc:  # noqa: BLE001 - one unrenderable record must not cost the member; surfaced via stderr
+                sys.stderr.write(f"session log archive: logs.txt record failed: {exc}\n")
+                line = "<<failed to render log record>>"
+            yield line.rstrip("\n")
 
-    jsonl_payload = ""
-    if write_jsonl:
-        try:
-            jsonl_lines: list[str] = []
-            for raw_evt in (job.log_events or []):
-                evt = _coerce_event(raw_evt)
+    def _jsonl_lines() -> Iterator[str]:
+        for raw_evt in (job.log_events or []):
+            evt = _coerce_event(raw_evt)
+            try:
                 record_out = _build_jsonl_record(evt)
-                try:
-                    jsonl_lines.append(json.dumps(record_out, ensure_ascii=False, separators=(",", ":")))
-                except (TypeError, ValueError, RecursionError):
-                    fallback = {"ts": record_out.get("ts"), "level": record_out.get("level"), "message": "<<failed to encode log record>>"}
-                    jsonl_lines.append(json.dumps(fallback, ensure_ascii=False, separators=(",", ":")))
-            jsonl_payload = "\n".join(jsonl_lines)
-            if jsonl_payload and not jsonl_payload.endswith("\n"):
-                jsonl_payload += "\n"
-        except Exception as exc:  # noqa: BLE001 - logs.jsonl build net; surfaced via stderr; logging avoided in archive writer
-            sys.stderr.write(f"session log archive: logs.jsonl build failed: {exc}\n")
-            jsonl_payload = ""
+            except Exception as exc:  # noqa: BLE001 - one malformed record must not cost the member; surfaced via stderr
+                sys.stderr.write(f"session log archive: logs.jsonl record failed: {exc}\n")
+                record_out = {"ts": _format_iso_utc(time.time()), "level": "ERROR", "message": "<<failed to build log record>>"}
+            try:
+                yield json.dumps(record_out, ensure_ascii=False, separators=(",", ":"))
+            except (TypeError, ValueError, RecursionError):
+                fallback = {"ts": record_out.get("ts"), "level": record_out.get("level"), "message": "<<failed to encode log record>>"}
+                yield json.dumps(fallback, ensure_ascii=False, separators=(",", ":"))
+
+    def _write_member(zf: Any, name: str, lines: Iterator[str]) -> None:
+        with zf.open(name, "w", force_zip64=True) as member:
+            buf: list[str] = []
+            held = 0
+            for line in lines:
+                buf.append(line)
+                held += len(line) + 1
+                if held >= _ARCHIVE_CHUNK_CHARS:
+                    member.write(("\n".join(buf) + "\n").encode("utf-8"))
+                    buf, held = [], 0
+                    if job.progress is not None:
+                        job.progress()
+            if buf:
+                member.write(("\n".join(buf) + "\n").encode("utf-8"))
 
     zip_kwargs: dict[str, Any] = {
         "mode": "w",
@@ -1176,9 +1199,13 @@ def _write_session_log_archive_unclaimed(
             zf.setpassword(job.zip_password or b"")
             zf.writestr("meta.json", meta_json)
             if write_text:
-                zf.writestr("logs.txt", logs_payload)
+                _write_member(zf, "logs.txt", _text_lines())
             if write_jsonl:
-                zf.writestr("logs.jsonl", jsonl_payload)
+                _write_member(zf, "logs.jsonl", _jsonl_lines())
+    except ArchiveWriteInterrupted:
+        with contextlib.suppress(Exception):
+            tmp_path.unlink(missing_ok=True)  # type: ignore[arg-type]
+        raise
     except Exception as exc:  # noqa: BLE001 - zip write net; mixed pyzipper error types; surfaced via stderr
         sys.stderr.write(f"session log archive: zip write {tmp_path} failed: {exc}\n")
         _report_archive_write_failed(

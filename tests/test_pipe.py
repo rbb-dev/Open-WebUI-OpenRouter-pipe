@@ -5862,7 +5862,7 @@ class _FakeQuery:
     def __init__(self, rows: list[_FakeModel], select_fields: list[_Field] | None = None) -> None:
         self._rows = rows
         self._filters: list[tuple[str, str, Any]] = []
-        self._order: tuple[str, str] | None = None
+        self._order: tuple[tuple[str, str], ...] = ()
         self._order_agg: str | None = None
         self._limit: int | None = None
         self._select_fields = select_fields
@@ -5901,15 +5901,14 @@ class _FakeQuery:
         """
         return self
 
-    def order_by(self, order):
-        if isinstance(order, tuple):
-            self._order = (order[0], order[1])
-            self._order_agg = None
-        else:
+    def order_by(self, *orders):
+        specs = []
+        for order in orders:
             spec = _unary_order_spec(order)
             if spec is not None:
-                self._order = (spec[0], spec[1])
-                self._order_agg = spec[2]
+                specs.append(spec)
+        self._order = tuple((spec[0], spec[1]) for spec in specs)
+        self._order_agg = specs[-1][2] if specs else None
         return self
 
     def limit(self, limit: int):
@@ -5935,15 +5934,15 @@ class _FakeQuery:
         if self._group_by:
             results = self._reduce_groups(results)
         if self._order:
-            direction, name = self._order
-            reverse = direction == "desc"
             agg = self._order_agg
-            if agg == "min":
-                results.sort(key=lambda row: _group_min(row, name), reverse=reverse)
-            elif agg == "max":
-                results.sort(key=lambda row: _group_max(row, name), reverse=reverse)
-            else:
-                results.sort(key=lambda row: cast(Any, _as_naive_utc(getattr(row, name, None))), reverse=reverse)
+            for direction, name in reversed(self._order):
+                reverse = direction == "desc"
+                if agg == "min":
+                    results.sort(key=lambda row: _group_min(row, name), reverse=reverse)
+                elif agg == "max":
+                    results.sort(key=lambda row: _group_max(row, name), reverse=reverse)
+                else:
+                    results.sort(key=lambda row: cast(Any, _as_naive_utc(getattr(row, name, None))), reverse=reverse)
         if self._limit is not None:
             results = results[: self._limit]
         return results
@@ -5963,7 +5962,7 @@ class _FakeQuery:
             groups.setdefault(key, []).append(row)
         out: list[_FakeModel] = []
         for members in groups.values():
-            ordered_name = self._order[1] if self._order else None
+            ordered_name = self._order[-1][1] if self._order else None
             agg = self._order_agg if ordered_name else None
             if agg == "min" and ordered_name:
                 out.append(min(members, key=lambda row: _as_naive_utc(getattr(row, ordered_name, None))))
@@ -6174,6 +6173,132 @@ def test_assemble_and_write_session_log_bundle_writes_zip(pipe_instance, monkeyp
     assert result is True
     remaining = pipe._artifact_store._db_fetch_sync(chat_id, message_id, [row["id"]])
     assert remaining == {}
+
+
+def _session_log_store_for_assembly(pipe: Any, tmp_path: Any) -> None:
+    _install_real_session_log_store(pipe, tmp_path)
+    store_any = cast(Any, pipe._artifact_store)
+    if store_any._db_executor is None:
+        store_any._db_executor = ThreadPoolExecutor(max_workers=1)
+    store_any._artifact_table_name = "response_items_test"
+    pipe._artifact_store._ensure_artifact_store = lambda valves, marker: None  # type: ignore[method-assign]
+
+
+def _stage_one_terminal_turn(pipe: Any, chat_id: str, message_id: str, message: str = "hello") -> str:
+    row = {
+        "id": generate_item_id(),
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "model_id": None,
+        "item_type": "session_log_segment_terminal",
+        "payload": {
+            "type": "session_log_segment_terminal",
+            "status": "complete",
+            "user_id": "user-stop",
+            "session_id": "sess-stop",
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "request_id": "req-stop",
+            "created_at": 1.0,
+            "events": [{"created": 1.0, "message": message}],
+        },
+    }
+    assert pipe._artifact_store._db_persist_sync([row]) == [row["id"]]
+    return row["id"]
+
+
+def _staged_turn_rows(pipe: Any, chat_id: str, message_id: str) -> int:
+    model = pipe._artifact_store._item_model
+    session_factory = pipe._artifact_store._session_factory
+    check_session = session_factory()  # type: ignore[call-arg]
+    try:
+        return (
+            check_session.query(model.id)
+            .filter(model.chat_id == chat_id)
+            .filter(model.message_id == message_id)
+            .count()
+        )
+    finally:
+        check_session.close()
+
+
+def test_scratch_files_follow_the_expanded_session_log_directory_and_an_unusable_one_fails_the_pass(
+    pipe_instance, tmp_path, monkeypatch
+):
+    import tempfile
+
+    pipe = pipe_instance
+    _session_log_store_for_assembly(pipe, tmp_path)
+    pipe.valves.SESSION_LOG_STORE_ENABLED = True
+    home = tmp_path / "home"
+    work = tmp_path / "work"
+    system_tmp = tmp_path / "system_tmp"
+    for folder in (home, work, system_tmp):
+        folder.mkdir()
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.chdir(work)
+    monkeypatch.setattr(tempfile, "tempdir", str(system_tmp))
+
+    _stage_one_terminal_turn(pipe, "chat-home", "msg-home")
+    assembled = pipe._session_log_manager._assemble_and_write_bundle(
+        "chat-home",
+        "msg-home",
+        terminal=True,
+        archive_settings=("~/archives", b"pw", "stored", None),
+    )
+    assert assembled is True
+    assert list((home / "archives").rglob("*.zip"))
+    assert not (work / "~").exists()
+
+    _stage_one_terminal_turn(pipe, "chat-blocked", "msg-blocked")
+    with pytest.raises(OSError):
+        pipe._session_log_manager._assemble_and_write_bundle(
+            "chat-blocked",
+            "msg-blocked",
+            terminal=True,
+            archive_settings=(str(blocker / "archives"), b"pw", "stored", None),
+        )
+    assert _staged_turn_rows(pipe, "chat-blocked", "msg-blocked") == 1
+    assert list(system_tmp.iterdir()) == []
+
+
+def test_a_sorter_that_fails_to_start_leaves_no_file_behind(tmp_path, monkeypatch):
+    import sqlite3
+
+    from open_webui_openrouter_pipe.logging.session_log_manager import _EventSorter
+
+    def refuse(*args, **kwargs):
+        raise sqlite3.OperationalError("unable to open database file")
+
+    monkeypatch.setattr(sqlite3, "connect", refuse)
+
+    with pytest.raises(sqlite3.OperationalError):
+        _EventSorter(tmp_path)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_encrypted_sorter_stores_one_record_as_different_blobs_each_time(tmp_path):
+    import secrets
+
+    from open_webui_openrouter_pipe.logging.session_log_manager import _EventSorter
+
+    record = {"created": 1.0, "message": "sorter-canary-text"}
+    sorter = _EventSorter(tmp_path, secrets.token_bytes(32))
+    try:
+        sorter.add("first", 0, 0, record)
+        sorter.add("second", 0, 0, record)
+        blobs = [row[0] for row in sorter._conn.execute("SELECT data FROM ev")]
+        assert len(blobs) == 2
+        assert blobs[0] != blobs[1]
+        assert not any(b"sorter-canary-text" in blob for blob in blobs)
+        assert list(sorter.stream("first", False)) == [record]
+        assert list(sorter.stream("second", False)) == [record]
+    finally:
+        sorter.close()
 
 
 def test_run_session_log_assembler_once_handles_terminal_and_stale(pipe_instance, tmp_path):
@@ -6796,6 +6921,9 @@ def test_convert_jsonl_to_internal_handles_invalid_ts():
         pipe.shutdown()
 
 
+from tests.session_log_sorter import _sorter_stream
+
+
 def test_dedupe_session_log_events_removes_duplicates():
     """Test that _dedupe_session_log_events removes duplicate events."""
     pipe = Pipe()
@@ -6806,7 +6934,7 @@ def test_dedupe_session_log_events_removes_duplicates():
             {"created": 2.0, "request_id": "req1", "lineno": 2, "message": "test2"},
         ]
 
-        result = pipe._session_log_manager.dedupe_events(events)
+        result = _sorter_stream(events, dedupe=True)
 
         assert len(result) == 2
         assert result[0]["message"] == "test1"
@@ -6825,7 +6953,7 @@ def test_dedupe_session_log_events_preserves_order():
             {"created": 3.0, "request_id": "req1", "lineno": 3, "message": "third"},
         ]
 
-        result = pipe._session_log_manager.dedupe_events(events)
+        result = _sorter_stream(events, dedupe=True)
 
         assert len(result) == 3
         assert result[0]["message"] == "first"
@@ -7796,7 +7924,9 @@ class TestSessionLogArchiveReader:
 
             settings = ("/tmp", password, "deflated", 6)
 
-            events = pipe._session_log_manager.read_archive(zip_path, settings)[1]
+            _, events_iter = pipe._session_log_manager.read_archive(zip_path, settings)
+            with contextlib.closing(events_iter):
+                events = list(events_iter)
 
             assert len(events) == 2
             assert events[0].get("event") == "test"
@@ -7823,7 +7953,9 @@ class TestSessionLogArchiveReader:
 
             settings = ("/tmp", password, "deflated", 6)
 
-            events = pipe._session_log_manager.read_archive(zip_path, settings)[1]
+            _, events_iter = pipe._session_log_manager.read_archive(zip_path, settings)
+            with contextlib.closing(events_iter):
+                events = list(events_iter)
 
             # Should have 2 valid events, skipping the malformed line
             assert len(events) == 2
@@ -8831,7 +8963,7 @@ class TestDedupeSessionLogEvents:
         pipe = Pipe()
 
         try:
-            result = pipe._session_log_manager.dedupe_events([])
+            result = _sorter_stream([], dedupe=True)
             assert result == []
         finally:
             pipe.shutdown()
@@ -8847,7 +8979,7 @@ class TestDedupeSessionLogEvents:
                 {"created": 3.0, "event": "test3"},
             ]
 
-            result = pipe._session_log_manager.dedupe_events(events)
+            result = _sorter_stream(events, dedupe=True)
             assert len(result) == 3
         finally:
             pipe.shutdown()

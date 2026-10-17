@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
+import tempfile
 import time
 from typing import Any
 
@@ -383,6 +385,36 @@ class TestSessionLogArchiveEdgeCases:
         # Old directories should be pruned if emptied.
         assert not (tmp_path / "user_old").exists()
 
+    def test_cleanup_removes_aged_scratch_files_a_killed_worker_left_and_nothing_else(
+        self, tmp_path, monkeypatch, pipe_instance
+    ) -> None:
+        from open_webui_openrouter_pipe.logging.session_log_manager import _EventSorter
+
+        def refuse(path):
+            raise PermissionError(path)
+
+        with monkeypatch.context() as windows_like:
+            windows_like.setattr(os, "unlink", refuse)
+            sorters = [_EventSorter(tmp_path), _EventSorter(tmp_path)]
+        aged_sorter, young_sorter = (sorter._path for sorter in sorters)
+        aged_writer = os.path.join(tmp_path, "writer.1.ab.zip.tmp")
+        other_tenant = os.path.join(tmp_path, "tmpOTHERTENANT")
+        aged = time.time() - 2 * 3600
+        for leftover in (aged_sorter, aged_writer, other_tenant):
+            with open(leftover, "wb") as handle:
+                handle.write(b"x")
+            os.utime(leftover, (aged, aged))
+
+        pipe = pipe_instance
+        pipe.valves.SESSION_LOG_STORE_ENABLED = True
+        pipe.valves.SESSION_LOG_DIR = str(tmp_path)
+        pipe._session_log_manager._dirs = {str(tmp_path)}
+        pipe._session_log_manager.cleanup_archives()
+
+        assert sorted(os.listdir(tmp_path)) == sorted([os.path.basename(young_sorter), "tmpOTHERTENANT"])
+        for sorter in sorters:
+            sorter.close()
+
     def test_cleanup_prunes_empty_directories(self, tmp_path, monkeypatch, pipe_instance) -> None:
         """Empty user/chat directories removed after archive deletion."""
         pipe = pipe_instance
@@ -554,6 +586,10 @@ class TestConvertJsonlToInternal:
         assert original == original_copy
 
 
+
+from tests.session_log_sorter import _sorter_stream
+
+
 class TestDedupeSessionLogEvents:
     """Tests for _dedupe_session_log_events helper."""
 
@@ -564,7 +600,7 @@ class TestDedupeSessionLogEvents:
             {"created": 1000.0, "request_id": "req1", "lineno": 42, "message": "hello"},
             {"created": 1000.0, "request_id": "req1", "lineno": 42, "message": "hello"},
         ]
-        result = pipe._session_log_manager.dedupe_events(events)
+        result = _sorter_stream(events, dedupe=True)
 
         assert len(result) == 1
         assert result[0]["message"] == "hello"
@@ -576,7 +612,7 @@ class TestDedupeSessionLogEvents:
             {"created": 1000.0, "request_id": "req1", "lineno": 42, "message": "hello"},
             {"created": 1001.0, "request_id": "req1", "lineno": 42, "message": "hello"},
         ]
-        result = pipe._session_log_manager.dedupe_events(events)
+        result = _sorter_stream(events, dedupe=True)
 
         assert len(result) == 2
 
@@ -587,7 +623,7 @@ class TestDedupeSessionLogEvents:
             {"created": 1000.0, "request_id": "req1", "lineno": 42, "message": "hello"},
             {"created": 1000.0, "request_id": "req2", "lineno": 42, "message": "hello"},
         ]
-        result = pipe._session_log_manager.dedupe_events(events)
+        result = _sorter_stream(events, dedupe=True)
 
         assert len(result) == 2
 
@@ -598,7 +634,7 @@ class TestDedupeSessionLogEvents:
             {"created": 1000.0, "request_id": "req1", "lineno": 42, "message": "hello"},
             {"created": 1000.0, "request_id": "req1", "lineno": 43, "message": "hello"},
         ]
-        result = pipe._session_log_manager.dedupe_events(events)
+        result = _sorter_stream(events, dedupe=True)
 
         assert len(result) == 2
 
@@ -609,7 +645,7 @@ class TestDedupeSessionLogEvents:
             {"created": 1000.0, "request_id": "req1", "lineno": 42, "message": "hello"},
             {"created": 1000.0, "request_id": "req1", "lineno": 42, "message": "world"},
         ]
-        result = pipe._session_log_manager.dedupe_events(events)
+        result = _sorter_stream(events, dedupe=True)
 
         assert len(result) == 2
 
@@ -620,7 +656,7 @@ class TestDedupeSessionLogEvents:
             {"created": 1000.0, "request_id": "req1", "lineno": 42, "message": "first", "extra": "A"},
             {"created": 1000.0, "request_id": "req1", "lineno": 42, "message": "first", "extra": "B"},
         ]
-        result = pipe._session_log_manager.dedupe_events(events)
+        result = _sorter_stream(events, dedupe=True)
 
         assert len(result) == 1
         assert result[0]["extra"] == "A"  # First occurrence kept
@@ -633,7 +669,7 @@ class TestDedupeSessionLogEvents:
             {"created": 1000.0, "message": "no request_id"},
             {"request_id": "req1", "message": "no created"},
         ]
-        result = pipe._session_log_manager.dedupe_events(events)
+        result = _sorter_stream(events, dedupe=True)
 
         # All are unique because of different content
         assert len(result) == 3
@@ -641,7 +677,7 @@ class TestDedupeSessionLogEvents:
     def test_handles_empty_list(self, pipe_instance) -> None:
         """Empty event list returns empty list."""
         pipe = pipe_instance
-        result = pipe._session_log_manager.dedupe_events([])
+        result = _sorter_stream([], dedupe=True)
         assert result == []
 
     def test_dedupes_db_and_archive_twin_at_ms_precision(self, pipe_instance) -> None:
@@ -670,7 +706,7 @@ class TestDedupeSessionLogEvents:
         # Precision really was lost in the round-trip (else the test proves nothing).
         assert archive_evt["created"] != created
 
-        result = mgr.dedupe_events([db_evt, archive_evt])
+        result = _sorter_stream([db_evt, archive_evt], dedupe=True)
         assert len(result) == 1
 
     def test_keeps_events_one_millisecond_apart(self, pipe_instance) -> None:
@@ -680,7 +716,7 @@ class TestDedupeSessionLogEvents:
             {"created": 1700000000.123, "request_id": "req1", "lineno": 42, "message": "hello"},
             {"created": 1700000000.124, "request_id": "req1", "lineno": 42, "message": "hello"},
         ]
-        result = mgr.dedupe_events(events)
+        result = _sorter_stream(events, dedupe=True)
         assert len(result) == 2
 
 
@@ -712,7 +748,9 @@ class TestReadSessionLogArchiveEvents:
                 zf.writestr("logs.jsonl", jsonl_content.encode("utf-8"))
 
             settings = ("/tmp", password, "deflated", 6)
-            result = pipe._session_log_manager.read_archive(zip_path, settings)[1]
+            _, events_iter = pipe._session_log_manager.read_archive(zip_path, settings)
+            with contextlib.closing(events_iter):
+                result = list(events_iter)
 
             assert len(result) == 2
             # Verify conversion happened
@@ -741,7 +779,9 @@ class TestReadSessionLogArchiveEvents:
                 zf.writestr("other.txt", b"not jsonl")
 
             settings = ("/tmp", password, "deflated", 6)
-            result = pipe._session_log_manager.read_archive(zip_path, settings)[1]
+            _, events_iter = pipe._session_log_manager.read_archive(zip_path, settings)
+            with contextlib.closing(events_iter):
+                result = list(events_iter)
 
             assert result == []
         finally:
@@ -774,7 +814,9 @@ class TestReadSessionLogArchiveEvents:
                 zf.writestr("logs.jsonl", jsonl_content.encode("utf-8"))
 
             settings = ("/tmp", password, "deflated", 6)
-            result = pipe._session_log_manager.read_archive(zip_path, settings)[1]
+            _, events_iter = pipe._session_log_manager.read_archive(zip_path, settings)
+            with contextlib.closing(events_iter):
+                result = list(events_iter)
 
             assert len(result) == 2
             assert result[0]["message"] == "valid"
@@ -807,7 +849,9 @@ class TestReadSessionLogArchiveEvents:
                 zf.writestr("logs.jsonl", jsonl_content.encode("utf-8"))
 
             settings = ("/tmp", password, "deflated", 6)
-            result = pipe._session_log_manager.read_archive(zip_path, settings)[1]
+            _, events_iter = pipe._session_log_manager.read_archive(zip_path, settings)
+            with contextlib.closing(events_iter):
+                result = list(events_iter)
 
             assert len(result) == 2
         finally:
@@ -835,9 +879,7 @@ class TestMergeIntegration:
         ]
 
         # Merge them
-        merged = existing + new_events
-        merged = pipe._session_log_manager.dedupe_events(merged)
-        merged.sort(key=lambda e: e.get("created", 0))
+        merged = _sorter_stream(new_events, dedupe=True, prior=existing)
 
         assert len(merged) == 4
         assert merged[0]["message"] == "existing 1"
@@ -858,9 +900,7 @@ class TestMergeIntegration:
             {"created": 1001.0, "request_id": "req1", "lineno": 20, "message": "unique"},
         ]
 
-        merged = existing + new_events
-        merged = pipe._session_log_manager.dedupe_events(merged)
-        merged.sort(key=lambda e: e.get("created", 0))
+        merged = _sorter_stream(new_events, dedupe=True, prior=existing)
 
         assert len(merged) == 2
         assert merged[0]["message"] == "same event"
@@ -876,8 +916,7 @@ class TestMergeIntegration:
             {"created": 1000.0, "request_id": "req1", "lineno": 3, "message": "C"},
         ]
 
-        # Sort should preserve insertion order for equal keys
-        events.sort(key=lambda e: e.get("created", 0))
+        events = _sorter_stream(events, dedupe=False)
 
         assert events[0]["message"] == "A"
         assert events[1]["message"] == "B"
