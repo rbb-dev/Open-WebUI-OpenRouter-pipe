@@ -931,6 +931,57 @@ async def test_flush_requeues_rows_the_writer_did_not_commit(pipe_instance, coun
 
 
 @pytest.mark.asyncio
+async def test_flush_deletes_staged_session_log_rows_at_the_rejection_limit_and_dead_letters_the_rest(
+    pipe_instance, caplog
+):
+    _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+    store._redis_enabled = True
+    pipe_instance.valves.REDIS_FLUSH_REJECT_LIMIT = 2
+
+    def _entry(row_id, item_type, chat_id, message_id):
+        return json.dumps(
+            {
+                "id": row_id,
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "item_type": item_type,
+                "payload": {"note": "queued"},
+            }
+        )
+
+    session_entry = _entry("sess-1", "session_log_segment", "chat-queue", "msg-queue")
+    other_entry = _entry("reas-1", "reasoning", "chat-queue", "msg-other")
+    entries = [session_entry, other_entry]
+    store._redis_client = _QueueRedis(store._redis_pending_key, entries)
+
+    async def _always_refusing(rows, user_id=""):
+        for row in rows:
+            row["_rejected"] = "the store refuses every row"
+        return []
+
+    store._db_persist_direct = _always_refusing
+
+    with caplog.at_level(
+        logging.WARNING, logger="open_webui_openrouter_pipe.storage.persistence"
+    ):
+        for _ in range(2):
+            await store._flush_redis_queue()
+
+    client = store._redis_client
+    assert client.lists[store._redis_pending_key] == []
+    assert client.lists[store._redis_dead_key()] == [other_entry]
+    deleted = [
+        record
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+        and "chat-queue" in record.getMessage()
+        and "msg-queue" in record.getMessage()
+    ]
+    assert len(deleted) == 1
+
+
+@pytest.mark.asyncio
 async def test_requeue_never_puts_a_ttl_on_the_pending_queue(pipe_instance):
     """The pending queue is a write buffer; any expiry on it is silent data loss."""
     store = pipe_instance._artifact_store

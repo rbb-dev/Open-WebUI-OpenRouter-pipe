@@ -195,6 +195,8 @@ _PERSIST_LOSS_NOTICE = (
     "database; they will be missing from later turns."
 )
 
+_SESSION_LOG_QUEUE_ROW_TYPES = ("session_log_segment", "session_log_segment_terminal")
+
 _PIPE_OWNED_ROW_TYPES = frozenset({
     "session_log_segment",
     "session_log_segment_terminal",
@@ -3319,12 +3321,22 @@ class ArtifactStore:
                 due.append((entry, row_id, reason))
         if not due:
             return set()
+        rows_by_id = {str(row.get("id")): row for _entry, row in rejected}
+        session_log_due = [
+            (entry, row_id, reason)
+            for entry, row_id, reason in due
+            if str(rows_by_id.get(row_id, {}).get("item_type") or "") in _SESSION_LOG_QUEUE_ROW_TYPES
+        ]
+        other_due = [(entry, row_id, reason) for entry, row_id, reason in due if (entry, row_id, reason) not in session_log_due]
         try:
             pipe = client.pipeline()
-            for entry, row_id, _reason in due:
+            for entry, row_id, _reason in other_due:
                 pipe.rpush(self._redis_dead_key(), entry)
                 pipe.delete(self._redis_flushfail_key(row_id))
-            pipe.ltrim(self._redis_dead_key(), -_FLUSH_DEAD_LETTER_CAP, -1)
+            for _entry, row_id, _reason in session_log_due:
+                pipe.delete(self._redis_flushfail_key(row_id))
+            if other_due:
+                pipe.ltrim(self._redis_dead_key(), -_FLUSH_DEAD_LETTER_CAP, -1)
             replies = await _await_if_needed(pipe.execute())
         except Exception as exc:
             self.logger.warning(
@@ -3335,32 +3347,53 @@ class ArtifactStore:
             )
             return set()
         set_aside = {row_id for _entry, row_id, _reason in due}
-        try:
-            dropped = int(replies[2 * (len(due) - 1)]) - _FLUSH_DEAD_LETTER_CAP
-        except (TypeError, ValueError, IndexError):
-            dropped = 0
-        if dropped > 0:
+        if other_due:
+            try:
+                dropped = int(replies[2 * (len(other_due) - 1)]) - _FLUSH_DEAD_LETTER_CAP
+            except (TypeError, ValueError, IndexError):
+                dropped = 0
+            if dropped > 0:
+                self.logger.warning(
+                    "The Redis list %s holds the artifacts the database rejected and is at its "
+                    "limit of %d entries, so %d of its oldest entries were dropped to make room. "
+                    "Nothing else removes entries from it.",
+                    self._redis_dead_key(),
+                    _FLUSH_DEAD_LETTER_CAP,
+                    dropped,
+                )
+        if session_log_due:
+            shown = [
+                "chat_id={} message_id={}".format(
+                    rows_by_id[row_id].get("chat_id"), rows_by_id[row_id].get("message_id")
+                )
+                for _entry, row_id, _reason in session_log_due
+][:_REJECTED_IDS_LOGGED]
             self.logger.warning(
-                "The Redis list %s holds the artifacts the database rejected and is at its "
-                "limit of %d entries, so %d of its oldest entries were dropped to make room. "
-                "Nothing else removes entries from it.",
+                "Deleted %d staged session log row(s) from the Redis queue at flush-rejection "
+                "limit %d; they are not in the database and no dead-letter entry is kept for them "
+                "(%s%s). The assembler's own retention and attempt counts no longer see them. "
+                "First error: %s",
+                len(session_log_due),
+                limit,
+                "; ".join(shown),
+                " and more" if len(session_log_due) > len(shown) else "",
+                session_log_due[0][2],
+            )
+        if other_due:
+            self._flushfail_counted.difference_update({row_id for _entry, row_id, _reason in other_due})
+            shown = sorted(row_id for _entry, row_id, _reason in other_due)[:_REJECTED_IDS_LOGGED]
+            self.logger.warning(
+                "Set aside %d artifact(s) the database rejected on %d flushes in a row. They "
+                "are not in the database; they wait in the Redis list %s until someone moves "
+                "them back after the cause is fixed. ids=%s%s; first error: %s",
+                len(other_due),
+                limit,
                 self._redis_dead_key(),
-                _FLUSH_DEAD_LETTER_CAP,
-                dropped,
+                shown,
+                " and more" if len(other_due) > len(shown) else "",
+                other_due[0][2],
             )
         self._flushfail_counted.difference_update(set_aside)
-        shown = sorted(set_aside)[:_REJECTED_IDS_LOGGED]
-        self.logger.warning(
-            "Set aside %d artifact(s) the database rejected on %d flushes in a row. They "
-            "are not in the database; they wait in the Redis list %s until someone moves "
-            "them back after the cause is fixed. ids=%s%s; first error: %s",
-            len(due),
-            limit,
-            self._redis_dead_key(),
-            shown,
-            " and more" if len(set_aside) > len(shown) else "",
-            due[0][2],
-        )
         return set_aside
 
     async def _clear_flush_counters(self, committed: set[str]) -> None:
