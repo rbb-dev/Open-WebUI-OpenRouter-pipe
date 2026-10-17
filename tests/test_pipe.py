@@ -6567,6 +6567,63 @@ def test_encrypted_staged_row_streams_the_records_the_store_decoder_yields(pipe_
     assert events == stored["events"]
 
 
+def test_staging_splits_long_logs_into_ordered_terminal_last_pieces(pipe_instance, monkeypatch, tmp_path):
+    from open_webui_openrouter_pipe.logging.session_log_manager import SESSION_LOG_OWNERSHIP_MEMO
+
+    pipe = pipe_instance
+    _install_real_session_log_store(pipe, tmp_path)
+    store_any = cast(Any, pipe._artifact_store)
+    if store_any._db_executor is None:
+        store_any._db_executor = ThreadPoolExecutor(max_workers=1)
+    store_any._artifact_table_name = "response_items_test"
+    monkeypatch.setattr(pipe._artifact_store, "_ensure_artifact_store", lambda valves, marker: None)
+    pipe.valves.SESSION_LOG_STORE_ENABLED = True
+    pipe.valves.SESSION_LOG_DIR = str(tmp_path)
+    pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("pieces-archive-pass")
+
+    events = [
+        {"created": 1.0 + index * 0.001, "message": f"event {index}"} for index in range(1001)
+    ]
+    memo_token = SESSION_LOG_OWNERSHIP_MEMO.set({("chat-pieces", "user-pieces"): True})
+    try:
+        asyncio.run(
+            pipe._session_log_manager.persist_segment_to_db(
+                pipe.valves,
+                user_id="user-pieces",
+                session_id="sess-pieces",
+                chat_id="chat-pieces",
+                message_id="msg-pieces",
+                request_id="req-pieces",
+                log_events=events,
+                terminal=True,
+                status="complete",
+            )
+        )
+    finally:
+        SESSION_LOG_OWNERSHIP_MEMO.reset(memo_token)
+    pipe._session_log_manager.stop_workers()
+
+    model = pipe._artifact_store._item_model
+    session_factory = pipe._artifact_store._session_factory
+    check_session = session_factory()  # type: ignore[call-arg]
+    try:
+        rows = (
+            check_session.query(model.id, model.item_type, model.payload)
+            .filter(model.chat_id == "chat-pieces")
+            .filter(model.message_id == "msg-pieces")
+            .order_by(model.created_at, model.id)
+            .all()
+        )
+    finally:
+        check_session.close()
+
+    assert [row[1] for row in rows] == ["session_log_segment", "session_log_segment_terminal"]
+    assert [len(row[2]["events"]) for row in rows] == [1000, 1]
+    ids = [row[0] for row in rows]
+    assert ids == sorted(ids)
+    assert len(set(ids)) == len(ids)
+
+
 def test_run_session_log_assembler_once_handles_terminal_and_stale(pipe_instance, tmp_path):
     """Exercises the fake harness's `group_by`/`order_by`/`having` plumbing, nothing more.
 

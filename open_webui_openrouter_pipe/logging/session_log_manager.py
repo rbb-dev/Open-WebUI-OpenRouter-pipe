@@ -256,6 +256,8 @@ def _assembler_loop(mgr_ref: Any, stop_event: threading.Event) -> None:
 
 _UNREADABLE_ARCHIVE_CAPTURE_AFTER = 3
 
+_SEGMENT_MAX_EVENTS = 1000
+
 _SEGMENT_ROW_TYPES = ("session_log_segment", "session_log_segment_terminal")
 
 _ORPHAN_WRITE_MIN_AGE_SECONDS = 3600.0
@@ -1140,7 +1142,7 @@ class SessionLogManager:
         """
         from ..core.logging_system import _SessionLogArchiveJob
         from ..storage.owui_files import is_linkable_chat, is_temporary_chat
-        from ..storage.persistence import _names_a_conversation, generate_item_id
+        from ..storage.persistence import _names_a_conversation, generate_item_ids
 
         temporary = is_temporary_chat(chat_id)
         if not valves.SESSION_LOG_STORE_ENABLED:
@@ -1219,8 +1221,7 @@ class SessionLogManager:
                 self._artifact_store._ensure_artifact_store(valves, pipe_identifier)
 
         item_type = "session_log_segment_terminal" if terminal else "session_log_segment"
-        payload: dict[str, Any] = {
-            "type": item_type,
+        header: dict[str, Any] = {
             "status": str(status or ""),
             "reason": str(reason or ""),
             "user_id": str(user_id or ""),
@@ -1230,19 +1231,28 @@ class SessionLogManager:
             "request_id": str(request_id or ""),
             "created_at": time.time(),
             "log_format": valves.SESSION_LOG_FORMAT,
-            "events": log_events,
         }
         if pipe_identifier:
-            payload["pipe_id"] = str(pipe_identifier)
+            header["pipe_id"] = str(pipe_identifier)
 
-        row: dict[str, Any] = {
-            "id": generate_item_id(),
-            "chat_id": chat_id,
-            "message_id": message_id,
-            "model_id": None,
-            "item_type": item_type,
-            "payload": payload,
-        }
+        pieces = [
+            log_events[start : start + _SEGMENT_MAX_EVENTS]
+            for start in range(0, len(log_events), _SEGMENT_MAX_EVENTS)
+        ]
+        row_ids = generate_item_ids(len(pieces))
+        rows: list[dict[str, Any]] = []
+        for index, piece in enumerate(pieces):
+            piece_type = item_type if index == len(pieces) - 1 else "session_log_segment"
+            rows.append(
+                {
+                    "id": row_ids[index],
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "model_id": None,
+                    "item_type": piece_type,
+                    "payload": {"type": piece_type, **header, "events": piece},
+                }
+            )
 
         persisted: list[str] = []
         try:
@@ -1250,7 +1260,7 @@ class SessionLogManager:
             # modes, so we also attempt to assemble terminal bundles inline (below).
             self.start_workers()
             self.start_assembler_worker()
-            persisted = await self._artifact_store._db_persist([row]) if self._artifact_store else []
+            persisted = await self._artifact_store._db_persist(rows) if self._artifact_store else []
         except Exception:
             self.logger.debug(
                 "Failed to persist session log segment (chat_id=%s message_id=%s request_id=%s terminal=%s)",
@@ -1260,6 +1270,17 @@ class SessionLogManager:
                 terminal,
                 exc_info=True,
             )
+
+        if len(rows) > 1 and len(persisted) < len(rows) and self._artifact_store is not None:
+            if persisted:
+                self.logger.warning(
+                    "Session log DB staging stored %d of %d pieces of one request's log (chat_id=%s message_id=%s "
+                    "request_id=%s); the stored pieces are removed and the whole log is written through the queued zip fallback.",
+                    len(persisted), len(rows), chat_id, message_id, request_id,
+                )
+            with contextlib.suppress(Exception):
+                await self._artifact_store._delete_artifacts([(chat_id, row_id) for row_id in row_ids])
+            persisted = []
 
         if not persisted and getattr(self._artifact_store, "_artifact_key_unreadable", False):
             self.logger.debug(

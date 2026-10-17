@@ -254,11 +254,19 @@ def _encode_crockford(value: int, length: int) -> str:
 def generate_item_id() -> str:
     """Generate a 20-char ULID using a 16-char time component + 4-char random tail.
     """
-    timestamp = time.time_ns() & _ULID_TIME_MASK
-    time_component = _encode_crockford(timestamp, ULID_TIME_LENGTH)
+    return _item_id_at(time.time_ns())
+
+
+def _item_id_at(timestamp_ns: int) -> str:
+    time_component = _encode_crockford(timestamp_ns & _ULID_TIME_MASK, ULID_TIME_LENGTH)
     random_bits = secrets.randbits(ULID_RANDOM_LENGTH * 5)
     random_component = _encode_crockford(random_bits, ULID_RANDOM_LENGTH)
     return f"{time_component}{random_component}"
+
+
+def generate_item_ids(count: int) -> list[str]:
+    start = time.time_ns()
+    return [_item_id_at(start + offset) for offset in range(count)]
 
 
 def _sanitize_table_fragment(value: str) -> str:
