@@ -16,7 +16,7 @@ Persisted artifacts include (at least):
   which lists the rounds that are stored differently or not at all):
   the call and its output, with the arguments and result in full, pictures included (a web search keeps
   its query, its links and the excerpts the engine returned, within the record caps, and a fetched page is cut at 150,000 characters with a note saying how much), whatever `PERSIST_TOOL_RESULTS`
-  says. That setting decides what later turns receive; tool results are stored even while it is off. They are
+  says. That setting decides what later turns receive of the result (a call's name and arguments go back either way); tool results are stored even while it is off. They are
   encrypted at rest only when `ARTIFACT_ENCRYPTION_KEY` is set and `ENCRYPT_ALL` is on at write time; a row written
   while it was on stays encrypted, in the table and in the replay cache, including the buffered flush.
 

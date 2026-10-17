@@ -115,8 +115,9 @@ TOOL_ROUND_SKELETON_KEY = "_anchor_tool_round_skeleton"
 PIPE_ONLY_TOOL_ROUND_KEY = "_anchor_pipe_only_tool_round"
 BUILTIN_ASK_USER_ROUND_KEY = "_anchor_builtin_ask_user"
 PIPE_TOOL_IMAGES_KEY = "_anchor_pipe_tool_images_message"
-UNRETAINED_TOOL_RESULT = "[tool result not retained]"
-UNRETAINED_FAILED_TOOL_RESULT = "[tool call failed; result not retained]"
+UNRETAINED_TOOL_RESULT = "[This call succeeded. Its result is not kept for later turns.]"
+UNRETAINED_FAILED_TOOL_RESULT = "[This call failed. Its result is not kept for later turns.]"
+_EARLIER_UNRETAINED_FAILED_TOOL_RESULT = "[tool call failed; result not retained]"
 TOOL_FAILURE_LINE = "Error: the tool call did not complete."
 
 IMAGE_NO_IMAGES_REASON = "OpenRouter image generation returned no images."
@@ -229,7 +230,7 @@ def _own_is_tool_result_error(value: Any) -> bool:
 def _tool_result_failed(text: str, status: Any = None) -> bool:
     if isinstance(status, str) and status and status != "completed":
         return True
-    if text == unretained_tool_result(True):
+    if text in (UNRETAINED_FAILED_TOOL_RESULT, _EARLIER_UNRETAINED_FAILED_TOOL_RESULT):
         return True
     if _owui_is_tool_result_error is None:
         return _own_is_tool_result_error(text)
@@ -418,10 +419,26 @@ def server_tool_status(item: dict[str, Any]) -> str:
 
 
 _SERVER_TOOL_ARGUMENT_KEYS = {"openrouter:advisor": ("prompt",), "openrouter:subagent": ("task_name", "task_description")}
+_SEARCH_MODELS_ITEM_TYPE = "openrouter:experimental__search_models"
+
+
+def _search_models_arguments(item: dict[str, Any]) -> dict[str, Any]:
+    raw = item.get("arguments")
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+    except (ValueError, RecursionError):
+        parsed = None
+    if isinstance(parsed, dict) and parsed:
+        return parsed
+    query = item.get("query")
+    return {"query": query} if isinstance(query, str) and query else {}
 
 
 def server_tool_arguments(item: dict[str, Any]) -> dict[str, Any]:
-    return {key: item[key] for key in _SERVER_TOOL_ARGUMENT_KEYS.get(str(item.get("type") or ""), ()) if item.get(key)}
+    item_type = str(item.get("type") or "")
+    if item_type == _SEARCH_MODELS_ITEM_TYPE:
+        return _search_models_arguments(item)
+    return {key: item[key] for key in _SERVER_TOOL_ARGUMENT_KEYS.get(item_type, ()) if item.get(key)}
 
 
 def server_tool_result_text(item: dict[str, Any]) -> str:

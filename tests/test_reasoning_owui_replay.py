@@ -34,6 +34,7 @@ from typing import Any, cast
 import pytest
 
 from open_webui_openrouter_pipe import Pipe, ResponsesBody
+from open_webui_openrouter_pipe.core.utils import UNRETAINED_TOOL_RESULT
 from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
 from open_webui_openrouter_pipe.streaming import streaming_core
 from tests.test_continue_reasoning_order import _real_artifact_store
@@ -524,7 +525,7 @@ class TestReplayWebSearch:
         pipe = pipe_instance_async
         valves = pipe.valves.model_copy(update={"PERSIST_TOOL_RESULTS": True, "SHOW_TOOL_CARDS": cards})
 
-        kept, _ = await _replays_after_a_search_turn(
+        kept, not_kept = await _replays_after_a_search_turn(
             pipe, monkeypatch, [_search_answer_events(with_search_item=True)], valves
         )
 
@@ -538,6 +539,11 @@ class TestReplayWebSearch:
         for page in SEARCH_PAGES:
             assert page["url"] in result["output"]
         assert SEARCH_PAGES[0]["content"][:60] in result["output"]
+
+        (call_not_kept,) = [i for i in not_kept if i["type"] == "function_call"]
+        (result_not_kept,) = [i for i in not_kept if i["type"] == "function_call_output"]
+        assert call_not_kept["arguments"] == call["arguments"]
+        assert result_not_kept["output"] == UNRETAINED_TOOL_RESULT
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("cards", [True, False], ids=["cards-on", "cards-off"])

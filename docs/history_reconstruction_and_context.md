@@ -248,7 +248,7 @@ when the turn ends, see below), and the round comes back to the model in call or
 reply, Stop keeps a round's calls before the first one still running. When the model reaches a tool through Open WebUI's
 Tool Search and the pipe runs it, the stored round names the tool that ran and also keeps the model's original
 `call_tool` call. Later turns replay that original call, from the pipe's own stored copy or from Open WebUI's stored
-copy of the card alike; with `PERSIST_TOOL_RESULTS` off it keeps its `tool_name` and its `params` are blanked. A call refused before it ran is answered as soon as it
+copy of the card alike, with the `tool_name` and `params` the model gave it whether `PERSIST_TOOL_RESULTS` is on or off. A call refused before it ran is answered as soon as it
 is refused, and on the turn it is answered it is handed to the model in the order the round asked for it, because its
 answer is produced before any queued call has run. A round stored with tool cards on is written as the calls are answered, so a
 Continue replays a refused call's answer ahead of the results that were still running. A call the model sends malformed is answered as Open WebUI's own tool loop answers it on the same route and is kept like any other call; several argument objects sent back to back become one call each.
@@ -259,10 +259,10 @@ pipe's own loop: the model emitted it, the pipe never ran it. Its `shell_call` o
 `function_call_output` pair every other round is stored as — named `shell`, carrying the commands the item asked to
 run as its arguments and the item's own stdout as its result. The pair is keyed on the item's `call_id`, so a call and
 its output are one round on one id rather than two, and the round is committed once however many of the family's items
-the turn carried. What the model is handed on a later turn follows the ordinary rule: with `PERSIST_TOOL_RESULTS` off
-the arguments and the result are withheld and the model is told the tool name and whether it succeeded; with it on
-both are handed over whole, since a round the model ran is a fact about the turn whether or not the commands are
-retained. The raw native item is never what is replayed, and never what is stored: the four types are in the
+the turn carried. What the model is handed on a later turn follows the ordinary rule: the commands go back as the call's arguments
+whatever `PERSIST_TOOL_RESULTS` says; with it off the result is replaced by a note saying whether the call
+succeeded, and with it on the output is handed over whole, since a round the model ran is a fact about the turn
+whether or not the output is retained. The raw native item is never what is replayed, and never what is stored: the four types are in the
 non-replayable set (§5.1), so a `shell_call` the caller echoes back into a request is stripped before it reaches the
 provider, and the pair behind its marker is what stands in its place.
 
@@ -303,7 +303,7 @@ the next turn logs the missing artifacts, and with tool cards on the saved card 
 chat keeps no rows past the reply, so its card, which holds the final text, is the only carrier on later turns. A chat
 saved before this behaviour keeps the older text, an empty call and a sentence that pointed at the citations panel,
 because its saved cards and rows already hold it. With `PERSIST_TOOL_RESULTS` off the round reaches the model as the
-usual placeholder.
+call with its query and the usual note in place of the result.
 
 A search that the model follows with a call to one of the pipe's own tools, before it has written any answer, is
 written with the query and the links only: OpenRouter had sent no excerpt when that response ended, and the
@@ -346,9 +346,10 @@ only through the card Open WebUI keeps for it in the browser, and none with card
 - An earlier turn's results are withheld by the same rule whichever copy carries them, and so is a round that arrived before the chat's
   first turn -- which is what an API caller, an imported or reordered chat, or a filter posts -- since such a
   round is never the current turn. With `PERSIST_TOOL_RESULTS` off
-  the model gets `{}` in place of the arguments (a Tool Search `call_tool` call keeps its `tool_name`) and a
-  placeholder result -- `[tool result not retained]`, or
-  `[tool call failed; result not retained]` when the call did not complete. The withholding holds on the list shape,
+  the model gets the call as it was made, its name and its arguments (a Tool Search `call_tool` call keeps its
+  `tool_name` and `params`), and a note in place of the result -- `[This call succeeded. Its result is not kept
+  for later turns.]`, or `[This call failed. Its result is not kept for later turns.]` when the call did not
+  complete. The withholding holds on the list shape,
   and on the flattened shape whenever the hand-off sits next to its result, which is how Open WebUI 0.11.4 builds it
   (`flush_tool_outputs()` and `flush_tool_images()` run back to back). On a flattened history whose hand-off is
   separated from its result -- a shape only an API caller, an imported or hand-edited chat, or a filter can build --

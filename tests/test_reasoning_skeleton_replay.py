@@ -5,8 +5,9 @@ When the round is missing, replay puts the blocks next to each other, and Anthro
 blocks ... cannot be modified", recorded live in tests/fixtures/anthropic_reasoning_replay_probe.json). So the pipe
 keeps its own copy of every round it runs -- the call and its result, committed where the round happened -- and
 replay uses it whenever Open WebUI does not hand the same round back; while results are not kept, the model is
-handed `{}` and a placeholder in their place. The thinking blocks stay apart. The copy is a record of the round,
-not of the reasoning: it survives every path that drops reasoning (measured accepted without it, t233a).
+handed the call as it was made and a note in place of its result. The thinking blocks stay apart. The copy is a
+record of the round, not of the reasoning: it survives every path that drops reasoning (measured accepted without
+it, t233a).
 
 Stage A is the real streaming loop. Stage B feeds the next request what Open WebUI would: its saved message when the
 turn published one, otherwise the content stage A produced (text plus hidden markers), through the real transformer.
@@ -29,7 +30,13 @@ from open_webui_openrouter_pipe.api.transforms import (
     _filter_openrouter_request,
     _responses_payload_to_chat_completions_payload,
 )
-from open_webui_openrouter_pipe.core.utils import PIPE_ONLY_TOOL_ROUND_KEY, TOOL_ROUND_SKELETON_KEY, contains_marker
+from open_webui_openrouter_pipe.core.utils import (
+    PIPE_ONLY_TOOL_ROUND_KEY,
+    TOOL_ROUND_SKELETON_KEY,
+    UNRETAINED_FAILED_TOOL_RESULT,
+    UNRETAINED_TOOL_RESULT,
+    contains_marker,
+)
 from open_webui_openrouter_pipe.models.reasoning_config import ReasoningConfigManager
 from open_webui_openrouter_pipe.requests.sanitizer import _sanitize_request_input
 from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
@@ -536,6 +543,14 @@ def _has_consecutive_reasoning(items):
     return any(b == a + 1 for a, b in zip(positions, positions[1:]))
 
 
+def _assert_calls_keep_their_arguments_and_results_are_notes(replay):
+    calls = [item for item in replay if item.get("type") == "function_call"]
+    outputs = [item for item in replay if item.get("type") == "function_call_output"]
+    assert calls and {json.loads(call["arguments"])["q"] for call in calls} == {ARGUMENT_CANARY}
+    assert {output["output"] for output in outputs} == {UNRETAINED_TOOL_RESULT}
+    assert RESULT_CANARY not in json.dumps(replay)
+
+
 # --- the replay is a shape Anthropic accepted --------------------------------------------------------------------------
 
 
@@ -565,6 +580,7 @@ async def test_an_unretained_tool_turn_replays_as_a_shape_anthropic_accepted(
 
     assert _shape(replay) == accepted["shape"]
     assert _shape(replay) != _recorded("sequential_rounds", "T52")["shape"]
+    _assert_calls_keep_their_arguments_and_results_are_notes(replay)
 
 # --- every default-settings path keeps the rounds apart ----------------------------------------------------------------
 
@@ -590,6 +606,7 @@ async def test_every_executed_round_keeps_its_structure_when_no_card_holds_it(
     calls = [item.get("call_id") for item in replay if item.get("type") == "function_call"]
     results = [item.get("call_id") for item in replay if item.get("type") == "function_call_output"]
     assert calls == results == [f"toolu-{i}" for i in range(rounds)]
+    _assert_calls_keep_their_arguments_and_results_are_notes(replay)
 
 
 # --- what the copy holds, and where it never goes -------------------------------------------------------------------
@@ -618,13 +635,17 @@ async def test_a_skeleton_result_keeps_the_real_status(monkeypatch, pipe_instanc
     pipe = pipe_instance_async
     valves = _valves(pipe)
 
-    _, persisted, emitted = await _stage_a(
+    content, persisted, emitted = await _stage_a(
         pipe, monkeypatch, valves, [("calls", ["toolu-1"]), ("answer", True)], tool_status=tool_status,
         stream=False,
     )
 
     results = [p for p in persisted.values() if p.get("type") == "function_call_output"]
     assert [r.get("status") for r in results] == [tool_status]
+
+    replay = await _stage_b(pipe, valves, content, persisted, recorded=_recorded_output(emitted))
+    notes = [item["output"] for item in replay if item.get("type") == "function_call_output"]
+    assert notes == [UNRETAINED_TOOL_RESULT if tool_status == "completed" else UNRETAINED_FAILED_TOOL_RESULT]
 
 
 

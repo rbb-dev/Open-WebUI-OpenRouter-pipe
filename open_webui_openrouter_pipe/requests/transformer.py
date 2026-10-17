@@ -114,7 +114,6 @@ from ..storage.owui_files import (
 
 # Import from persistence
 from ..storage.persistence import generate_item_id, normalize_persisted_item
-from ..tools.tool_registry import CALL_TOOL_NAME
 from ..tools.tool_schema import (
     _classify_function_call_artifacts,
 )
@@ -162,29 +161,17 @@ def _server_round(
 _NOT_A_TOOL_ROUND = frozenset({"message", "reasoning"})
 
 
-def _withheld_call_arguments(name: str, arguments: Any) -> str:
-    if name != CALL_TOOL_NAME:
-        return "{}"
-    try:
-        parsed = json.loads(arguments) if isinstance(arguments, str) else None
-    except (ValueError, RecursionError):
-        return "{}"
-    if not isinstance(parsed, dict) or set(parsed) != {"tool_name", "params"}:
-        return "{}"
-    tool_name = parsed.get("tool_name")
-    if not isinstance(tool_name, str):
-        return "{}"
-    return json.dumps({"tool_name": tool_name, "params": "{}"})
-
-
 def _withheld_provider_round(item: dict[str, Any]) -> list[dict[str, Any]]:
     item_type = str(item.get("type") or "")
     call_id = str(item.get("call_id") or item.get("id") or "")
     name = item.get("name")
+    arguments = item.get("arguments")
+    if not isinstance(arguments, str) or not arguments.strip():
+        arguments = json.dumps(arguments, ensure_ascii=False) if isinstance(arguments, (dict, list)) and arguments else "{}"
     return [
         {"type": "function_call", "call_id": call_id,
          "name": name.strip() if isinstance(name, str) and name.strip() else item_type,
-         "arguments": "{}"},
+         "arguments": arguments},
         {"type": "function_call_output", "call_id": call_id,
          "output": unretained_tool_result(server_tool_status(item) != "completed")},
     ]
@@ -296,10 +283,7 @@ def _without_tool_result(
 ) -> list[dict[str, Any]] | None:
     item_type = item.get("type")
     if item_type == "function_call":
-        exempt = _round_keeps_its_ask_user_answer(
-            item.get("call_id"), name, ask_user_names, own_stamp
-        )
-        return None if exempt else [{**item, "arguments": _withheld_call_arguments(name, item.get("arguments"))}]
+        return None
     if item_type == "function_call_output":
         if _round_keeps_its_ask_user_answer(
             item.get("call_id"), name, ask_user_names, own_stamp
@@ -308,7 +292,11 @@ def _without_tool_result(
         text = tool_output_text_and_pictures(item.get("output"))[0]
         return [{**item, "output": unretained_tool_result(_tool_result_failed(text, item.get("status")))}]
     if isinstance(item_type, str) and item_type.startswith("openrouter:"):
-        return _server_round(item, "{}", unretained_tool_result(server_tool_status(item) != "completed"))
+        return _server_round(
+            item,
+            json.dumps(server_tool_arguments(item), ensure_ascii=False),
+            unretained_tool_result(server_tool_status(item) != "completed"),
+        )
     if isinstance(item_type, str) and item_type.lower() in _NOT_A_TOOL_ROUND:
         return None
     return _withheld_provider_round(item)
@@ -3711,7 +3699,6 @@ async def transform_messages_to_input(
                     appended_text_chunks[-1]["reasoning_details"] = msg_reasoning_details
 
             if msg_tool_calls:
-                live_round_ordinals: dict[str, int] = {}
                 for index, tool_call in enumerate(msg_tool_calls):
                     if not isinstance(tool_call, dict):
                         continue
@@ -3739,14 +3726,6 @@ async def transform_messages_to_input(
                             args_text = json.dumps(arguments or {}, ensure_ascii=False)
                         except (TypeError, ValueError):
                             args_text = "{}"
-                    live_ordinal = live_round_ordinals.get(tool_call_id, 0)
-                    live_round_ordinals[tool_call_id] = live_ordinal + 1
-                    if _tool_round_withheld(msg_turn_index) and not _round_keeps_its_ask_user_answer(
-                        tool_call_id, name, ask_user_names,
-                        _chat_round_stamp(msg_id, tool_call_id, live_ordinal),
-                    ):
-                        args_text = _withheld_call_arguments(name, args_text)
-
                     openai_input.append(
                         {
                             "type": "function_call",

@@ -30,7 +30,6 @@ from tests.test_tools import _as_open_webui_resolves_them
 
 _CALL_TOOL_ARGUMENTS = json.dumps({"tool_name": "lookup", "params": json.dumps({"q": "v"})})
 _MALFORMED_CALL_ARGUMENTS = _CALL_TOOL_ARGUMENTS[:-6]
-_WITHHELD_CALL_ARGUMENTS = json.dumps({"tool_name": "lookup", "params": "{}"})
 
 
 def _open_webui_tool_search_functions() -> dict[str, Any]:
@@ -263,8 +262,8 @@ async def test_a_stored_call_tool_round_replays_as_the_model_made_it(monkeypatch
 
     With cards on, Open WebUI's converter rebuilds the round from the published item, which carries
     `provider_function`; with cards off, the pipe's own stored row does, through the replay formation.
-    At the `PERSIST_TOOL_RESULTS` default the round is withheld, so both routes must blank to the same
-    kept-name shape, and no replayed item may carry the resolver's own key.
+    At the `PERSIST_TOOL_RESULTS` default only the round's result is withheld, so both routes must replay
+    the call with the arguments the model gave it, and no replayed item may carry the resolver's own key.
     """
     functions = _open_webui_tool_search_functions()
     monkeypatch.setattr(streaming_core_mod, "resolve_tool_call", functions["resolve_tool_call"], raising=False)
@@ -353,6 +352,6 @@ async def test_a_stored_call_tool_round_replays_as_the_model_made_it(monkeypatch
     rows_item = _restored_call(replay_rows)
     for item in (cards_item, rows_item):
         assert item["name"] == "call_tool", item
-        assert item["arguments"] == _WITHHELD_CALL_ARGUMENTS, item
+        assert item["arguments"] == _CALL_TOOL_ARGUMENTS, item
         assert "provider_function" not in item, item
     assert (cards_item["name"], cards_item["arguments"]) == (rows_item["name"], rows_item["arguments"])
