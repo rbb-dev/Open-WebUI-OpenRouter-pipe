@@ -6567,6 +6567,146 @@ def test_encrypted_staged_row_streams_the_records_the_store_decoder_yields(pipe_
     assert events == stored["events"]
 
 
+def test_stop_mid_ingest_ends_in_the_stopped_handler(pipe_instance, tmp_path, caplog, monkeypatch):
+    import threading
+
+    pipe = pipe_instance
+    _session_log_store_for_assembly(pipe, tmp_path)
+    pipe.valves.SESSION_LOG_STORE_ENABLED = True
+    pipe.valves.SESSION_LOG_DIR = str(tmp_path)
+    pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("midstop-archive-pass")
+
+    chat_id = "chat-midstop"
+    message_id = "msg-midstop"
+    _stage_one_terminal_turn(pipe, chat_id, message_id)
+
+    stop = threading.Event()
+    pipe._session_log_manager._stop_event = stop
+    store = pipe._artifact_store
+    real_acquire = store._try_acquire_lock_sync
+    acquired: list[str] = []
+
+    def acquire_then_stop(row):
+        taken = real_acquire(row)
+        if not acquired:
+            stop.set()
+        acquired.append(row["item_type"])
+        return taken
+
+    monkeypatch.setattr(store, "_try_acquire_lock_sync", acquire_then_stop)
+
+    with caplog.at_level(logging.WARNING):
+        result = pipe._session_log_manager._assemble_and_write_bundle(
+            chat_id,
+            message_id,
+            terminal=True,
+            archive_settings=(str(tmp_path), b"pw", "stored", None),
+        )
+
+    assert result is False
+    assert _staged_turn_rows(pipe, chat_id, message_id) == 1
+    warned = [
+        record
+        for record in caplog.records
+        if record.levelno == logging.WARNING and record.funcName == "_assemble_and_write_bundle"
+    ]
+    assert len(warned) == 1
+    assert warned[0].exc_info is None
+
+
+def test_a_pass_that_returns_leaves_no_attempt_row_behind(pipe_instance, tmp_path):
+    pipe = pipe_instance
+    _session_log_store_for_assembly(pipe, tmp_path)
+    pipe.valves.SESSION_LOG_STORE_ENABLED = True
+    pipe.valves.SESSION_LOG_DIR = str(tmp_path)
+    pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("clean-return-archive-pass")
+
+    chat_id = "chat-cleanret"
+    message_id = "msg-cleanret"
+    row_id = _stage_one_terminal_turn(pipe, chat_id, message_id)
+
+    result = pipe._session_log_manager._assemble_and_write_bundle(
+        chat_id,
+        message_id,
+        terminal=True,
+        archive_settings=(str(tmp_path), b"pw", "stored", None),
+    )
+
+    assert result is True
+    model = pipe._artifact_store._item_model
+    session_factory = pipe._artifact_store._session_factory
+    check_session = session_factory()  # type: ignore[call-arg]
+    try:
+        attempts = (
+            check_session.query(model.id)
+            .filter(model.chat_id == chat_id)
+            .filter(model.message_id == message_id)
+            .filter(model.item_type == "session_log_attempt")
+            .count()
+        )
+        staged = (
+            check_session.query(model.id)
+            .filter(model.chat_id == chat_id)
+            .filter(model.message_id == message_id)
+            .filter(model.id == row_id)
+            .count()
+        )
+    finally:
+        check_session.close()
+    assert attempts == 0
+    assert staged == 0
+
+
+def test_the_pass_renews_the_lock_row_when_its_interval_has_passed(pipe_instance, tmp_path, monkeypatch):
+    import time as time_module
+
+    from sqlalchemy import event
+
+    from open_webui_openrouter_pipe.core.utils import _stable_crockford_id
+
+    pipe = pipe_instance
+    _session_log_store_for_assembly(pipe, tmp_path)
+    pipe.valves.SESSION_LOG_STORE_ENABLED = True
+    pipe.valves.SESSION_LOG_DIR = str(tmp_path)
+    pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("hb-archive-pass")
+
+    chat_id = "chat-hb"
+    message_id = "msg-hb"
+    _stage_one_terminal_turn(pipe, chat_id, message_id)
+    lock_id = _stable_crockford_id(f"{chat_id}:{message_id}:session_log_lock")
+
+    statements = []
+
+    def record(_conn, _cursor, statement, parameters, _context, _executemany):
+        statements.append((statement, parameters))
+
+    event.listen(pipe._artifact_store._engine, "before_cursor_execute", record)
+
+    real_monotonic = time_module.monotonic
+    ticks = []
+
+    def ever_forward():
+        ticks.append(1)
+        return real_monotonic() + 3600.0 * len(ticks)
+
+    monkeypatch.setattr(time_module, "monotonic", ever_forward)
+
+    result = pipe._session_log_manager._assemble_and_write_bundle(
+        chat_id,
+        message_id,
+        terminal=True,
+        archive_settings=(str(tmp_path), b"pw", "stored", None),
+    )
+
+    assert result is True
+    renewals = [
+        (statement, parameters)
+        for statement, parameters in statements
+        if "UPDATE" in statement and lock_id in str(parameters)
+    ]
+    assert len(renewals) >= 1
+
+
 def test_staging_splits_long_logs_into_ordered_terminal_last_pieces(pipe_instance, monkeypatch, tmp_path):
     from open_webui_openrouter_pipe.logging.session_log_manager import SESSION_LOG_OWNERSHIP_MEMO
 
@@ -6743,6 +6883,52 @@ def test_assembly_drops_a_turn_after_three_unreturned_passes(pipe_instance, tmp_
     ]
     assert len(dropped) == 1
     assert chat_id in dropped[0].getMessage() and message_id in dropped[0].getMessage()
+
+
+def test_assembler_tick_leaves_the_turn_staged_once_stop_is_set(pipe_instance, tmp_path):
+    import threading
+
+    pipe = pipe_instance
+    _session_log_store_for_assembly(pipe, tmp_path)
+    pipe.valves.SESSION_LOG_STORE_ENABLED = True
+    pipe.valves.SESSION_LOG_DIR = str(tmp_path)
+    pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("stop-archive-pass")
+
+    chat_id = "chat-stop"
+    message_id = "msg-stop"
+    _stage_one_terminal_turn(pipe, chat_id, message_id)
+
+    stopped = threading.Event()
+    stopped.set()
+    pipe._session_log_manager._stop_event = stopped
+
+    pipe._session_log_manager.run_assembler_once()
+
+    assert _staged_turn_rows(pipe, chat_id, message_id) == 1
+
+
+def test_pass_progress_interrupts_the_pass_on_stop_and_switch_off(pipe_instance, tmp_path):
+    import threading
+
+    from open_webui_openrouter_pipe.logging.session_log_manager import _PassInterrupted
+
+    pipe = pipe_instance
+    _session_log_store_for_assembly(pipe, tmp_path)
+    model = pipe._artifact_store._item_model
+    session_factory = pipe._artifact_store._session_factory
+
+    pipe.valves.SESSION_LOG_STORE_ENABLED = True
+    stopped = threading.Event()
+    stopped.set()
+    progress = pipe._session_log_manager._pass_progress(model, session_factory, "lock-stop-x", stopped)
+    with pytest.raises(_PassInterrupted):
+        progress()
+
+    pipe.valves.SESSION_LOG_STORE_ENABLED = False
+    running = threading.Event()
+    progress = pipe._session_log_manager._pass_progress(model, session_factory, "lock-stop-y", running)
+    with pytest.raises(_PassInterrupted):
+        progress()
 
 
 def test_run_session_log_assembler_once_handles_terminal_and_stale(pipe_instance, tmp_path):

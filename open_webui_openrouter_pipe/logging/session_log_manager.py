@@ -233,7 +233,7 @@ def _assembler_loop(mgr_ref: Any, stop_event: threading.Event) -> None:
         if mgr is None or stop_event.is_set():
             break
         try:
-            mgr.run_assembler_once()
+            mgr.run_assembler_once(stop_event)
         except Exception:
             logger.debug("Session log assembler failed", exc_info=True)
         if stop_event.is_set():
@@ -268,6 +268,8 @@ _MAX_UNRETURNED_ATTEMPTS = 3
 _ORPHAN_WRITE_MIN_AGE_SECONDS = 3600.0
 
 _SORTER_PREFIX = ".session-log-sorter-"
+
+_HEARTBEAT_MAX_SECONDS = 60.0
 
 _WRITER_DRAIN_SECONDS = 1.0
 
@@ -1359,7 +1361,7 @@ class SessionLogManager:
         )
 
     @timed
-    def run_assembler_once(self) -> None:
+    def run_assembler_once(self, stop_event: threading.Event | None = None) -> None:
         """One assembler tick: cleanup stale locks, assemble terminal + stale bundles."""
         model, session_factory = self._db_handles()
         if not model or not session_factory:
@@ -1429,10 +1431,15 @@ class SessionLogManager:
         )
         deadline = time.monotonic() + budget
         set_aside: list[tuple[str, str]] = []
+        stop = stop_event if stop_event is not None else self._stop_event
         for _listing in range(_MAX_ASSEMBLER_LISTINGS):
             del contended[:]
             over_budget = False
             for index, (terminal, turns) in enumerate(candidates):
+                if stop is not None and stop.is_set():
+                    break
+                if not self.valves.SESSION_LOG_STORE_ENABLED:
+                    break
                 if time.monotonic() >= deadline:
                     self.logger.debug(
                         "Session log assembler pass stopped at %d of %d candidate turn(s) at its "
@@ -1445,11 +1452,14 @@ class SessionLogManager:
                     break
                 try:
                     if terminal:
-                        assembled = self._assemble_and_write_bundle(turns[0], turns[1], terminal=True)
+                        assembled = self._assemble_and_write_bundle(
+                            turns[0], turns[1], terminal=True, stop_event=stop_event
+                        )
                     else:
                         assembled = self._assemble_and_write_bundle(
                             turns[0], turns[1], terminal=False,
                             stale_finalize_seconds=stale_finalize_seconds,
+                            stop_event=stop_event,
                         )
                 except Exception:
                     self.logger.log(
@@ -2031,6 +2041,33 @@ class SessionLogManager:
         )
         return True
 
+    def _pass_progress(
+        self, model: Any, session_factory: Any, lock_id: str, stop_event: threading.Event | None
+    ) -> Callable[[], None]:
+        interval = min(_HEARTBEAT_MAX_SECONDS, max(1.0, float(self.valves.SESSION_LOG_LOCK_STALE_SECONDS) / 10.0))
+        stop = stop_event if stop_event is not None else self._stop_event
+        last = [time.monotonic()]
+
+        def progress() -> None:
+            if stop is not None and stop.is_set():
+                raise _PassInterrupted("the worker is stopping")
+            if not self.valves.SESSION_LOG_STORE_ENABLED:
+                raise _PassInterrupted("session log storage was switched off")
+            now = time.monotonic()
+            if now - last[0] >= interval:
+                last[0] = now
+                try:
+                    with _db_session(session_factory) as session:
+                        session.query(model).filter(model.id == lock_id).update(  # type: ignore[attr-defined]
+                            {model.created_at: datetime.datetime.now(datetime.UTC)},  # type: ignore[attr-defined]
+                            synchronize_session=False,
+                        )
+                        session.commit()
+                except Exception:
+                    self.logger.debug("Session log assembly lock refresh failed for lock_id=%s", lock_id, exc_info=True)
+
+        return progress
+
     def _attempt_row_ids(
         self, model: Any, session_factory: Any, chat_id: str, message_id: str
     ) -> list[str]:
@@ -2178,6 +2215,7 @@ class SessionLogManager:
         terminal: bool,
         stale_finalize_seconds: float = 0.0,
         archive_settings: tuple[str, bytes, str, int | None] | None = None,
+        stop_event: threading.Event | None = None,
     ) -> bool | _LockContended:
         """Assemble all segments for one message into a single zip, then delete DB rows."""
         from ..core.logging_system import (
@@ -2201,6 +2239,11 @@ class SessionLogManager:
         if not model or not session_factory:
             return False
         if self._artifact_store is None:
+            return False
+        entry_stop = stop_event if stop_event is not None else self._stop_event
+        if entry_stop is not None and entry_stop.is_set():
+            return False
+        if not self.valves.SESSION_LOG_STORE_ENABLED:
             return False
 
         lock_id = _stable_crockford_id(f"{chat_id}:{message_id}:session_log_lock")
@@ -2288,8 +2331,7 @@ class SessionLogManager:
                 return False
             attempt_ids = [attempt_row["id"]]
 
-            def progress() -> None:
-                return None
+            progress = self._pass_progress(model, session_factory, lock_id, stop_event)
 
             scratch = _resolve_archive_root(base_dir)
             scratch.mkdir(parents=True, exist_ok=True)
