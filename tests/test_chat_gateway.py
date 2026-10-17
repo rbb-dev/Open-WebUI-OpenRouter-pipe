@@ -4940,3 +4940,119 @@ class _FakeSession:
 
     def post(self, *_args: Any, **_kwargs: Any) -> _FakeResponse:
         return _FakeResponse(self._body)
+
+
+async def _chat_route_search_turn(pipe, *, stream: bool, cards: bool, offered: bool):
+    from typing import cast
+
+    from open_webui_openrouter_pipe import ResponsesBody
+    from tests.test_continue_reasoning_order import _real_artifact_store
+    from tests.test_continue_stores_once import _open_webui_convert_output_to_messages
+    from tests.test_reasoning_owui_replay import SEARCH_ANSWER, SEARCH_MODEL, SEARCH_PAGES, owui_assemble
+
+    citations = [
+        {"type": "url_citation", "url_citation": {**page, "start_index": 0, "end_index": len(SEARCH_ANSWER)}}
+        for page in SEARCH_PAGES
+    ]
+    usage = {"prompt_tokens": 40, "completion_tokens": 12, "total_tokens": 52, "server_tool_use_details": {"web_search_requests": 1}}
+
+    def chunk(delta: dict[str, Any], finish: str | None = None) -> str:
+        return _sse({"choices": [{"index": 0, "delta": delta, "finish_reason": finish}], **({"usage": usage} if finish else {})})
+
+    streamed = (
+        "".join(chunk({"role": "assistant", "content": "", "annotations": [citation]}) for citation in citations)
+        + chunk({"content": SEARCH_ANSWER[:20]})
+        + chunk({"content": SEARCH_ANSWER[20:]})
+        + chunk({}, finish="stop")
+        + "data: [DONE]\n\n"
+    )
+    whole = {
+        "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": SEARCH_ANSWER, "annotations": citations}}],
+        "usage": usage,
+    }
+    valves = pipe.valves.model_copy(update={
+        "DEFAULT_LLM_ENDPOINT": "chat_completions", "PERSIST_TOOL_RESULTS": True, "SHOW_TOOL_CARDS": cards,
+        "API_KEY": "sk-test",
+    })
+    emitted: list[dict[str, Any]] = []
+
+    async def emitter(event):
+        emitted.append(event)
+
+    session = pipe._create_http_session(valves)
+    try:
+        with aioresponses() as http, _real_artifact_store(pipe) as store:
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            if stream:
+                http.post(url, body=streamed.encode("utf-8"), headers={"Content-Type": "text/event-stream"}, status=200)
+            else:
+                http.post(url, payload=whole, status=200)
+            runner = pipe._streaming_handler._run_streaming_loop if stream else pipe._streaming_handler._run_nonstreaming_loop
+            await runner(
+                ResponsesBody(
+                    model=SEARCH_MODEL, input=[], stream=stream,
+                    tools=[{"type": "openrouter:web_search"}] if offered else None,
+                ),
+                valves, emitter,
+                metadata={"model": {"id": SEARCH_MODEL}, "chat_id": "c1", "message_id": "m1"},
+                tools={}, session=cast(Any, session), user_id="u1",
+            )
+            saved = await owui_assemble(emitted)
+            answer = _open_webui_convert_output_to_messages()(saved, raw=True, flatten_tool_images=True)
+            history = [{"role": "user", "content": "q1"}, *answer, {"role": "user", "content": "q2"}]
+
+            async def replay(replay_valves):
+                return await transform_messages_to_input(
+                    pipe, history, chat_id="c1", openwebui_model_id="owui", artifact_loader=store._db_fetch,
+                    model_id=SEARCH_MODEL, valves=replay_valves,
+                )
+
+            return emitted, await replay(valves), await replay(valves.model_copy(update={"PERSIST_TOOL_RESULTS": False}))
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("stream", "cards"), [(True, True), (False, False)], ids=["streamed-cards-on", "whole-cards-off"])
+async def test_a_search_on_the_chat_route_reaches_the_next_turn_with_its_excerpts(pipe_instance_async, stream, cards):
+    from open_webui_openrouter_pipe.core.utils import UNRETAINED_TOOL_RESULT
+    from open_webui_openrouter_pipe.core.web_search_record import (
+        SEARCH_QUERY_NOT_RETURNED_NOTE,
+        SEARCH_QUERY_NOT_RETURNED_STEM,
+    )
+    from tests.test_reasoning_owui_replay import SEARCH_PAGES
+
+    _, replay, replay_without_results = await _chat_route_search_turn(
+        pipe_instance_async, stream=stream, cards=cards, offered=True
+    )
+
+    (call,) = [item for item in replay if item["type"] == "function_call"]
+    (result,) = [item for item in replay if item["type"] == "function_call_output"]
+    assert call["call_id"] == result["call_id"]
+    assert json.loads(call["arguments"]) == {}
+    entries = json.loads(result["output"])
+    assert entries[0] == {"note": SEARCH_QUERY_NOT_RETURNED_NOTE}
+    snippets = {entry["link"]: entry["snippet"] for entry in entries if "link" in entry}
+    assert snippets == {page["url"]: page["content"] for page in SEARCH_PAGES}
+
+    (call_without_results,) = [item for item in replay_without_results if item["type"] == "function_call"]
+    (result_without_results,) = [item for item in replay_without_results if item["type"] == "function_call_output"]
+    assert json.loads(call_without_results["arguments"]) == {}
+    assert SEARCH_QUERY_NOT_RETURNED_STEM in result_without_results["output"]
+    assert UNRETAINED_TOOL_RESULT[1:] in result_without_results["output"]
+    assert not any(page["content"][:40] in result_without_results["output"] for page in SEARCH_PAGES)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [True, False], ids=["streamed", "whole"])
+async def test_a_chat_route_reply_to_a_request_that_offered_no_web_search_leaves_no_search_round(
+    pipe_instance_async, stream
+):
+    from tests.test_reasoning_owui_replay import SEARCH_PAGES
+
+    emitted, replay, _ = await _chat_route_search_turn(pipe_instance_async, stream=stream, cards=True, offered=False)
+
+    assert [event["data"]["source"]["url"] for event in emitted if event.get("type") == "source"] == [
+        page["url"] for page in SEARCH_PAGES
+    ]
+    assert not [item for item in replay if item["type"] in ("function_call", "function_call_output")]

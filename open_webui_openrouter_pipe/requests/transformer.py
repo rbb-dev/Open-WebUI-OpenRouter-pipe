@@ -86,6 +86,7 @@ from ..core.utils import (
     unretained_tool_result,
 )
 from ..core.warn_latch import warn_level
+from ..core.web_search_record import unretained_result_text
 
 # Import Anthropic integration
 from ..integrations.anthropic import _maybe_apply_anthropic_prompt_caching
@@ -290,7 +291,7 @@ def _without_tool_result(
         ):
             return None
         text = tool_output_text_and_pictures(item.get("output"))[0]
-        return [{**item, "output": unretained_tool_result(_tool_result_failed(text, item.get("status")))}]
+        return [{**item, "output": unretained_result_text(text, _tool_result_failed(text, item.get("status")))}]
     if isinstance(item_type, str) and item_type.startswith("openrouter:"):
         return _server_round(
             item,
@@ -1936,7 +1937,9 @@ async def transform_messages_to_input(
 
                 if _tool_round_withheld(msg_turn_index):
                     if not round_exempt:
-                        tool_content_text = unretained_tool_result(_tool_result_failed(tool_content_text))
+                        tool_content_text = unretained_result_text(
+                            tool_content_text, _tool_result_failed(tool_content_text)
+                        )
                     tool_pictures = []
 
                 tool_item: dict[str, Any] = {

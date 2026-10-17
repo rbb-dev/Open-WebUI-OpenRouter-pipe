@@ -36,6 +36,18 @@ The producer reads the OpenRouter `text/event-stream` response and:
 ### Tool-call slots (the `/chat/completions` leg)
 A provider that streams parallel tool calls is supposed to label every fragment with the call's `index`. The `/chat/completions` reader matches a frame to the call it continues by three keys, in order: the frame's `id`, then its `function.name`, then neither. **A frame carrying no `index`, no `id` and no `function.name` continues the newest call whose accumulated arguments do not yet parse** — the call the provider opened last and is still writing — and opens a new call only when no call is open. A keyless frame used to answer `max(slots) + 1` whenever more than one call was open, which minted one call, and one announced card, per continuation frame. A call is **closed the moment its arguments parse**: a closed call is not extended by a later keyless fragment, and it is not decoded again while its argument string is unchanged, so the completeness test costs a bounded number of bytes per call rather than one whole-argument parse per delta. (A tool call's arguments are a JSON **object**, and a JSON object's last non-space character is `}`, so an accumulator that begins with `{` is decoded on `}` and on nothing else. That is what makes the bounded-bytes claim above true: the other sixteen characters of the seventeen-character `_ARGUMENTS_VALUE_TERMINATORS` set — `]`, a quote, a digit, `e`, `E`, `l`, `L` — are the ones a JSON *value* can end on, and a provider fragmenting a `write_file` call across them was charged a whole-argument parse per delta for an answer that could not be anything but `no`. The whole set is still the gate for an accumulator that does **not** begin with `{`, so a provider streaming a bare scalar keeps today's latch, and with it `json.loads`' acceptance of `NaN` and `Infinity` — which end in characters that set does contain — stays reachable on that path rather than being ruled out. A slot the explicit-`index` path appends to re-opens, because its bytes no longer match what was declared whole.)
 
+### Citations on the `/chat/completions` leg
+The reader turns each citation frame into a `response.output_text.annotation.added` event. When the request offered
+the web search tool, a wrapper between the reader and the loop holds back the first run of consecutive such events
+until the first event that is not one, or the end of the stream, and then emits a `web_search` item that lists the
+held pages (`response.output_item.added`, then `response.output_item.done`) followed by the held events, so the loop
+sees the sequence a `/responses` search produces: the item first, its citations after. The item carries no query and
+is marked `query_not_returned`, which makes the record open with a note entry instead of a query. Once the item is
+open, later citations pass through unchanged, so the first run of consecutive citation frames forms the round and
+frames after that run reach the sources panel only. When the request offered no web search tool the wrapper passes
+every event through unchanged. The whole-reply reader passes through the same wrapper. A stream that fails inside the
+held run loses the held citations and opens no item.
+
 ### End of body
 The read buffer is consumed line by line, so when the body ends the buffer still
 holds the bytes after the last newline. A `data:` frame the body ended without a

@@ -5,6 +5,7 @@ This module handles Chat Completions API streaming and non-streaming requests.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import uuid
@@ -36,6 +37,7 @@ from ...core.logging_system import SessionLogger
 from ...core.timing_logger import timed, timing_mark
 from ...core.utils import _apply_retry_after_metadata, http_timeout
 from ...core.warn_latch import warn_level
+from ...core.web_search_record import chat_route_search_item, offers_web_search
 from ...requests.debug import (
     _debug_print_error_response,
     _debug_print_request,
@@ -231,6 +233,40 @@ def _choice_carries_an_answer(choice: Any) -> bool:
             return True
     finish_reason = choice.get("finish_reason")
     return isinstance(finish_reason, str) and finish_reason.strip() not in ("", "stop")
+
+
+async def chat_route_search_record(
+    events: AsyncGenerator[dict[str, Any], None],
+    offered: bool,
+) -> AsyncGenerator[dict[str, Any], None]:
+    held: list[dict[str, Any]] = []
+    recorded = False
+
+    def _opening() -> list[dict[str, Any]]:
+        cited = [event.get("annotation") for event in held]
+        urls = [c["url"] for c in cited if isinstance(c, dict) and isinstance(c.get("url"), str) and c["url"]]
+        item = chat_route_search_item(f"chat_{generate_item_id()}", urls)
+        return [
+            {"type": "response.output_item.added", "item": {"id": item["id"], "type": item["type"], "status": "in_progress"}},
+            {"type": "response.output_item.done", "item": item},
+            *held,
+        ]
+
+    async with contextlib.aclosing(events):
+        async for event in events:
+            if offered and event.get("type") == "response.output_text.annotation.added" and not recorded:
+                held.append(event)
+                continue
+            if held:
+                opening = _opening()
+                held.clear()
+                recorded = True
+                for opened in opening:
+                    yield opened
+            yield event
+        if held:
+            for opened in _opening():
+                yield opened
 
 
 class ChatCompletionsAdapter:
@@ -1422,17 +1458,20 @@ class ChatCompletionsAdapter:
 
         @timed
         async def _run_chat() -> AsyncGenerator[dict[str, Any], None]:
-            async for event in self._pipe.send_openai_chat_completions_streaming_request(
-                session,
-                dict(inlined_request_body or {}),
-                api_key=api_key,
-                base_url=base_url,
-                valves=effective_valves,
-                breaker_key=breaker_key,
-                user=user,
-                owui_chat_id=owui_chat_id,
-                files_inlined=True,
-                event_emitter=event_emitter,
+            async for event in chat_route_search_record(
+                self._pipe.send_openai_chat_completions_streaming_request(
+                    session,
+                    dict(inlined_request_body or {}),
+                    api_key=api_key,
+                    base_url=base_url,
+                    valves=effective_valves,
+                    breaker_key=breaker_key,
+                    user=user,
+                    owui_chat_id=owui_chat_id,
+                    files_inlined=True,
+                    event_emitter=event_emitter,
+                ),
+                offers_web_search(inlined_request_body),
             ):
                 yield event
 

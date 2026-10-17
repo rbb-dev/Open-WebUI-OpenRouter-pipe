@@ -266,19 +266,20 @@ whether or not the output is retained. The raw native item is never what is repl
 non-replayable set (§5.1), so a `shell_call` the caller echoes back into a request is stripped before it reaches the
 provider, and the pair behind its marker is what stands in its place.
 
-A **web search round** (OpenRouter's `web_search` server tool) is kept in the same place and in the same shape, but it
-is written differently, because the item OpenRouter closes for a search carries only the query and the links the
-engine found. The page excerpts arrive in the `url_citation` annotations of the answer: before its first word on most
-engines and between its words on Anthropic's own search (streamed requests of 2026-10-16 on Claude Haiku 5.5, one
-search on each engine), and only in the finished message on a reply that is not streamed. So the round is marked when
-the search item closes and written when the turn ends -- the turn being the whole reply to one message, however many
-responses the model's tool calls split it into, so a citation of a later response counts too. When the item closes,
-the pipe publishes the card with the query and the links, reserves the ids of the round's two rows and places their
-markers where the search happened, ahead of the answer text. When the turn ends, the pipe renders the round once and
-gives that one text to both copies: it replaces the card in place -- in the pipe's own record first, so the reply's
-final list carries it -- and it fills in the two rows, which are then written, once. Open WebUI therefore hands back
-the same round whether the card is shown (the saved card is handed back and the pipe's copy is dropped as a duplicate)
-or hidden (the pipe's copy is used).
+On `/responses`, a **web search round** (OpenRouter's `web_search` server tool) is kept in the same place and in the
+same shape, but it is written differently, because the item OpenRouter closes for a search carries only the query and
+the links the engine found. The paragraphs below describe that route; the one that begins "On `/chat/completions`"
+says what changes on the other. The page excerpts arrive in the `url_citation` annotations of the answer: before its
+first word on most engines and between its words on Anthropic's own search (streamed requests of 2026-10-16 on Claude
+Haiku 5.5, one search on each engine), and only in the finished message on a reply that is not streamed. So the round
+is marked when the search item closes and written when the turn ends -- the turn being the whole reply to one message,
+however many responses the model's tool calls split it into, so a citation of a later response counts too. When the
+item closes, the pipe publishes the card with the query and the links, reserves the ids of the round's two rows and
+places their markers where the search happened, ahead of the answer text. When the turn ends, the pipe renders the
+round once and gives that one text to both copies: it replaces the card in place -- in the pipe's own record first, so
+the reply's final list carries it -- and it fills in the two rows, which are then written, once. Open WebUI therefore
+hands back the same round whether the card is shown (the saved card is handed back and the pipe's copy is dropped as a
+duplicate) or hidden (the pipe's copy is used).
 
 The call's arguments are `{"query": ...}`. The result is a JSON list shaped like the result of Open WebUI's own
 `search_web` tool, `[{"title", "link", "snippet"}]`, with a key left out when the engine gave nothing for it: one
@@ -313,6 +314,25 @@ is added to it, and the card and both rows then carry the same text. In Open-Web
 the tool and calls the pipe again, the continuation is a separate request to the pipe, so the search keeps what it
 had when the first request ended and the continuation's citations stay in the sources panel.
 
+On `/chat/completions` OpenRouter sends the cited pages and their excerpts as `url_citation` annotations (one frame
+each when the reply is streamed, all before the answer's first word in the one streamed request measured), a search
+count in the usage block for the server tool, and no search item and no query (measured on Claude Haiku 5.5 on
+2026-10-17: four requests, streamed and not, with the tool and with the `web` plugin). The pipe builds the same round
+from the citations alone: when the request offered `openrouter:web_search`, it opens a search item when the first run
+of consecutive citation frames ends and lists those pages. The call's arguments are `{}`, because the query is not
+sent back, and the result opens with a note entry telling the model that this search ran with a query it wrote and
+that OpenRouter does not send that query back on this route; the cited pages follow, and the trailing note, when there
+is one, stays last. The opening note takes no result slot and no excerpt budget, as the trailing one takes none. A
+phrase placed in the `query` argument instead was read by Claude Haiku 5.5 and GPT-5-mini as the words that had been
+searched (live check, 2026-10-17: all three requests, two to Claude Haiku 5.5 and one to GPT-5-mini), which is why the
+arguments stay empty. From there the card, the two rows, the markers and the limits are the ones above, and a streamed
+reply and a whole one are treated alike. With `PERSIST_TOOL_RESULTS` off the round reaches the model as the call with
+`{}` and one note that says both things: the query is not shown, and the call succeeded but its result is not kept.
+One round stands for the whole reply, because the route cannot tell two searches apart; a reply with no citations
+leaves none; the first run of consecutive citation frames forms the round, and frames after that run reach the sources
+panel only. A request that offered no web search tool gets no round, and its citations reach the sources panel as
+before.
+
 A call can also be kept in this copy and still be withheld from one request: when the replay budget is applied to that
 turn, the result is replaced in `input` with a model-visible stub, and the tools whose results were replaced are named to
 the person in a warning notification — once per call id, on every path that applies the budget except the task-model
@@ -320,7 +340,7 @@ adapter, which never sees the tool round. The copy above is untouched, so a late
 result.
 
 The copy carries the call's arguments and its result in full, pictures included, whatever `PERSIST_TOOL_RESULTS`
-says, as a shown card does in the message Open WebUI saves, except a web search, which keeps its query, its links and the excerpts the engine returned within the record caps, and a fetched page, which is cut at 150,000 characters with a note saying how much;
+says, as a shown card does in the message Open WebUI saves, except a web search, which keeps its query (none on `/chat/completions`, where OpenRouter does not send the query back and the call has no arguments), its links and the excerpts the engine returned within the record caps, and a fetched page, which is cut at 150,000 characters with a note saying how much;
 that setting decides what later turns receive, not whether the round is stored (see below). A call that
 did not complete keeps its failure text; where that text alone would not read as a failure, it opens with
 `Error: the tool call did not complete.` With no `ARTIFACT_ENCRYPTION_KEY` set, or with `ENCRYPT_ALL` off, the copy

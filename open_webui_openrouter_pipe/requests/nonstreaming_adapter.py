@@ -24,6 +24,7 @@ from ..api.transforms import (
     responses_refusal_text,
 )
 from ..core.timing_logger import timed
+from ..core.web_search_record import offers_web_search
 from ..storage.persistence import generate_item_id
 from ..structured_task.client import output_message_text
 
@@ -57,6 +58,15 @@ def _build_chat_output_items(**kwargs: Any) -> list[dict[str, Any]]:
     from ..api.gateway.chat_completions_adapter import _build_output_items as build
 
     return build(**kwargs)
+
+
+def _chat_route_search_record(
+    events: AsyncGenerator[dict[str, Any], None],
+    offered: bool,
+) -> AsyncGenerator[dict[str, Any], None]:
+    from ..api.gateway.chat_completions_adapter import chat_route_search_record as wrap
+
+    return wrap(events, offered)
 
 
 class NonStreamingAdapter:
@@ -179,7 +189,7 @@ class NonStreamingAdapter:
             yield {"type": "response.completed", "response": response if isinstance(response, dict) else {}}
 
         @timed
-        async def _run_chat() -> AsyncGenerator[dict[str, Any], None]:
+        async def _chat_events() -> AsyncGenerator[dict[str, Any], None]:
             chat_response = await self._pipe.send_openai_chat_completions_nonstreaming_request(
                 session,
                 dict(inlined_request_body or {}),
@@ -430,6 +440,10 @@ class NonStreamingAdapter:
                 response_payload["status"] = "incomplete"
                 response_payload["incomplete_details"] = {"reason": "max_output_tokens"}
             yield {"type": terminal_type, "response": response_payload}
+
+        async def _run_chat() -> AsyncGenerator[dict[str, Any], None]:
+            async for event in _chat_route_search_record(_chat_events(), offers_web_search(inlined_request_body)):
+                yield event
 
         if endpoint == "chat_completions":
             async for event in _run_chat():

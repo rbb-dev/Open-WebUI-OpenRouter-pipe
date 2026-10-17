@@ -5,18 +5,25 @@ from collections.abc import Iterable
 from typing import Any
 from urllib.parse import urlsplit
 
-from .utils import server_tool_status
+from .utils import server_tool_status, unretained_tool_result
 
 SEARCH_SNIPPET_CHAR_CAP = 1600
 SEARCH_SNIPPET_CHAR_FLOOR = 100
 SEARCH_ROUND_SNIPPET_CHAR_BUDGET = 8000
 SEARCH_MAX_RESULTS = 25
+WEB_SEARCH_TOOL_TYPE = "openrouter:web_search"
 SEARCH_REPORTED_NO_SOURCES = "The search reported no sources."
 SEARCH_DID_NOT_COMPLETE = "Search did not complete."
+SEARCH_QUERY_NOT_RETURNED_KEY = "query_not_returned"
+SEARCH_QUERY_NOT_RETURNED_STEM = (
+    "This search ran with a query you wrote; OpenRouter does not send that query back on this route"
+)
+SEARCH_QUERY_NOT_RETURNED_NOTE = f"{SEARCH_QUERY_NOT_RETURNED_STEM}, so it is not shown here."
 
 _OPENAI_TRACKING_SUFFIX = "?utm_source=openai"
 _PASSAGE_SEPARATOR = "\n[...]\n"
 _CUT_MARK = "…"
+_QUERY_NOTE_PREFIX = json.dumps([{"note": SEARCH_QUERY_NOT_RETURNED_NOTE}], ensure_ascii=False)[:-2]
 
 
 def comparable_url(url: str) -> str:
@@ -53,6 +60,23 @@ def search_source_urls(item: dict[str, Any]) -> list[str]:
 def render_search_args(item: dict[str, Any]) -> str:
     query = search_query(item)
     return json.dumps({"query": query}, ensure_ascii=False) if query else "{}"
+
+
+def offers_web_search(request_body: Any) -> bool:
+    tools = request_body.get("tools") if isinstance(request_body, dict) else None
+    return isinstance(tools, list) and any(
+        isinstance(tool, dict) and tool.get("type") == WEB_SEARCH_TOOL_TYPE for tool in tools
+    )
+
+
+def chat_route_search_item(item_id: str, urls: Iterable[str]) -> dict[str, Any]:
+    return {
+        "type": WEB_SEARCH_TOOL_TYPE,
+        "id": item_id,
+        "status": "completed",
+        SEARCH_QUERY_NOT_RETURNED_KEY: True,
+        "action": {"type": "search", "sources": [{"type": "url", "url": url} for url in urls]},
+    }
 
 
 def merge_search_citations(parsed: Iterable[tuple[str, str, str]]) -> list[dict[str, str]]:
@@ -143,4 +167,13 @@ def render_search_result(item: dict[str, Any], citations: list[dict[str, str]]) 
     note = _cut_note(len(results) - len(kept), withheld, shortened)
     if note:
         entries.append({"note": note})
+    if item.get(SEARCH_QUERY_NOT_RETURNED_KEY):
+        entries.insert(0, {"note": SEARCH_QUERY_NOT_RETURNED_NOTE})
     return json.dumps(entries, ensure_ascii=False)
+
+
+def unretained_result_text(text: str, failed: bool) -> str:
+    note = unretained_tool_result(failed)
+    if text.startswith(_QUERY_NOTE_PREFIX):
+        return f"[{SEARCH_QUERY_NOT_RETURNED_STEM}. {note[1:]}"
+    return note
