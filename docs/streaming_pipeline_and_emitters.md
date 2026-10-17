@@ -272,10 +272,17 @@ contents feed only the write that is not made.
 
 The batch is strictly cheaper on a successful turn and strictly worse on a failed one: one refused write now loses
 all three fields where it previously lost one. That is the trade. What it buys back is the read, which the union
-needs — a read-modify-write across three calls is three reads. The read is the chat blob rather than the
-per-message fast path, because `chat_message` has no column for `annotations` or `reasoning_details`
-(`chat_messages.py:127-175`, `:380-393`) and a read through it would merge the citations and silently drop the other
-two. A turn with nothing to write does neither: the read sits behind the empty-payload check. The payload carries
+needs — a read-modify-write across three calls is three reads. The read takes the one stored message out of the
+chat's own JSON with a single-message select, so what it costs follows the size of that message and not the size of
+the conversation; it does not go through the `chat_message` rows, because those have no column for `annotations`
+or `reasoning_details` and a read through them would merge the citations and silently drop the other two. The
+select is used for a message id made of letters, digits, `_` and `-`; any other id, an error from the database
+(PostgreSQL 16.2 refuses to extract from a JSON document that holds a NUL escape, whichever message holds it), or an
+Open WebUI without the database layer the select needs, takes Open WebUI's whole-chat read instead, which returns
+the same message. A failed select logs one WARNING per kind of error and then falls back, so the merge never starts
+from an empty message because a read failed. The chat's owner for the Zero Data Retention check is read the same
+way, from the owner column alone, and takes the whole-chat read when that select fails. A chat row that records no owner has no owner either way, which the Zero Data Retention check treats as an owner it cannot determine. A turn with nothing to write does neither: the read sits behind the empty-payload
+check. The payload carries
 the non-empty fields and nothing else — no `content`, no `output`, because `Chat.svelte:3216-3218` assigns
 `message.content` absolutely from any frame carrying text and no output, so naming either would overwrite the
 answer being read. There is no `touch=`: Open WebUI's socket handler passes it because it fires per citation, and

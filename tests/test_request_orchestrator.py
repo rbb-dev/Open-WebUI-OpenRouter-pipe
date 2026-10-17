@@ -5302,13 +5302,12 @@ def _chat_owned_by(monkeypatch, owner_id: str) -> None:
     import open_webui.models.chats as owc
     import open_webui.models.users as owu
 
-    class _ChatRow:
-        user_id = owner_id
+    from open_webui_openrouter_pipe.requests import orchestrator as orchestrator_module
 
-    async def reader(chat_id, db=None):
-        return _ChatRow()
+    async def owner_of(chat_id, whole_chat):
+        return owner_id
 
-    monkeypatch.setattr(owc.Chats, "get_chat_by_id", staticmethod(reader), raising=False)
+    monkeypatch.setattr(orchestrator_module, "read_chat_owner_id", owner_of)
 
     async def not_owner(chat_id, user_id, db=None):
         return False

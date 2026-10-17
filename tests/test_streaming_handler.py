@@ -8232,6 +8232,129 @@ class TestStreamingCoreAdditionalCoverage:
         monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", original_upsert)
 
     @pytest.mark.asyncio
+    async def test_a_turns_stored_fields_are_merged_without_reading_the_whole_chat(
+        self, monkeypatch, pipe_instance_async
+    ):
+        import contextlib
+        import sys
+        import types
+
+        from sqlalchemy import JSON, Column, String
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+        from sqlalchemy.orm import declarative_base
+        from sqlalchemy.pool import StaticPool
+
+        from open_webui_openrouter_pipe.storage import owui_chats
+        from open_webui_openrouter_pipe.streaming import streaming_core
+
+        one_mebibyte = 1024 * 1024
+        owner, chat_id, target, odd_target = "user-invented-1", "chat-invented-1", "msg-7", "msg,7"
+        prior = {
+            "sources": [{"source": {"url": "https://example.com/earlier"}, "document": ["invented earlier text"]}],
+            "annotations": [{"type": "url_citation", "url": "https://example.org/earlier", "title": "invented earlier"}],
+            "reasoning_details": [{"type": "reasoning.text", "text": "invented earlier reasoning"}],
+        }
+        fresh = {
+            "sources": [{"source": {"url": "https://example.com/fresh"}, "document": ["invented fresh text"]}],
+            "annotations": [{"type": "url_citation", "url": "https://example.net/fresh", "title": "invented fresh"}],
+            "reasoning_details": [{"type": "reasoning.text", "text": "invented fresh reasoning"}],
+        }
+        base = declarative_base()
+
+        class Chat(base):
+            __tablename__ = "chat"
+            id = Column(String, primary_key=True)
+            user_id = Column(String)
+            chat = Column(JSON)
+
+        def message(index: int, with_prior: bool) -> dict:
+            body = {"id": f"msg-{index}", "role": "assistant", "content": "invented sentence for the filler text. " * 13000}
+            if with_prior:
+                body.update({field: [dict(entry) for entry in entries] for field, entries in prior.items()})
+            return body
+
+        decoded: list[int] = []
+
+        def recording_loads(raw):
+            decoded.append(len(raw))
+            return json.loads(raw)
+
+        engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool, json_deserializer=recording_loads)
+        async with engine.begin() as connection:
+            await connection.run_sync(base.metadata.create_all)
+        sessions = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        messages = {f"msg-{i}": message(i, f"msg-{i}" == target) for i in range(20)}
+        messages[odd_target] = message(99, True)
+        async with sessions() as session:
+            session.add(Chat(id=chat_id, user_id=owner, chat={"history": {"messages": messages}}))
+            session.add(Chat(id="chat-without-owner", user_id=None, chat={"history": {"messages": {}}}))
+            await session.commit()
+
+        @contextlib.asynccontextmanager
+        async def get_async_db_context(db=None):
+            async with sessions() as session:
+                yield session
+
+        internal = types.ModuleType("open_webui.internal")
+        db_module = types.ModuleType("open_webui.internal.db")
+        db_module.get_async_db_context = get_async_db_context
+        internal.db = db_module
+        monkeypatch.setitem(sys.modules, "open_webui.internal", internal)
+        monkeypatch.setitem(sys.modules, "open_webui.internal.db", db_module)
+        chats_module = sys.modules["open_webui.models.chats"]
+        monkeypatch.setattr(chats_module, "Chat", Chat, raising=False)
+        monkeypatch.setattr(chats_module.Chats, "_clean_null_bytes", staticmethod(lambda value: value), raising=False)
+
+        async def whole_chat(requested_id):
+            async with sessions() as session:
+                return await session.get(Chat, requested_id)
+
+        written: list[dict] = []
+
+        async def upsert(requested_id, message_id, payload, user_id):
+            written.append(payload)
+
+        monkeypatch.setattr(streaming_core, "_chats_chat", whole_chat)
+        monkeypatch.setattr(streaming_core, "_chats_upsert", upsert)
+        handler = pipe_instance_async._streaming_handler
+
+        decoded.clear()
+        await whole_chat(chat_id)
+        whole_bytes = sum(decoded)
+        read_bytes = {}
+        for message_id in (target, odd_target):
+            decoded.clear()
+            payload = {field: [dict(entry) for entry in entries] for field, entries in fresh.items()}
+            await handler._store_turn_fields(chat_id, message_id, payload, owner, None, None)
+            read_bytes[message_id] = sum(decoded)
+
+        decoded.clear()
+        found = await owui_chats.read_chat_owner_id(chat_id, whole_chat)
+        absent = await owui_chats.read_chat_owner_id("chat-absent", whole_chat)
+        unowned = await owui_chats.read_chat_owner_id("chat-without-owner", whole_chat)
+        owner_bytes = sum(decoded)
+        await engine.dispose()
+
+        assert whole_bytes > 8 * one_mebibyte
+        assert read_bytes[target] <= one_mebibyte
+        assert read_bytes[odd_target] > 8 * one_mebibyte
+        for merged in written:
+            assert [entry["source"]["url"] for entry in merged["sources"]] == [
+                "https://example.com/earlier",
+                "https://example.com/fresh",
+            ]
+            assert [entry["url"] for entry in merged["annotations"]] == [
+                "https://example.org/earlier",
+                "https://example.net/fresh",
+            ]
+            assert [entry["text"] for entry in merged["reasoning_details"]] == [
+                "invented earlier reasoning",
+                "invented fresh reasoning",
+            ]
+        assert len(written) == 2
+        assert (found, absent, unowned, owner_bytes) == (owner, None, None, 0)
+
+    @pytest.mark.asyncio
     async def test_reasoning_details_persistence_exception(self, monkeypatch, pipe_instance_async, caplog):
         """Test reasoning_details persistence exception handling (lines 1798-1809)."""
         pipe = pipe_instance_async

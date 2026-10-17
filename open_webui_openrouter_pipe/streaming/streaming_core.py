@@ -118,6 +118,7 @@ from ..core.utils import (
     tool_output_text_and_pictures,
     wrap_code_block,
 )
+from ..core.warn_latch import warn_level
 from ..core.web_fetch_record import bound_fetch_record
 from ..core.web_search_record import (
     attribute_search_citations,
@@ -216,6 +217,7 @@ from ..storage.multimodal import (
     image_extension_for_mime,
     resolve_download_type,
 )
+from ..storage.owui_chats import read_stored_message
 from ..storage.owui_files import (
     caller_may_write_chat,
     is_channel_chat,
@@ -484,6 +486,8 @@ def _merge_stored_field(stored: Any, fresh: Any, *, key_fn: Any) -> list[Any]:
     return merged
 
 
+_warned_turn_field_read: set[str] = set()
+
 _TURN_METADATA_FIELDS: tuple[tuple[str, str, str, Any], ...] = (
     ("sources", "citations", "citations", _stored_citation_identity),
     ("annotations", "annotations", "file annotations", _stored_entry_identity),
@@ -624,6 +628,68 @@ class StreamingHandler:
                 "Tool card(s) emitted without matching function_call_output: %s",
                 sorted(unmatched),
             )
+
+    async def _store_turn_fields(
+        self,
+        chat_id: Any,
+        message_id: Any,
+        payload: dict[str, Any],
+        user_id: Any,
+        event_emitter: EventEmitter | None,
+        cancelled: BaseException | None,
+    ) -> BaseException | None:
+        stored_message: Any = {}
+        try:
+            if Chats is not None:
+                stored_message = await read_stored_message(chat_id, message_id, _chats_chat)
+        except (asyncio.CancelledError, Exception) as exc:
+            if isinstance(exc, asyncio.CancelledError):
+                cancelled = cancelled or exc
+            level = warn_level(_warned_turn_field_read, type(exc).__name__)
+            self.logger.log(
+                level,
+                "Could not read the stored message to merge this turn's fields into "
+                "(chat_id=%s message_id=%s)",
+                chat_id, message_id,
+                exc_info=True,
+            )
+            stored_message = {}
+        if not isinstance(stored_message, dict):
+            self.logger.debug(
+                "Stored message for chat_id=%s message_id=%s is not an object; "
+                "writing this turn's own values",
+                chat_id, message_id,
+            )
+            stored_message = {}
+        for turn_field, _log_label, _notify_label, key_fn in _TURN_METADATA_FIELDS:
+            if turn_field in payload:
+                payload[turn_field] = _merge_stored_field(
+                    stored_message.get(turn_field), payload[turn_field], key_fn=key_fn
+                )
+        try:
+            await _chats_upsert(chat_id, message_id, payload, user_id)
+        except (asyncio.CancelledError, Exception) as exc:
+            if isinstance(exc, asyncio.CancelledError):
+                cancelled = exc
+            self.logger.warning(
+                "Failed to persist %s for chat_id=%s message_id=%s: %s",
+                _joined_labels([log for _f, log, _n, _k in _TURN_METADATA_FIELDS if _f in payload]),
+                chat_id, message_id, exc,
+                exc_info=True,
+            )
+            try:
+                await self._pipe._event_emitter_handler._emit_notification(
+                    event_emitter,
+                    f"Unable to save {_joined_labels([n for _f, _l, n, _k in _TURN_METADATA_FIELDS if _f in payload])} for this response. Output was delivered successfully.",
+                    level="warning",
+                )
+            except (asyncio.CancelledError, Exception) as notify_exc:
+                if isinstance(notify_exc, asyncio.CancelledError):
+                    cancelled = notify_exc
+                self.logger.debug(
+                    "Notifying about a failed turn-field write failed", exc_info=True
+                )
+        return cancelled
 
     @timed
     async def _run_streaming_loop(  # pyright: ignore[reportGeneralTypeIssues]
@@ -5251,61 +5317,14 @@ class StreamingHandler:
             }
             if (not was_cancelled) and (not handed_back_for_retry) and chat_id and message_id \
                     and payload and is_linkable_chat(chat_id):
-                stored_message: dict[str, Any] = {}
-                try:
-                    chat_row = await _chats_chat(chat_id)
-                    stored_message = (
-                        (chat_row.chat or {}).get("history", {}).get("messages", {}).get(message_id, {})
-                        if chat_row is not None and isinstance(chat_row.chat, dict)
-                        else {}
-                    )
-                except (asyncio.CancelledError, Exception) as _exc:
-                    if isinstance(_exc, asyncio.CancelledError):
-                        _finalise_cancelled = _finalise_cancelled or _exc
-                    self.logger.debug(
-                        "Could not read the stored message to merge this turn's fields into "
-                        "(chat_id=%s message_id=%s)",
-                        chat_id, message_id,
-                        exc_info=True,
-                    )
-                    stored_message = {}
-                if not isinstance(stored_message, dict):
-                    self.logger.debug(
-                        "Stored message for chat_id=%s message_id=%s is not an object; "
-                        "writing this turn's own values",
-                        chat_id, message_id,
-                    )
-                    stored_message = {}
-                for field, _log_label, _notify_label, key_fn in _TURN_METADATA_FIELDS:
-                    if field in payload:
-                        payload[field] = _merge_stored_field(
-                            stored_message.get(field), payload[field], key_fn=key_fn
-                        )
-                try:
-                    await _chats_upsert(
-                        chat_id, message_id, payload, user_id or metadata.get("user_id") or ""
-                    )
-                except (asyncio.CancelledError, Exception) as exc:
-                    if isinstance(exc, asyncio.CancelledError):
-                        _finalise_cancelled = exc
-                    self.logger.warning(
-                        "Failed to persist %s for chat_id=%s message_id=%s: %s",
-                        _joined_labels([log for _f, log, _n, _k in _TURN_METADATA_FIELDS if _f in payload]),
-                        chat_id, message_id, exc,
-                        exc_info=True,
-                    )
-                    try:
-                        await self._pipe._event_emitter_handler._emit_notification(
-                            event_emitter,
-                            f"Unable to save {_joined_labels([n for _f, _l, n, _k in _TURN_METADATA_FIELDS if _f in payload])} for this response. Output was delivered successfully.",
-                            level="warning",
-                        )
-                    except (asyncio.CancelledError, Exception) as notify_exc:
-                        if isinstance(notify_exc, asyncio.CancelledError):
-                            _finalise_cancelled = notify_exc
-                        self.logger.debug(
-                            "Notifying about a failed turn-field write failed", exc_info=True
-                        )
+                _finalise_cancelled = await self._store_turn_fields(
+                    chat_id,
+                    message_id,
+                    payload,
+                    user_id or metadata.get("user_id") or "",
+                    event_emitter,
+                    _finalise_cancelled,
+                )
 
         _record_outcome()
         if _finalise_cancelled is not None:

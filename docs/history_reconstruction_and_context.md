@@ -553,8 +553,9 @@ a chip the person already saw does not change underneath them. The union is unco
 would be an inference from a client-supplied key (`assistant_message_id`), and the clobber it would leave is the
 ordinary one: a builtin tool's citation is emitted as a `source` frame without being accumulated by the pipe, so on
 a plain RAG turn the message already holds a source this request knows nothing about. `annotations` and
-`reasoning_details` are read from the chat blob for the same reason — `chat_message` has no column for either, so a
-per-message read would merge the citations and silently drop the other two. See
+`reasoning_details` are read from the message's entry in the chat's own JSON (that one message, not the whole chat)
+for the same reason — `chat_message` has no column for either, so a read of its rows would merge the citations and
+silently drop the other two. See
 [Streaming pipeline and emitters](streaming_pipeline_and_emitters.md#41-the-stored-output-array-and-who-owns-it)
 for how many times that write happens.
 

@@ -1441,6 +1441,7 @@ async def test_one_fusion_turn_reads_the_chat_row_once_for_the_owner_check(
     from aioresponses import aioresponses
 
     from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+    from open_webui_openrouter_pipe.requests import orchestrator as orchestrator_module
     from tests.test_request_orchestrator import _consume_stream, _smart_callback
 
     _orchestrator, pipe = orchestrator_and_pipe
@@ -1451,12 +1452,9 @@ async def test_one_fusion_turn_reads_the_chat_row_once_for_the_owner_check(
 
     monkeypatch.setattr(owf.Functions, "get_user_valves_by_id_and_user_id", staticmethod(valve_rows))
 
-    class _ChatRow:
-        user_id = "owner_1"
-
-    async def counted_chat(chat_id, db=None):
+    async def counted_owner(chat_id, whole_chat):
         reads["owner_row"] += 1
-        return _ChatRow()
+        return "owner_1"
 
     async def not_owner(chat_id, user_id, db=None):
         return False
@@ -1468,7 +1466,7 @@ async def test_one_fusion_turn_reads_the_chat_row_once_for_the_owner_check(
     async def owner_user(user_id, db=None):
         return _OwnerUser()
 
-    monkeypatch.setattr(owc.Chats, "get_chat_by_id", staticmethod(counted_chat), raising=False)
+    monkeypatch.setattr(orchestrator_module, "read_chat_owner_id", counted_owner)
     monkeypatch.setattr(owc.Chats, "is_chat_owner", staticmethod(not_owner), raising=False)
     monkeypatch.setattr(owu.Users, "get_user_by_id", staticmethod(owner_user), raising=False)
     monkeypatch.setattr(

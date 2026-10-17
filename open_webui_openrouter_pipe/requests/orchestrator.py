@@ -88,6 +88,7 @@ from ..models.registry import (
     textless_output_noun,
 )
 from ..storage.multimodal import Confidence, _sniff_evidence
+from ..storage.owui_chats import read_chat_owner_id
 from ..storage.owui_files import (
     declared_file_size,
     get_file_by_id,
@@ -230,14 +231,13 @@ async def _chat_owner_zdr_override(
 
         if await Chats.is_chat_owner(str(chat_id), sender_id):
             return False, "REQUEST_ZDR"
-        chat = await Chats.get_chat_by_id(str(chat_id))
-        if chat is None:
+        owner_id = await read_chat_owner_id(str(chat_id), Chats.get_chat_by_id)
+        if owner_id is None:
             logger.warning(
                 "The chat row for the Zero Data Retention owner check did not resolve; "
                 "enforcing ZDR rather than routing without it"
             )
             return True, "OWNER_ZDR_UNDETERMINABLE"
-        owner_id = str(getattr(chat, "user_id", "") or "")
         if not owner_id or owner_id == sender_id:
             return False, "REQUEST_ZDR"
         try:
