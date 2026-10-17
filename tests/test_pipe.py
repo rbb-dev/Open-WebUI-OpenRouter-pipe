@@ -6124,7 +6124,7 @@ def test_resolve_session_log_archive_settings_success(pipe_instance, monkeypatch
 
 def test_assemble_and_write_session_log_bundle_writes_zip(pipe_instance, monkeypatch, tmp_path):
     pipe = pipe_instance
-    _install_fake_store(pipe)
+    _install_real_session_log_store(pipe, tmp_path)
 
     pipe.valves.SESSION_LOG_STORE_ENABLED = True
     pipe.valves.SESSION_LOG_DIR = str(tmp_path)
@@ -6299,6 +6299,272 @@ def test_encrypted_sorter_stores_one_record_as_different_blobs_each_time(tmp_pat
         assert list(sorter.stream("second", False)) == [record]
     finally:
         sorter.close()
+
+
+def test_assembly_removes_a_turn_whose_stored_row_fails_its_signature(pipe_instance, tmp_path, caplog):
+    pipe = pipe_instance
+    _install_real_session_log_store(pipe, tmp_path)
+    pipe.valves.SESSION_LOG_STORE_ENABLED = True
+    pipe.valves.ARTIFACT_ENCRYPTION_KEY = EncryptedStr("turn-signature-key")
+    pipe.valves.ENCRYPT_ALL = True
+    pipe._artifact_store._initialize_encryption_state()
+
+    chat_id = "chat-signature"
+    message_id = "msg-signature"
+    payload = {
+        "type": "session_log_segment_terminal",
+        "status": "complete",
+        "user_id": "user-1",
+        "session_id": "sess-1",
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "request_id": "req-signature",
+        "created_at": 1.0,
+        "events": [{"created": 1.0, "message": "hello"}],
+    }
+    row = {
+        "id": generate_item_id(),
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "model_id": None,
+        "item_type": "session_log_segment_terminal",
+        "payload": payload,
+    }
+    assert pipe._artifact_store._db_persist_sync([row]) == [row["id"]]
+
+    model = pipe._artifact_store._item_model
+    session_factory = pipe._artifact_store._session_factory
+    stored_session = session_factory()  # type: ignore[call-arg]
+    try:
+        stored = stored_session.query(model).filter(model.id == row["id"]).one()
+        envelope = dict(stored.payload)
+        ciphertext = envelope["ciphertext"]
+        pivot = len(ciphertext) // 2
+        flipped = "A" if ciphertext[pivot] != "A" else "B"
+        envelope["ciphertext"] = ciphertext[:pivot] + flipped + ciphertext[pivot + 1:]
+        stored.payload = envelope
+        stored_session.commit()
+    finally:
+        stored_session.close()
+
+    with caplog.at_level(logging.WARNING, logger="open_webui_openrouter_pipe.logging.session_log_manager"):
+        result = pipe._session_log_manager._assemble_and_write_bundle(
+            chat_id,
+            message_id,
+            terminal=True,
+            archive_settings=(str(tmp_path), b"pw", "stored", None),
+        )
+
+    assert result is False
+    check_session = pipe._artifact_store._session_factory()  # type: ignore[call-arg]
+    try:
+        left = check_session.query(model.id).filter(model.id == row["id"]).count()
+    finally:
+        check_session.close()
+    assert left == 0
+    assert any(
+        record.levelno == logging.WARNING
+        and chat_id in record.getMessage()
+        and message_id in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def _break_stored_token(pipe: Any, row_id: str, at: int, char: str) -> None:
+    model = pipe._artifact_store._item_model
+    session = pipe._artifact_store._session_factory()  # type: ignore[call-arg]
+    try:
+        stored = session.query(model).filter(model.id == row_id).one()
+        envelope = dict(stored.payload)
+        token = envelope["ciphertext"]
+        envelope["ciphertext"] = token[:at] + char + token[at + 1:]
+        stored.payload = envelope
+        session.commit()
+    finally:
+        session.close()
+
+
+def test_a_row_refused_while_it_is_read_does_not_block_the_deletion_of_its_turn(pipe_instance, tmp_path):
+    import secrets
+
+    pipe = pipe_instance
+    _session_log_store_for_assembly(pipe, tmp_path)
+    with cast(Any, pipe._artifact_store)._engine.connect() as connection:
+        assert connection.exec_driver_sql("PRAGMA journal_mode=DELETE").scalar() == "delete"
+    pipe.valves.SESSION_LOG_STORE_ENABLED = True
+    pipe.valves.ARTIFACT_ENCRYPTION_KEY = EncryptedStr("refused-row-key")
+    pipe.valves.ENCRYPT_ALL = True
+    pipe._artifact_store._initialize_encryption_state()
+    row_id = _stage_one_terminal_turn(pipe, "chat-refused", "msg-refused", message=secrets.token_hex(6000))
+    _break_stored_token(pipe, row_id, 40, "!")
+
+    result = pipe._session_log_manager._assemble_and_write_bundle(
+        "chat-refused",
+        "msg-refused",
+        terminal=True,
+        archive_settings=(str(tmp_path), b"pw", "stored", None),
+    )
+
+    assert result is False
+    assert _staged_turn_rows(pipe, "chat-refused", "msg-refused") == 0
+
+
+def test_a_signature_failure_while_the_encryption_key_changes_keeps_the_turns_rows(pipe_instance, tmp_path):
+    pipe = pipe_instance
+    _session_log_store_for_assembly(pipe, tmp_path)
+    pipe.valves.SESSION_LOG_STORE_ENABLED = True
+    pipe.valves.ARTIFACT_ENCRYPTION_KEY = EncryptedStr("first-key")
+    pipe.valves.ENCRYPT_ALL = True
+    store = pipe._artifact_store
+    store._initialize_encryption_state()
+    _stage_one_terminal_turn(pipe, "chat-rekey", "msg-rekey")
+    store._artifact_store_signature = ("response_items_test", store._table_key)
+    store._apply_artifact_encryption_key("second-key", "second-key")
+
+    result = pipe._session_log_manager._assemble_and_write_bundle(
+        "chat-rekey",
+        "msg-rekey",
+        terminal=True,
+        archive_settings=(str(tmp_path), b"pw", "stored", None),
+    )
+
+    assert result is False
+    assert _staged_turn_rows(pipe, "chat-rekey", "msg-rekey") == 1
+
+
+def test_a_key_that_changes_and_comes_back_during_a_pass_does_not_cost_the_turn_its_rows(
+    pipe_instance, tmp_path, monkeypatch
+):
+    pipe = pipe_instance
+    _session_log_store_for_assembly(pipe, tmp_path)
+    pipe.valves.SESSION_LOG_STORE_ENABLED = True
+    pipe.valves.ARTIFACT_ENCRYPTION_KEY = EncryptedStr("first-key")
+    pipe.valves.ENCRYPT_ALL = True
+    store = pipe._artifact_store
+    store._initialize_encryption_state()
+    _stage_one_terminal_turn(pipe, "chat-flap", "msg-flap")
+    store._artifact_store_signature = ("response_items_test", store._table_key)
+    manager = pipe._session_log_manager
+    ingest = manager._ingest_row
+
+    def ingest_while_the_key_flaps(*args, **kwargs):
+        store._apply_artifact_encryption_key("second-key", "second-key")
+        try:
+            return ingest(*args, **kwargs)
+        finally:
+            store._apply_artifact_encryption_key("first-key", "first-key")
+
+    monkeypatch.setattr(manager, "_ingest_row", ingest_while_the_key_flaps)
+
+    result = manager._assemble_and_write_bundle(
+        "chat-flap",
+        "msg-flap",
+        terminal=True,
+        archive_settings=(str(tmp_path), b"pw", "stored", None),
+    )
+
+    assert result is False
+    assert _staged_turn_rows(pipe, "chat-flap", "msg-flap") == 1
+
+
+def test_a_pass_over_a_driver_without_blob_io_warns_once_per_process(pipe_instance, tmp_path, caplog, monkeypatch):
+    import open_webui_openrouter_pipe.storage.payload_stream as payload_stream
+
+    class WithoutBlobOpen:
+        def __init__(self, inner: Any) -> None:
+            self._inner = inner
+
+        def __getattr__(self, name: str) -> Any:
+            if name == "blobopen":
+                raise AttributeError(name)
+            return getattr(self._inner, name)
+
+    class EngineWithoutBlobOpen:
+        def __init__(self, engine: Any) -> None:
+            self._engine = engine
+            self.dialect = engine.dialect
+
+        def raw_connection(self) -> Any:
+            raw = self._engine.raw_connection()
+            return SimpleNamespace(driver_connection=WithoutBlobOpen(raw.driver_connection), close=raw.close)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._engine, name)
+
+    pipe = pipe_instance
+    _session_log_store_for_assembly(pipe, tmp_path)
+    pipe.valves.SESSION_LOG_STORE_ENABLED = True
+    monkeypatch.setattr(pipe._artifact_store, "_engine", EngineWithoutBlobOpen(pipe._artifact_store._engine))
+    monkeypatch.setattr(payload_stream, "_BLOBOPEN_WARNED", False)
+
+    with caplog.at_level(logging.WARNING):
+        for index in range(3):
+            _stage_one_terminal_turn(pipe, f"chat-noblob-{index}", f"msg-noblob-{index}")
+            result = pipe._session_log_manager._assemble_and_write_bundle(
+                f"chat-noblob-{index}",
+                f"msg-noblob-{index}",
+                terminal=True,
+                archive_settings=(str(tmp_path), b"pw", "stored", None),
+            )
+            assert result is True
+
+    warned = [
+        record
+        for record in caplog.records
+        if record.levelno == logging.WARNING and record.funcName == "_sqlite_driver"
+    ]
+    assert len(warned) == 1
+
+
+def test_encrypted_staged_row_streams_the_records_the_store_decoder_yields(pipe_instance, tmp_path):
+    import tempfile
+    from pathlib import Path as _Path
+
+    from open_webui_openrouter_pipe.storage.payload_stream import stream_row
+
+    pipe = pipe_instance
+    _install_real_session_log_store(pipe, tmp_path)
+    pipe.valves.ARTIFACT_ENCRYPTION_KEY = EncryptedStr("round-trip-key")
+    pipe.valves.ENCRYPT_ALL = True
+    pipe._artifact_store._initialize_encryption_state()
+
+    row = {
+        "id": generate_item_id(),
+        "chat_id": "chat-rt",
+        "message_id": "msg-rt",
+        "model_id": None,
+        "item_type": "session_log_segment",
+        "payload": {
+            "type": "session_log_segment",
+            "user_id": "user-rt",
+            "session_id": "sess-rt",
+            "request_id": "req-rt",
+            "created_at": 1.0,
+            "events": [
+                {"created": 1.0, "message": "first"},
+                {"created": 2.0, "message": "second"},
+            ],
+        },
+    }
+    assert pipe._artifact_store._db_persist_sync([row]) == [row["id"]]
+
+    events = []
+    headers = []
+    with tempfile.TemporaryDirectory() as scratch:
+        for kind, value in stream_row(
+            pipe._artifact_store,
+            "chat-rt",
+            "msg-rt",
+            row["id"],
+            encrypted=True,
+            spool_dir=_Path(scratch),
+            tick=lambda: None,
+        ):
+            (events if kind == "event" else headers).append(value)
+
+    stored = pipe._artifact_store._db_fetch_sync("chat-rt", "msg-rt", [row["id"]])[row["id"]]
+    assert [h.get("user_id") for h in headers if h] == ["user-rt"] or headers[0].get("user_id") == "user-rt"
+    assert events == stored["events"]
 
 
 def test_run_session_log_assembler_once_handles_terminal_and_stale(pipe_instance, tmp_path):

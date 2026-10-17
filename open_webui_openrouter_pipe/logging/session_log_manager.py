@@ -50,6 +50,11 @@ from ..core.logging_system import (
 from ..core.timing_logger import timed
 from ..core.warn_latch import warn_level
 from ..integrations.video_intent_prompts import INTENT_SCHEMA_NAME
+from ..storage.payload_stream import (
+    StoredPayloadUnavailable,
+    StoredPayloadUnreadable,
+    stream_row,
+)
 from ..storage.persistence import _db_session
 
 logger = logging.getLogger(__name__)
@@ -2000,50 +2005,44 @@ class SessionLogManager:
         )
         return True
 
-    def _restore_touched_stamps(
-        self,
-        model: Any,
-        session_factory: Any,
-        stamps: dict[str, Any],
-        touched_ids: list[str],
-        chat_id: str = "",
-        message_id: str = "",
-    ) -> None:
+    def _store_table_moved(self, model: Any) -> bool:
+        current = getattr(self._artifact_store, "_item_model", None)
+        return current is None or current.__table__.name != model.__table__.name
 
-        if not touched_ids:
-            return
+    def _store_moved_since(self, model: Any, key_changes: int) -> bool:
+        store = self._artifact_store
+        if self._store_table_moved(model) or getattr(store, "_key_changes", key_changes) != key_changes:
+            return True
+        built_for = getattr(store, "_artifact_store_signature", None)
+        return built_for is not None and built_for[1] != getattr(store, "_table_key", built_for[1])
+
+    def _refuse_turn(
+        self, chat_id: str, message_id: str, lock_id: str, row_ids: list[str], exc: Exception
+    ) -> None:
         try:
-            with _db_session(session_factory) as session:
-                pairs = [
-                    (item_id, stamps[item_id])
-                    for item_id in touched_ids
-                    if stamps.get(item_id) is not None
-                ]
-                if pairs:
-                    session.query(model).filter(  # type: ignore[attr-defined]
-                        model.id.in_([item_id for item_id, _ in pairs])
-                    ).update(
-                        {model.created_at: case(  # type: ignore[attr-defined]
-                            *[(model.id == item_id, original) for item_id, original in pairs],
-                            else_=model.created_at,
-                        )},
-                        synchronize_session=False,
-                    )
-                    session.commit()
+            self._artifact_store._delete_artifacts_sync([*row_ids, lock_id])  # type: ignore[union-attr]
         except Exception:
-            _truncate_latch(self._stale_filter_warnings, _MAX_DRAIN_LATCH_KEYS)
-            self.logger.log(
-                warn_level(
-                    self._stale_filter_warnings,
-                    f"session_log_stamp_restore_failed:{chat_id}:{message_id}",
-                    cooldown_s=3600.0,
-                ),
-                "Restoring staged-segment staleness stamps failed for chat_id=%s message_id=%s; "
-                "the turn may no longer be surfaced as stale, so its staged segments can be stranded.",
+            self.logger.warning(
+                "Staged session log rows for chat_id=%s message_id=%s failed the signature or structure check "
+                "(%s) but could not be deleted; they stay in the database and the next pass refuses them again.",
                 chat_id,
                 message_id,
+                exc,
                 exc_info=True,
             )
+            self._release_assembly_lock(lock_id)
+            return
+        with self._lock:
+            self._unreadable_archive_attempts.pop(f"{chat_id}:{message_id}", None)
+            self._rescue_pending.pop((chat_id, message_id), None)
+        self.logger.warning(
+            "Staged session log rows for chat_id=%s message_id=%s were removed unreadable (%s): a "
+            "stored row failed its signature or structure check, so the turn's staged rows are "
+            "deleted at once and no archive is written from them.",
+            chat_id,
+            message_id,
+            exc,
+        )
 
     def _release_assembly_lock(
         self,
@@ -2118,6 +2117,7 @@ class SessionLogManager:
                 "Session log assembly skipped (temporary chat): message_id=%s", message_id,
             )
             return _LOCK_CONTENDED
+        key_changes = getattr(self._artifact_store, "_key_changes", 0)
         model, session_factory = self._db_handles()
         if not model or not session_factory:
             return False
@@ -2153,15 +2153,13 @@ class SessionLogManager:
             return held
 
         ids: list[str] = []
-        touched: list[str] = []
-        stamps: dict[str, Any] = {}
         sealed: dict[str, bool] = {}
         sorter: _EventSorter | None = None
         try:
             # Fetch all segment ids for this message (including any terminal markers).
             with _db_session(session_factory) as session:
                 rows = (
-                    session.query(model.id, model.created_at, model.is_encrypted)  # type: ignore[attr-defined]
+                    session.query(model.id, model.is_encrypted)  # type: ignore[attr-defined]
                     .filter(model.chat_id == chat_id)  # type: ignore[attr-defined]
                     .filter(model.message_id == message_id)  # type: ignore[attr-defined]
                     .filter(model.item_type.in_(_SEGMENT_ROW_TYPES))  # type: ignore[attr-defined]
@@ -2169,8 +2167,7 @@ class SessionLogManager:
                     .all()
                 )
                 ids = [row[0] for row in rows if row and isinstance(row[0], str)]
-                stamps = {row[0]: row[1] for row in rows if row and isinstance(row[0], str)}
-                sealed = {row[0]: bool(row[2]) for row in rows if row and isinstance(row[0], str)}
+                sealed = {row[0]: bool(row[1]) for row in rows if row and isinstance(row[0], str)}
 
             if not ids:
                 self._release_assembly_lock(lock_id)
@@ -2204,10 +2201,25 @@ class SessionLogManager:
                 segments: list[dict[str, Any]] = []
                 readable_ids: list[str] = []
                 for rank, item_id in enumerate(ids):
-                    header = self._ingest_row(sorter, chat_id, message_id, item_id, rank, touched)
+                    try:
+                        header = self._ingest_row(
+                            sorter, chat_id, message_id, item_id, rank,
+                            sealed.get(item_id, False), scratch, progress,
+                        )
+                    except StoredPayloadUnreadable as exc:
+                        if self._store_moved_since(model, key_changes):
+                            raise StoredPayloadUnavailable(
+                                "the artifact store changed its key or table while the pass was reading"
+                            ) from exc
+                        raise
                     if header is not None:
                         segments.append(header)
                         readable_ids.append(item_id)
+            except _PassInterrupted:
+                raise
+            except StoredPayloadUnreadable as exc:
+                self._refuse_turn(chat_id, message_id, lock_id, ids, exc)
+                return False
             except Exception:
                 _truncate_latch(self._read_fault_warnings, _MAX_DRAIN_LATCH_KEYS)
                 self.logger.log(
@@ -2221,7 +2233,6 @@ class SessionLogManager:
                     message_id,
                     exc_info=True,
                 )
-                self._restore_touched_stamps(model, session_factory, stamps, list(touched), chat_id, message_id)
                 self._release_assembly_lock(lock_id)
                 return False
 
@@ -2240,7 +2251,6 @@ class SessionLogManager:
                     chat_id,
                     message_id,
                 )
-                self._restore_touched_stamps(model, session_factory, stamps, list(touched), chat_id, message_id)
                 self._release_assembly_lock(lock_id)
                 return False
 
@@ -2537,7 +2547,6 @@ class SessionLogManager:
                     )
                 return True
 
-            self._restore_touched_stamps(model, session_factory, stamps, list(touched), chat_id, message_id)
             if contended:
                 self.logger.log(
                     warn_level(
@@ -2555,7 +2564,6 @@ class SessionLogManager:
             self._release_assembly_lock(lock_id)
             return False
         except _PassInterrupted as exc:
-            self._restore_touched_stamps(model, session_factory, stamps, list(touched), chat_id, message_id)
             self._release_assembly_lock(lock_id)
             self.logger.log(
                 warn_level(
@@ -2571,7 +2579,6 @@ class SessionLogManager:
             )
             return False
         except BaseException:
-            self._restore_touched_stamps(model, session_factory, stamps, list(touched), chat_id, message_id)
             self._release_assembly_lock(lock_id)
             raise
         finally:
@@ -2610,18 +2617,35 @@ class SessionLogManager:
         message_id: str,
         item_id: str,
         rank: int,
-        touched: list[str],
+        encrypted: bool,
+        scratch: Path,
+        progress: Callable[[], None],
     ) -> dict[str, Any] | None:
-        store = self._artifact_store
-        payload = store._db_fetch_sync(chat_id, message_id, [item_id]).get(item_id) if store else None
-        touched.append(item_id)
-        if not isinstance(payload, dict) or payload.get("type") not in _SEGMENT_ROW_TYPES:
-            return None
-        grp = str(payload.get("user_id") or "").strip()
-        for pos, evt in enumerate(payload.pop("events", None) or []):
-            if isinstance(evt, dict):
-                sorter.add(grp, rank, pos, evt)
-        return payload
+        header: dict[str, Any] = {}
+        pos = 0
+        early = False
+        with contextlib.closing(
+            stream_row(
+                self._artifact_store,
+                chat_id,
+                message_id,
+                item_id,
+                encrypted=encrypted,
+                spool_dir=scratch,
+                tick=progress,
+            )
+        ) as rows:
+            for kind, value in rows:
+                if kind == "fields":
+                    header.update(value)
+                    continue
+                grp = str(header.get("user_id") or "").strip()
+                early = early or not grp
+                sorter.add(grp, rank, pos, value)
+                pos += 1
+        if early and str(header.get("user_id") or "").strip():
+            sorter.regroup(str(header["user_id"]).strip(), rank)
+        return header if header.get("type") in _SEGMENT_ROW_TYPES else None
 
     # =========================================================================
     # Archive Cleanup

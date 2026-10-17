@@ -758,6 +758,7 @@ class ArtifactStore:
         self._read_fault_notified = False
         self._artifact_key_unreadable = False
         self._table_key = ""
+        self._key_changes = 0
         self._apply_artifact_encryption_key(
             EncryptedStr.read(self.valves.ARTIFACT_ENCRYPTION_KEY),
             self.valves.ARTIFACT_ENCRYPTION_KEY,
@@ -820,6 +821,7 @@ class ArtifactStore:
         return bool(str(stored or "").strip()) or self._stored_valve_row_is_unreadable(stored)
 
     def _apply_artifact_encryption_key(self, plaintext: str | None, stored: Any) -> None:
+        previous = (getattr(self, "_encryption_key", ""), self._table_key)
         self._encryption_key: str = (plaintext or "").strip()
         unreadable = self._stored_key_is_unreadable(stored)
         if unreadable != self._artifact_key_unreadable:
@@ -827,6 +829,8 @@ class ArtifactStore:
             self._write_refusal_notified = False
         self._artifact_key_unreadable = unreadable
         self._table_key = _UNREADABLE_ARTIFACT_TABLE_KEY if unreadable else self._encryption_key
+        if (self._encryption_key, self._table_key) != previous:
+            self._key_changes += 1
 
     def _artifact_writes_blocked(self, rows: list[dict[str, Any]]) -> bool:
         if not self._artifact_key_unreadable:
