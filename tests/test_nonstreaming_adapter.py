@@ -1007,7 +1007,7 @@ async def test_nonstreaming_chat_annotations_empty_url_skipped(pipe_instance_asy
                     {"type": "url_citation", "url_citation": {"url": "", "title": "Empty URL"}},
                     {"type": "url_citation", "url_citation": {"url": "   ", "title": "Whitespace URL"}},
                     {"type": "url_citation", "url_citation": {"url": None, "title": "None URL"}},
-                    {"type": "url_citation", "url_citation": {"url": "https://valid.com", "title": "Valid"}},
+                    {"type": "url_citation", "url_citation": {"url": "https://valid.example", "title": "Valid"}},
                 ],
             },
             "finish_reason": "stop",
@@ -1037,7 +1037,7 @@ async def test_nonstreaming_chat_annotations_empty_url_skipped(pipe_instance_asy
     # Should have only one valid annotation
     annotation_events = [e for e in events if e.get("type") == "response.output_text.annotation.added"]
     assert len(annotation_events) == 1
-    assert annotation_events[0]["annotation"]["url"] == "https://valid.com"
+    assert annotation_events[0]["annotation"]["url"] == "https://valid.example"
 
 
 @pytest.mark.asyncio
@@ -1054,9 +1054,9 @@ async def test_nonstreaming_chat_annotations_duplicate_urls_skipped(pipe_instanc
                 "role": "assistant",
                 "content": "Based on sources",
                 "annotations": [
-                    {"type": "url_citation", "url_citation": {"url": "https://dupe.com", "title": "First"}},
-                    {"type": "url_citation", "url_citation": {"url": "https://dupe.com", "title": "Second"}},
-                    {"type": "url_citation", "url_citation": {"url": "https://unique.com", "title": "Unique"}},
+                    {"type": "url_citation", "url_citation": {"url": "https://dupe.example", "title": "First"}},
+                    {"type": "url_citation", "url_citation": {"url": "https://dupe.example", "title": "Second"}},
+                    {"type": "url_citation", "url_citation": {"url": "https://unique.example", "title": "Unique"}},
                 ],
             },
             "finish_reason": "stop",
@@ -1087,8 +1087,8 @@ async def test_nonstreaming_chat_annotations_duplicate_urls_skipped(pipe_instanc
     annotation_events = [e for e in events if e.get("type") == "response.output_text.annotation.added"]
     assert len(annotation_events) == 2
     urls = {e["annotation"]["url"] for e in annotation_events}
-    assert "https://dupe.com" in urls
-    assert "https://unique.com" in urls
+    assert "https://dupe.example" in urls
+    assert "https://unique.example" in urls
 
 
 @pytest.mark.asyncio
@@ -1105,8 +1105,8 @@ async def test_nonstreaming_chat_annotations_non_string_title(pipe_instance_asyn
                 "role": "assistant",
                 "content": "Based on sources",
                 "annotations": [
-                    {"type": "url_citation", "url_citation": {"url": "https://notitle.com", "title": 12345}},  # Non-string title
-                    {"type": "url_citation", "url_citation": {"url": "https://empty.com", "title": "   "}},  # Whitespace title
+                    {"type": "url_citation", "url_citation": {"url": "https://notitle.example", "title": 12345}},  # Non-string title
+                    {"type": "url_citation", "url_citation": {"url": "https://empty.example", "title": "   "}},  # Whitespace title
                 ],
             },
             "finish_reason": "stop",
@@ -1137,8 +1137,8 @@ async def test_nonstreaming_chat_annotations_non_string_title(pipe_instance_asyn
     annotation_events = [e for e in events if e.get("type") == "response.output_text.annotation.added"]
     assert len(annotation_events) == 2
     # First should use URL as title since title was non-string
-    first = [e for e in annotation_events if e["annotation"]["url"] == "https://notitle.com"][0]
-    assert first["annotation"]["title"] == "https://notitle.com"
+    first = [e for e in annotation_events if e["annotation"]["url"] == "https://notitle.example"][0]
+    assert first["annotation"]["title"] == "https://notitle.example"
 
 
 @pytest.mark.asyncio
@@ -1157,7 +1157,7 @@ async def test_nonstreaming_chat_annotation_preserves_content(pipe_instance_asyn
                 "content": "Based on sources",
                 "annotations": [
                     {"type": "url_citation", "url_citation": {
-                        "url": "https://x.com", "title": "X", "content": "the excerpt body"}},
+                        "url": "https://x.example", "title": "X", "content": "the excerpt body"}},
                 ],
             },
             "finish_reason": "stop",
@@ -1612,8 +1612,8 @@ async def test_nonstreaming_complete_chat_workflow(pipe_instance_async):
                     {"type": "reasoning.summary", "summary": "Deep analysis completed."},
                 ],
                 "annotations": [
-                    {"type": "url_citation", "url_citation": {"url": "https://source1.com", "title": "Source 1"}},
-                    {"type": "url_citation", "url_citation": {"url": "https://source2.com", "title": "Source 2"}},
+                    {"type": "url_citation", "url_citation": {"url": "https://source1.example", "title": "Source 1"}},
+                    {"type": "url_citation", "url_citation": {"url": "https://source2.example", "title": "Source 2"}},
                 ],
                 "tool_calls": [
                     {"id": "call_1", "type": "function", "function": {"name": "search", "arguments": '{"query": "test"}'}},

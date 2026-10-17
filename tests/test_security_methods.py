@@ -36,7 +36,7 @@ async def test_is_safe_url_allows_public_ips(pipe_instance_async, monkeypatch):
     monkeypatch.setattr(
         socket,
         "getaddrinfo",
-        lambda *_args, **_kwargs: _addrinfo_for_ip("8.8.8.8"),
+        lambda *_args, **_kwargs: _addrinfo_for_ip("93.184.216.34"),
     )
     assert await pipe_instance_async._multimodal_handler._is_safe_url("https://example.com/image.jpg") is True
 
@@ -97,7 +97,7 @@ async def test_the_master_switch_blocks_even_an_allowlisted_host(pipe_instance_a
     monkeypatch.setattr(
         socket,
         "getaddrinfo",
-        lambda *_args, **_kwargs: _addrinfo_for_ip("8.8.8.8"),
+        lambda *_args, **_kwargs: _addrinfo_for_ip("93.184.216.34"),
     )
     assert await pipe_instance_async._multimodal_handler._is_safe_url(
         "http://example.com/resource"
@@ -115,7 +115,7 @@ async def test_http_allowlist_allows_host(pipe_instance_async, monkeypatch):
     monkeypatch.setattr(
         socket,
         "getaddrinfo",
-        lambda *_args, **_kwargs: _addrinfo_for_ip("8.8.8.8"),
+        lambda *_args, **_kwargs: _addrinfo_for_ip("93.184.216.34"),
     )
     assert await pipe_instance_async._multimodal_handler._is_safe_url("http://example.com/resource") is True
 
@@ -128,7 +128,7 @@ async def test_http_allowlist_port_mismatch_blocks(pipe_instance_async, monkeypa
     monkeypatch.setattr(
         socket,
         "getaddrinfo",
-        lambda *_args, **_kwargs: _addrinfo_for_ip("8.8.8.8"),
+        lambda *_args, **_kwargs: _addrinfo_for_ip("93.184.216.34"),
     )
     assert await pipe_instance_async._multimodal_handler._is_safe_url("http://example.com:80/resource") is False
 
@@ -184,8 +184,8 @@ async def test_download_remote_url_halts_when_ssrf_blocks(pipe_instance_async, m
 
 def test_is_youtube_url_variants(pipe_instance):
     """_is_youtube_url should detect both standard and short formats."""
-    assert pipe_instance._multimodal_handler._is_youtube_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ") is True
-    assert pipe_instance._multimodal_handler._is_youtube_url("https://youtu.be/dQw4w9WgXcQ") is True
+    assert pipe_instance._multimodal_handler._is_youtube_url("https://www.youtube.com/watch?v=video_ex_01") is True
+    assert pipe_instance._multimodal_handler._is_youtube_url("https://youtu.be/video_ex_01") is True
     assert pipe_instance._multimodal_handler._is_youtube_url("https://vimeo.com/123456") is False
     assert pipe_instance._multimodal_handler._is_youtube_url("") is False
 

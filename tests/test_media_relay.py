@@ -552,7 +552,7 @@ def test_the_retention_an_operator_chose_is_the_one_on_the_wire(retention):
 
 def test_a_retention_the_host_does_not_publish_falls_back_to_the_shortest():
     """An unknown value must not be sent verbatim -- the host would reject the upload."""
-    _, wire = asyncio.run(_relayed([(200, "https://l.moe/a.mp4")], retention="forever"))
+    _, wire = asyncio.run(_relayed([(200, "https://l.example/a.mp4")], retention="forever"))
     after = wire.bodies[0].split(b'name="time"')[1][:64]
     assert b"forever" not in after
     assert RELAY_RETENTIONS[0].encode() in after
@@ -568,7 +568,7 @@ def test_the_permanent_host_is_never_asked_for_a_retention():
 def test_the_file_reaches_the_host_intact_inside_a_declared_multipart_part():
     """Framing is the whole upload: a mangled boundary is a silent corrupt file."""
     blob = bytes(range(256)) * 4
-    _, wire = asyncio.run(_relayed([(200, "https://l.moe/a.mp4")], blob=blob))
+    _, wire = asyncio.run(_relayed([(200, "https://l.example/a.mp4")], blob=blob))
     sent = wire.bodies[0]
     boundary = wire.content_types[0].split("boundary=")[1]
     assert sent.startswith(f"--{boundary}\r\n".encode())

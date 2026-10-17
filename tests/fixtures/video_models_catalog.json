@@ -6,7 +6,7 @@
       "hugging_face_id": null,
       "name": "Google: Veo 3.1 Fast",
       "created": 1776994666,
-      "description": "Google's mid-tier video generation model balancing speed and quality. Veo 3.1 Fast generates high-quality video from text or image prompts with native synchronized audio, offering faster turnaround than Veo 3.1...",
+      "description": "Invented description 01: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": [
         "720p",
         "1080p",
@@ -59,7 +59,7 @@
       "hugging_face_id": null,
       "name": "Google: Veo 3.1 Lite",
       "created": 1776978818,
-      "description": "Google's most cost-effective video generation model, designed for high-volume applications and rapid iteration. Veo 3.1 Lite generates 720p and 1080p video from text or image prompts with native synchronized audio...",
+      "description": "Invented description 02: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": [
         "720p",
         "1080p"
@@ -107,7 +107,7 @@
       "hugging_face_id": null,
       "name": "Kling: Video O1",
       "created": 1776704777,
-      "description": "Kling Video O1 is a video generation model from Kuaishou. It supports text and image inputs with video output, enabling text-to-video and image-to-video workflows. It is suited for cinematic content...",
+      "description": "Invented description 03: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": [
         "720p"
       ],
@@ -146,7 +146,7 @@
       "hugging_face_id": null,
       "name": "Kling: Video v3.0 Pro",
       "created": 1777496206,
-      "description": "Kling v3.0 Pro is Kuaishou's premium video generation model, offering higher visual quality than the Standard tier. It supports text-to-video and image-to-video workflows, with first-frame and last-frame control for precise...",
+      "description": "Invented description 04: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": [
         "720p"
       ],
@@ -203,7 +203,7 @@
       "hugging_face_id": null,
       "name": "Kling: Video v3.0 Standard",
       "created": 1777496205,
-      "description": "Kling v3.0 Standard is a video generation model from Kuaishou. It supports text-to-video and image-to-video workflows, with first-frame and last-frame control for guided scene composition. Clips range from 3 to...",
+      "description": "Invented description 05: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": [
         "720p"
       ],
@@ -260,7 +260,7 @@
       "hugging_face_id": null,
       "name": "MiniMax: Hailuo 2.3",
       "created": 1776702740,
-      "description": "Hailuo 2.3 is a video generation model from MiniMax. It accepts text prompts and reference images as input and generates video output, supporting both text-to-video and image-to-video workflows. It is...",
+      "description": "Invented description 06: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": [
         "1080p"
       ],
@@ -295,7 +295,7 @@
       "hugging_face_id": null,
       "name": "ByteDance: Seedance 2.0 Fast",
       "created": 1776211362,
-      "description": "Seedance 2.0 Fast is a video generation model from ByteDance. It supports text-to-video, image-to-video with first and last frame control, and multimodal reference-to-video. It prioritizes generation speed and lower cost...",
+      "description": "Invented description 07: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": [
         "480p",
         "720p"
@@ -362,7 +362,7 @@
       "hugging_face_id": null,
       "name": "Alibaba: Wan 2.7",
       "created": 1776211362,
-      "description": "Wan 2.7 is a video generation model from Alibaba. It supports text-to-video, image-to-video with first and last frame control, and reference-to-video, where multiple reference images guide the style and content...",
+      "description": "Invented description 08: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": [
         "720p",
         "1080p"
@@ -425,7 +425,7 @@
       "hugging_face_id": null,
       "name": "ByteDance: Seedance 2.0",
       "created": 1776211362,
-      "description": "Seedance 2.0 is a video generation model from ByteDance. It supports text-to-video, image-to-video with first and last frame control, and multimodal reference-to-video. It is particularly strong at preserving character consistency,...",
+      "description": "Invented description 09: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": [
         "480p",
         "720p",
@@ -510,7 +510,7 @@
       "hugging_face_id": null,
       "name": "Alibaba: Wan 2.6",
       "created": 1774659190,
-      "description": "Alibaba's most advanced video generation model, supporting over 10 visual creation capabilities in a unified system. Wan 2.6 generates 1080p video at 24fps from text, images, reference videos, or audio,...",
+      "description": "Invented description 10: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": [
         "720p",
         "1080p"
@@ -557,7 +557,7 @@
       "hugging_face_id": null,
       "name": "ByteDance: Seedance 1.5 Pro",
       "created": 1774277608,
-      "description": "ByteDance's next-generation audio-visual generation model with a 4.5B parameter Dual-Branch Diffusion Transformer architecture. Seedance 1.5 Pro generates video and audio simultaneously in a single unified pass — eliminating the timing...",
+      "description": "Invented description 11: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": [
         "480p",
         "720p",
@@ -629,7 +629,7 @@
       "hugging_face_id": null,
       "name": "OpenAI: Sora 2 Pro",
       "created": 1774277521,
-      "description": "OpenAI's flagship video generation model, delivering production-quality video with physics-accurate motion, synchronized audio, and world-state persistence across shots. Sora 2 Pro follows intricate multi-shot instructions while maintaining consistent spatial relationships...",
+      "description": "Invented description 12: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": [
         "720p",
         "1080p"
@@ -672,7 +672,7 @@
       "hugging_face_id": null,
       "name": "Google: Veo 3.1",
       "created": 1774277148,
-      "description": "Google's state-of-the-art video generation model, built for maximum visual fidelity in final production cuts. Veo 3.1 generates high-quality 1080p video from text or image prompts with native synchronized audio —...",
+      "description": "Invented description 13: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": [
         "720p",
         "1080p",
@@ -723,7 +723,7 @@
       "hugging_face_id": null,
       "name": "Alibaba: HappyHorse 1.0",
       "created": 1782260324,
-      "description": "HappyHorse 1.0 is a video generation model from Alibaba. It generates short videos from a text prompt, a single starting image, or a set of reference images, with output up...",
+      "description": "Invented description 14: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": [
         "720p",
         "1080p"
@@ -787,7 +787,7 @@
       "hugging_face_id": null,
       "name": "Alibaba: HappyHorse 1.1",
       "created": 1782269643,
-      "description": "HappyHorse 1.1 is a video generation model from Alibaba. It generates short videos from a text prompt, a single starting image, or a set of reference images, with output up...",
+      "description": "Invented description 15: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": [
         "720p",
         "1080p"
@@ -851,7 +851,7 @@
       "hugging_face_id": null,
       "name": "ByteDance: Seedance 2.5",
       "created": 1786141253,
-      "description": "Seedance 2.5 is a video generation model from ByteDance. It is suited for long-form storytelling, multimodal reference-based generation, video editing, and video extension. It supports first-frame and first-and-last-frame control, up...",
+      "description": "Invented description 16: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": [
         "480p",
         "720p"
@@ -932,7 +932,7 @@
       "hugging_face_id": null,
       "name": "Black Forest Labs: FLUX.3 Video",
       "created": 1785858831,
-      "description": "FLUX.3 Video is a video generation model from Black Forest Labs. It supports text-to-video, image-guided generation with opening and closing keyframes, and video continuation workflows, making it suited for controlled...",
+      "description": "Invented description 17: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": [
         "720p",
         "1080p"
@@ -990,7 +990,7 @@
       "hugging_face_id": null,
       "name": "MiniMax: H3",
       "created": 1785366648,
-      "description": "MiniMax H3 is a lightweight, open-weights video generation model from MiniMax. It is designed for precise multimodal editing and controlled content generation, including instruction-guided edits, text and brand rendering, and...",
+      "description": "Invented description 18: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": [
         "2K"
       ],
@@ -1038,7 +1038,7 @@
       "hugging_face_id": null,
       "name": "Runway: Aleph 2.0",
       "created": 1785339484,
-      "description": "Runway Aleph 2.0 is an in-context video editing model from Runway. It applies text instructions and keyframe-guided edits across existing footage while preserving details that are not meant to change....",
+      "description": "Invented description 19: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": null,
       "supported_aspect_ratios": [
         "16:9",
@@ -1072,7 +1072,7 @@
       "hugging_face_id": null,
       "name": "Runway: Gen-4.5",
       "created": 1785339483,
-      "description": "Runway Gen-4.5 is a video generation model from Runway for text-to-video and image-to-video workflows. It is designed for cinematic scene creation with strong motion quality, visual fidelity, and prompt adherence....",
+      "description": "Invented description 20: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": [
         "720p"
       ],
@@ -1115,7 +1115,7 @@
       "hugging_face_id": null,
       "name": "SpaceXAI: Grok Imagine Video 1.5",
       "created": 1784548100,
-      "description": "Grok Imagine Video 1.5 is a video generation model from SpaceXAI. It creates videos from text prompts, with an optional starting image to guide the scene. It can direct subject...",
+      "description": "Invented description 21: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": [
         "480p",
         "720p",
@@ -1169,7 +1169,7 @@
       "hugging_face_id": null,
       "name": "SpaceXAI: Grok Imagine Video",
       "created": 1779117586,
-      "description": "Grok Imagine Video is SpaceXAI's fast, text-, image-, and reference-conditioned video generation model. It produces short videos (1–15 seconds, 24 fps) at 480p or 720p across seven aspect ratios -...",
+      "description": "Invented description 22: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": [
         "480p",
         "720p"
@@ -1236,7 +1236,7 @@
       "hugging_face_id": null,
       "name": "Black Forest Labs: FLUX Video Edit",
       "created": 1789073532,
-      "description": "FLUX Video Edit [fast] takes a source video and an edit prompt and returns a precisely edited video. Add, remove, or replace objects and characters, rebuild the setting, edit on-screen...",
+      "description": "Invented description 23: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": null,
       "supported_aspect_ratios": null,
       "supported_sizes": null,
@@ -1259,7 +1259,7 @@
       "hugging_face_id": null,
       "name": "MiniMax: H3 Max",
       "created": 1788313310,
-      "description": "MiniMax H3 Max is a video-generation model from MiniMax, jointly released with fal.ai. Derived through additional training from MiniMax H3, it is designed for faster text-to-video and image-to-video generation with...",
+      "description": "Invented description 24: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": [
         "768p",
         "480p"
@@ -1309,7 +1309,7 @@
       "hugging_face_id": null,
       "name": "Alibaba: Wan 3.0 Prime",
       "created": 1787863800,
-      "description": "Wan 3.0 Prime is a fast-mode variant of [Wan 3.0](https://openrouter.ai/alibaba/wan-3.0) from Alibaba. It supports text-to-video and first-frame image-to-video generation.",
+      "description": "Invented description 25: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": [
         "480p",
         "720p",
@@ -1374,7 +1374,7 @@
       "hugging_face_id": null,
       "name": "Alibaba: Wan 3.0",
       "created": 1787603856,
-      "description": "Wan 3.0 is a video generation model from Alibaba for text-to-video, image-to-video, and reference-guided video generation. It produces 480p, 720p, or 1080p video with durations from 2 to 30 seconds.",
+      "description": "Invented description 26: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": [
         "480p",
         "720p",
@@ -1439,7 +1439,7 @@
       "hugging_face_id": null,
       "name": "HeyGen: Avatar IV",
       "created": 1787595728,
-      "description": "HeyGen: Avatar IV is an image-to-video model that animates a single photo into an expressive, lip-synced talking-head video. Rather than only matching mouth shapes to words, it interprets the vocal...",
+      "description": "Invented description 27: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": [
         "720p",
         "1080p"
@@ -1477,7 +1477,7 @@
       "hugging_face_id": null,
       "name": "Black Forest Labs: FLUX Video Upscale",
       "created": 1787173919,
-      "description": "FLUX Video Upscale is a video upscaling model from Black Forest Labs. It enlarges a single source video by 1.5× to 3× while preserving its duration, with an optional prompt...",
+      "description": "Invented description 28: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": null,
       "supported_aspect_ratios": null,
       "supported_sizes": null,
@@ -1507,7 +1507,7 @@
       "hugging_face_id": null,
       "name": "ByteDance: Seedance 2.0 Mini",
       "created": 1786552600,
-      "description": "Seedance 2.0 Mini is a video generation model from ByteDance. It supports text-to-video, image-to-video with first and last frame control, and multimodal reference-to-video with image, video, and audio inputs. It...",
+      "description": "Invented description 29: a sample model that renders a short clip from a text prompt.",
       "supported_resolutions": [
         "480p",
         "720p"

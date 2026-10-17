@@ -124,26 +124,26 @@ def _faithful_turn2_history(r1_ulid: str, r2_ulid: str):
     msg[1] has native `tool_calls` (no markers); the continuation message carries
     both reasoning markers at its tail."""
     return [
-        {"role": "user", "content": "Please give me instructions for a relational systems map"},
+        {"role": "user", "content": "Please list the winter opening hours in the staff handbook"},
         {
             "role": "assistant",
-            "content": "Welcome. Let me look.",
+            "content": "Sure. I will check the handbook.",
             "tool_calls": [
-                {"id": "toolu_01T3", "type": "function",
+                {"id": "toolu_0001", "type": "function",
                  "function": {"name": "query_knowledge_files", "arguments": "{}"}},
-                {"id": "toolu_01Xc", "type": "function",
+                {"id": "toolu_0002", "type": "function",
                  "function": {"name": "query_knowledge_files", "arguments": "{}"}},
             ],
         },
-        {"role": "tool", "tool_call_id": "toolu_01T3", "content": "[{\"content\": \"...\"}]"},
-        {"role": "tool", "tool_call_id": "toolu_01Xc", "content": "[{\"content\": \"...\"}]"},
+        {"role": "tool", "tool_call_id": "toolu_0001", "content": "[{\"content\": \"...\"}]"},
+        {"role": "tool", "tool_call_id": "toolu_0002", "content": "[{\"content\": \"...\"}]"},
         {
             "role": "assistant",
             "message_id": "asst-final",
-            "content": "There's something important here.\n\n"
+            "content": "The handbook gives two sets of hours.\n\n"
                        + _serialize_marker(r1_ulid) + "\n\n" + _serialize_marker(r2_ulid),
         },
-        {"role": "user", "content": "I want a whole picture of the systems aliveness"},
+        {"role": "user", "content": "Now give me the whole list, summer hours included"},
     ]
 
 

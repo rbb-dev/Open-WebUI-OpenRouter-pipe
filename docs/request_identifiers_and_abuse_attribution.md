@@ -132,9 +132,9 @@ These examples show only the relevant identifier fields; request bodies vary dep
 {
   "model": "openrouter/...",
   "input": [...],
-  "user": "a3d0d2c1-7f49-4b6b-9a3b-9d3b2a54c2d1",
+  "user": "00000000-0000-4000-8000-000000000001",
   "metadata": {
-    "user_id": "a3d0d2c1-7f49-4b6b-9a3b-9d3b2a54c2d1"
+    "user_id": "00000000-0000-4000-8000-000000000001"
   }
 }
 ```
@@ -145,12 +145,12 @@ These examples show only the relevant identifier fields; request bodies vary dep
 {
   "model": "openrouter/...",
   "input": [...],
-  "user": "a3d0d2c1-7f49-4b6b-9a3b-9d3b2a54c2d1",
+  "user": "00000000-0000-4000-8000-000000000001",
   "metadata": {
-    "user_id": "a3d0d2c1-7f49-4b6b-9a3b-9d3b2a54c2d1",
-    "session_id": "0f6b31b0-8c9f-4c3b-a1e7-0d7d2c6b5a33",
-    "chat_id": "b52f9c2e-5c01-4c47-8a2e-7b4f8e9a1d00",
-    "message_id": "c0d9ad44-0d8b-4e6f-b6f3-8d6a9d1b2c3e"
+    "user_id": "00000000-0000-4000-8000-000000000001",
+    "session_id": "00000000-0000-4000-8000-000000000002",
+    "chat_id": "00000000-0000-4000-8000-000000000003",
+    "message_id": "00000000-0000-4000-8000-000000000004"
   }
 }
 ```

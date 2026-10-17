@@ -635,9 +635,9 @@ async def test_fusion_missing_analysis_emits_synthetic_analysis_over_socket(monk
 @pytest.mark.asyncio
 async def test_fusion_output_item_done_synthesizes_analysis_and_emits_sources(monkeypatch, pipe_instance_async):
     sources = [
-        {"url": "https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe",
-         "title": "rbb-dev/Open-WebUI-OpenRouter-pipe - GitHub"},
-        {"url": "https://docs.openwebui.com/", "title": "Connect a Provider"},
+        {"url": "https://repo.example.org/acme/widgets",
+         "title": "acme/widgets - Example Repo Host"},
+        {"url": "https://docs.example.org/", "title": "Getting Started"},
     ]
     events = [
         {"type": "response.created", "response": {"model": "anthropic/claude-opus"}},
@@ -679,14 +679,14 @@ async def test_fusion_output_item_done_synthesizes_analysis_and_emits_sources(mo
     urls = {e["data"]["source"]["url"] for e in source_events}
     assert urls == {s["url"] for s in sources}
     docs = " ".join(d for e in source_events for d in e["data"]["document"])
-    assert "rbb-dev/Open-WebUI-OpenRouter-pipe - GitHub" in docs
+    assert "acme/widgets - Example Repo Host" in docs
 
 
 @pytest.mark.asyncio
 async def test_fusion_sources_dedup_and_persist_to_sources_field(monkeypatch, pipe_instance_async):
     import open_webui_openrouter_pipe.streaming.streaming_core as sc
 
-    dup_url = "https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe"
+    dup_url = "https://repo.example.org/acme/widgets"
     events = [
         {"type": "response.created", "response": {"model": "anthropic/claude-opus"}},
         {"type": "response.output_item.added", "output_index": 0,
@@ -697,7 +697,7 @@ async def test_fusion_sources_dedup_and_persist_to_sources_field(monkeypatch, pi
          "item": {"type": "openrouter:fusion", "status": "completed",
                   "sources": [
                       {"url": dup_url, "title": "GitHub repo"},
-                      {"url": "https://docs.openwebui.com/", "title": "Docs"},
+                      {"url": "https://docs.example.org/", "title": "Docs"},
                       {"url": dup_url, "title": "GitHub repo (again)"},
                   ]}},
         {"type": "response.output_item.added", "output_index": 1, "item": {"type": "message"}},
@@ -735,7 +735,7 @@ async def test_fusion_sources_dedup_and_persist_to_sources_field(monkeypatch, pi
 
     source_urls = [e["data"]["source"]["url"] for e in _source_events(emitted)]
     assert source_urls.count(dup_url) == 1, "duplicate source URL must be emitted once"
-    assert set(source_urls) == {dup_url, "https://docs.openwebui.com/"}
+    assert set(source_urls) == {dup_url, "https://docs.example.org/"}
 
     sources_payload = next(
         (p["sources"] for p in persisted if isinstance(p.get("sources"), list) and p["sources"]),
@@ -743,7 +743,7 @@ async def test_fusion_sources_dedup_and_persist_to_sources_field(monkeypatch, pi
     )
     assert sources_payload is not None, "fusion sources must persist to the message 'sources' field"
     persisted_urls = {s["source"]["url"] for s in sources_payload}
-    assert persisted_urls == {dup_url, "https://docs.openwebui.com/"}
+    assert persisted_urls == {dup_url, "https://docs.example.org/"}
 
 
 @pytest.mark.asyncio

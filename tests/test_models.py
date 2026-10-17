@@ -158,7 +158,7 @@ def test_build_icon_mapping_favicon_from_base_url(pipe_instance) -> None:
                 "slug": "test/model",
                 "endpoint": {
                     "provider_info": {
-                        "baseUrl": "https://api.provider.com/v1",
+                        "baseUrl": "https://api.provider.example/v1",
                     }
                 },
             }
@@ -167,7 +167,7 @@ def test_build_icon_mapping_favicon_from_base_url(pipe_instance) -> None:
     icon_mapping = pipe._ensure_catalog_manager()._build_icon_mapping(frontend_data)
     assert "test/model" in icon_mapping
     assert "gstatic.com/faviconV2" in icon_mapping["test/model"]
-    assert "api.provider.com" in icon_mapping["test/model"]
+    assert "api.provider.example" in icon_mapping["test/model"]
 
 
 def test_build_icon_mapping_favicon_from_status_page_url(pipe_instance) -> None:
@@ -179,7 +179,7 @@ def test_build_icon_mapping_favicon_from_status_page_url(pipe_instance) -> None:
                 "slug": "test/model",
                 "endpoint": {
                     "provider_info": {
-                        "statusPageUrl": "https://status.provider.com",
+                        "statusPageUrl": "https://status.provider.example",
                     }
                 },
             }
@@ -187,7 +187,7 @@ def test_build_icon_mapping_favicon_from_status_page_url(pipe_instance) -> None:
     }
     icon_mapping = pipe._ensure_catalog_manager()._build_icon_mapping(frontend_data)
     assert "test/model" in icon_mapping
-    assert "status.provider.com" in icon_mapping["test/model"]
+    assert "status.provider.example" in icon_mapping["test/model"]
 
 
 def test_build_icon_mapping_favicon_from_data_policy_urls(pipe_instance) -> None:
@@ -241,7 +241,7 @@ def test_build_icon_mapping_skips_invalid_entries(pipe_instance) -> None:
             {"slug": 123},
             {
                 "slug": "valid/model",
-                "endpoint": {"provider_info": {"icon": {"url": "https://x.com/i.png"}}},
+                "endpoint": {"provider_info": {"icon": {"url": "https://x.example/i.png"}}},
             },
         ]
     }
@@ -2216,7 +2216,7 @@ def test_build_icon_mapping_success(pipe_instance):
                             "url": "/images/icons/OpenAI.svg",
                             "className": "something",
                         },
-                        "baseUrl": "https://api.openai.com/v1",
+                        "baseUrl": "https://api.provider.example/v1",
                     }
                 },
             },
@@ -2328,7 +2328,7 @@ async def test_sync_model_metadata_prefixes_pipe_id_and_prefers_icon_mapping(pip
                     "endpoint": {
                         "provider_info": {
                             "icon": {"url": "/images/icons/OpenAI.svg"},
-                            "baseUrl": "https://api.openai.com/v1",
+                            "baseUrl": "https://api.provider.example/v1",
                         }
                     },
                 }

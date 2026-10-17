@@ -8,9 +8,272 @@ from open_webui_openrouter_pipe.tools.citation_harvester import (
     harvest_tool_citations,
 )
 
-EXA_SEARCH_FIXTURE = "Title: Consumer Price Index, Australia, May 2026\nURL: https://www.abs.gov.au/statistics/economy/price-indexes-and-inflation/consumer-price-index-australia/latest-release\nPublished: 2026-06-24T00:00:00.000Z\nAuthor: N/A\nHighlights:\nConsumer Price Index, Australia, May 2026 | Australian Bureau of Statistics\n...\nConsumer Price Index, Australia\n...\nThe Consumer Price Index (CPI) measures household inflation and includes statistics about price change for categories of household expenditure.\n...\nMay 2026\n...\n24/06/2026\n...\n24/06/2026 11:30am AEST\n...\n## Key statistics\n...\nIn the 12 months to May 2026:\n...\n- The Consumer Price Index (CPI) rose 4.0%, down from 4.2% in the 12 months to April 2026.\n- The largest contributors to annual inflation were Housing (+6.5%), Food and non-alcoholic beverages (+3.3%) and Transport (+3.3%).\n- Trimmed mean inflation was 3.6%, up from 3.4% in the 12 months to April 2026.\n...\nIn the month of May, the CPI fell 0.7% in original terms and 0.1% in seasonally adjusted terms.\n...\n| May-26\n...\n### CPI annual inflation fell, while Trimmed mean inflation rose\n...\nCPI annual inflation was 4.0 per cent in the 12 months to May 2026, down from 4.2 per cent in the 12 months to April 2026.\n...\nTrimmed mean inflation was 3.6 per cent in the 12 months to May 2026, up from 3.4 per cent in the 12 months to April 2026.\n...\n12 months to May 2026\n\n---\n\nTitle: CPI rose 4.0% in the year to May 2026\nURL: https://www.abs.gov.au/media-centre/media-releases/cpi-rose-40-year-may-2026\nPublished: 2026-06-24T00:00:00.000Z\nAuthor: N/A\nHighlights:\nCPI rose 4.0% in the year to May 2026 | Australian Bureau of Statistics\n...\n# CPI rose 4.0% in the year to May 2026\n...\nThe Consumer Price Index (CPI) rose 4.0 per cent in the 12 months to May 2026, according to the latest data from the Australian Bureau of Statistics (ABS).\n...\nRachael McCririck, ABS head of prices statistics, said: ‘Annual CPI inflation in May was 4.0 per cent, down from 4.2 per cent in the year to April.’\n...\nThe largest contributor to annual inflation in May was Housing, which rose by 6.5 per cent. This was followed by a 3.3 per cent rise in Food and non-alcoholic beverages and a 3.3 per cent rise in Transport.\n...\n| | Change\n...\nprevious month (%) | Annual change (%) |\n...\n| --- | --- | --- |\n|\n...\n0.2 | |\n...\n| Jun-2\n...\n0.4 | |\n...\n| Jul-24 | 0.3 | |\n...\n| Aug-24 | -0.3 | |\n...\n| Sep-24 | 0.1 | |\n| Oct-24 | -0.2 | |\n| Nov-24 | 0.4 | |\n| Dec-24 | 0.7 | |\n| Jan-25 | 0.3 | |\n| Feb-25 | 0.1 | |\n| Mar-25 | 0.3 | |\n| Apr-25 | 0.7 | 2.4 |\n| May-25 | -0.5 | 2.1 |\n| Jun-25 | 0.1 | 1.9 |\n| Jul-25 | 1.3 | 3.0 |\n| Aug-25 | -0.1 | 3.2 |\n| Sep-25 | 0.5 | 3.6 |\n| Oct-25 | 0.0 | 3.8 |\n| Nov-25 | 0.0 | 3.4 |\n| Dec-25 | 1.0 | 3.8 |\n| Jan-26 | 0.4 | 3.8 |\n| Feb-26 | 0.0 | 3.7 |\n| Mar-26 | 1.1 | 4.6 |\n| Apr-26 | 0.4 | 4.2 |\n| May-26 | -0.7 | 4.0 |\n...\n‘Trimmed mean annual inflation was 3.6 per cent in the 12 months to May 2026, up from 3.4 per cent in the 12 months to April 2026,’ Ms McCririck said.\n...\nAnnual Housing inflation was 6.5 per cent in the 12 months to May. This reflects rising costs for Electricity, New dwellings and Rents.\n...\nAnnual inflation for Food and non-alcoholic beverages was 3.3 per cent, up from 2.8 per cent in April. Food inflation was driven by higher prices for Meals out and takeaway, which rose by 4.0 per cent in the 12 months to May 2026.\n...\n‘Price growth for Transport eased from what we saw in April, rising 3.3 per cent in annual terms, down from a 6.6 per cent rise in the 12 months to April 2026.\n\n---\n\nTitle: Consumer Price Index, Australia | Australian Bureau of Statistics\nURL: https://www.abs.gov.au/statistics/economy/price-indexes-and-inflation/consumer-price-index-australia/sort\nPublished: N/A\nAuthor: N/A\nHighlights:\nConsumer Price Index, Australia | Australian Bureau of Statistics\n...\nRelease date and time 24 June 2026 Release date and time: 24/06/2026In the 12 months to May 2026:The Consumer Price Index (CPI) rose 4.0%, down from 4.2% in the 12 months to April 2026.The largest contributors to annual inflation were Housing (+6.5%), Food and non-alcoholic beverages (+3.3%) and Transport (+3.3%).Trimmed mean inflation was 3.6%, up from 3.4% in the 12 months to April 2026.In the month of May, the CPI fell 0.7% in original terms and 0.1% in seasonally adjusted terms.Reference periodMay 2026\n\n---\n\nTitle: Consumer Price Index, Australia\nURL: https://www.abs.gov.au/statistics/economy/price-indexes-and-inflation/consumer-price-index-australia\nPublished: N/A\nAuthor: N/A\nHighlights:\nConsumer Price Index, Australia | Australian Bureau of Statistics\n...\nConsumer Price Index, Australia, May 2026 Latest release\n\n---\n\nTitle: Consumer Price Index, Australia methodology, May 2026 | Australian Bureau of Statistics\nURL: https://www.abs.gov.au/methodologies/consumer-price-index-australia-methodology/may-2026\nPublished: N/A\nAuthor: N/A\nHighlights:\nConsumer Price Index, Australia methodology, May 2026 | Australian Bureau of Statistics\n...\n# Consumer Price Index, Australia methodology\n...\nMay 2026\n...\n24/06/2026\n...\n- Consumer Price Index, Australia methodology Reference Period\n...\n2026\n...\nConsumer Price Index\n...\n2026\n...\nConsumer Price Index\n...\n2026\n...\nRelease date and time\n...\n24/06/2026 11:30am AEST\n...\nThe CPI is a general measure of price change for goods and services purchased by Australian households.\n...\n## Data release\n...\n- The Consumer Price Index is released monthly, on the last Wednesday of each month (for the previous month's reference period), except the December publication, which is released in early January. In most cases, the CPI is released four weeks after the end of the reference month.\n...\n- Quarterly tables will be included in every monthly\n...\ngoing forward. New quarterly data will be available in every third monthly publication (i.e., March, June\n...\n- Monthly and quarterly CPI data have an index reference period of September 2025 = 100.00. The quarterly data was re-referenced for the December 2025 quarter. Prior to this, the index reference period was 2011-12 = 100.0.\n- Release dates are published under the Future releases section of the publication and in the ABS Release Calendar.\n\n---\n\nTitle: Headline inflation eases, but underlying inflation highest since 2024 - ABC News\nURL: https://www.abc.net.au/news/2026-06-24/australia-cpi-inflation-may-2026-bureau-of-statistics/106835946\nPublished: 2026-06-24T01:51:46.000Z\nAuthor: N/A\nHighlights:\nHeadline inflation eased in May, but underlying inflation strengthened again.\n...\nTrimmed mean inflation, the Reserve Bank's preferred measure of underlying inflation, increased from an annual pace of 3.4 per cent to 3.6 per cent.\n...\nHeadline inflation eased in May, with consumer prices increasing at an annual pace of 4 per cent, down from 4.2 per cent in April.\n...\nBut trimmed mean inflation, the Reserve Bank's preferred measure of underlying inflation, still increased to 3.6 per cent in May, up from 3.4 per cent.\n...\nAnd the Bureau of Statistics says underlying inflation is now running at its highest annual pace since the September quarter of 2024.\n\n---\n\nTitle: Inflation lying in wait to strike another rate blow\nURL: https://aapnews.aap.com.au/news/inflation-tipped-to-rise-despite-falling-fuel-prices\nPublished: 2026-06-24T05:16:46.000Z\nAuthor: N/A\nHighlights:\nA mixed consumer price report, released by the Australian Bureau of Statistics on Wednesday, was softer and stronger than forecasters had predicted.\n...\nThe core inflation measure, which strips out volatile items and is more closely watched by the RBA, edged up to 3.6 per cent in May, from 3.4 per cent a month earlier.\n...\nHeadline inflation fell to four per cent annually, from 4.2 per cent in April.\n...\n9 per cent\n...\nCPI rose 4.0% in the year to May 2026Find out more https://t.co/Vq5I5szNw1\n...\n— Australian Bureau of Statistics (@ABSStats) June 24, 2026\n...\nBut ANZ Bank economists Madeline Dunk and Adam Boyton said the report suggested the trimmed mean was tracking to 3.7 per cent for the June quarter, which would be a touch lower than the RBA's forecast of 3.8 per cent.\n\n---\n\nTitle: Australia CPI Inflation Drops to 4.0% in May 2026, Housing Costs Lead\nURL: https://www.indexbox.io/blog/australia-cpi-inflation-drops-to-40-in-may-2026-housing-costs-lead/\nPublished: 2026-06-24T08:58:54.000Z\nAuthor: N/A\nHighlights:\nAustralia CPI Inflation May 2026: Annual Rate Falls to 4.0%, Housing Up 6.5% - News and Statistics - IndexBox\n...\nAnnual inflation falls to 4.0% in May 2026\n...\nat 6.5% annual rise\n...\n# Australia CPI Inflation Drops to 4.0% in May 2026, Housing Costs Lead\n...\nThe Australian Bureau of Statistics (ABS) has released the latest Consumer Price Index(CPI) data, which measures household inflation by tracking price changes across various expenditure categories.\n...\nAccording to the ABS, annual CPI inflation stood at 4.0 percent in the 12 months to May 2026, a decline from the 4.2 percent recorded in the 12 months to April 2026. The largest contributors to this annual inflation were Housing, which rose 6.5 percent, followed by Food and non-alcoholic beverages and Transport, each increasing 3.3 percent.\n...\nThe trimmed mean inflation, a measure of underlying inflation, was 3.6 percent for the 12 months to May 2026, up from 3.4 percent in the previous period. On a monthly basis, the CPI fell 0.7 percent in original terms and 0.1 percent in seasonally adjusted terms for May.\n...\nAnnual goods inflation was 4.2 percent in the year to May 2026, down from 4.7 percent in the year to April 2026. Key contributors included Electricity, which surged 21.1 percent, and New dwellings, which rose 5.6 percent. Automotive fuel increased 7.7 percent over the same period, a significant slowdown from the 18.6 percent rise recorded in the 12 months to April 2026.\n...\nThe Housing group saw a 6.5 percent annual increase, accelerating from 6.3 percent in the 12 months to April 2026. Electricity costs rose 21.1 percent, primarily due to the conclusion of Commonwealth and State Government electricity rebates. Excluding the impact of those rebates, electricity prices rose 3.9 percent over the year. New dwelling prices increased 5.6 percent, driven by project home builders raising base prices to cover higher labour and material costs. Rental prices rose 3.6 percent, reflecting sustained low vacancy rates in most capital cities.\n...\nthat from February 202\n...\n, the CPI\n...\nbe published on the fourth Wednesday of each month instead of the final Wednesday, following a review that determined an earlier release would not affect data quality. Additionally, a mid-2026 weight update was considered but deemed unnecessary after monitoring household spending patterns; the CPI weights will next be updated for January\n...\n2027, scheduled for release on 24 February 2027.\n\n---\n\nTitle: CPI rose 4.0% in the year to May 2026 | Australian Bureau of Statistics\nURL: https://www.linkedin.com/posts/absstats_cpi-rose-40-in-the-year-to-may-2026-activity-7475397310814826496-m9Yw\nPublished: 2026-06-24T00:00:00.000Z\nAuthor: Australian Bureau of Statistics\nHighlights:\n# CPI rose 4.0% in the year to May 2026 | Australian Bureau of Statistics · LinkedIn · 2026-06-24\n...\nCPI rose 4.0% in the year to May 2026\n\n---\n\nTitle: Release schedule | Australian Bureau of Statistics\nURL: https://www.abs.gov.au/about/key-priorities/big-data-timely-insights-phase-2/complete-monthly-measure-cpi/release-schedule\nPublished: N/A\nAuthor: N/A\nHighlights:\ncomplete Monthly CPI on\n...\nThe Monthly CPI will be published on the last Wednesday of the month, following the end of the reference month. The exception to this will be November, which will be released on the 7 January 2026 owing to the Christmas / New Year holiday period. The release will be published on the ABS website in a new publication titled Consumer Price Index, Australia and will be available on the Price indexes and inflation page. Table 1 outlines the release schedule for six months following the initial release.\n...\n| Table 1 Consumer Price Index future releases |\n| --- |\n| Reference Month | Release Date |\n| Consumer Price Index, Australia, November 2025 | 07/01/2026 |\n| Consumer Price Index, Australia, December 2025 | 28/01/2026 |\n| Consumer Price Index, Australia, January 2026 | 25/02/2026 |\n| Consumer Price Index, Australia, February 2026 | 25/03/2026 |\n| Consumer Price Index, Australia, March 2026 | 29/04/2026 |\n| Consumer Price Index, Australia, April 2026 | 27/05/2026 |\n...\nThe transition to the complete Monthly CPI represents a significant change to the ABS systems, data and business processes. The first six months of publication will be used to bed in the new systems, resolve any issues, and assess whether the release schedule can be brought forward without compromising statistical quality. The ABS will review the publication schedule by May 2026."
+EXA_SEARCH_FIXTURE = """Title: Winter timetable 2031, Example Ferries
+URL: https://ferries.example.org/timetables/winter-2031/latest
+Published: 2031-10-20T00:00:00.000Z
+Author: N/A
+Highlights:
+Winter timetable 2031 | Example Ferries
+...
+Example Ferries
+...
+Sailing times for the Skerry Point, Tarn Quay and Mainland routes, valid from the first Monday in November.
+...
+Valid from 03/11/2031
+...
+Last updated 31/10/2031 4:45pm
+...
+## What has changed
+...
+From 3 November 2031:
+...
+- The 6:10am Tarn Quay departure now leaves at 6:25am and calls at Pier Four.
+- Skerry Point gains two evening sailings, at 7:40pm and 9:05pm, on Fridays and Saturdays.
+- The foot-passenger crossing to the mainland takes 35 minutes instead of 40.
+...
+Vehicle bookings for the winter season open on 15 October, and bicycles travel free on every sailing.
+...
+### Quieter mornings, busier weekends
+...
+Weekday morning sailings carry about a third fewer passengers between November and February, so two of them are merged.
+...
+Weekend sailings to Skerry Point are full most weeks, which is why the extra evening crossings were added.
+...
+Timetable valid until 28 February 2032
 
-EXA_FETCH_FIXTURE = "# Climate change\nURL: https://www.who.int/news-room/fact-sheets/detail/climate-change-and-health\n\nClimate change Skip to main content\n\nWHO /A. Craggs\n\n© Credits\n\n# Climate change\n\n## Key facts\n\n- Climate change is directly contributing to humanitarian emergencies from heatwaves, wildfires, floods, tropical storms and hurricanes and they are increasing in scale, frequency and intensity.\n- Research shows that 3.6 billion people already live in areas highly susceptible to climate change. Between 2030 and 2050, climate change is expected to cause approximately 250 000 additional deaths per year, from undernutrition, malaria, diarrhoea and heat stress alone.\n- The direct damage costs to health (excluding costs in health-determining sectors such as agriculture and water and sanitation) is estimated to be between US$ 2–4 billion per year by 2030.\n- Areas with weak health infrastructure – mostly in developing countries – will be the least able to cope without assistance to prepare and respond.\n- Reducing emissions of greenhouse gases through better transport, food and energy use choices can result in very large gains for health, particularly through reduced air pollution.\n\n---\n\n## Overview\n\nClimate change presents a fundamental threat to human health. It affects the physical environment as well as all aspects of both natural and human systems – including social and economic conditions and the functioning of health systems. It is therefore a threat multiplier, undermining and potentially reversing decades of health progress. As climatic conditions change, more frequent and intensifying weather and climate events are observed, including storms, extreme heat, floods, droughts and wildfires. These weather and climate hazards affect health both directly and indirectly, increasing the risk of deaths, noncommunicable diseases, the emergence and spread of infectious diseases, and health emergencies.\n\nClimate change is also having an impact on our health workforce and infrastructure, reducing capacity to provide universal health coverage (UHC). More fundamentally, climate shocks and growing stresses such as changing temperature and precipitation patterns, drought, floods and rising sea levels degrade the environmental and social determinants of physical and mental health. All aspects of health are affected by climate change, from clean air, water and soil to food systems and livelihoods. Further delay in tackling climate change will increase health risks, undermine decades of improvements in global health, and contravene our collective commitments to ensure the human right to health for all.\n\n## Climate change impacts on health\n\nThe Intergovernmental Panel on Climate Change's (IPCC) Sixth Assessment Report (AR6) concluded that climate risks are appearing faster and will become more severe sooner than previously expected, and it will be harder to adapt with increased global heating.\n\nIt further reveals that 3.6 billion people already live in areas highly susceptible to climate change. Despite contributing minimally to global emissions, low-income countries and"
+---
+
+Title: Example Ferries adds evening sailings to Skerry Point from 3 November
+URL: https://ferries.example.org/media/evening-sailings-skerry-point
+Published: 2031-10-20T00:00:00.000Z
+Author: N/A
+Highlights:
+Example Ferries adds evening sailings to Skerry Point from 3 November | Example Ferries
+...
+# Example Ferries adds evening sailings to Skerry Point from 3 November
+...
+Example Ferries will run two extra evening crossings to Skerry Point on Fridays and Saturdays, the company announced on Monday.
+...
+Tamsin Hartnoll-Vey, head of passenger services, said: ‘Our Friday and Saturday sailings have been full for most of the year, and the new departures give islanders a later way home.’
+...
+The new departures leave Kelpmouth at 7:40pm and 9:05pm. The 6:10am service to Tarn Quay moves to 6:25am and now calls at Pier Four.
+...
+| | Departs
+...
+Kelpmouth | Arrives
+...
+| --- | --- | --- |
+|
+...
+Skerry Point | |
+...
+| Fri
+| Fri 7:40pm | 8:20pm | |
+| Fri 9:05pm | 9:45pm | |
+| Sat 7:40pm | 8:20pm | |
+| Sat 9:05pm | 9:45pm | |
+...
+‘We will review the extra sailings after the winter season, and keep them if they stay busy,’ Ms Hartnoll-Vey said.
+...
+Bookings for the new sailings open on 27 October at the Example Ferries ticket office and online.
+
+---
+
+Title: Winter timetable | Example Ferries
+URL: https://ferries.example.org/timetables/winter-2031/summary
+Published: N/A
+Author: N/A
+Highlights:
+Winter timetable | Example Ferries
+...
+Valid from 3 November 2031Last updated 31 October 2031Skerry Point: 7:40pm and 9:05pm on Fridays and SaturdaysTarn Quay: 6:25am departure now calls at Pier FourMainland crossing: 35 minutes for foot passengersBicycles travel free on every sailing
+
+---
+
+Title: Timetables
+URL: https://ferries.example.org/timetables
+Published: N/A
+Author: N/A
+Highlights:
+Timetables | Example Ferries
+...
+Winter timetable 2031 Latest version
+
+---
+
+Title: Terms of travel, winter 2031 | Example Ferries
+URL: https://ferries.example.org/information/terms-of-travel/winter-2031
+Published: N/A
+Author: N/A
+Highlights:
+Terms of travel, winter 2031 | Example Ferries
+...
+# Terms of travel
+...
+Winter 2031
+...
+Valid from 03/11/2031
+...
+- Terms of travel Reference
+...
+Foot passengers
+...
+Vehicles
+...
+Bicycles
+...
+Last updated
+...
+31/10/2031 4:45pm
+...
+These terms apply to every sailing operated by Example Ferries between November 2031 and February 2032.
+...
+## Boarding
+...
+- Foot passengers should arrive at the quay at least ten minutes before departure. Vehicles should arrive twenty minutes before departure, and a booked space is released if the vehicle has not checked in by then.
+...
+- Bookings can be changed up to two hours before departure at no charge.
+...
+- Bicycles travel free and do not need a booking, but space on the car deck is limited
+...
+and may be refused on busy sailings. Guide dogs and assistance animals
+...
+- Sailings may be delayed or cancelled in high winds. Updates are posted on the sailing status page and at each quay.
+- Refund requests are handled by the ticket office under the Refunds section of these terms.
+
+---
+
+Title: Evening ferries return to Skerry Point - The Example Courier
+URL: https://news.example.net/local/2031-10-20/evening-ferries-return-to-skerry-point/1000001
+Published: 2031-10-20T01:51:46.000Z
+Author: N/A
+Highlights:
+Islanders will be able to catch a ferry home after the theatre again this winter.
+...
+Example Ferries has confirmed two extra crossings to Skerry Point on Fridays and Saturdays, leaving Kelpmouth at 7:40pm and 9:05pm.
+...
+The evening service stopped three winters ago after a drop in passenger numbers.
+...
+But the company says weekend sailings have been full for months, and the island council had pressed for later departures.
+...
+The new crossings begin on 3 November and will be reviewed in March.
+
+---
+
+Title: Island commuters welcome later ferries
+URL: https://wire.example.com/news/island-commuters-welcome-later-ferries
+Published: 2031-10-20T05:16:46.000Z
+Author: N/A
+Highlights:
+Passengers on the Skerry Point route said the new evening sailings would change how they plan their weekends.
+...
+The extra crossings, announced by Example Ferries on Monday, were requested by the island council after a petition gathered more than two thousand signatures.
+...
+Fares on the new sailings will match the standard weekend fare.
+...
+Two evening ferries to Skerry Point from 3 November. Details here https://social.example.net/p/aB3dE9
+...
+— Example Ferries (@ferries@social.example.net) October 20, 2031
+...
+But transport analysts Corvin Ashdown-Lyle and Odalys Fenwick-Marsh said the extra sailings were unlikely to be enough on their own, with Saturday demand expected to stay above capacity until the larger vessel arrives next year.
+
+---
+
+Title: Winter Ferry Changes: What Skerry Point Commuters Need to Know
+URL: https://commuter.example.org/blog/winter-ferry-changes-what-skerry-point-commuters-need-to-know/
+Published: 2031-10-20T08:58:54.000Z
+Author: N/A
+Highlights:
+Winter Ferry Changes: What Skerry Point Commuters Need to Know - Example Commuter Notes
+...
+What changes on 3 November
+...
+6:25am departure
+...
+# Winter Ferry Changes: What Skerry Point Commuters Need to Know
+...
+Example Ferries has published its winter timetable, and a few small changes will affect anyone who crosses to Skerry Point or Tarn Quay during the week.
+...
+The biggest change is on Friday and Saturday evenings, when two extra departures leave Kelpmouth at 7:40pm and 9:05pm. The return legs leave Skerry Point at 8:30pm and 9:55pm, so a late dinner on the island is now possible without booking a room.
+...
+The early Tarn Quay service now leaves at 6:25am rather than 6:10am and stops at Pier Four, which shortens the walk for anyone working on the east side of the harbour. The foot-passenger crossing to the mainland has been trimmed from 40 to 35 minutes, thanks to a new docking procedure at the quay.
+...
+Vehicle bookings are open now, and the company advises booking at least a week ahead for Saturday departures. Bicycles still travel free, though space on the car deck is limited and the crew can refuse them on busy sailings.
+...
+Not everything is better. The mid-morning Tarn Quay sailing on weekdays has been merged with the one before it, so there is now a gap of almost three hours around lunchtime. If that suits your day, nothing changes
+...
+, but anyone who relied on the old departure will need to
+...
+plan around it. The timetable is valid until 28 February 2032, and the company will publish the spring changes in January 2032.
+
+---
+
+Title: Two evening ferries to Skerry Point from 3 November | Example Ferries
+URL: https://social.example.net/posts/example-ferries_two-evening-ferries-to-skerry-point-from-3-november-activity-1000000000000000001-aB1c
+Published: 2031-10-20T00:00:00.000Z
+Author: Example Ferries
+Highlights:
+# Two evening ferries to Skerry Point from 3 November | Example Ferries · Example Social · 2031-10-20
+...
+Two evening ferries to Skerry Point from 3 November
+
+---
+
+Title: Booking calendar | Example Ferries
+URL: https://ferries.example.org/information/booking/calendar
+Published: N/A
+Author: N/A
+Highlights:
+booking calendar for the winter season
+...
+Bookings for each month of the winter season open on the first working day of the previous month. The exception to this will be December, which opens on 27 October to allow for the festive period. Bookings are made through the Example Ferries website and ticket office, and the calendar below shows when each month opens.
+...
+| Table 1 Booking opening dates |
+| --- |
+| Sailing month | Bookings open |
+| November 2031 | 15/10/2031 |
+| December 2031 | 27/10/2031 |
+| January 2032 | 01/12/2031 |
+| February 2032 | 05/01/2032 |
+| March 2032 | 01/02/2032 |
+| April 2032 | 01/03/2032 |
+...
+The booking system will be updated at the start of the winter season to show live vehicle space. The first six weeks will be used to bed in the new system and resolve any issues, and the calendar may change if demand requires it. Example Ferries will review the calendar by March 2032."""
+
+EXA_FETCH_FIXTURE = """# Skerry Point nature reserve
+URL: https://visit.example.org/places/skerry-point-nature-reserve
+
+Skerry Point nature reserve Skip to main content
+
+Photo: Example Archive / T. Hartnoll
+
+© Credits
+
+# Skerry Point nature reserve
+
+## Key facts
+
+- The reserve covers 340 hectares of dune, heath and saltmarsh on the northern tip of the island.
+- Entry is free, and the visitor centre is open from 9am to 4pm between April and October.
+- Seals haul out on the east beach from late autumn, and visitors are asked to keep at least 50 metres away from them.
+- Dogs must be kept on a lead at all times between March and August, when the ground-nesting birds are raising their young.
+- Two walking routes, one of 3 km and one of 8 km, start from the car park at Kelpmouth. The shorter route is suitable for pushchairs in dry weather.
+
+---
+
+## Overview
+
+Skerry Point is the most northerly stretch of the island and the last place on it where the old coastal heath survives. The reserve was set up to protect that heath and the saltmarsh behind it, and it is managed jointly by the island council and a group of local volunteers who run the visitor centre, mend the boardwalks and count the birds each spring.
+
+The landscape changes a great deal over the year. In April the dunes are covered in violets and the first terns arrive from the south. By midsummer the heath is purple with heather and the marsh is loud with wading birds. Autumn brings the seals and the geese, and in winter the reserve is often empty except for the wind, which makes it a good place for walkers who like to be alone.
+
+## Getting there
+
+The reserve is a forty-minute drive from the harbour at Kelpmouth. There is no bus service, but the Example Ferries evening sailings on Fridays and Saturdays connect with a taxi that can be booked at the quay. The car park at the trailhead holds about thirty cars and fills early on summer weekends, so visitors are encouraged to arrive before ten in the morning or after two in the afternoon.
+
+## Wildlife
+
+More than ninety species of bird have been recorded on the reserve since the volunteers began keeping a register. The most important are the ground-nesting terns, which lay their eggs in shallow scrapes on the shingle and are easily disturbed. The nesting areas are marked with rope and signs from March, and the volunteers ask that visitors stay on the marked paths and out of the roped areas. Dogs, even well-behaved ones, are the single largest cause of failed nests, which is why the lead rule is"""
 
 
 def test_builtin_set_contents():
@@ -25,8 +288,8 @@ def test_exa_search_yields_unique_url_sources_with_titles():
     urls = [r[0] for r in results]
     assert len(set(urls)) == 10
     assert all(u.startswith("http") for u in urls)
-    assert results[0][1] == "Consumer Price Index, Australia, May 2026"
-    assert results[0][0] == "https://www.abs.gov.au/statistics/economy/price-indexes-and-inflation/consumer-price-index-australia/latest-release"
+    assert results[0][1] == "Winter timetable 2031, Example Ferries"
+    assert results[0][0] == "https://ferries.example.org/timetables/winter-2031/latest"
 
 
 def test_exa_search_dashes_in_highlights_do_not_oversplit():
@@ -53,8 +316,8 @@ def test_exa_fetch_header_url_single_source():
     results = harvest_tool_citations(EXA_FETCH_FIXTURE)
     assert len(results) == 1
     url, title, snippet = results[0]
-    assert url == "https://www.who.int/news-room/fact-sheets/detail/climate-change-and-health"
-    assert title == "Climate change"
+    assert url == "https://visit.example.org/places/skerry-point-nature-reserve"
+    assert title == "Skerry Point nature reserve"
     assert snippet
 
 

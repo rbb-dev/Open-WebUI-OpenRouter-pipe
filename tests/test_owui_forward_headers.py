@@ -109,7 +109,7 @@ def test_none_user_is_noop(enabled):
 
 
 def test_dict_user_is_noop_no_exception(enabled):
-    dict_user = {"id": "uuid-123", "email": "a@b.com", "name": "Alice", "role": "user"}
+    dict_user = {"id": "uuid-123", "email": "a@example.com", "name": "Alice", "role": "user"}
     out = config._apply_owui_forward_user_headers({"Authorization": "Bearer x"}, dict_user, chat_id="c1")
     assert out == {"Authorization": "Bearer x"}
 

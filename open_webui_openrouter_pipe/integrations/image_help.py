@@ -360,11 +360,8 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Recraft's typography champion — the only AI image model that can "
             "render long-form text (full sentences and paragraphs) reliably AND "
             "place text at exact positions inside the image. 20B parameters, "
-            "released Oct 2024, held #1 on the Artificial Analysis benchmark for "
-            "5+ consecutive months at launch (beating Midjourney/DALL-E/FLUX). "
-            "Used in production by Shopify and Salesforce. Pure-image-only at ~1K "
-            "resolution. Best for posters, signage, packaging, marketing assets "
-            "with embedded copy."
+            "released Oct 2024. Pure-image-only at ~1K resolution. Best for "
+            "posters, signage, packaging, marketing assets with embedded copy."
         ),
         "tips_and_pitfalls": [
             "PURE-image-only — does NOT output text in chat.",
@@ -379,9 +376,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "display_name": "Recraft: Recraft V4",
         "best_known_for": (
             "Recraft's Feb 2026 ground-up rebuild — \"design taste meets image "
-            "generation.\" 1024x1024 raster output, ~10s/image. Topped the "
-            "Hugging Face Text-to-Image Arena (blind human preference) over "
-            "Midjourney V8, DALL-E 3, FLUX, and Stable Diffusion. Strengths: "
+            "generation.\" 1024x1024 raster output, ~10s/image. Strengths: "
             "balanced composition, cohesive color, clean readable embedded text "
             "(short / mid-length), and outputs that feel deliberate rather than "
             "stock-like. Best for infographics, signage, packaging, branded "

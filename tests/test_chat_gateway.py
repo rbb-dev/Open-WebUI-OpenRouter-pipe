@@ -1455,7 +1455,7 @@ async def test_chat_completions_streaming_annotation_empty_url(pipe_instance_asy
                     "annotations": [
                         {"type": "url_citation", "url_citation": {"url": "", "title": "Empty"}},
                         {"type": "url_citation", "url_citation": {"url": "   ", "title": "Whitespace"}},
-                        {"type": "url_citation", "url_citation": {"url": "https://valid.com", "title": "Valid"}},
+                        {"type": "url_citation", "url_citation": {"url": "https://valid.example", "title": "Valid"}},
                     ]
                 },
                 "finish_reason": None,
@@ -1489,7 +1489,7 @@ async def test_chat_completions_streaming_annotation_empty_url(pipe_instance_asy
     annotation_events = [e for e in events if e.get("type") == "response.output_text.annotation.added"]
     # Only the valid URL should be added
     assert len(annotation_events) == 1
-    assert annotation_events[0]["annotation"]["url"] == "https://valid.com"
+    assert annotation_events[0]["annotation"]["url"] == "https://valid.example"
 
 
 # ============================================================================
@@ -2083,7 +2083,7 @@ async def test_chat_completions_streaming_annotation_not_dict(pipe_instance_asyn
                     "annotations": [
                         "not a dict",  # Invalid
                         123,  # Invalid
-                        {"type": "url_citation", "url_citation": {"url": "https://valid.com", "title": "Valid"}},
+                        {"type": "url_citation", "url_citation": {"url": "https://valid.example", "title": "Valid"}},
                     ]
                 },
                 "finish_reason": None,

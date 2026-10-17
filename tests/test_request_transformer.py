@@ -2881,7 +2881,7 @@ class TestVideoProcessingEdgeCases:
 
         messages = [
             {"role": "user", "content": [
-                {"type": "video_url", "video_url": {"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"}}
+                {"type": "video_url", "video_url": {"url": "https://www.youtube.com/watch?v=video_ex_01"}}
             ]}
         ]
 
@@ -3139,7 +3139,7 @@ class TestYouTubeVideo:
         """Standard YouTube URL is passed through."""
         messages = [
             {"role": "user", "content": [
-                {"type": "video_url", "video_url": {"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"}}
+                {"type": "video_url", "video_url": {"url": "https://www.youtube.com/watch?v=video_ex_01"}}
             ]}
         ]
 
@@ -3154,7 +3154,7 @@ class TestYouTubeVideo:
         """YouTube short URL (youtu.be) is passed through."""
         messages = [
             {"role": "user", "content": [
-                {"type": "video_url", "video_url": {"url": "https://youtu.be/dQw4w9WgXcQ"}}
+                {"type": "video_url", "video_url": {"url": "https://youtu.be/video_ex_01"}}
             ]}
         ]
 

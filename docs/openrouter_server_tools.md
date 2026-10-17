@@ -396,4 +396,4 @@ Set `AUTO_DEFAULT_WEB_TOOLS_FILTER=False`. The Web Tools toggle remains availabl
 
 ### Restrict search domains
 
-Configure the Web Tools filter's admin valve `WEB_SEARCH_ALLOWED_DOMAINS` with a comma-separated domain list (e.g. `docs.python.org, stackoverflow.com`). Search results will be restricted to those domains.
+Configure the Web Tools filter's admin valve `WEB_SEARCH_ALLOWED_DOMAINS` with a comma-separated domain list (e.g. `docs.example.org, forum.example.net`). Search results will be restricted to those domains.

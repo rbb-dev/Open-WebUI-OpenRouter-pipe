@@ -1225,7 +1225,7 @@ class TestWebSearchStatus:
                     "action": {
                         "type": "search",
                         "query": "weather NYC",
-                        "sources": [{"url": "https://weather.com"}],
+                        "sources": [{"url": "https://weather.example.com"}],
                     },
                 },
             },
@@ -1310,7 +1310,7 @@ class TestWebSearchStatus:
                     "action": {
                         "type": "find_in_page",
                         "needle": "temperature forecast",
-                        "url": "https://weather.com/forecast",
+                        "url": "https://weather.example.com/forecast",
                     },
                 },
             },
@@ -12144,22 +12144,22 @@ class TestOpenRouterServerToolCards:
         pipe = pipe_instance_async
         events = [
             {"type": "response.output_text.annotation.added",
-             "annotation": {"type": "url_citation", "url": "https://a.com", "title": "A", "content": "excerpt A"}},
+             "annotation": {"type": "url_citation", "url": "https://a.example", "title": "A", "content": "excerpt A"}},
             {"type": "response.output_item.done", "item": {
                 "type": "message", "role": "assistant",
                 "content": [{"type": "output_text", "text": "x", "annotations": [
-                    {"type": "url_citation", "url_citation": {"url": "https://a.com", "title": "A", "content": "excerpt A"}},
-                    {"type": "url_citation", "url_citation": {"url": "https://b.com", "title": "B", "content": "excerpt B"}},
+                    {"type": "url_citation", "url_citation": {"url": "https://a.example", "title": "A", "content": "excerpt A"}},
+                    {"type": "url_citation", "url_citation": {"url": "https://b.example", "title": "B", "content": "excerpt B"}},
                 ]}]}},
             {"type": "response.completed", "response": {"output": [], "usage": {}}},
         ]
         emitted = await self._run_card_events(pipe, events)
         sources = [e for e in emitted if e.get("type") == "source"]
         by_url = {s["data"]["source"]["url"]: s for s in sources}
-        assert "https://a.com" in by_url
-        assert "https://b.com" in by_url, "superset citation (b.com) was dropped"
-        assert "excerpt A" in by_url["https://a.com"]["data"]["document"]
-        assert "excerpt B" in by_url["https://b.com"]["data"]["document"]
+        assert "https://a.example" in by_url
+        assert "https://b.example" in by_url, "superset citation (b.example) was dropped"
+        assert "excerpt A" in by_url["https://a.example"]["data"]["document"]
+        assert "excerpt B" in by_url["https://b.example"]["data"]["document"]
 
     @pytest.mark.asyncio
     async def test_unhandled_file_citation_notifies_without_breaking(self, pipe_instance_async):
@@ -12170,7 +12170,7 @@ class TestOpenRouterServerToolCards:
             {"type": "response.output_item.done", "item": {
                 "type": "message", "role": "assistant",
                 "content": [{"type": "output_text", "text": "x", "annotations": [
-                    {"type": "url_citation", "url_citation": {"url": "https://a.com", "title": "A", "content": "exA"}},
+                    {"type": "url_citation", "url_citation": {"url": "https://a.example", "title": "A", "content": "exA"}},
                     {"type": "file_citation", "file_id": "f-1", "filename": "doc.pdf", "index": 3},
                     {"type": "file_citation", "file_id": "f-2", "filename": "doc2.pdf", "index": 9},
                 ]}]}},
@@ -12178,7 +12178,7 @@ class TestOpenRouterServerToolCards:
         ]
         emitted = await self._run_card_events(pipe, events)
         sources = [e for e in emitted if e.get("type") == "source"]
-        assert any(s["data"]["source"]["url"] == "https://a.com" for s in sources)
+        assert any(s["data"]["source"]["url"] == "https://a.example" for s in sources)
         notifs = [e for e in emitted if e.get("type") == "notification" and e.get("data", {}).get("type") == "warning"]
         assert len(notifs) == 1, "expected exactly one throttled warning toast"
         assert "file_citation" in notifs[0]["data"]["content"]
@@ -12202,7 +12202,7 @@ class TestOpenRouterServerToolCards:
             {"type": "response.output_item.done", "item": {
                 "type": "message", "role": "assistant",
                 "content": [{"type": "output_text", "text": "Hello world", "annotations": [
-                    {"type": "url_citation", "url_citation": {"url": "https://a.com", "title": "A"}},
+                    {"type": "url_citation", "url_citation": {"url": "https://a.example", "title": "A"}},
                 ]}]}},
             {"type": "response.completed", "response": {"output": [], "usage": {}}},
         ]
@@ -12228,7 +12228,7 @@ class TestOpenRouterServerToolCards:
             {"type": "response.output_item.done", "item": {
                 "type": "message", "role": "assistant",
                 "content": [{"type": "output_text", "text": "y", "annotations": [
-                    {"type": "url_citation", "url_citation": {"url": "https://a.com", "title": "A", "content": big}},
+                    {"type": "url_citation", "url_citation": {"url": "https://a.example", "title": "A", "content": big}},
                 ]}]}},
             {"type": "response.completed", "response": {"output": [], "usage": {}}},
         ]
@@ -12407,8 +12407,8 @@ class TestOpenRouterServerToolCards:
             {"type": "response.output_item.done", "item": {
                 "type": "openrouter:web_search", "id": "ws-1", "status": "completed",
                 "action": {"query": "x", "sources": [
-                    {"type": "url", "url": "https://a.com"},
-                    {"type": "url", "url": "https://b.com"},
+                    {"type": "url", "url": "https://a.example"},
+                    {"type": "url", "url": "https://b.example"},
                 ]}}},
             {"type": "response.completed", "response": {"output": [], "usage": {}}},
         ]
@@ -12428,7 +12428,7 @@ class TestOpenRouterServerToolCards:
                              and e.get("data", {}).get("action") == "web_search"]
         assert len(web_search_status) == 1
         urls = web_search_status[0]["data"]["urls"]
-        assert "https://a.com" in urls and "https://b.com" in urls
+        assert "https://a.example" in urls and "https://b.example" in urls
 
     @pytest.mark.asyncio
     async def test_openrouter_server_tool_dedup(self, monkeypatch, pipe_instance_async):
@@ -12584,12 +12584,12 @@ def test_citation_host_strips_www_prefix_not_character_set():
     from open_webui_openrouter_pipe.streaming.streaming_core import _citation_host
 
     assert _citation_host("https://www.example.com/path") == "example.com"
-    assert _citation_host("https://weather.com/forecast") == "weather.com"
-    assert _citation_host("https://wikipedia.org/wiki/X") == "wikipedia.org"
-    assert _citation_host("https://wsj.com/a") == "wsj.com"
-    assert _citation_host("https://web.archive.org/x") == "web.archive.org"
+    assert _citation_host("https://weather.example.com/forecast") == "weather.example.com"
+    assert _citation_host("https://wiki.example.org/wiki/X") == "wiki.example.org"
+    assert _citation_host("https://wire.example.net/a") == "wire.example.net"
+    assert _citation_host("https://web.mirror.example.org/x") == "web.mirror.example.org"
     assert _citation_host("example.com") == "example.com"
-    assert _citation_host("https://wwworld.com") == "wwworld.com"
+    assert _citation_host("https://wwworld.example.com") == "wwworld.example.com"
 
 
 class TestToolCitationHarvesting:

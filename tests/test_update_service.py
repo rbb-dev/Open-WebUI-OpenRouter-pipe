@@ -180,7 +180,7 @@ def _asset(content: bytes, name="open_webui_openrouter_pipe_bundled.py", digest=
     entry = {
         "name": name,
         "size": len(content),
-        "browser_download_url": f"https://github.com/x/releases/download/v2.7.0/{name}",
+        "browser_download_url": f"https://assets.example.org/x/releases/download/v2.7.0/{name}",
     }
     if digest:
         entry["digest"] = f"sha256:{_sha(content)}"
@@ -495,7 +495,7 @@ async def test_fetch_rejects_missing_digest(svc, fake_functions, fake_http):
 async def test_fetch_rejects_digest_mismatch(svc, fake_functions, fake_http):
     content = GOOD_HEADER.encode()
     asset = _asset(b"other-bytes")
-    asset["browser_download_url"] = "https://github.com/x/a.py"
+    asset["browser_download_url"] = "https://assets.example.org/x/a.py"
     fake_http.bytes_map[asset["browser_download_url"]] = content
     with pytest.raises(us.UpdateError) as exc:
         await svc.fetch_and_validate(asset, require_newer=True)

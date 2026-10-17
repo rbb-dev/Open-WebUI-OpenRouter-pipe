@@ -1930,7 +1930,7 @@ class TestRequestIpsBlocking:
         def fake_getaddrinfo(*args, **kwargs):
             return [
                 (socket.AF_INET, socket.SOCK_STREAM, 0, "", None),
-                (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("8.8.8.8", 80)),
+                (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 80)),
             ]
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
@@ -1983,11 +1983,11 @@ class TestIsYoutubeUrl:
 
     def test_detects_standard_youtube_url(self, pipe_instance):
         """Should detect standard YouTube watch URL."""
-        assert pipe_instance._multimodal_handler._is_youtube_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        assert pipe_instance._multimodal_handler._is_youtube_url("https://www.youtube.com/watch?v=video_ex_01")
 
     def test_detects_short_youtube_url(self, pipe_instance):
         """Should detect short youtu.be URL."""
-        assert pipe_instance._multimodal_handler._is_youtube_url("https://youtu.be/dQw4w9WgXcQ")
+        assert pipe_instance._multimodal_handler._is_youtube_url("https://youtu.be/video_ex_01")
 
     def test_detects_http_youtube_url(self, pipe_instance):
         """Should detect HTTP YouTube URL."""
@@ -2948,7 +2948,7 @@ class TestSSRFIPv6Validation:
 
     async def test_allows_global_ipv6_literal(self, pipe_instance_async):
         """Public IPv6 literals should be considered safe."""
-        assert await pipe_instance_async._multimodal_handler._is_safe_url("https://[2001:4860:4860::8888]/foo")
+        assert await pipe_instance_async._multimodal_handler._is_safe_url("https://[2606:2800:220:1:248:1893:25c8:1946]/foo")
 
     async def test_blocks_domain_with_private_ipv6_record(self, pipe_instance_async, monkeypatch):
         """Hosts resolving to any private IPv6 addresses are rejected."""
@@ -2967,7 +2967,7 @@ class TestSSRFIPv6Validation:
 
         def fake_getaddrinfo(host, *args, **kwargs):
             return [
-                (socket.AF_INET6, socket.SOCK_STREAM, 0, "", ("2001:4860:4860::8888", 0, 0, 0)),
+                (socket.AF_INET6, socket.SOCK_STREAM, 0, "", ("2606:2800:220:1:248:1893:25c8:1946", 0, 0, 0)),
                 (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 0)),
             ]
 

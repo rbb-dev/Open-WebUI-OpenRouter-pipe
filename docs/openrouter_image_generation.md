@@ -638,12 +638,10 @@ prompt to choose between.
 
 > **id**: `recraft/recraft-v3` · **pure-image-only**
 
-Recraft's typography champion — released October 2024, 20B parameters,
-held #1 on the Artificial Analysis benchmark for 5+ consecutive months
-at launch. The only AI image model that can render long-form text
+Recraft's typography champion — released October 2024, 20B parameters.
+The only AI image model that can render long-form text
 (full sentences/paragraphs) reliably AND place text at exact positions
-inside the image. Used in production by Shopify and Salesforce.
-~1K resolution output, pure-image-only.
+inside the image. ~1K resolution output, pure-image-only.
 
 - PURE-image-only — does NOT output text in chat.
 - **Publishes the full Recraft set**: `style`, `controls` and
@@ -662,9 +660,7 @@ inside the image. Used in production by Shopify and Salesforce.
 > **id**: `recraft/recraft-v4` · **pure-image-only**
 
 Recraft's February 2026 ground-up rebuild — "design taste meets image
-generation." 1024x1024 raster output, ~10s/image. Topped the
-Hugging Face Text-to-Image Arena (blind human preference) over
-Midjourney V8, DALL-E 3, FLUX, and Stable Diffusion. Strengths:
+generation." 1024x1024 raster output, ~10s/image. Strengths:
 balanced composition, cohesive color, clean readable embedded text
 (short / mid-length), and outputs that feel deliberate rather than
 stock-like. Best for infographics, signage, packaging, and rapid
@@ -1255,8 +1251,8 @@ address in an old turn would otherwise fail every later request in that chat.
 A deployment that also wants to say *which* host a reference may name sets
 `IMAGE_REFERENCE_ALLOWED_DOMAINS` (Config tab: **Image reference host
 allowlist**). It is empty by default, so nothing changes until it is set. An entry
-matches exactly or as a parent domain, case-insensitively — `example.com` covers
-`cdn.example.com` and does not cover `notexample.com` — and a bare host matches on
+matches exactly or as a parent domain, case-insensitively — `media.example` covers
+`cdn.media.example` and does not cover `notmedia.example` — and a bare host matches on
 any port, where a `host:port` entry names that host on that port only. It covers
 all three routes alike: the links box, the pictures already in the chat, and every
 address under the free-text `provider.options` box at any depth, because the check
@@ -1416,7 +1412,7 @@ this project's own test data for that model.
 ```
 # Recraft: Recraft V3
 
-Recraft's typography champion — the only AI image model that can render long-form text (full sentences and paragraphs) reliably AND place text at exact positions inside the image. 20B parameters, released Oct 2024, held #1 on the Artificial Analysis benchmark for 5+ consecutive months at launch (beating Midjourney/DALL-E/FLUX). Used in production by Shopify and Salesforce. Pure-image-only at ~1K resolution. Best for posters, signage, packaging, marketing assets with embedded copy.
+Recraft's typography champion — the only AI image model that can render long-form text (full sentences and paragraphs) reliably AND place text at exact positions inside the image. 20B parameters, released Oct 2024. Pure-image-only at ~1K resolution. Best for posters, signage, packaging, marketing assets with embedded copy.
 
 ## Tips & pitfalls
 - PURE-image-only — does NOT output text in chat.

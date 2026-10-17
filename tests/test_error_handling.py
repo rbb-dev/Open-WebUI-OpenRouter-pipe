@@ -544,7 +544,7 @@ class TestTemplateValueBuilding:
                 "timestamp": "2024-01-01T10:30:00Z",
                 "session_id": "sess_xyz",
                 "user_id": "user_999",
-                "support_email": "help@openrouter.ai",
+                "support_email": "help@example.org",
             },
         )
 
@@ -554,7 +554,7 @@ class TestTemplateValueBuilding:
         assert values["timestamp"] == "2024-01-01T10:30:00Z"
         assert values["session_id"] == "sess_xyz"
         assert values["user_id"] == "user_999"
-        assert values["support_email"] == "help@openrouter.ai"
+        assert values["support_email"] == "help@example.org"
         assert values["provider"] == "openai"
         assert values["model_identifier"] == "gpt-4"
         assert values["requested_model"] == "openai/gpt-4"
@@ -595,7 +595,7 @@ def test_openrouter_api_error_includes_provider_and_request_details():
             "type": "invalid_request_error",
             "message": "prompt is too long: 1015918 tokens > 1000000 maximum",
         },
-        "request_id": "req_011CVgpGEQMnFmYrjfT7Zh9h",
+        "request_id": "req_0000000000000001",
     }
     body = json.dumps(
         {

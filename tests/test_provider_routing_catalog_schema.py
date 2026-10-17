@@ -16,7 +16,7 @@ FRONTEND_CATALOG_SAMPLE_JSON = r"""
       "name": "OpenAI: GPT-5.1",
       "short_name": "GPT-5.1",
       "author": "openai",
-      "description": "GPT-5.1 is the latest frontier-grade model in the GPT-5 series, offering stronger general-purpose reasoning, improved instruction adherence, and a more natural conversational style compared to GPT-5. It uses adaptive reasoning to allocate computation dynamically, responding quickly to simple queries while spending more depth on complex tasks. The model produces clearer, more grounded explanations with reduced jargon, making it easier to follow even on technical or multi-step problems.\n\nBuilt for broad task coverage, GPT-5.1 delivers consistent gains across math, coding, and structured analysis workloads, with more coherent long-form answers and improved tool-use reliability. It also features refined conversational alignment, enabling warmer, more intuitive responses without compromising precision. GPT-5.1 serves as the primary full-capability successor to GPT-5",
+      "description": "Invented description 01: a sample chat model used only in tests.",
       "model_version_group_id": null,
       "context_length": 400000,
       "input_modalities": [
@@ -62,7 +62,7 @@ FRONTEND_CATALOG_SAMPLE_JSON = r"""
       "is_trainable_text": null,
       "is_trainable_image": null,
       "endpoint": {
-        "id": "764eb97f-8bab-4326-b29b-7a8799b00a70",
+        "id": "00000000-0000-4000-8000-000000000011",
         "name": "OpenAI | openai/gpt-5.1-20251113",
         "context_length": 400000,
         "model": {
@@ -74,7 +74,7 @@ FRONTEND_CATALOG_SAMPLE_JSON = r"""
           "name": "OpenAI: GPT-5.1",
           "short_name": "GPT-5.1",
           "author": "openai",
-          "description": "GPT-5.1 is the latest frontier-grade model in the GPT-5 series, offering stronger general-purpose reasoning, improved instruction adherence, and a more natural conversational style compared to GPT-5. It uses adaptive reasoning to allocate computation dynamically, responding quickly to simple queries while spending more depth on complex tasks. The model produces clearer, more grounded explanations with reduced jargon, making it easier to follow even on technical or multi-step problems.\n\nBuilt for broad task coverage, GPT-5.1 delivers consistent gains across math, coding, and structured analysis workloads, with more coherent long-form answers and improved tool-use reliability. It also features refined conversational alignment, enabling warmer, more intuitive responses without compromising precision. GPT-5.1 serves as the primary full-capability successor to GPT-5",
+          "description": "Invented description 01: a sample chat model used only in tests.",
           "model_version_group_id": null,
           "context_length": 400000,
           "input_modalities": [
@@ -128,14 +128,14 @@ FRONTEND_CATALOG_SAMPLE_JSON = r"""
           "name": "OpenAI",
           "displayName": "OpenAI",
           "slug": "openai/default",
-          "baseUrl": "https://api.openai.com/v1",
+          "baseUrl": "https://api.provider-a.example/v1",
           "dataPolicy": {
             "training": false,
             "trainingOpenRouter": false,
             "retainsPrompts": true,
             "canPublish": false,
-            "termsOfServiceURL": "https://openai.com/policies/row-terms-of-use/",
-            "privacyPolicyURL": "https://openai.com/policies/privacy-policy/",
+            "termsOfServiceURL": "https://provider-a.example/policies/terms/",
+            "privacyPolicyURL": "https://provider-a.example/policies/privacy/",
             "requiresUserIDs": true
           },
           "headquarters": "US",
@@ -152,7 +152,7 @@ FRONTEND_CATALOG_SAMPLE_JSON = r"""
           ],
           "adapterName": "OpenAIResponsesAdapter",
           "isMultipartSupported": true,
-          "statusPageUrl": "https://status.openai.com/",
+          "statusPageUrl": "https://status.provider-a.example/",
           "byokEnabled": true,
           "icon": {
             "url": "/images/icons/OpenAI.svg",
@@ -189,8 +189,8 @@ FRONTEND_CATALOG_SAMPLE_JSON = r"""
           "trainingOpenRouter": false,
           "retainsPrompts": true,
           "canPublish": false,
-          "termsOfServiceURL": "https://openai.com/policies/row-terms-of-use/",
-          "privacyPolicyURL": "https://openai.com/policies/privacy-policy/",
+          "termsOfServiceURL": "https://provider-a.example/policies/terms/",
+          "privacyPolicyURL": "https://provider-a.example/policies/privacy/",
           "requiresUserIDs": true
         },
         "pricing": {
@@ -207,7 +207,7 @@ FRONTEND_CATALOG_SAMPLE_JSON = r"""
           "openai_responses:completion_tokens": 1e-05,
           "openai_responses:cached_prompt_tokens": 1.25e-07
         },
-        "pricing_version_id": "177855b5-4b6e-4f70-a823-4eb03aa1322b",
+        "pricing_version_id": "00000000-0000-4000-8000-000000000012",
         "is_hidden": false,
         "is_deranked": false,
         "is_disabled": false,
@@ -249,8 +249,8 @@ FRONTEND_CATALOG_SAMPLE_JSON = r"""
       "name": "Anthropic: Claude 3.5 Sonnet",
       "short_name": "Claude 3.5 Sonnet",
       "author": "anthropic",
-      "description": "New Claude 3.5 Sonnet delivers better-than-Opus capabilities, faster-than-Sonnet speeds, at the same Sonnet prices. Sonnet is particularly good at:\n\n- Coding: Scores ~49% on SWE-Bench Verified, higher than the last best score, and without any fancy prompt scaffolding\n- Data science: Augments human data science expertise; navigates unstructured data while using multiple tools for insights\n- Visual processing: excelling at interpreting charts, graphs, and images, accurately transcribing text to derive insights beyond just the text alone\n- Agentic tasks: exceptional tool use, making it great at agentic tasks (i.e. complex, multi-step problem solving tasks that require engaging with other systems)\n\n#multimodal",
-      "model_version_group_id": "30636d20-cda3-4a59-aa0c-1a5b6efba072",
+      "description": "Invented description 02: a sample chat model used only in tests.",
+      "model_version_group_id": "00000000-0000-4000-8000-000000000013",
       "context_length": 200000,
       "input_modalities": [
         "text",
@@ -290,7 +290,7 @@ FRONTEND_CATALOG_SAMPLE_JSON = r"""
       "is_trainable_text": null,
       "is_trainable_image": null,
       "endpoint": {
-        "id": "d4fb79bd-9786-4932-af81-b83040e9f4e4",
+        "id": "00000000-0000-4000-8000-000000000014",
         "name": "Amazon Bedrock | anthropic/claude-3.5-sonnet",
         "context_length": 200000,
         "model": {
@@ -302,8 +302,8 @@ FRONTEND_CATALOG_SAMPLE_JSON = r"""
           "name": "Anthropic: Claude 3.5 Sonnet",
           "short_name": "Claude 3.5 Sonnet",
           "author": "anthropic",
-          "description": "New Claude 3.5 Sonnet delivers better-than-Opus capabilities, faster-than-Sonnet speeds, at the same Sonnet prices. Sonnet is particularly good at:\n\n- Coding: Scores ~49% on SWE-Bench Verified, higher than the last best score, and without any fancy prompt scaffolding\n- Data science: Augments human data science expertise; navigates unstructured data while using multiple tools for insights\n- Visual processing: excelling at interpreting charts, graphs, and images, accurately transcribing text to derive insights beyond just the text alone\n- Agentic tasks: exceptional tool use, making it great at agentic tasks (i.e. complex, multi-step problem solving tasks that require engaging with other systems)\n\n#multimodal",
-          "model_version_group_id": "30636d20-cda3-4a59-aa0c-1a5b6efba072",
+          "description": "Invented description 02: a sample chat model used only in tests.",
+          "model_version_group_id": "00000000-0000-4000-8000-000000000013",
           "context_length": 200000,
           "input_modalities": [
             "text",
@@ -357,8 +357,8 @@ FRONTEND_CATALOG_SAMPLE_JSON = r"""
             "trainingOpenRouter": false,
             "retainsPrompts": false,
             "canPublish": false,
-            "termsOfServiceURL": "https://aws.amazon.com/service-terms/",
-            "privacyPolicyURL": "https://aws.amazon.com/privacy"
+            "termsOfServiceURL": "https://provider-b.example/service-terms/",
+            "privacyPolicyURL": "https://provider-b.example/privacy"
           },
           "headquarters": "US",
           "regionOverrides": {
@@ -378,7 +378,7 @@ FRONTEND_CATALOG_SAMPLE_JSON = r"""
           ],
           "adapterName": "AmazonBedrockConverseAdapter",
           "isMultipartSupported": true,
-          "statusPageUrl": "https://health.aws.amazon.com/health/status",
+          "statusPageUrl": "https://status.provider-b.example/health/status",
           "byokEnabled": true,
           "icon": {
             "url": "/images/icons/Bedrock.svg"
@@ -413,8 +413,8 @@ FRONTEND_CATALOG_SAMPLE_JSON = r"""
           "trainingOpenRouter": false,
           "retainsPrompts": false,
           "canPublish": false,
-          "termsOfServiceURL": "https://aws.amazon.com/service-terms/",
-          "privacyPolicyURL": "https://aws.amazon.com/privacy"
+          "termsOfServiceURL": "https://provider-b.example/service-terms/",
+          "privacyPolicyURL": "https://provider-b.example/privacy"
         },
         "pricing": {
           "prompt": "0.000006",
@@ -426,7 +426,7 @@ FRONTEND_CATALOG_SAMPLE_JSON = r"""
           "anthropic:prompt_tokens": 6e-06,
           "anthropic:completion_tokens": 3e-05
         },
-        "pricing_version_id": "eb96ddba-9cd5-4a4b-bb70-4f88db92ecb1",
+        "pricing_version_id": "00000000-0000-4000-8000-000000000015",
         "is_hidden": false,
         "is_deranked": false,
         "is_disabled": false,

@@ -3,7 +3,7 @@
     {
       "id": "qwen/qwen-image-3-pro",
       "name": "Qwen: Qwen Image 3 Pro",
-      "description": "Qwen Image 3 Pro is an image generation and editing model from Qwen. It supports precise rendering of text and details as small as 10px, along with richer world knowledge...",
+      "description": "Invented description 01: a sample model that draws a picture from a text prompt.",
       "created": 1785894548,
       "architecture": {
         "input_modalities": [
@@ -60,7 +60,7 @@
     {
       "id": "qwen/qwen-image-3",
       "name": "Qwen: Qwen Image 3",
-      "description": "Qwen Image 3 is a unified image generation and editing model from Qwen. It supports precise rendering of text and details as small as 10px, along with a richer world...",
+      "description": "Invented description 02: a sample model that draws a picture from a text prompt.",
       "created": 1785894548,
       "architecture": {
         "input_modalities": [
@@ -117,7 +117,7 @@
     {
       "id": "microsoft/mai-image-2.5-pro",
       "name": "Microsoft AI: MAI-Image-2.5 Pro",
-      "description": "Microsoft AI's MAI-Image-2.5 is a high-quality image generation model available via Azure AI Foundry. It produces photorealistic and artistic images from text prompts with support for various aspect ratios.",
+      "description": "Invented description 03: a sample model that draws a picture from a text prompt.",
       "created": 1784827701,
       "architecture": {
         "input_modalities": [
@@ -159,7 +159,7 @@
     {
       "id": "krea/krea-2-large",
       "name": "Krea: Krea 2 Large",
-      "description": "Krea 2 Large is Krea's high-capability image generation model, more than twice the size of Krea 2 Medium. Its lighter post-training gives images a rawer, more textured, and flexible character,...",
+      "description": "Invented description 04: a sample model that draws a picture from a text prompt.",
       "created": 1784574931,
       "architecture": {
         "input_modalities": [
@@ -204,7 +204,7 @@
     {
       "id": "krea/krea-2-medium",
       "name": "Krea: Krea 2 Medium",
-      "description": "Krea 2 Medium is Krea's balanced, cost-efficient image generation model and a practical starting point for a broad range of use cases. Its extensive post-training supports stable, consistent generations, with...",
+      "description": "Invented description 05: a sample model that draws a picture from a text prompt.",
       "created": 1784574928,
       "architecture": {
         "input_modalities": [
@@ -249,7 +249,7 @@
     {
       "id": "krea/krea-2-medium-turbo",
       "name": "Krea: Krea 2 Medium Turbo",
-      "description": "Krea 2 Medium Turbo is a distilled, speed-focused variant of Krea 2 Medium from Krea. It is designed for rapid iteration and graphic design exploration where fast generation is the...",
+      "description": "Invented description 06: a sample model that draws a picture from a text prompt.",
       "created": 1784574923,
       "architecture": {
         "input_modalities": [
@@ -294,7 +294,7 @@
     {
       "id": "google/gemini-3.1-flash-lite-image",
       "name": "Google: Nano Banana 2 Lite (Gemini 3.1 Flash Lite Image)",
-      "description": "Nano Banana 2 Lite (Gemini 3.1 Flash Lite Image) is Google's fastest, most cost-efficient Gemini image model, built for high-velocity developer pipelines and rapid-fire visual exploration. It delivers text-to-image generation...",
+      "description": "Invented description 07: a sample model that draws a picture from a text prompt.",
       "created": 1782837225,
       "architecture": {
         "input_modalities": [
@@ -349,7 +349,7 @@
     {
       "id": "openai/gpt-image-2",
       "name": "OpenAI: GPT Image 2",
-      "description": "OpenAI's latest image generation model. Supports high-fidelity image generation and editing via the dedicated Images API.",
+      "description": "Invented description 08: a sample model that draws a picture from a text prompt.",
       "created": 1782264714,
       "architecture": {
         "input_modalities": [
@@ -413,7 +413,7 @@
     {
       "id": "openai/gpt-image-1-mini",
       "name": "OpenAI: GPT Image 1 Mini",
-      "description": "A cost-efficient variant of GPT Image 1 for high-quality image generation at reduced latency and cost via OpenAI's dedicated Images API.",
+      "description": "Invented description 09: a sample model that draws a picture from a text prompt.",
       "created": 1782264713,
       "architecture": {
         "input_modalities": [
@@ -473,7 +473,7 @@
     {
       "id": "openai/gpt-image-1",
       "name": "OpenAI: GPT Image 1",
-      "description": "OpenAI's GPT Image 1 generates and edits images via the dedicated Images API. Features accurate text rendering, transparent backgrounds, and up to 16 reference images for edits.",
+      "description": "Invented description 10: a sample model that draws a picture from a text prompt.",
       "created": 1782264713,
       "architecture": {
         "input_modalities": [
@@ -533,7 +533,7 @@
     {
       "id": "google/gemini-3.1-flash-image",
       "name": "Google: Nano Banana 2 (Gemini 3.1 Flash Image)",
-      "description": "Gemini 3.1 Flash Image, a.k.a. \"Nano Banana 2,\" is Google’s latest state of the art image generation and editing model, delivering Pro-level visual quality at Flash speed. It combines advanced...",
+      "description": "Invented description 11: a sample model that draws a picture from a text prompt.",
       "created": 1781754065,
       "architecture": {
         "input_modalities": [
@@ -591,7 +591,7 @@
     {
       "id": "google/gemini-3-pro-image",
       "name": "Google: Nano Banana Pro (Gemini 3 Pro Image)",
-      "description": "Nano Banana Pro is Google’s most advanced image-generation and editing model, built on Gemini 3 Pro. It extends the original Nano Banana with significantly improved multimodal reasoning, real-world grounding, and...",
+      "description": "Invented description 12: a sample model that draws a picture from a text prompt.",
       "created": 1781754054,
       "architecture": {
         "input_modalities": [
@@ -644,7 +644,7 @@
     {
       "id": "sourceful/riverflow-v2.5-pro",
       "name": "Sourceful: Riverflow V2.5 Pro",
-      "description": "Riverflow V2.5 Pro is the most powerful variant of Sourceful's Riverflow 2.5 lineup, best for top-tier control and quality-sensitive outputs. The Riverflow 2.5 series is a unified text-to-image and image-to-image...",
+      "description": "Invented description 13: a sample model that draws a picture from a text prompt.",
       "created": 1780584991,
       "architecture": {
         "input_modalities": [
@@ -711,7 +711,7 @@
     {
       "id": "sourceful/riverflow-v2.5-fast",
       "name": "Sourceful: Riverflow V2.5 Fast",
-      "description": "Riverflow V2.5 Fast is the speed-optimized variant of Sourceful's Riverflow 2.5 lineup, best for production deployments and latency-critical workflows. The Riverflow 2.5 series is a unified text-to-image and image-to-image family...",
+      "description": "Invented description 14: a sample model that draws a picture from a text prompt.",
       "created": 1780584983,
       "architecture": {
         "input_modalities": [
@@ -775,7 +775,7 @@
     {
       "id": "microsoft/mai-image-2.5",
       "name": "Microsoft AI: MAI-Image-2.5",
-      "description": "Microsoft AI's MAI-Image-2.5 is a high-quality image generation model available via Azure AI Foundry. It produces photorealistic and artistic images from text prompts with support for various aspect ratios.",
+      "description": "Invented description 15: a sample model that draws a picture from a text prompt.",
       "created": 1780424896,
       "architecture": {
         "input_modalities": [
@@ -817,7 +817,7 @@
     {
       "id": "x-ai/grok-imagine-image-quality",
       "name": "SpaceXAI: Grok Imagine Image Quality",
-      "description": "Grok Imagine Image Quality is SpaceXAI's fast, high-fidelity image generation and editing model. It accepts text prompts and optional reference images, producing photorealistic outputs at 1K or 2K across a...",
+      "description": "Invented description 16: a sample model that draws a picture from a text prompt.",
       "created": 1779117584,
       "architecture": {
         "input_modalities": [
@@ -872,7 +872,7 @@
     {
       "id": "recraft/recraft-v4.1-pro-vector",
       "name": "Recraft: Recraft V4.1 Pro Vector",
-      "description": "Recraft V4.1 Pro Vector is the vector (SVG) variant of Recraft V4.1 Pro, tuned for high aesthetics. It supports text and image inputs and produces higher-resolution SVG image output across...",
+      "description": "Invented description 17: a sample model that draws a picture from a text prompt.",
       "created": 1778707395,
       "architecture": {
         "input_modalities": [
@@ -918,7 +918,7 @@
     {
       "id": "recraft/recraft-v4.1-vector",
       "name": "Recraft: Recraft V4.1 Vector",
-      "description": "Recraft V4.1 Vector is the vector (SVG) variant of Recraft V4.1, tuned for high aesthetics. It supports text and image inputs and produces SVG image output across multiple aspect ratios,...",
+      "description": "Invented description 18: a sample model that draws a picture from a text prompt.",
       "created": 1778707392,
       "architecture": {
         "input_modalities": [
@@ -964,7 +964,7 @@
     {
       "id": "recraft/recraft-v4.1-utility-pro",
       "name": "Recraft: Recraft V4.1 Utility Pro",
-      "description": "Recraft V4.1 Utility Pro is a general-purpose image generation model from Recraft. It supports text and image inputs with image output at ~2K resolution across multiple aspect ratios — double...",
+      "description": "Invented description 19: a sample model that draws a picture from a text prompt.",
       "created": 1778707389,
       "architecture": {
         "input_modalities": [
@@ -1004,7 +1004,7 @@
     {
       "id": "recraft/recraft-v4.1-utility",
       "name": "Recraft: Recraft V4.1 Utility",
-      "description": "Recraft V4.1 Utility is a general-purpose image generation model from Recraft. It supports text and image inputs with image output at ~1K resolution across multiple aspect ratios, with typical generation...",
+      "description": "Invented description 20: a sample model that draws a picture from a text prompt.",
       "created": 1778707387,
       "architecture": {
         "input_modalities": [
@@ -1044,7 +1044,7 @@
     {
       "id": "recraft/recraft-v4.1-pro",
       "name": "Recraft: Recraft V4.1 Pro",
-      "description": "Recraft V4.1 Pro is an image generation model from Recraft tuned for high aesthetics. It supports text and image inputs with image output at ~2K resolution across multiple aspect ratios...",
+      "description": "Invented description 21: a sample model that draws a picture from a text prompt.",
       "created": 1778707384,
       "architecture": {
         "input_modalities": [
@@ -1084,7 +1084,7 @@
     {
       "id": "recraft/recraft-v4.1",
       "name": "Recraft: Recraft V4.1",
-      "description": "Recraft V4.1 is an image generation model from Recraft tuned for high aesthetics. It supports text and image inputs with image output at ~1K resolution across multiple aspect ratios, with...",
+      "description": "Invented description 22: a sample model that draws a picture from a text prompt.",
       "created": 1778707381,
       "architecture": {
         "input_modalities": [
@@ -1124,7 +1124,7 @@
     {
       "id": "recraft/recraft-v4-pro-vector",
       "name": "Recraft: Recraft V4 Pro Vector",
-      "description": "Recraft V4 Pro Vector is the vector (SVG) variant of Recraft V4 Pro. It supports text and image inputs and produces vector image output across multiple aspect ratios at the...",
+      "description": "Invented description 23: a sample model that draws a picture from a text prompt.",
       "created": 1778707334,
       "architecture": {
         "input_modalities": [
@@ -1170,7 +1170,7 @@
     {
       "id": "recraft/recraft-v4-vector",
       "name": "Recraft: Recraft V4 Vector",
-      "description": "Recraft V4 Vector is the vector (SVG) variant of Recraft V4. It supports text and image inputs and produces vector image output across multiple aspect ratios. Compared to the raster...",
+      "description": "Invented description 24: a sample model that draws a picture from a text prompt.",
       "created": 1778707333,
       "architecture": {
         "input_modalities": [
@@ -1216,7 +1216,7 @@
     {
       "id": "recraft/recraft-v4-pro",
       "name": "Recraft: Recraft V4 Pro",
-      "description": "Recraft V4 Pro is an image generation model from Recraft. It supports text and image inputs with image output at ~2K resolution across multiple aspect ratios, double the resolution of...",
+      "description": "Invented description 25: a sample model that draws a picture from a text prompt.",
       "created": 1778185441,
       "architecture": {
         "input_modalities": [
@@ -1256,7 +1256,7 @@
     {
       "id": "recraft/recraft-v4",
       "name": "Recraft: Recraft V4",
-      "description": "Recraft V4 is an image generation model from Recraft. It supports text and image inputs with image output at ~1K resolution across multiple aspect ratios. It delivers stronger compositional judgment,...",
+      "description": "Invented description 26: a sample model that draws a picture from a text prompt.",
       "created": 1778185437,
       "architecture": {
         "input_modalities": [
@@ -1296,7 +1296,7 @@
     {
       "id": "recraft/recraft-v3",
       "name": "Recraft: Recraft V3",
-      "description": "Recraft V3 is an image generation model from Recraft. It supports text and image inputs with image output at ~1K resolution across multiple aspect ratios. Supports the following `image_config` parameters:...",
+      "description": "Invented description 27: a sample model that draws a picture from a text prompt.",
       "created": 1778185433,
       "architecture": {
         "input_modalities": [
@@ -1336,7 +1336,7 @@
     {
       "id": "openai/gpt-5.4-image-2",
       "name": "OpenAI: GPT-5.4 Image 2",
-      "description": "[GPT-5.4](https://openrouter.ai/openai/gpt-5.4) Image 2 combines OpenAI's GPT-5.4 model with state-of-the-art image generation capabilities from GPT Image 2. It enables rich multimodal workflows, allowing users to seamlessly move between reasoning, coding, and...",
+      "description": "Invented description 28: a sample model that draws a picture from a text prompt.",
       "created": 1776797528,
       "architecture": {
         "input_modalities": [
@@ -1402,7 +1402,7 @@
     {
       "id": "google/gemini-3.1-flash-image-preview",
       "name": "Google: Nano Banana 2 (Gemini 3.1 Flash Image Preview)",
-      "description": "Gemini 3.1 Flash Image Preview, a.k.a. \"Nano Banana 2,\" is Google’s latest state of the art image generation and editing model, delivering Pro-level visual quality at Flash speed. It combines...",
+      "description": "Invented description 29: a sample model that draws a picture from a text prompt.",
       "created": 1772119558,
       "architecture": {
         "input_modalities": [
@@ -1460,7 +1460,7 @@
     {
       "id": "sourceful/riverflow-v2-pro",
       "name": "Sourceful: Riverflow V2 Pro",
-      "description": "Riverflow V2 Pro is the most powerful variant of Sourceful's Riverflow 2.0 lineup, best for top-tier control and perfect text rendering. The Riverflow 2.0 series represents SOTA performance on image...",
+      "description": "Invented description 30: a sample model that draws a picture from a text prompt.",
       "created": 1770051427,
       "architecture": {
         "input_modalities": [
@@ -1511,7 +1511,7 @@
     {
       "id": "sourceful/riverflow-v2-fast",
       "name": "Sourceful: Riverflow V2 Fast",
-      "description": "Riverflow V2 Fast is the fastest variant of Sourceful's Riverflow 2.0 lineup, best for production deployments and latency-critical workflows. The Riverflow 2.0 series represents SOTA performance on image generation and...",
+      "description": "Invented description 31: a sample model that draws a picture from a text prompt.",
       "created": 1770051423,
       "architecture": {
         "input_modalities": [
@@ -1562,7 +1562,7 @@
     {
       "id": "black-forest-labs/flux.2-klein-4b",
       "name": "Black Forest Labs: FLUX.2 Klein 4B",
-      "description": "FLUX.2 [klein] 4B is the fastest and most cost-effective model in the FLUX.2 family, optimized for high-throughput use cases while maintaining excellent image quality. Pricing is based on the output...",
+      "description": "Invented description 32: a sample model that draws a picture from a text prompt.",
       "created": 1768429228,
       "architecture": {
         "input_modalities": [
@@ -1615,7 +1615,7 @@
     {
       "id": "bytedance-seed/seedream-4.5",
       "name": "ByteDance Seed: Seedream 4.5",
-      "description": "Seedream 4.5 is the latest in-house image generation model developed by ByteDance. Compared with Seedream 4.0, it delivers comprehensive improvements, especially in editing consistency, including better preservation of subject details,...",
+      "description": "Invented description 33: a sample model that draws a picture from a text prompt.",
       "created": 1766519506,
       "architecture": {
         "input_modalities": [
@@ -1678,7 +1678,7 @@
     {
       "id": "black-forest-labs/flux.2-max",
       "name": "Black Forest Labs: FLUX.2 Max",
-      "description": "FLUX.2 [max] is the new top-tier image model from Black Forest Labs, pushing image quality, prompt understanding, and editing consistency to the highest level yet. Pricing is as follows, [per...",
+      "description": "Invented description 34: a sample model that draws a picture from a text prompt.",
       "created": 1765857570,
       "architecture": {
         "input_modalities": [
@@ -1731,7 +1731,7 @@
     {
       "id": "black-forest-labs/flux.2-flex",
       "name": "Black Forest Labs: FLUX.2 Flex",
-      "description": "FLUX.2 [flex] excels at rendering complex text, typography, and fine details, and supports multi-reference editing in the same unified architecture. Pricing is as follows, [per the docs](https://bfl.ai/pricing?category=flux.2): We charge $0.06...",
+      "description": "Invented description 35: a sample model that draws a picture from a text prompt.",
       "created": 1764045987,
       "architecture": {
         "input_modalities": [
@@ -1784,7 +1784,7 @@
     {
       "id": "black-forest-labs/flux.2-pro",
       "name": "Black Forest Labs: FLUX.2 Pro",
-      "description": "A high-end image generation and editing model focused on frontier-level visual quality and reliability. It delivers strong prompt adherence, stable lighting, sharp textures, and consistent character/style reproduction across multi-reference inputs....",
+      "description": "Invented description 36: a sample model that draws a picture from a text prompt.",
       "created": 1764030274,
       "architecture": {
         "input_modalities": [
@@ -1837,7 +1837,7 @@
     {
       "id": "google/gemini-3-pro-image-preview",
       "name": "Google: Nano Banana Pro (Gemini 3 Pro Image Preview)",
-      "description": "Nano Banana Pro is Google’s most advanced image-generation and editing model, built on Gemini 3 Pro. It extends the original Nano Banana with significantly improved multimodal reasoning, real-world grounding, and...",
+      "description": "Invented description 37: a sample model that draws a picture from a text prompt.",
       "created": 1763653797,
       "architecture": {
         "input_modalities": [
@@ -1890,7 +1890,7 @@
     {
       "id": "openai/gpt-5-image-mini",
       "name": "OpenAI: GPT-5 Image Mini",
-      "description": "GPT-5 Image Mini combines OpenAI's advanced language capabilities, powered by [GPT-5 Mini](https://openrouter.ai/openai/gpt-5-mini), with GPT Image 1 Mini for efficient image generation. This natively multimodal model features superior instruction following, text...",
+      "description": "Invented description 38: a sample model that draws a picture from a text prompt.",
       "created": 1760624583,
       "architecture": {
         "input_modalities": [
@@ -1952,7 +1952,7 @@
     {
       "id": "openai/gpt-5-image",
       "name": "OpenAI: GPT-5 Image",
-      "description": "[GPT-5](https://openrouter.ai/openai/gpt-5) Image combines OpenAI's GPT-5 model with state-of-the-art image generation capabilities. It offers major improvements in reasoning, code quality, and user experience while incorporating GPT Image 1's superior instruction following,...",
+      "description": "Invented description 39: a sample model that draws a picture from a text prompt.",
       "created": 1760447986,
       "architecture": {
         "input_modalities": [
@@ -2014,7 +2014,7 @@
     {
       "id": "google/gemini-2.5-flash-image",
       "name": "Google: Nano Banana (Gemini 2.5 Flash Image)",
-      "description": "Gemini 2.5 Flash Image, a.k.a. \"Nano Banana,\" is now generally available. It is a state of the art image generation model with contextual understanding. It is capable of image generation,...",
+      "description": "Invented description 40: a sample model that draws a picture from a text prompt.",
       "created": 1759870431,
       "architecture": {
         "input_modalities": [
@@ -2059,7 +2059,7 @@
     {
       "id": "openai/gpt-image-2.5-sunburst",
       "name": "OpenAI: GPT Image 2.5 Sunburst",
-      "description": "GPT Image 2.5 Sunburst is an image generation and editing model from OpenAI, positioned as the precision-oriented tier of the GPT Image 2.5 series. It is suited to detailed creative...",
+      "description": "Invented description 41: a sample model that draws a picture from a text prompt.",
       "created": 1788916368,
       "architecture": {
         "input_modalities": [
@@ -2126,7 +2126,7 @@
     {
       "id": "openai/gpt-image-2.5-flare",
       "name": "OpenAI: GPT Image 2.5 Flare",
-      "description": "GPT Image 2.5 Flare is an image generation and editing model from OpenAI, positioned as the speed-oriented tier of the GPT Image 2.5 series. It is suited to high-volume everyday...",
+      "description": "Invented description 42: a sample model that draws a picture from a text prompt.",
       "created": 1788916350,
       "architecture": {
         "input_modalities": [
@@ -2193,7 +2193,7 @@
     {
       "id": "microsoft/mai-image-2.6",
       "name": "Microsoft AI: MAI-Image-2.6",
-      "description": "MAI-Image-2.6 is an image generation and editing model from Microsoft AI, the precision tier of the MAI-Image-2.6 family alongside the faster [MAI-Image-2.6 Flash](/microsoft/mai-image-2.6-flash). It is suited for design-ready visuals and...",
+      "description": "Invented description 43: a sample model that draws a picture from a text prompt.",
       "created": 1788550742,
       "architecture": {
         "input_modalities": [
@@ -2235,7 +2235,7 @@
     {
       "id": "microsoft/mai-image-2.6-flash",
       "name": "Microsoft AI: MAI-Image-2.6 Flash",
-      "description": "MAI-Image-2.6 Flash is the lower-latency, lower-cost member of the [MAI-Image-2.6](/microsoft/mai-image-2.6) family from Microsoft AI, built for latency-sensitive, high-throughput production image generation and editing at comparable quality to the precision tier....",
+      "description": "Invented description 44: a sample model that draws a picture from a text prompt.",
       "created": 1788550735,
       "architecture": {
         "input_modalities": [
@@ -2277,7 +2277,7 @@
     {
       "id": "meta/muse-image",
       "name": "Meta: Muse Image",
-      "description": "Muse Image is an agentic image generation model from Meta that generates and edits images from text and reference images. Unlike single-pass image models, it reasons before it renders, breaking...",
+      "description": "Invented description 45: a sample model that draws a picture from a text prompt.",
       "created": 1787764532,
       "architecture": {
         "input_modalities": [
@@ -2295,7 +2295,7 @@
     {
       "id": "recraft/recraft-v4-styles-pro",
       "name": "Recraft: Recraft V4 Styles Pro",
-      "description": "Recraft V4 Styles Pro is a style-consistent image generation model from Recraft. Every request requires at least one style reference image and generates a new image that reproduces the reference's...",
+      "description": "Invented description 46: a sample model that draws a picture from a text prompt.",
       "created": 1787742640,
       "architecture": {
         "input_modalities": [
@@ -2341,7 +2341,7 @@
     {
       "id": "recraft/recraft-v4-styles-vector",
       "name": "Recraft: Recraft V4 Styles Vector",
-      "description": "Recraft V4 Styles Vector is a style-consistent image generation model from Recraft. Every request requires at least one style reference image and generates a new image that reproduces the reference's...",
+      "description": "Invented description 47: a sample model that draws a picture from a text prompt.",
       "created": 1787742635,
       "architecture": {
         "input_modalities": [
@@ -2393,7 +2393,7 @@
     {
       "id": "recraft/recraft-v4-styles-pro-vector",
       "name": "Recraft: Recraft V4 Styles Pro Vector",
-      "description": "Recraft V4 Styles Pro Vector is a style-consistent image generation model from Recraft. Every request requires at least one style reference image and generates a new image that reproduces the...",
+      "description": "Invented description 48: a sample model that draws a picture from a text prompt.",
       "created": 1787742628,
       "architecture": {
         "input_modalities": [
@@ -2445,7 +2445,7 @@
     {
       "id": "recraft/recraft-v4-styles",
       "name": "Recraft: Recraft V4 Styles",
-      "description": "Recraft V4 Styles is a style-consistent image generation model from Recraft. Every request requires at least one style reference image and generates a new image that reproduces the reference's rendering...",
+      "description": "Invented description 49: a sample model that draws a picture from a text prompt.",
       "created": 1787742458,
       "architecture": {
         "input_modalities": [
@@ -2491,7 +2491,7 @@
     {
       "id": "bytedance-seed/seedream-5-0-lite",
       "name": "ByteDance Seed: Seedream 5.0 Lite",
-      "description": "Seedream 5.0 Lite is an image generation model from ByteDance Seed. It is suited for professional visual creation that benefits from web-connected retrieval, complex-prompt comprehension, visual references, and broad knowledge...",
+      "description": "Invented description 50: a sample model that draws a picture from a text prompt.",
       "created": 1786650094,
       "architecture": {
         "input_modalities": [
@@ -2553,7 +2553,7 @@
     {
       "id": "bytedance-seed/seedream-5-0-pro",
       "name": "ByteDance Seed: Seedream 5.0 Pro",
-      "description": "Seedream 5.0 Pro is an image generation and editing model from ByteDance Seed. It is suited for commercial visual-production workflows that require precise editing control, lifelike scenes, and natural rendering.",
+      "description": "Invented description 51: a sample model that draws a picture from a text prompt.",
       "created": 1786578139,
       "architecture": {
         "input_modalities": [
@@ -2615,7 +2615,7 @@
     {
       "id": "x-ai/grok-imagine-image-2.0",
       "name": "xAI: Grok Imagine Image 2.0",
-      "description": "Grok Imagine Image 2.0 is an image generation and editing model from xAI. It is suited for creating images from text prompts and editing images from references, with low and...",
+      "description": "Invented description 52: a sample model that draws a picture from a text prompt.",
       "created": 1786486044,
       "architecture": {
         "input_modalities": [

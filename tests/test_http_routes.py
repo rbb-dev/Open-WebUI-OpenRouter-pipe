@@ -137,7 +137,7 @@ def _req(headers=None, app_redis=None, user=None):
     r.headers = headers or {}
     r.cookies = {}
     r.app = SimpleNamespace(state=SimpleNamespace(redis=app_redis))
-    r.client = SimpleNamespace(host="1.2.3.4")
+    r.client = SimpleNamespace(host="203.0.113.9")
     r.state = SimpleNamespace(
         user=user if user is not None else SimpleNamespace(id="u1", role="user", email="u1@example.com")
     )

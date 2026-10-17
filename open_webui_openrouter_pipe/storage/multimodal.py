@@ -1857,14 +1857,6 @@ class MultimodalHandler:
             - Only checks URL format, not video availability
             - Query parameters (like &t=30s) are allowed
             - HTTP is disabled by default; http:// URLs require ALLOW_INSECURE_HTTP allowlisting
-
-        Example:
-            >>> self._is_youtube_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
-            True
-            >>> self._is_youtube_url("https://youtu.be/dQw4w9WgXcQ")
-            True
-            >>> self._is_youtube_url("https://vimeo.com/123456")
-            False
         """
         if not url:
             return False

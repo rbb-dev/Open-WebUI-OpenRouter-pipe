@@ -334,11 +334,6 @@ def _reply_key(user_id: Any, chat_id: Any, message_id: Any) -> tuple[Any, Any, A
 
 
 def _citation_host(url: str) -> str:
-    """Extract a display host from a citation URL, dropping a leading "www.".
-
-    Uses ``removeprefix`` (not ``lstrip``, which strips a character *set* and
-    would corrupt hosts beginning with 'w'/'.', e.g. weather.com -> eather.com).
-    """
     host = url.split("//", 1)[-1].split("/", 1)[0].lower()
     return host.removeprefix("www.")
 

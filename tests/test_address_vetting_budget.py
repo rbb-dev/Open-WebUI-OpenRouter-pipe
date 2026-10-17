@@ -71,7 +71,7 @@ async def test_a_stalled_lookup_gives_up_inside_the_budget_it_was_given(budget):
 
     def _blocking(_url):
         released.wait(30)
-        return ["1.2.3.4"]
+        return ["93.184.216.34"]
 
     handler = _handler(_blocking)
     started = time.monotonic()

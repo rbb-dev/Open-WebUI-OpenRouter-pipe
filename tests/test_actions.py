@@ -138,12 +138,12 @@ async def test_write_args_audited_read_args_omitted(monkeypatch):
         actions, "_audit",
         lambda user, name, outcome, client_ip, args=None: calls.append((name, outcome, client_ip, args)),
     )
-    await actions.dispatch_action(SimpleNamespace(id="p"), _user(), "echo", {"message": "secret"}, client_ip="9.9.9.9")
+    await actions.dispatch_action(SimpleNamespace(id="p"), _user(), "echo", {"message": "secret"}, client_ip="203.0.113.9")
     await actions.dispatch_action(SimpleNamespace(id="p"), _user(), "whoami", {"x": 1})
     echo_ok = next(c for c in calls if c[0] == "echo" and c[1] == "ok")
     whoami_ok = next(c for c in calls if c[0] == "whoami" and c[1] == "ok")
     assert echo_ok[3] == {"message": "secret"}  # write args logged
-    assert echo_ok[2] == "9.9.9.9"  # client_ip logged
+    assert echo_ok[2] == "203.0.113.9"  # client_ip logged
     assert whoami_ok[3] is None  # read args omitted
 
 
@@ -159,9 +159,9 @@ def test_audit_routine_ok_is_debug_anomaly_is_warning(monkeypatch):
     calls = []
     monkeypatch.setattr(actions.logger, "debug", lambda *a, **k: calls.append("debug"))
     monkeypatch.setattr(actions.logger, "warning", lambda *a, **k: calls.append("warning"))
-    actions._audit(SimpleNamespace(id="u"), "usage_stats", "ok", "1.2.3.4")
-    actions._audit(SimpleNamespace(id="u"), "usage_stats", "forbidden", "1.2.3.4")
-    actions._audit(SimpleNamespace(id="u"), "usage_stats", "disabled", "1.2.3.4")
+    actions._audit(SimpleNamespace(id="u"), "usage_stats", "ok", "203.0.113.9")
+    actions._audit(SimpleNamespace(id="u"), "usage_stats", "forbidden", "203.0.113.9")
+    actions._audit(SimpleNamespace(id="u"), "usage_stats", "disabled", "203.0.113.9")
     assert calls == ["debug", "warning", "debug"]
 
 
