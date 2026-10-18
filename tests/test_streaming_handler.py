@@ -5054,6 +5054,94 @@ class TestAdaptiveToolBudgeting:
                 f"the notice reads as a template rather than a sentence: {notice}"
             )
 
+    @pytest.mark.asyncio
+    async def test_a_live_result_is_not_omitted_while_older_call_arguments_can_still_be_reduced(
+        self, monkeypatch, pipe_instance_async
+    ):
+        import copy
+
+        from open_webui_openrouter_pipe import CompletionsBody
+        from open_webui_openrouter_pipe.models.registry import ModelFamily
+
+        limit_tokens = 1_500
+        ModelFamily.set_dynamic_specs(
+            {"test.model": {"context_length": limit_tokens,
+                            "full_model": {"context_length": limit_tokens}}}
+        )
+        pipe = pipe_instance_async
+        valves = pipe.valves.model_copy(
+            update={"TOOL_EXECUTION_MODE": "Pipeline", "MAX_FUNCTION_CALL_LOOPS": 2}
+        )
+        messages: list[dict] = []
+        for turn in range(3):
+            messages += [
+                {"role": "user", "content": f"Question {turn}"},
+                {"role": "assistant", "content": "", "tool_calls": [{
+                    "id": f"call_{turn}", "type": "function",
+                    "function": {"name": "write_file",
+                                 "arguments": json.dumps({"content": "w" * 2_000})}}]},
+                {"role": "tool", "tool_call_id": f"call_{turn}", "content": "r" * 600},
+                {"role": "assistant", "content": f"Answer {turn}"},
+            ]
+        messages.append({"role": "user", "content": "Current question"})
+        body = await ResponsesBody.from_completions(
+            CompletionsBody(model="test/model", messages=messages, stream=True),
+            transformer_context=pipe, transformer_valves=valves,
+            pruning_turns=valves.TOOL_OUTPUT_RETENTION_TURNS,
+        )
+        live_result = "L" * 400
+        sent: list[dict] = []
+        rounds = iter(range(1, 200))
+
+        async def streaming(self, session, request_body, **_kwargs):
+            sent.append(copy.deepcopy(request_body))
+            if next(rounds) == 1:
+                yield {"type": "response.completed", "response": {"output": [
+                    {"type": "function_call", "call_id": "live", "name": "lookup",
+                     "arguments": "{}"}], "usage": {}}}
+            else:
+                yield {"type": "response.output_text.delta", "delta": "Done."}
+                yield {"type": "response.completed", "response": {"output": [], "usage": {}}}
+
+        async def mock_execute(calls, registry):
+            return [{"type": "function_call_output", "call_id": c.get("call_id"),
+                     "output": live_result} for c in calls]
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
+
+        async def emitter(event):
+            return None
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body, valves, emitter,
+            metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
+            tools={"lookup": {"callable": lambda **_kwargs: "ok"}},
+            session=cast(Any, object()), user_id="user-123",
+        )
+
+        shipped = sent[-1]["input"]
+        delivered = [
+            item["output"] for item in shipped
+            if item.get("type") == "function_call_output" and item.get("call_id") == "live"
+        ]
+        assert delivered == [live_result], (
+            f"the model was handed {delivered} for a {len(live_result)}-char result while "
+            "older calls still carried reducible arguments"
+        )
+        assert len(json.dumps(shipped, ensure_ascii=False)) <= limit_tokens * 4, (
+            "the request that shipped does not fit the model's window"
+        )
+        call_arguments = {
+            item.get("call_id"): item.get("arguments")
+            for item in shipped
+            if item.get("type") == "function_call"
+        }
+        assert call_arguments.get("call_0") == "{}", "the oldest call's arguments were not emptied first"
+        assert call_arguments.get("call_2") == json.dumps({"content": "w" * 2_000}), (
+            "the newest earlier call was emptied while older ones were enough"
+        )
+
     @pytest.mark.parametrize(
         ("max_tokens", "user_chars", "expect_futile"),
         [(200, 6_000, True), (100_000, 260, False)],

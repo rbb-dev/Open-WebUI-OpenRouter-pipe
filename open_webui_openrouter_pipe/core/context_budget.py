@@ -618,6 +618,55 @@ _REPLAY_FUTILE_MESSAGE = (
 )
 
 
+_EMPTY_ARGUMENTS = "{}"
+_ARGUMENT_SHED_TARGET_FRACTION = 0.8
+
+
+def _empty_oldest_call_arguments(
+    items: list[Any],
+    sheddable: list[Any],
+    *,
+    stop: int,
+    protected_call_ids: set[str],
+    over_chars: int,
+    limit_chars: int,
+    logger: logging.Logger,
+) -> int:
+    if over_chars <= 0:
+        return 0
+    shed_chars = 0
+    emptied = 0
+    for index in range(min(stop, len(sheddable))):
+        if shed_chars >= over_chars:
+            break
+        item = sheddable[index]
+        if not isinstance(item, dict) or item.get("type") != "function_call":
+            continue
+        call_id = item.get("call_id")
+        if isinstance(call_id, str) and call_id.strip() in protected_call_ids:
+            continue
+        arguments = item.get("arguments")
+        if not isinstance(arguments, str):
+            continue
+        saved = _wire_chars(arguments) - _wire_chars(_EMPTY_ARGUMENTS)
+        if saved <= 0:
+            continue
+        emptied_item = {**item, "arguments": _EMPTY_ARGUMENTS}
+        sheddable[index] = emptied_item
+        items[index] = emptied_item
+        shed_chars += saved
+        emptied += 1
+    if emptied:
+        logger.warning(
+            "Emptied the arguments of %d earlier tool call(s), oldest first (~%d chars), so the "
+            "request fits its ~%d char limit.",
+            emptied,
+            shed_chars,
+            limit_chars,
+        )
+    return shed_chars
+
+
 def _apply_tool_output_budget(
     items: list[Any],
     *,
@@ -629,6 +678,7 @@ def _apply_tool_output_budget(
     reserved_output_tokens: int | None = None,
     fixed_overhead_chars: int = 0,
     chars_per_token: float | None = None,
+    sheddable: list[Any] | None = None,
 ) -> BudgetOutcome:
     omitted_call_ids: set[str] = set()
     if not items:
@@ -672,6 +722,29 @@ def _apply_tool_output_budget(
         measured[index] = (output_text, wire_chars, floor_chars, picture_chars)
         floor_chars_total += floor_chars
     irreducible_chars = fixed_chars + max(fixed_overhead_chars, 0) + floor_chars_total
+    if sheddable is not None and prompt_limit_chars:
+        live_excess = 0
+        protected_call_ids: set[str] = set()
+        if live_from is not None:
+            for index, (_text, wire_chars, floor_chars, picture_chars) in measured.items():
+                if index < live_from:
+                    continue
+                live_excess += max(wire_chars + picture_chars - floor_chars, 0)
+                live_call_id = items[index].get("call_id") if isinstance(items[index], dict) else None
+                if isinstance(live_call_id, str) and live_call_id.strip():
+                    protected_call_ids.add(live_call_id.strip())
+        over_chars = irreducible_chars + live_excess - prompt_limit_chars
+        if over_chars > 0:
+            over_chars += prompt_limit_chars - int(prompt_limit_chars * _ARGUMENT_SHED_TARGET_FRACTION)
+        irreducible_chars -= _empty_oldest_call_arguments(
+            items,
+            sheddable,
+            stop=len(sheddable) if live_from is None else live_from,
+            protected_call_ids=protected_call_ids,
+            over_chars=over_chars,
+            limit_chars=prompt_limit_chars,
+            logger=logger,
+        )
     futile = bool(prompt_limit_chars) and irreducible_chars >= prompt_limit_chars
     if futile:
         logger.warning(futile_message, irreducible_chars, prompt_limit_chars)
@@ -744,6 +817,7 @@ def apply_live_tool_output_budget(
         reserved_output_tokens=reserved_output_tokens,
         fixed_overhead_chars=fixed_overhead_chars,
         chars_per_token=chars_per_token,
+        sheddable=existing_input_items if isinstance(existing_input_items, list) else None,
     )
 
 
@@ -767,4 +841,5 @@ def apply_replay_tool_output_budget(
         reserved_output_tokens=reserved_output_tokens,
         fixed_overhead_chars=fixed_overhead_chars,
         chars_per_token=chars_per_token,
+        sheddable=items,
     )
