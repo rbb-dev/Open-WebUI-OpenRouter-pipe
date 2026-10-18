@@ -1061,6 +1061,31 @@ class TestPublisherLoop:
         assert client.pubsub.call_count >= 2
         emit.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failing_step", ["subscribe", "get_message"])
+    async def test_every_wake_subscription_it_gives_up_is_closed(self, monkeypatch, failing_step):
+        monkeypatch.setattr(dashboard_publisher, "local_viewer_sids", lambda pipe_id: [])
+        opened = []
+
+        def new_pubsub():
+            pubsub = Mock()
+            pubsub.subscribe = AsyncMock(side_effect=TimeoutError() if failing_step == "subscribe" else None)
+            pubsub.get_message = AsyncMock(side_effect=TimeoutError())
+            pubsub.unsubscribe = AsyncMock()
+            pubsub.aclose = AsyncMock()
+            pubsub.close = AsyncMock()
+            opened.append(pubsub)
+            return pubsub
+
+        client = Mock()
+        client.exists = AsyncMock(return_value=0)
+        client.pubsub = Mock(side_effect=new_pubsub)
+        client.delete = AsyncMock()
+        await self._run_briefly(_make_mock_pipe, lambda: (client, True))
+        left_open = [p for p in opened if p.aclose.await_count + p.close.await_count == 0]
+        assert len(opened) >= 3
+        assert left_open == [], f"{len(left_open)} of {len(opened)} wake subscriptions were dropped without closing"
+
 
 # ── Blob module drift guard ──
 

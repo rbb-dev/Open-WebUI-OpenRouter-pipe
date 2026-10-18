@@ -418,6 +418,14 @@ async def _redis_op(awaitable: Any, timeout: float = _PD_REDIS_OP_TIMEOUT) -> An
         return await awaitable
 
 
+async def _close_wake_listener(pubsub: Any) -> None:
+    closer = getattr(pubsub, "aclose", None) or pubsub.close
+    try:
+        await closer()
+    except Exception:
+        logger.debug("Dashboard wake listener close failed", exc_info=True)
+
+
 async def _scan_worker_slices(client: Any, namespace: str) -> list[dict[str, Any]]:
     pattern = f"{namespace}:dashboard:worker:*"
     seen: set[Any] = set()
@@ -745,6 +753,8 @@ async def run_dashboard_publisher(
                     await _redis_op(pubsub.subscribe(wake_channel))
                 except Exception:
                     logger.debug("Pub/sub subscribe failed", exc_info=True)
+                    if pubsub is not None:
+                        await _close_wake_listener(pubsub)
                     pubsub = None
 
             if pipe is None:
@@ -806,6 +816,7 @@ async def run_dashboard_publisher(
                             continue
                     except Exception:
                         logger.debug("Dashboard wake listener failed; will resubscribe", exc_info=True)
+                        await _close_wake_listener(pubsub)
                         pubsub = None
                         await asyncio.sleep(_PD_POLL_INTERVAL)
                 else:
@@ -819,11 +830,7 @@ async def run_dashboard_publisher(
         logger.debug("Dashboard publisher cancelled (pid=%d)", pid)
     finally:
         if pubsub is not None:
-            try:
-                await _redis_op(pubsub.unsubscribe(wake_channel))
-                await pubsub.close()
-            except Exception:
-                logger.debug("Dashboard wake listener teardown failed", exc_info=True)
+            await _close_wake_listener(pubsub)
         try:
             client, enabled = get_redis()
             if enabled and client is not None and not stood_down:
