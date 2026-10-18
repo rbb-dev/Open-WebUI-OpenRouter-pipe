@@ -330,7 +330,7 @@ phrase placed in the `query` argument instead was read by Claude Haiku 5.5 and G
 searched (live check, 2026-10-17: all three requests, two to Claude Haiku 5.5 and one to GPT-5-mini), which is why the
 arguments stay empty. From there the card, the two rows, the markers and the limits are the ones above, and a streamed
 reply and a whole one are treated alike. With `PERSIST_TOOL_RESULTS` off the round reaches the model as the call with
-`{}` and one note that says both things: the query is not shown, and the call succeeded but its result is not kept.
+`{}` and one note that says both things: the query is not shown, and the call succeeded but its result is not kept -- and, while the history search is offered, which call to read it by.
 One round stands for the whole reply, because the route cannot tell two searches apart; a reply with no citations
 leaves none; the first run of consecutive citation frames forms the round, and frames after that run reach the sources
 panel only. A request that offered no web search tool gets no round, and its citations reach the sources panel as
@@ -372,7 +372,10 @@ only through the card Open WebUI keeps for it in the browser, and none with card
   the model gets the call as it was made, its name and its arguments (a Tool Search `call_tool` call keeps its
   `tool_name` and `params`), and a note in place of the result -- `[This call succeeded. Its result is not kept
   for later turns.]`, or `[This call failed. Its result is not kept for later turns.]` when the call did not
-  complete. The withholding holds on the list shape,
+  complete. While the history search is offered (see `TOOL_HISTORY_SEARCH`), the note carries the round's id --
+  `[This call succeeded. Its result is not kept for later turns; view_tool_call 37.4 returns it.]` --, a function of
+  the round's position on the chat's current path alone, and the search returns the stored result, and the call's
+  arguments, on request; with the search off, or wherever it is not offered, the note is the bare form. The withholding holds on the list shape,
   and on the flattened shape whenever the hand-off sits next to its result, which is how Open WebUI 0.11.4 builds it
   (`flush_tool_outputs()` and `flush_tool_images()` run back to back). On a flattened history whose hand-off is
   separated from its result -- a shape only an API caller, an imported or hand-edited chat, or a filter can build --
