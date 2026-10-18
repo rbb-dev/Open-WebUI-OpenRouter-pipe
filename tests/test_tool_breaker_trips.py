@@ -206,28 +206,20 @@ def _failing_after_a_moment(ran: list[str]):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("request_slots", "global_slots"),
-    [(1, None), (5, 1)],
-    ids=["waiting-for-a-request-slot", "waiting-for-a-global-slot"],
-)
 @pytest.mark.parametrize("threshold", [2])
-async def test_calls_waiting_for_a_slot_are_skipped_once_the_breaker_opens(
-    pipe_instance_async, threshold, request_slots, global_slots
-):
-    # Several workers and several calls per batch, as by default: every call is past the queue before any has failed,
-    # so only a check made once the call holds its slot can see the failures recorded while it waited.
+async def test_calls_waiting_for_a_slot_are_skipped_once_the_breaker_opens(pipe_instance_async, threshold):
+    # A round's delegate_task calls are the ones that start together, so they wait for the request's one slot behind
+    # each other, and only a check made once a call holds its slot can see the failures recorded while it waited.
     pipe = pipe_instance_async
     pipe._circuit_breaker.threshold = threshold
     ran: list[str] = []
-    registry = _registry(_failing_after_a_moment(ran))
+    registry = {"delegate_task": _registry(_failing_after_a_moment(ran))["flaky"]}
 
-    async def six_calls_in_one_turn(executor):
-        return await executor._execute_function_calls([_call(index) for index in range(6)], registry)
+    async def six_delegate_task_calls(executor):
+        calls = [{**_call(index), "name": "delegate_task"} for index in range(6)]
+        return await executor._execute_function_calls(calls, registry)
 
-    outputs = await _with_tool_context(
-        pipe, six_calls_in_one_turn, workers=5, batch_cap=4, request_slots=request_slots, global_slots=global_slots
-    )
+    outputs = await _with_tool_context(pipe, six_delegate_task_calls)
 
     assert len(ran) == threshold
     assert sum(_is_skip(output) for output in outputs) == 6 - threshold

@@ -253,7 +253,7 @@ Tool Search and the pipe runs it, the stored round names the tool that ran and a
 copy of the card alike, with the `tool_name` and `params` the model gave it whether `PERSIST_TOOL_RESULTS` is on or off. A call refused before it ran is answered as soon as it
 is refused, and on the turn it is answered it is handed to the model in the order the round asked for it, because its
 answer is produced before any queued call has run. A round stored with tool cards on is written as the calls are answered, so a
-Continue replays a refused call's answer ahead of the results that were still running. A call the model sends malformed is answered as Open WebUI's own tool loop answers it on the same route and is kept like any other call; several argument objects sent back to back become one call each.
+Continue replays a refused call's answer ahead of the results that were still to come. A call the model sends malformed is answered as Open WebUI's own tool loop answers it on the same route and is kept like any other call; several argument objects sent back to back become one call each.
 
 A **provider-native shell round** is kept in the same place and in the same shape, and is not a special case of the
 pipe's own loop: the model emitted it, the pipe never ran it. Its `shell_call` or `local_shell_call` item, and the

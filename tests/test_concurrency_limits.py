@@ -245,10 +245,12 @@ class TestToolSemaphore:
         )
 
     @pytest.mark.asyncio
-    async def test_no_more_than_the_configured_number_of_tools_run_at_once(
+    async def test_no_more_than_the_configured_number_of_delegate_task_calls_run_at_once(
         self, monkeypatch
     ) -> None:
         """Observes the peak that production's own semaphore permitted.
+
+        A reply's other calls run one after another, so delegate_task calls are the calls that can run together.
 
         Three earlier versions of this check failed three different ways: one built its
         own Semaphore and asserted CPython bounds it; one asserted on a context object
@@ -278,7 +280,7 @@ class TestToolSemaphore:
 
         ran: list[str] = []
         calls = [
-            {"type": "function_call", "call_id": f"c{i}", "name": "t", "arguments": "{}"}
+            {"type": "function_call", "call_id": f"c{i}", "name": "delegate_task", "arguments": "{}"}
             for i in range(limit * 3)
         ]
         rounds = [
@@ -332,10 +334,10 @@ class TestToolSemaphore:
                     __event_call__=None,
                     __metadata__={},
                     __tools__={
-                        "t": {
+                        "delegate_task": {
                             "callable": _slow,
                             "spec": {
-                                "name": "t",
+                                "name": "delegate_task",
                                 "description": "d",
                                 "parameters": {"type": "object", "properties": {}},
                             },
@@ -363,10 +365,9 @@ class TestToolSemaphore:
         )
         assert peak == limit, (
             f"the peak was {peak} under MAX_PARALLEL_TOOLS_PER_REQUEST={limit}. The "
-            "ceiling above is satisfied by a pool of ONE worker, which runs every call "
-            "one at a time and honours the semaphore by never contending for it: the "
-            "limit is a cap and the valve also sizes the pool, so the peak has to reach "
-            "it for the check to have observed the pool at all."
+            "ceiling above is satisfied by calls that run one at a time and never "
+            "contend for the semaphore, so the peak has to reach the limit for the "
+            "check to have observed the semaphore at all."
         )
 
     @pytest.mark.asyncio

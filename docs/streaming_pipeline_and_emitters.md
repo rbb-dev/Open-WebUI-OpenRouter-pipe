@@ -321,7 +321,7 @@ position - so an attempt to heal it would duplicate or corrupt the saved copy in
 round's calls before the first one still running, in the order the model emitted them: Open WebUI saves their cards as finished and hands them back, and
 with cards off the pipe's own copy does (not in a temporary chat, where the pipe keeps no copy), since the pipe writes
 a round's calls when the round starts and each result when its call returns, that is as the calls are answered, so a
-refused call's answer is written ahead of the results that were still running (see
+refused call's answer is written ahead of the results that were still to come (see
 [History Reconstruction & Context Replay](history_reconstruction_and_context.md), section 5.4).
 
 ---

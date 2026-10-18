@@ -335,6 +335,7 @@ async def _resolved_user_obj(context: _ToolExecutionContext) -> Any:
 
 OWUI_BUILTIN_TYPE = "builtin"
 OWUI_BUILTIN_TOOL_ID_PREFIX = "builtin:"
+SUB_AGENT_TOOL_NAME = "delegate_task"
 
 
 def is_owui_builtin(tool_cfg: Any) -> bool:
@@ -347,6 +348,11 @@ def is_builtin_ask_user(tool_cfg: Any) -> bool:
         and tool_cfg.get("type") == OWUI_BUILTIN_TYPE
         and tool_cfg.get("tool_id") == f"{OWUI_BUILTIN_TOOL_ID_PREFIX}ask_user"
     )
+
+
+def is_sub_agent_call(tool_name: str, tool_cfg: Any) -> bool:
+    origin_name = tool_cfg.get("origin_name") if isinstance(tool_cfg, dict) else None
+    return (origin_name if isinstance(origin_name, str) and origin_name else tool_name) == SUB_AGENT_TOOL_NAME
 
 
 _DATA_ENTRY_EXTENSIONS = {
@@ -720,6 +726,7 @@ class ToolExecutor:
         started_at = loop.time()
         context.calls[:] = [earlier for earlier in context.calls if not earlier.future.done()]
         pending: list[tuple[int, _QueuedToolCall, float | None]] = []
+        sub_agent_calls: list[tuple[int, _QueuedToolCall, float | None]] = []
         batches: list[list[_QueuedToolCall]] = []
         slots: list[dict[str, Any] | None] = [None] * len(calls)
         _on_complete = context.on_complete
@@ -840,17 +847,6 @@ class ToolExecutor:
                 allow_batch=allow_batch,
             )
             context.calls.append(queued)
-            batch = batches[-1] if batches else None
-            if (
-                batch is not None
-                and allow_batch
-                and batch[0].allow_batch
-                and len(batch) < context.batch_cap
-                and all(self._can_batch_tool_calls(member, queued) for member in batch)
-            ):
-                batch.append(queued)
-            else:
-                batches.append([queued])
             origin_source = tool_cfg.get("origin_source")
             origin_name = tool_cfg.get("origin_name")
             if isinstance(origin_source, str) and isinstance(origin_name, str):
@@ -863,7 +859,16 @@ class ToolExecutor:
                 )
             else:
                 self.logger.debug("Enqueued tool %s (batch=%s)", call.get("name"), allow_batch)
-            pending.append((index, queued, self._ask_user_window(tool_cfg, args)))
+            entry = (index, queued, self._ask_user_window(tool_cfg, args))
+            if is_sub_agent_call(tool_name, tool_cfg):
+                sub_agent_calls.append(entry)
+            else:
+                batches.append([queued])
+                pending.append(entry)
+
+        if sub_agent_calls:
+            batches.append([queued for _index, queued, _window in sub_agent_calls])
+            pending.extend(sub_agent_calls)
 
         try:
             if batches:
@@ -890,11 +895,15 @@ class ToolExecutor:
                         context.request_id,
                     )
 
-            for batch in batches:
-                await context.queue.put(batch)
-
             allowance = _idle_allowance(context, pending)
+            batch_by_first_call = {id(batch[0]): batch for batch in batches}
+            notify_order = sorted(index for index, _queued, _window in pending)
+            finished: dict[int, tuple[dict[str, Any], dict[str, Any]]] = {}
+            notified = 0
             for index, queued, _window in pending:
+                batch = batch_by_first_call.get(id(queued))
+                if batch is not None:
+                    await context.queue.put(batch)
                 call = queued.call
                 future = queued.future
                 try:
@@ -919,10 +928,14 @@ class ToolExecutor:
                     self.logger.warning("Tool idle limit: %s", message)
                     result = self._build_tool_output(call, message, status="failed")
                     await _dispatch_settled(call, "failed")
-                if _on_complete:
-                    with contextlib.suppress(Exception):
-                        await _on_complete(call, result)
                 slots[index] = result
+                finished[index] = (call, result)
+                while notified < len(notify_order) and notify_order[notified] in finished:
+                    notified_call, notified_result = finished.pop(notify_order[notified])
+                    notified += 1
+                    if _on_complete:
+                        with contextlib.suppress(Exception):
+                            await _on_complete(notified_call, notified_result)
         except BaseException:
             self._withdraw_unstarted_calls(context)
             raise

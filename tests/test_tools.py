@@ -362,15 +362,14 @@ async def test_execute_function_calls_with_context_idle_timeout():
 async def test_idle_timeout_returns_failed_output_and_continues():
     """Idle timeout returns failed outputs for all timed-out tools (no exception).
 
-    Both workers must DEQUEUE and START both calls for the idle limit to be what ends
-    them: the limit counts from a call's own start and never ends a call that has not
-    started. So two things hold this together.
+    The calls run one after another, so each has an idle window of its own: the limit counts
+    from a call's own start and never ends a call that has not started.
 
-    The limit is a second, not milliseconds. Measured on an idle box both tools hold their
+    The limit is half a second, not milliseconds. Measured on an idle box both tools hold their
     slot ~1.3 ms after the enqueue, and pinned to one core under contention the same figure
-    reached 11 ms -- past a 10 ms allowance, which is what the farm gate saw. One second
+    reached 11 ms -- past a 10 ms allowance, which is what the farm gate saw. Half a second
     sits far above any scheduling jitter this box can produce, and the tools' own 30 s sleep
-    is still far above it, so the idle limit is unambiguously what ends the wait.
+    is still far above it, so the idle limit is unambiguously what ends each wait.
 
     The clock stays real rather than the house jumping clock. The simulated loop would
     serve this arm -- both workers run to a start before the loop ever has nothing left to
@@ -386,7 +385,7 @@ async def test_idle_timeout_returns_failed_output_and_continues():
     try:
         pipe.valves.API_KEY = EncryptedStr("test-key")
         loop = asyncio.get_running_loop()
-        context = create_tool_context(loop, idle_timeout=1.0)
+        context = create_tool_context(loop, idle_timeout=0.5)
         token = pipe._TOOL_CONTEXT.set(context)
 
         try:
@@ -3042,7 +3041,7 @@ class TestToolWorkerLoop:
 import json
 
 
-async def _batches_formed(monkeypatch, calls: list[tuple[str, str, dict[str, Any]]], batch_cap: int) -> list[list[str]]:
+async def _batches_formed(monkeypatch, calls: list[tuple[str, str, dict[str, Any]]]) -> list[list[str]]:
     """Queue ``calls`` through `_execute_function_calls` with one real worker and record the batches it runs."""
     pipe = Pipe()
     formed: list[list[str]] = []
@@ -3060,9 +3059,9 @@ async def _batches_formed(monkeypatch, calls: list[tuple[str, str, dict[str, Any
     monkeypatch.setattr(pipe, "_execute_tool_batch", record_the_batch)
     tools = {
         name: {"type": "function", "callable": unused_tool, "spec": {"name": name, "parameters": {"type": "object", "properties": {}}}}
-        for name in ("tool_a", "tool_b")
+        for name in ("tool_a", "tool_b", "delegate_task")
     }
-    context = create_tool_context(asyncio.get_running_loop(), batch_cap=batch_cap)
+    context = create_tool_context(asyncio.get_running_loop())
     executor = pipe._ensure_tool_executor()
     context.workers.append(asyncio.create_task(executor._tool_worker_loop(context)))
     token = pipe._TOOL_CONTEXT.set(context)
@@ -3083,70 +3082,35 @@ async def _batches_formed(monkeypatch, calls: list[tuple[str, str, dict[str, Any
 
 
 class TestToolCallBatching:
-    """Consecutive calls to one tool that can run together share a batch, up to the batch cap."""
+    """Each call is queued as a batch of its own, in the order the model asked; delegate_task calls share the last batch."""
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("calls", "batch_cap", "expected"),
+        ("calls", "expected"),
         [
-            ([("c1", "tool_a", {}), ("c2", "tool_a", {}), ("c3", "tool_a", {})], 10, [["c1", "c2", "c3"]]),
-            ([("c1", "tool_a", {}), ("c2", "tool_a", {}), ("c3", "tool_a", {})], 2, [["c1", "c2"], ["c3"]]),
-            ([("c1", "tool_a", {}), ("c2", "tool_a", {}), ("c3", "tool_b", {})], 4, [["c1", "c2"], ["c3"]]),
-            ([("c1", "tool_a", {}), ("c2", "tool_b", {}), ("c3", "tool_a", {})], 4, [["c1"], ["c2"], ["c3"]]),
-            ([("c1", "tool_a", {"sequential": True}), ("c2", "tool_a", {})], 4, [["c1"], ["c2"]]),
-            ([("c1", "tool_a", {}), ("c2", "tool_a", {"depends_on": "c1"})], 4, [["c1"], ["c2"]]),
-            ([("c1", "tool_a", {}), ("c2", "tool_a", {"depends_on": "the whole list"})], 4, [["c1"], ["c2"]]),
-            ([("c1", "tool_a", {}), ("c2", "tool_a", {"_depends_on": "the whole list"})], 4, [["c1"], ["c2"]]),
-            ([("c1", "tool_a", {}), ("c2", "tool_a", {"no_batch": True})], 4, [["c1"], ["c2"]]),
-            ([("c1", "tool_a", {}), ("c2", "tool_a", {"note": "use what c1 found"})], 4, [["c1"], ["c2"]]),
-            ([("c1", "tool_a", {}), ("c2", "missing", {}), ("c3", "tool_a", {})], 4, [["c1", "c3"]]),
             (
-                [
-                    ("c1", "tool_a", {}),
-                    ("c2", "tool_a", {}),
-                    ("c3", "tool_b", {}),
-                    ("c4", "tool_b", {}),
-                    ("c5", "tool_b", {"depends_on": "c4"}),
-                ],
-                10,
-                [["c1", "c2"], ["c3", "c4"], ["c5"]],
-            ),
-            ([("c1", "tool_a", {}), ("c2", "tool_a", {}), ("c3", "tool_a", {"note": "see c2"})], 10, [["c1", "c2"], ["c3"]]),
-            (
-                [("c1", "tool_a", {}), ("c2", "tool_a", {}), ("c3", "tool_a", {}), ("c4", "tool_a", {"note": "see c3"})],
-                10,
-                [["c1", "c2", "c3"], ["c4"]],
+                [("c1", "tool_a", {}), ("c2", "tool_a", {}), ("c3", "tool_b", {})],
+                [["c1"], ["c2"], ["c3"]],
             ),
             (
-                [("c1", "tool_a", {}), ("c2", "tool_a", {}), ("c3", "tool_a", {}), ("c4", "tool_a", {"note": "see c2"})],
-                10,
-                [["c1", "c2", "c3"], ["c4"]],
+                [("c1", "delegate_task", {}), ("c2", "tool_a", {}), ("c3", "delegate_task", {})],
+                [["c2"], ["c1", "c3"]],
             ),
-            ([("c1", "tool_a", {}), ("c2", "tool_a", {"note": "about c3"}), ("c3", "tool_a", {})], 10, [["c1", "c2"], ["c3"]]),
-            ([("c1", "tool_a", {}), ("c2", "tool_a", {}), ("c3", "tool_a", {"note": "see nobody"})], 10, [["c1", "c2", "c3"]]),
         ],
         ids=[
-            "one-tool-under-the-cap",
-            "one-tool-over-the-cap",
-            "a-second-tool-starts-a-new-batch",
-            "another-tool-between-two-calls",
-            "a-call-marked-sequential",
-            "a-call-that-depends-on-another",
-            "a-call-marked-depends-on-something-not-a-call-id",
-            "a-call-marked-underscore-depends-on-something-not-a-call-id",
-            "a-call-marked-no-batch",
-            "a-call-that-refers-to-another",
-            "a-call-answered-before-queueing-does-not-split",
-            "mixed",
-            "c3-names-a-non-first-member",
-            "c4-names-a-later-member",
-            "c4-names-a-member-that-is-not-last",
-            "a-member-names-the-candidate",
-            "c3-names-nobody",
+            "calls-to-one-tool-stay-apart",
+            "delegate-task-calls-are-queued-last-and-together",
         ],
     )
-    async def test_calls_share_a_batch_only_when_they_can_run_together(self, monkeypatch, calls, batch_cap, expected):
-        assert await _batches_formed(monkeypatch, calls, batch_cap) == expected
+    async def test_each_call_is_its_own_batch_and_delegate_task_calls_share_the_last_one(
+        self, monkeypatch, calls, expected
+    ):
+        assert await _batches_formed(monkeypatch, calls) == expected
+
+    @pytest.mark.asyncio
+    async def test_a_call_answered_before_queueing_is_not_queued(self, monkeypatch):
+        calls = [("c1", "tool_a", {}), ("c2", "missing", {}), ("c3", "tool_a", {})]
+        assert await _batches_formed(monkeypatch, calls) == [["c1"], ["c3"]]
 
 
 # ===== From test_tool_passthrough.py =====

@@ -1054,7 +1054,7 @@ Each hook has a specific dispatch pattern:
 | `on_request` | **Chain** | `dict \| str \| None` | All subscribers run; each receives `current_result` kwarg; return non-`None` to set/replace result |
 | `on_request_transform` | **Void/Mutation** | `None` | All subscribers mutate the same body dict in place |
 | `on_emitter_wrap` | **Chain/Wrap** | `callable \| None` | All subscribers run; each wraps or replaces the current emitter |
-| `on_tool_result` | **Void broadcast (observer)** | `None` | Observe one tool call the pipe ran in a batch; plain await, no timeout |
+| `on_tool_result` | **Void broadcast (observer)** | `None` | Observe one tool call the pipe ran; plain await, no timeout |
 | `on_request_retry` | **Void broadcast (observer)** | `None` | Observe one orchestrator retry decision; plain await, no timeout |
 | `on_request_alive` | **Void broadcast (observer)** | `None` | Observe that a request the pipe is still running is alive; plain await, no timeout |
 | `on_generation_complete` | **Void broadcast (observer)** | `None` | Observe the terminal state once per request; plain await, no timeout |
@@ -1474,7 +1474,7 @@ Use `_ensure_*()` methods — safe to call, creates on first access:
 | `_ensure_reasoning_config_manager()` | `ReasoningConfigManager` | Reasoning/thinking output configuration |
 | `_ensure_nonstreaming_adapter()` | `NonStreamingAdapter` | Non-streaming OpenRouter requests |
 | `_ensure_task_model_adapter()` | `TaskModelAdapter` | Task model (title/tags/emoji) requests |
-| `_ensure_tool_executor()` | `ToolExecutor` | Tool/function call queueing, batching and execution |
+| `_ensure_tool_executor()` | `ToolExecutor` | Tool/function call queueing and execution |
 | `_ensure_responses_adapter()` | `ResponsesAdapter` | OpenRouter Responses API streaming |
 | `_ensure_chat_completions_adapter()` | `ChatCompletionsAdapter` | OpenAI-compatible chat completions |
 | `_ensure_request_orchestrator()` | `RequestOrchestrator` | Routes requests to appropriate adapter |
