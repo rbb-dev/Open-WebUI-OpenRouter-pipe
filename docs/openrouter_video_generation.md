@@ -2101,21 +2101,21 @@ into the `files` table, and linked to the chat message via
 appears in the chat's Files panel and can be downloaded directly.
 
 Which link is made depends on the conversation, and the pipe writes the
-upload metadata the way Open WebUI's own middleware reads it
-(`backend/open_webui/utils/middleware.py:1839`), so a channel and a
+upload metadata the way Open WebUI's own image upload reads it
+(`upload_image` in `routers/images.py`), so a channel and a
 chat are never both named:
 
 - **A saved chat** — the link is a `chat_file` row, made under **the
   account the file was uploaded as**. That is the Files-panel sentence
   above, and it is the only case it describes. Open WebUI re-checks
   that ownership before the insert
-  (`backend/open_webui/models/chats.py:2590-2607`, "Only link files the
+  (`insert_chat_files` in `models/chats.py`, "Only link files the
   caller can read"), so a row naming an identity that cannot read the
   file is not written at all.
 - **A saved chat on a turn with no message id** — there is no link,
   and none is attempted. `chat_file` has to name the message the file
   belongs to, and Open WebUI's own read path gates on both ids
-  (`backend/open_webui/routers/images.py:544`); a row written under an
+  (the chat-link guard in `upload_image`); a row written under an
   empty message id would attach the file to no message while still
   granting it to every holder of the chat's share link, because
   `get_shared_chat_ids_by_file_id` joins on `(chat_id, file_id)` and
@@ -2125,7 +2125,7 @@ chat are never both named:
 - **A channel conversation** (`chat_id = "channel:<id>"`) — the link is
   the channel's own `channel_file` row, and that row is the only thing
   that makes a generated file readable by a second member
-  (`backend/open_webui/utils/access_control/files.py:66-69`), so
+  (the channel-membership arm of `has_access_to_file` in `utils/access_control/files.py`), so
   **every member** of the channel can open the file and not just the
   person who triggered the generation. What Open WebUI decides from is the *uploader's*
   membership, not the requester's: if the request's user could not be
@@ -2141,8 +2141,8 @@ chat are never both named:
 The link is always made under the account the file was uploaded as, and
 **that is the only account that can open it**: Open WebUI serves file
 content to the owner, an admin, or a user with an explicit access grant
-(`backend/open_webui/routers/files.py:919`,
-`backend/open_webui/utils/access_control/files.py:41-43`). So a
+(`get_file_content_by_id` in `routers/files.py`,
+the ownership check in `has_access_to_file`, `utils/access_control/files.py`). So a
 request whose user could not be resolved — the fallback storage
 account was used — leaves a listed picture the person cannot load
 (**404**). The row is a link into a chat, never an access grant for the

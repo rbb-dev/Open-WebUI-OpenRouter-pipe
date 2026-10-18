@@ -449,7 +449,7 @@ return [
 ]
 ```
 
-Plugins see the pipe's own catalog rows, not the raw OpenRouter entries. The returned list is stripped to `{id, name}` after dispatch, and Open WebUI reads only those two fields off a sub-pipe's rows (`functions.py:106-107`).
+Plugins see the pipe's own catalog rows, not the raw OpenRouter entries. The returned list is stripped to `{id, name}` after dispatch, and Open WebUI reads only those two fields off a sub-pipe's rows (the sub-pipe loop in `get_function_models`).
 
 **Dispatch type:** **Void/Mutation** — all subscribers receive a reference to the same list and mutate it in place. Plugins run in priority order; mutations made by higher-priority plugins are immediately visible to lower-priority ones.
 

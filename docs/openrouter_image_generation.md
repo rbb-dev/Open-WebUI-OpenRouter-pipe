@@ -1488,7 +1488,7 @@ sent the bytes and as the provider's own link where it sent a URL, and
 it is rendered the same way. On the chat route this is stricter than
 Open WebUI's own chat path, which uploads in a temporary chat and only
 declines the link
-(`.external/open-webui/backend/open_webui/routers/images.py:520`); a
+(the `upload_image` path in `routers/images.py`); a
 deployment that turns on Open WebUI's
 `ENABLE_CHAT_RESPONSE_BASE64_IMAGE_URL_CONVERSION` (off by default, and
 never set by the pipe) will still convert a long inline picture on the
@@ -1503,7 +1503,7 @@ chat has no row, so nothing is stored there either: the picture stays in
 the message itself as its own `data:` URL, numbered with the others in a
 reply that carries more than one, and no row is written at all. The one
 remaining case is a call that carries no chat id at all, and there
-Open WebUI's own image path (`routers/images.py:520`) stores whatever
+Open WebUI's own image path (`upload_image` in `routers/images.py`) stores whatever
 chat it is handed, so the pipe does too: the bytes reach the file store
 as a row with no chat or message link beside it, and the reply carries
 `/api/v1/files/{id}/content` like any other stored picture (see

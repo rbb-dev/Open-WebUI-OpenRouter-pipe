@@ -21,11 +21,13 @@ Inputs (high level):
     once per message: the markers of every message sharing a `message_id` are gathered first and
     asked for together. **The replayed path is the id-less shape.** `load_messages_from_db` builds
     each message from `MESSAGE_REPLAY_KEYS`, which includes `id` and `model`
-    (`utils/middleware.py:2221`, `models/chat_messages.py:386`), but `process_messages_with_output`
-    pops both before the pipe runs (`utils/middleware.py:2296-2298`) — and the `output`-bearing
+    (the tuple in `utils/middleware.py`, and the `chat_message` row reconstruction in
+    `models/chat_messages.py`), but `process_messages_with_output`
+    pops both before the pipe runs — and the `output`-bearing
     assistant branch replaces the dict wholesale through `convert_output_to_messages`, which writes
-    neither. Both of its callers (`process_chat_payload` at `:2523`, `drain_approved_tool_calls` at
-    `:3574`) run before `chat_completion_handler` (`main.py:1666-1671`), so no saved chat reaches
+    neither. Both of its callers before `chat_completion_handler` (`process_chat_payload`, and
+    `resume_tool_calls` on the tool-approval resume path) run before the handler (which
+    `chat_completion` calls), so no saved chat reaches
     `pipe.pipe(body=form_data)` carrying either key. Every message therefore groups under the same
     key and a saved chat of any length costs **one** call, not one per turn.
     `tests/test_b591_the_replayed_path_is_the_id_less_shape.py` drives the real host function and
@@ -53,7 +55,7 @@ Output:
 
 Messages with `role` of `system` or `developer` are preserved as separate message items:
 
-- Content is converted into `input_text` blocks without merging or whitespace normalization. A `system` or `developer` turn whose text resolves to nothing produces no message item at all — which is what Open WebUI’s own converter does (`if system_content:`, `routers/openai.py:1386-1387`) and what the list form of this pipe’s own guard already did.
+- Content is converted into `input_text` blocks without merging or whitespace normalization. A `system` or `developer` turn whose text resolves to nothing produces no message item at all — which is what Open WebUI’s own converter does (`if system_content:` in `routers/openai.py`) and what the list form of this pipe’s own guard already did.
 - The pipe emits them as:
 
 ```json
@@ -478,11 +480,11 @@ On `/chat/completions` a replayed reasoning item rides on the assistant message 
 `reasoning_details`, matching Open WebUI's `convert_output_to_messages(raw=True)`; a reasoning item with no
 assistant message of its own to ride on is emitted as an assistant message of its own before the round's results
 and before the round's picture handoff. A message that names a
-different `model` has its whole `reasoning_details` block dropped before the request is built, the way Open WebUI
-does at `utils/middleware.py:2516-2521`; a message that names no model, or a blank one, keeps it, because the
+different `model` has its whole `reasoning_details` block dropped before the request is built, the way the
+model-mismatch strip on Open WebUI's continue path (`strip_reasoning_details`) does; a message that names no model, or a blank one, keeps it, because the
 pipe's own gateway puts `model` on the chunk and never on the message and a missing id cannot be attributed.
 **On Open WebUI 0.11.4's replayed path that host guard cannot fire**: `process_messages_with_output` pops
-`model` from every message before the pipe runs (`utils/middleware.py:2296-2298`), so the message-level
+`model` from every message before the pipe runs, so the message-level
 `same_model` predicate always takes its absent-means-unknown arm there. It is load-bearing on the pipe's own
 OpenAI-compatible gateway, where the caller supplies its own messages; on a saved chat the **stored row's** guard
 (the next paragraph) is the one that carries the rule. That replayed block is
@@ -545,7 +547,7 @@ the offsets above govern what is sent, and this governs only what the person is 
 
 The message's `sources`, `annotations` and `reasoning_details` accumulate the same way, and the pipe's
 end-of-turn write is the reason they do. Open WebUI maintains `sources` by its own read-modify-write — its socket
-handler appends every `source` frame it receives (`socket/main.py:1250-1265`) — and the pipe's write was the only
+handler appends every `source` frame it receives (the `source`/`citation` arm of `__event_emitter__` in `socket/main.py`) — and the pipe's write was the only
 *replacing* writer, built from one request's accumulated citations, so it removed whatever was on the message that
 this request did not itself produce. The stored value of each field is now the union: the entries already on the
 message followed by this turn's entries whose identity is not among them, with the stored copy of a repeat kept so
