@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from typing import Any
 from urllib.parse import urlsplit
 
-from .utils import server_tool_status, unretained_tool_result
+from .utils import server_tool_status, unretained_tool_result_ref
 
 SEARCH_SNIPPET_CHAR_CAP = 1600
 SEARCH_SNIPPET_CHAR_FLOOR = 100
@@ -172,8 +172,8 @@ def render_search_result(item: dict[str, Any], citations: list[dict[str, str]]) 
     return json.dumps(entries, ensure_ascii=False)
 
 
-def unretained_result_text(text: str, failed: bool) -> str:
-    note = unretained_tool_result(failed)
+def unretained_result_text(text: str, failed: bool, ref: str | None = None) -> str:
+    note = unretained_tool_result_ref(failed, ref)
     if text.startswith(_QUERY_NOTE_PREFIX):
         return f"[{SEARCH_QUERY_NOT_RETURNED_STEM}. {note[1:]}"
     return note

@@ -18,7 +18,7 @@ import hashlib
 import json
 import logging
 import time
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict, deque
 from collections.abc import Awaitable, Callable, Iterable, Iterator
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
@@ -83,7 +83,7 @@ from ..core.utils import (
     split_text_by_phase_markers,
     strip_hidden_marker_lines,
     tool_output_text_and_pictures,
-    unretained_tool_result,
+    unretained_tool_result_ref,
 )
 from ..core.warn_latch import warn_level
 from ..core.web_search_record import unretained_result_text
@@ -162,7 +162,7 @@ def _server_round(
 _NOT_A_TOOL_ROUND = frozenset({"message", "reasoning"})
 
 
-def _withheld_provider_round(item: dict[str, Any]) -> list[dict[str, Any]]:
+def _withheld_provider_round(item: dict[str, Any], ref: str | None = None) -> list[dict[str, Any]]:
     item_type = str(item.get("type") or "")
     call_id = str(item.get("call_id") or item.get("id") or "")
     name = item.get("name")
@@ -174,7 +174,7 @@ def _withheld_provider_round(item: dict[str, Any]) -> list[dict[str, Any]]:
          "name": name.strip() if isinstance(name, str) and name.strip() else item_type,
          "arguments": arguments},
         {"type": "function_call_output", "call_id": call_id,
-         "output": unretained_tool_result(server_tool_status(item) != "completed")},
+         "output": unretained_tool_result_ref(server_tool_status(item) != "completed", ref)},
     ]
 
 
@@ -281,6 +281,7 @@ def _without_tool_result(
     name: str,
     ask_user_names: frozenset[str],
     own_stamp: Any = None,
+    ref: str | None = None,
 ) -> list[dict[str, Any]] | None:
     item_type = item.get("type")
     if item_type == "function_call":
@@ -291,16 +292,16 @@ def _without_tool_result(
         ):
             return None
         text = tool_output_text_and_pictures(item.get("output"))[0]
-        return [{**item, "output": unretained_result_text(text, _tool_result_failed(text, item.get("status")))}]
+        return [{**item, "output": unretained_result_text(text, _tool_result_failed(text, item.get("status")), ref)}]
     if isinstance(item_type, str) and item_type.startswith("openrouter:"):
         return _server_round(
             item,
             json.dumps(server_tool_arguments(item), ensure_ascii=False),
-            unretained_tool_result(server_tool_status(item) != "completed"),
+            unretained_tool_result_ref(server_tool_status(item) != "completed", ref),
         )
     if isinstance(item_type, str) and item_type.lower() in _NOT_A_TOOL_ROUND:
         return None
-    return _withheld_provider_round(item)
+    return _withheld_provider_round(item, ref)
 
 
 _REUSE_DOWNLOAD_MEMO_MAX_BYTES = 8 * 1024 * 1024
@@ -1101,6 +1102,69 @@ def _handoff_back_answers(messages: list[dict[str, Any]]) -> dict[int, bool]:
     return answers
 
 
+def message_identifier(entry: dict[str, Any]) -> str | None:
+    """Return the most specific identifier available on ``entry``."""
+    for key in ("id", "_id", "message_id"):
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def compute_turn_indices(
+    messages: list[dict[str, Any]], handoff_back_at: dict[int, bool]
+) -> tuple[list[int | None], int]:
+    """Label each message with a turn index and return the total count."""
+    indices: list[int | None] = []
+    current_turn = -1
+    max_turn = -1
+    last_dialog_role: str | None = None
+
+    for position, msg in enumerate(messages):
+        role = (msg.get("role") or "").lower()
+        turn_idx: int | None = None
+
+        if role == "user" and _is_tool_image_handoff_at(messages, position, handoff_back_at):
+            turn_idx = current_turn if current_turn >= 0 else None
+        elif role == "user":
+            if last_dialog_role != "user":
+                current_turn += 1
+            turn_idx = current_turn
+            last_dialog_role = "user"
+        elif role == "assistant":
+            current_turn = max(current_turn, 0)
+            turn_idx = current_turn
+            last_dialog_role = "assistant"
+        else:
+            turn_idx = current_turn if current_turn >= 0 else None
+
+        if turn_idx is not None and turn_idx > max_turn:
+            max_turn = turn_idx
+        indices.append(turn_idx)
+
+    total_turns = max_turn + 1 if max_turn >= 0 else 0
+    return indices, total_turns
+
+
+_HISTORY_TOOL_BASE_NAMES = frozenset({"search_tool_history", "list_tool_history", "view_tool_call"})
+
+
+def history_self_name(name: str, exposed: frozenset[str] | set[str]) -> bool:
+    return name in exposed or name in _HISTORY_TOOL_BASE_NAMES
+
+
+def history_round_entry_ok(tool_call: Any) -> bool:
+    if not isinstance(tool_call, dict):
+        return False
+    if tool_call.get("type") not in (None, "function"):
+        return False
+    function = tool_call.get("function")
+    if not isinstance(function, dict):
+        return False
+    name = function.get("name")
+    return bool(name.strip()) if isinstance(name, str) else False
+
+
 def _tool_picture_gate(
     pictures: list[str],
     *,
@@ -1426,6 +1490,9 @@ async def transform_messages_to_input(
     ask_user_names: frozenset[str] = frozenset(),
     attachment_notices: list[str] | None = None,
     temporary_chat: bool | None = None,
+    tool_history_armed: bool = False,
+    history_left_out_rounds: list[int] | None = None,
+    tool_history_self_names: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """
     Build an OpenAI Responses-API `input` array from Open WebUI-style messages.
@@ -1477,12 +1544,7 @@ async def transform_messages_to_input(
         _deferred_tool_refusals: list[tuple[str, str, str]] = []
 
         def _message_identifier(entry: dict[str, Any]) -> str | None:
-            """Return the most specific identifier available on ``entry``."""
-            for key in ("id", "_id", "message_id"):
-                value = entry.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value
-            return None
+            return message_identifier(entry)
 
         async def _flush_deferred_tool_pictures() -> None:
             if _deferred_tool_pictures:
@@ -1510,36 +1572,7 @@ async def transform_messages_to_input(
                 _deferred_tool_refusals.clear()
 
         def _compute_turn_indices() -> tuple[list[int | None], int]:
-            """Label each message with a turn index and return the total count."""
-            indices: list[int | None] = []
-            current_turn = -1
-            max_turn = -1
-            last_dialog_role: str | None = None
-
-            for position, msg in enumerate(messages):
-                role = (msg.get("role") or "").lower()
-                turn_idx: int | None = None
-
-                if role == "user" and _is_tool_image_handoff_at(messages, position, handoff_back_at):
-                    turn_idx = current_turn if current_turn >= 0 else None
-                elif role == "user":
-                    if last_dialog_role != "user":
-                        current_turn += 1
-                    turn_idx = current_turn
-                    last_dialog_role = "user"
-                elif role == "assistant":
-                    current_turn = max(current_turn, 0)
-                    turn_idx = current_turn
-                    last_dialog_role = "assistant"
-                else:
-                    turn_idx = current_turn if current_turn >= 0 else None
-
-                if turn_idx is not None and turn_idx > max_turn:
-                    max_turn = turn_idx
-                indices.append(turn_idx)
-
-            total_turns = max_turn + 1 if max_turn >= 0 else 0
-            return indices, total_turns
+            return compute_turn_indices(messages, handoff_back_at)
 
         def _is_old_turn(turn_index: int | None, *, threshold: int | None) -> bool:
             """Return True when a message turn falls outside the retention window."""
@@ -1649,6 +1682,34 @@ async def transform_messages_to_input(
         )
         reuse_limit_seen: list[int | None] = [None]
         tool_name_at, issuer_at = _tool_names_by_position(messages)
+        history_note_state: (
+            tuple[defaultdict[Any, int], defaultdict[str, deque], defaultdict[str, deque]] | None
+        ) = (
+            (defaultdict(int), defaultdict(deque), defaultdict(deque)) if tool_history_armed else None
+        )
+
+        def _history_note_push(turn_index: int | None, call_id: Any, name: str, own: bool) -> None:
+            if history_note_state is None:
+                return
+            counter, own_queue, pipe_queue = history_note_state
+            counter[turn_index] += 1
+            key = call_id.strip() if isinstance(call_id, str) else ""
+            if not key or history_self_name(name, tool_history_self_names):
+                return
+            (own_queue if own else pipe_queue)[key].append(counter[turn_index])
+
+        def _history_note_ref(turn_index: int | None, call_id: Any, own: bool) -> str | None:
+            if history_note_state is None or turn_index is None:
+                return None
+            key = call_id.strip() if isinstance(call_id, str) else ""
+            if not key:
+                return None
+            bucket = history_note_state[1] if own else history_note_state[2]
+            queue = bucket.get(key)
+            position = queue.popleft() if queue else None
+            if position is None:
+                return None
+            return f"{turn_index + 1}.{position}"
 
         def _withheld(turn_index: int | None) -> bool:
             return not active_valves.PERSIST_TOOL_RESULTS and turn_index is not None and turn_index < total_turns - 1
@@ -2023,8 +2084,12 @@ async def transform_messages_to_input(
 
                 if _tool_round_withheld(msg_turn_index):
                     if not round_exempt:
+                        if history_left_out_rounds is not None:
+                            history_left_out_rounds.append(1)
                         tool_content_text = unretained_result_text(
-                            tool_content_text, _tool_result_failed(tool_content_text)
+                            tool_content_text,
+                            _tool_result_failed(tool_content_text),
+                            _history_note_ref(msg_turn_index, call_id, own=True),
                         )
                     tool_pictures = []
 
@@ -3731,6 +3796,17 @@ async def transform_messages_to_input(
                                     msg_id,
                                 )
                                 continue
+                            if history_note_state is not None and (
+                                item_type == "function_call" or item_type.startswith("openrouter:")
+                            ):
+                                _history_note_push(
+                                    msg_turn_index,
+                                    server_tool_call_id(item.get("id") or segment["marker"])
+                                    if item_type.startswith("openrouter:")
+                                    else item.get("call_id"),
+                                    str(item.get("name") or ""),
+                                    own=False,
+                                )
                             replay_round_name, replay_round_stamp = _replay_round_name(
                                 item_type, str(item.get("name") or ""), _round_own_stamp(item),
                                 item.get("call_id"), replay_pending,
@@ -3747,14 +3823,30 @@ async def transform_messages_to_input(
                             ):
                                 last_image_blocks, last_image_turn = [], None
                             if history_trimmed and not replay_round_exempt:
+                                if history_left_out_rounds is not None and (
+                                    item_type == "function_call" or item_type.startswith("openrouter:")
+                                ):
+                                    history_left_out_rounds.append(1)
                                 continue
                             if _tool_round_withheld(msg_turn_index):
+                                item_kind = str(item.get("type") or "")
                                 withheld_items = _without_tool_result(
                                     item,
                                     replay_round_name,
                                     ask_user_names,
                                     replay_round_stamp,
+                                    _history_note_ref(
+                                        msg_turn_index,
+                                        server_tool_call_id(item.get("id") or segment["marker"])
+                                        if item_kind.startswith("openrouter:")
+                                        else item.get("call_id"),
+                                        own=False,
+                                    )
+                                    if item_kind == "function_call_output" or item_kind.startswith("openrouter:")
+                                    else None,
                                 )
+                                if withheld_items is not None and history_left_out_rounds is not None:
+                                    history_left_out_rounds.append(1)
                                 if withheld_items is not None:
                                     openai_input.extend(_from_pipe_storage(withheld) for withheld in withheld_items)
                                     continue
@@ -3816,9 +3908,12 @@ async def transform_messages_to_input(
                     if not name:
                         continue
 
+                    _history_note_push(msg_turn_index, tool_call_id, name, own=True)
                     call_slot = call_slots.get(tool_call_id, 0)
                     call_slots[tool_call_id] = call_slot + 1
                     if history_trimmed and (idx, tool_call_id, call_slot) not in exempt_call_slots:
+                        if history_left_out_rounds is not None:
+                            history_left_out_rounds.append(1)
                         continue
 
                     arguments = function.get("arguments")

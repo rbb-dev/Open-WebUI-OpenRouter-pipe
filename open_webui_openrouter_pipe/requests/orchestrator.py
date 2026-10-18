@@ -447,6 +447,42 @@ def _openwebui_model_id_kwarg(model_id: Any) -> dict[str, Any]:
     return {"openwebui_model_id": model_id} if model_id else {}
 
 
+_HISTORY_TOOL_OFFER_NAMES = frozenset(
+    {"search_tool_history", "list_tool_history", "view_tool_call"}
+)
+
+
+def _history_tool_names_free(
+    owui_registry: dict[str, dict[str, Any]] | None,
+    direct_registry: dict[str, dict[str, Any]] | None,
+    incoming_tools: list[dict[str, Any]] | None,
+    extra_tools: list[dict[str, Any]] | None,
+) -> bool:
+    taken: set[str] = set()
+    for registry in (owui_registry, direct_registry):
+        for cfg in (registry or {}).values():
+            spec = cfg.get("spec") if isinstance(cfg, dict) else None
+            name = spec.get("name") if isinstance(spec, dict) else None
+            if isinstance(name, str) and name.strip():
+                taken.add(name.strip())
+    for source in (incoming_tools, extra_tools):
+        for tool in source or []:
+            name = tool.get("name") if isinstance(tool, dict) else None
+            if isinstance(name, str) and name.strip():
+                taken.add(name.strip())
+    return not (_HISTORY_TOOL_OFFER_NAMES & taken)
+
+
+def _history_model_capable(metadata: Any) -> bool:
+    model = metadata.get("model") if isinstance(metadata, dict) else None
+    info = model.get("info") if isinstance(model, dict) else None
+    meta = info.get("meta") if isinstance(info, dict) else None
+    capabilities = meta.get("capabilities") if isinstance(meta, dict) else None
+    if not isinstance(capabilities, dict):
+        return True
+    return capabilities.get("builtin_tools", True) is not False
+
+
 def _switched_off_web_tools_asked_for(
     metadata: Any, valves: Any, request_tools: Any = None
 ) -> bool:
@@ -1706,12 +1742,46 @@ class RequestOrchestrator:
                     )
 
         builtin_ask_user_names: set[str] = set(ask_user_origin_names)
+        history_registry: dict[str, dict[str, Any]] | None = None
+        history_left_out_rounds: list[int] = []
+        if (
+            not use_task_model_adapter
+            and not fusion_inner
+            and valves.TOOL_HISTORY_SEARCH
+            and not owui_tool_passthrough
+            and not withhold_owui_tools
+            and isinstance(__metadata__, dict)
+        ):
+            history_chat_id = __metadata__.get("chat_id")
+            history_message_id = __metadata__.get("message_id")
+            history_choice = completions_body.tool_choice
+            history_choice_ok = history_choice is None or history_choice == "auto"
+            if (
+                history_chat_id
+                and history_message_id
+                and history_choice_ok
+                and __metadata__.get("session_id")
+                and _history_tool_names_free(owui_registry, direct_registry, incoming_tools, merged_extra_tools)
+                and _history_model_capable(__metadata__)
+            ):
+                from ..tools.tool_history import history_entries as _history_entries
+
+                history_registry = _history_entries(
+                    self._pipe,
+                    messages=completions_body.messages,
+                    chat_id=str(history_chat_id),
+                    reply_id=str(history_message_id),
+                    window_turns=valves.TOOL_TURNS_TO_REMEMBER,
+                    notes_in_view=not valves.PERSIST_TOOL_RESULTS,
+                    ask_user_names=frozenset(ask_user_origin_names),
+                )
+                merged_extra_tools.extend(entry["spec"] for entry in history_registry.values())
         if not use_task_model_adapter:
             tools, exec_registry, exposed_to_origin = _build_collision_safe_tool_specs_and_registry(
                 request_tool_specs=incoming_tools if incoming_tools else None,
                 owui_registry=owui_registry or None,
                 direct_registry=direct_registry or None,
-                builtin_registry=None,
+                builtin_registry=history_registry,
                 extra_tools=merged_extra_tools or None,
                 strictify=strictify,
                 owui_tool_passthrough=owui_tool_passthrough,
@@ -1722,6 +1792,13 @@ class RequestOrchestrator:
             )
         else:
             tools, exec_registry, exposed_to_origin = [], {}, {}
+        history_self_names: frozenset[str] = frozenset()
+        if history_registry:
+            history_self_names = frozenset(
+                exposed
+                for exposed, origin in exposed_to_origin.items()
+                if origin in _HISTORY_TOOL_OFFER_NAMES
+            )
         responses_body = await ResponsesBody.from_completions(
             completions_body=completions_body,
 
@@ -1752,7 +1829,16 @@ class RequestOrchestrator:
             transformer_valves=valves,
             capability_model_id=pre_capability_model_id,
             ask_user_names=frozenset(builtin_ask_user_names),
+            tool_history_armed=history_registry is not None,
+            history_left_out_rounds=history_left_out_rounds if history_registry is not None else None,
+            tool_history_self_names=history_self_names,
         )
+        if history_registry is not None and not history_left_out_rounds:
+            for exposed in history_self_names:
+                tools = [tool for tool in tools if (tool.get("name") if isinstance(tool, dict) else None) != exposed]
+                exec_registry.pop(exposed, None)
+                exposed_to_origin.pop(exposed, None)
+            history_registry = None
         responses_body._continued_turn = continued_turn_counts(responses_body.input)
         responses_body._continues_after_marker = ends_on_hidden_marker_line(CONTINUED_REPLY.get())
         responses_body.input_file_sizes = await index_referenced_file_payloads(

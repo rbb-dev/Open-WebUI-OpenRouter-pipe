@@ -356,6 +356,9 @@ class ResponsesBody(BaseModel):
         capability_model_id: str | None = None,
         ask_user_names: frozenset[str] = frozenset(),
         temporary_chat: bool | None = None,
+        tool_history_armed: bool = False,
+        history_left_out_rounds: list[int] | None = None,
+        tool_history_self_names: frozenset[str] = frozenset(),
         **extra_params,
     ) -> ResponsesBody:
         """
@@ -461,6 +464,9 @@ class ResponsesBody(BaseModel):
                 ask_user_names=ask_user_names,
                 attachment_notices=attachment_notices,
                 temporary_chat=temporary_chat,
+                tool_history_armed=tool_history_armed,
+                history_left_out_rounds=history_left_out_rounds,
+                tool_history_self_names=tool_history_self_names,
             )
             if replayed_reasoning_refs:
                 sanitized_params["_replayed_reasoning_refs"] = replayed_reasoning_refs

@@ -190,6 +190,13 @@ def unretained_tool_result(failed: bool) -> str:
     return UNRETAINED_FAILED_TOOL_RESULT if failed else UNRETAINED_TOOL_RESULT
 
 
+def unretained_tool_result_ref(failed: bool, ref: str | None) -> str:
+    note = UNRETAINED_FAILED_TOOL_RESULT if failed else UNRETAINED_TOOL_RESULT
+    if not ref:
+        return note
+    return note[:-2] + f"; view_tool_call {ref} returns it.]"
+
+
 def _own_is_tool_result_error(value: Any) -> bool:
     if isinstance(value, str):
         text = value.strip().lower()
