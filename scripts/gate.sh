@@ -125,8 +125,36 @@ collect_no_plugins() {
   done
 }
 
+# Ruff's EXE001 (a file that starts with "#!" but is not executable) is not enforced on WSL,
+# where this gate runs, and git here records a new file as 100644 (core.fileMode=false). CI
+# checks out the index mode and enforces the rule, so the mode is read from the index.
+shebang_modes() {
+  python - <<'PY'
+import subprocess
+listing = subprocess.run(["git", "ls-files", "-s", "-z"], capture_output=True, check=True).stdout
+bad = []
+for entry in filter(None, listing.split(b"\0")):
+    meta, path = entry.split(b"\t", 1)
+    if not meta.startswith(b"100644 "):
+        continue
+    try:
+        with open(path, "rb") as fh:
+            starts = fh.read(2)
+    except OSError:
+        continue
+    if starts == b"#!":
+        bad.append(path.decode(errors="replace"))
+for p in bad:
+    print(f"  {p} starts with #! but git stores it as 100644; fix: git update-index --chmod=+x -- {p}")
+print(f"{len(bad)} tracked file(s) start with #! without the executable mode")
+raise SystemExit(1 if bad else 0)
+PY
+}
+
 static_checks() {
   step "ruff (source)";  keep ruff check open_webui_openrouter_pipe/ scripts/ filters/
+  step "executable mode of files that start with #! (ruff EXE001, which WSL does not enforce)"
+  keep shebang_modes
   step "ruff (bundles)"; keep ruff check --per-file-ignores '*:E402' "${BUNDLES[@]}"
   step "pyright";        keep pyright
   step "prose gate";     keep python scripts/check_added_prose.py HEAD --path open_webui_openrouter_pipe
