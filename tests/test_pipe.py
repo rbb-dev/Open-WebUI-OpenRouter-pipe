@@ -6462,11 +6462,9 @@ def test_a_pass_over_a_driver_without_blob_io_warns_once_per_process(pipe_instan
             )
             assert result is True
 
-    warned = [
-        record
-        for record in caplog.records
-        if record.levelno == logging.WARNING and record.funcName == "_sqlite_driver"
-    ]
+    from tests.log_capture import emitted
+
+    warned = [record for record in emitted(caplog, level=logging.WARNING) if record.funcName == "_sqlite_driver"]
     assert len(warned) == 1
 
 
@@ -6559,10 +6557,10 @@ def test_stop_mid_ingest_ends_in_the_stopped_handler(pipe_instance, tmp_path, ca
 
     assert result is False
     assert _staged_turn_rows(pipe, chat_id, message_id) == 1
+    from tests.log_capture import emitted
+
     warned = [
-        record
-        for record in caplog.records
-        if record.levelno == logging.WARNING and record.funcName == "_assemble_and_write_bundle"
+        record for record in emitted(caplog, level=logging.WARNING) if record.funcName == "_assemble_and_write_bundle"
     ]
     assert len(warned) == 1
     assert warned[0].exc_info is None
@@ -6830,11 +6828,9 @@ def test_assembly_drops_a_turn_after_three_unreturned_passes(pipe_instance, tmp_
     finally:
         check_session.close()
     assert left == 0
-    dropped = [
-        record
-        for record in caplog.records
-        if record.levelno == logging.WARNING and "Session log turn dropped" in record.getMessage()
-    ]
+    from tests.log_capture import emitted
+
+    dropped = emitted(caplog, level=logging.WARNING, containing="Session log turn dropped")
     assert len(dropped) == 1
     assert chat_id in dropped[0].getMessage() and message_id in dropped[0].getMessage()
 

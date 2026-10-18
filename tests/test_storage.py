@@ -971,12 +971,12 @@ async def test_flush_deletes_staged_session_log_rows_at_the_rejection_limit_and_
     client = store._redis_client
     assert client.lists[store._redis_pending_key] == []
     assert client.lists[store._redis_dead_key()] == [other_entry]
+    from tests.log_capture import emitted
+
     deleted = [
         record
-        for record in caplog.records
-        if record.levelno == logging.WARNING
-        and "chat-queue" in record.getMessage()
-        and "msg-queue" in record.getMessage()
+        for record in emitted(caplog, level=logging.WARNING)
+        if "chat-queue" in record.getMessage() and "msg-queue" in record.getMessage()
     ]
     assert len(deleted) == 1
 
