@@ -349,6 +349,7 @@ async def test_the_alarm_starts_only_when_the_pipe_first_serves_and_stops_everyt
     pipe = pipe_instance_async
     attachment = pipe._stall_alarm
     state = attachment.state
+    await _wait_until(lambda: not _stall_watcher_names())
     assert _stall_watcher_names() == [] and state.dump_path is None
 
     pipe.valves.STALL_ALARM_ENABLED = False
@@ -364,13 +365,13 @@ async def test_the_alarm_starts_only_when_the_pipe_first_serves_and_stops_everyt
 
     pipe.valves.STALL_ALARM_DUMP_ENABLED = True
     state.wake.set()
-    await _wait_until(lambda: state.dump_path is not None)
+    await _wait_until(lambda: state.dump_path is not None and state.armed)
     dump_path = state.dump_path
     assert os.path.exists(dump_path) and state.armed is True
 
     pipe.valves.STALL_ALARM_DUMP_ENABLED = False
     state.wake.set()
-    await _wait_until(lambda: state.dump_path is None)
+    await _wait_until(lambda: state.dump_path is None and not os.path.exists(dump_path))
     assert state.armed is False and state.dump_fd is None
     assert not os.path.exists(dump_path)
     assert state.watcher is not None
@@ -382,7 +383,12 @@ async def test_the_alarm_starts_only_when_the_pipe_first_serves_and_stops_everyt
 
     pipe.valves.STALL_ALARM_ENABLED = False
     state.wake.set()
-    await _wait_until(lambda: state.watcher is None and attachment.beat_task.done())
+    await _wait_until(
+        lambda: state.watcher is None
+        and attachment.beat_task.done()
+        and not _stall_watcher_names()
+        and not os.path.exists(dump_path)
+    )
 
     assert state.watcher is None
     assert state.armed is False
