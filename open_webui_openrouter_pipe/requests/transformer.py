@@ -1662,6 +1662,52 @@ async def transform_messages_to_input(
         if pruning_turns > 0 and total_turns > pruning_turns:
             prune_before_turn = total_turns - pruning_turns
 
+        picture_window_starts_at = (
+            total_turns - 1 - image_reuse_turns
+            if selection_mode == "user_then_assistant"
+            else total_turns
+        )
+
+        def _turn_number(turn_index: int | None) -> int:
+            return -1 if turn_index is None else turn_index
+
+        def _beyond_tool_window(turn_index: int | None) -> bool:
+            return _turn_number(turn_index) < total_turns - 1 - max(active_valves.TOOL_TURNS_TO_REMEMBER, 0)
+
+        tool_message_turns = {
+            _turn_number(turn_indices[position])
+            for position, message in enumerate(messages)
+            if (message.get("role") or "").lower() == "tool"
+            or (
+                (message.get("role") or "").lower() == "assistant"
+                and isinstance(message.get("tool_calls"), list)
+                and bool(message["tool_calls"])
+            )
+        }
+        stored_tool_turns: set[int] = set()
+        ask_user_turns = {
+            _turn_number(turn_indices[position])
+            for position, name in enumerate(tool_name_at)
+            if name and ("ask_user" in name or name in ask_user_names)
+        }
+
+        def _tool_history_trimmed(turn_index: int | None) -> bool:
+            turn = _turn_number(turn_index)
+            return _beyond_tool_window(turn_index) and (turn in tool_message_turns or turn in stored_tool_turns)
+
+        def _tool_history_unneeded(turn_index: int | None) -> bool:
+            return _tool_history_trimmed(turn_index) and _turn_number(turn_index) < picture_window_starts_at
+
+        def _stored_rows_wanted(turn_index: int | None) -> bool:
+            turn = _turn_number(turn_index)
+            return (
+                not _beyond_tool_window(turn_index)
+                or turn not in tool_message_turns
+                or turn in ask_user_turns
+                or turn >= picture_window_starts_at
+                or active_valves.PERSIST_REASONING_TOKENS != "conversation"
+            )
+
         def _sanitize_free_text(text: str) -> str:
             """Strip hidden transport markers from non-assistant free text."""
             return strip_hidden_marker_lines(text)
@@ -1704,6 +1750,7 @@ async def transform_messages_to_input(
         artifact_producers: dict[str | None, dict[str, str]] = {}
         ask_user_loader = ask_user_round_loader if openwebui_model_id else None
         full_loader = artifact_loader if chat_id and openwebui_model_id else None
+        unread_markers: dict[str, None] = {}
         if full_loader or ask_user_loader:
             markers_by_group: dict[str | None, dict[str, None]] = {}
             for entry_index, entry in enumerate(messages):
@@ -1715,7 +1762,11 @@ async def transform_messages_to_input(
                 if not entry_spans:
                     continue
                 group_id = entry.get("message_id") or _message_identifier(entry)
-                group_markers = markers_by_group.setdefault(group_id, {})
+                group_markers = (
+                    markers_by_group.setdefault(group_id, {})
+                    if _stored_rows_wanted(turn_indices[entry_index])
+                    else unread_markers
+                )
                 for segment in _marker_segments_for(entry_text, entry_spans):
                     if segment.get("type") == "marker":
                         group_markers[segment["marker"]] = None
@@ -1784,6 +1835,13 @@ async def transform_messages_to_input(
                 ):
                     artifact_groups[group_id] = loaded
                     artifact_producers[group_id] = producers
+            if full_loader and chat_id and unread_markers and not temporary_chat:
+                try:
+                    await pipe._artifact_store._refresh_dates(chat_id, list(unread_markers))
+                except Exception:
+                    logger.debug(
+                        "Artifact refresh failed for chat_id=%s", _chat_log_subject(chat_id), exc_info=True
+                    )
 
         normalized_rows: dict[int, Any] = {}
 
@@ -1796,7 +1854,7 @@ async def transform_messages_to_input(
                 )
             return normalized_rows[key]
 
-        ask_user_round_stamps: dict[tuple[str | None, str], list[Any]] = {}
+        ask_user_round_stamps: dict[tuple[str | None, int, str], list[Any]] = {}
         for entry_index, entry in enumerate(messages):
             if (entry.get("role") or "").lower() != "assistant":
                 continue
@@ -1813,20 +1871,58 @@ async def transform_messages_to_input(
                 if payload is None:
                     continue
                 stored = _normalized_row(payload)
+                if (
+                    isinstance(stored, dict)
+                    and str(stored.get("type") or "").lower() not in _NOT_A_TOOL_ROUND
+                ):
+                    stored_tool_turns.add(_turn_number(turn_indices[entry_index]))
                 if not isinstance(stored, dict) or stored.get("type") != "function_call":
                     continue
                 call_id = str(stored.get("call_id") or "")
                 if not call_id:
                     continue
-                ask_user_round_stamps.setdefault((group_id, call_id), []).append(
-                    _round_own_stamp(stored)
-                )
+                ask_user_round_stamps.setdefault(
+                    (group_id, _turn_number(turn_indices[entry_index]), call_id), []
+                ).append(_round_own_stamp(stored))
 
-        def _chat_round_stamp(group_id: str | None, call_id: str, ordinal: int) -> Any:
-            queue = ask_user_round_stamps.get((group_id, call_id))
+        def _chat_round_stamp(group_id: str | None, turn: int, call_id: str, ordinal: int) -> Any:
+            queue = ask_user_round_stamps.get((group_id, turn, call_id))
             if not queue or ordinal >= len(queue):
                 return None
             return queue[ordinal]
+
+        def _tool_message_round(
+            position: int, message: dict[str, Any], ordinals: dict[tuple[int, str], int]
+        ) -> tuple[str, int, int, bool]:
+            raw_call_id = message.get("tool_call_id") or message.get("id") or message.get("call_id")
+            call_id = raw_call_id.strip() if isinstance(raw_call_id, str) else ""
+            if not call_id:
+                return "", -1, 0, False
+            round_name = tool_name_at[position] or ""
+            issuer = issuer_at[position]
+            ordinal = ordinals.get((issuer, call_id), 0)
+            ordinals[(issuer, call_id)] = ordinal + 1
+            issuer_entry = messages[issuer] if issuer >= 0 else None
+            issuer_group = None
+            if isinstance(issuer_entry, dict):
+                issuer_group = issuer_entry.get("message_id") or _message_identifier(issuer_entry)
+            return call_id, issuer, ordinal, _round_keeps_its_ask_user_answer(
+                call_id,
+                round_name,
+                ask_user_names,
+                _chat_round_stamp(issuer_group, _turn_number(turn_indices[position]), call_id, ordinal),
+            )
+
+        exempt_call_slots: set[tuple[int, str, int]] = set()
+        slot_ordinals: dict[tuple[int, str], int] = {}
+        for position, message in enumerate(messages):
+            if (message.get("role") or "").lower() != "tool":
+                continue
+            slot_call_id, slot_issuer, slot_ordinal, slot_exempt = _tool_message_round(
+                position, message, slot_ordinals
+            )
+            if slot_call_id and slot_exempt and slot_issuer >= 0:
+                exempt_call_slots.add((slot_issuer, slot_call_id, slot_ordinal))
 
         chat_round_ordinals: dict[tuple[int, str], int] = {}
 
@@ -1894,23 +1990,10 @@ async def transform_messages_to_input(
                 continue
 
             if role == "tool":
-                call_id = msg.get("tool_call_id") or msg.get("id") or msg.get("call_id")
-                call_id = call_id.strip() if isinstance(call_id, str) else ""
-                if not call_id:
+                call_id, issuer, _, round_exempt = _tool_message_round(idx, msg, chat_round_ordinals)
+                if not call_id or (not round_exempt and _tool_history_unneeded(msg_turn_index)):
                     continue
 
-                round_name = tool_name_at[idx] or ""
-                issuer = issuer_at[idx]
-                ordinal_key = (issuer, call_id)
-                ordinal = chat_round_ordinals.get(ordinal_key, 0)
-                chat_round_ordinals[ordinal_key] = ordinal + 1
-                issuer_entry = messages[issuer] if issuer >= 0 else None
-                issuer_group = None
-                if isinstance(issuer_entry, dict):
-                    issuer_group = issuer_entry.get("message_id") or _message_identifier(issuer_entry)
-                round_exempt = _round_keeps_its_ask_user_answer(
-                    call_id, round_name, ask_user_names, _chat_round_stamp(issuer_group, call_id, ordinal)
-                )
                 if not round_exempt and not (
                     issuer >= 0 and issuer in window_armed_at and not is_picture_output(raw_content)
                 ):
@@ -1934,6 +2017,9 @@ async def transform_messages_to_input(
 
                 if is_picture_output(tool_content):
                     last_image_blocks, last_image_turn = [], None
+
+                if not round_exempt and _tool_history_trimmed(msg_turn_index):
+                    continue
 
                 if _tool_round_withheld(msg_turn_index):
                     if not round_exempt:
@@ -1969,7 +2055,9 @@ async def transform_messages_to_input(
                 tool_images = _is_tool_image_handoff_at(messages, idx, handoff_back_at)
                 if tool_images:
                     last_image_blocks, last_image_turn = [], None
-                if tool_images and _tool_round_withheld(msg_turn_index):
+                if tool_images and (
+                    _tool_round_withheld(msg_turn_index) or _tool_history_trimmed(msg_turn_index)
+                ):
                     continue
                 raw_content_value = msg.get("content")
                 content_blocks = raw_content_value or []
@@ -3449,6 +3537,7 @@ async def transform_messages_to_input(
                 or not msg_model.strip()
                 or str(msg_model) == str(target_model_id)
             )
+            history_trimmed = _tool_history_trimmed(msg_turn_index)
             raw_msg_reasoning_details = msg.get("reasoning_details")
             if (
                 not same_model
@@ -3468,6 +3557,7 @@ async def transform_messages_to_input(
                 if (
                     active_valves.PERSIST_REASONING_TOKENS != "disabled"
                     and same_model
+                    and not history_trimmed
                     and isinstance(raw_msg_reasoning_details, list)
                     and raw_msg_reasoning_details
                 )
@@ -3581,6 +3671,8 @@ async def transform_messages_to_input(
                 replay_pending: dict[str, list[tuple[str, Any]]] = {}
                 for segment in segments:
                     if segment["type"] == "marker":
+                        if history_trimmed and not _stored_rows_wanted(msg_turn_index):
+                            continue
                         artifact_payload = db_artifacts.get(segment["marker"])
                         if artifact_payload is None:
                             missing_artifact_markers.append(segment["marker"])
@@ -3654,6 +3746,8 @@ async def transform_messages_to_input(
                                 or (idx in window_armed_at and not is_picture_output(item.get("output")))
                             ):
                                 last_image_blocks, last_image_turn = [], None
+                            if history_trimmed and not replay_round_exempt:
+                                continue
                             if _tool_round_withheld(msg_turn_index):
                                 withheld_items = _without_tool_result(
                                     item,
@@ -3702,6 +3796,7 @@ async def transform_messages_to_input(
                     appended_text_chunks[-1]["reasoning_details"] = msg_reasoning_details
 
             if msg_tool_calls:
+                call_slots: dict[str, int] = {}
                 for index, tool_call in enumerate(msg_tool_calls):
                     if not isinstance(tool_call, dict):
                         continue
@@ -3719,6 +3814,11 @@ async def transform_messages_to_input(
                     name = function.get("name")
                     name = name.strip() if isinstance(name, str) else ""
                     if not name:
+                        continue
+
+                    call_slot = call_slots.get(tool_call_id, 0)
+                    call_slots[tool_call_id] = call_slot + 1
+                    if history_trimmed and (idx, tool_call_id, call_slot) not in exempt_call_slots:
                         continue
 
                     arguments = function.get("arguments")

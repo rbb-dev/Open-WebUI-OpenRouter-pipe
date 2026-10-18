@@ -206,6 +206,8 @@ _PIPE_OWNED_ROW_TYPES = frozenset({
 })
 
 _RETENTION_CACHE_PURGE_BATCH = 500
+_REFRESH_BATCH_IDS = 500
+_REFRESH_AFTER = datetime.timedelta(hours=1)
 _ARTIFACT_SHARED_FRAGMENT_COOLDOWN_S = 3600.0
 
 REPLY_MEMORY_IDLE_SECONDS = 900.0
@@ -2419,6 +2421,36 @@ class ArtifactStore:
             touch_query.update({model.created_at: now}, synchronize_session=False)
             touch_session.commit()
 
+    def _db_refresh_sync(self, chat_id: str, item_ids: list[str]) -> None:
+        if not (self._item_model and self._session_factory and item_ids):
+            return
+        model = self._item_model
+        with _db_session(self._session_factory) as refresh_session:
+            now = datetime.datetime.now(datetime.UTC)
+            stale_before = now - _REFRESH_AFTER
+            in_this_chat = (model.chat_id + "") == chat_id
+            ordered_ids = sorted(set(item_ids))
+            for start in range(0, len(ordered_ids), _REFRESH_BATCH_IDS):
+                refresh_session.query(model).filter(
+                    model.id.in_(ordered_ids[start : start + _REFRESH_BATCH_IDS])
+                ).filter(in_this_chat).filter(model.created_at < stale_before).update(
+                    {model.created_at: now}, synchronize_session=False
+                )
+            refresh_session.commit()
+
+    async def _refresh_dates(self, chat_id: str, ids: list[str]) -> None:
+        executor = self._db_executor
+        if not (executor and self._item_model and self._session_factory and ids):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(executor, functools.partial(self._db_refresh_sync, chat_id, ids))
+        except Exception as exc:
+            self.logger.debug(
+                "Artifact date refresh failed (chat_id=%s, rows=%d): %s",
+                loggable_chat_id(chat_id), len(ids), exc, exc_info=True,
+            )
+
     async def _touch_cached(self, chat_id: str, message_id: str | None, ids: list[str]) -> None:
         executor = self._db_executor
         if not (executor and self._item_model and self._session_factory and ids):
@@ -4132,7 +4164,7 @@ class ArtifactStore:
                 self.logger.info("Removed %s artifact row(s) left by temporary chats", left_by_temporary_chats)
             if deleted:
                 self.logger.info(
-                    "Retention removed %s artifact row(s) last read before %s "
+                    "Retention removed %s artifact row(s) last read or renewed before %s "
                     "(ulid_range=%s..%s)",
                     deleted,
                     cutoff,

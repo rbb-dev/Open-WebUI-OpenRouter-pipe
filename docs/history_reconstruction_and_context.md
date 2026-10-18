@@ -41,6 +41,7 @@ Inputs (high level):
     and a longer history adds work rather than overlap.
 - Retention/pruning:
   - `pruning_turns` (from `TOOL_OUTPUT_RETENTION_TURNS`)
+  - `valves.TOOL_TURNS_TO_REMEMBER`: how many earlier turns keep their tool history (§5.5)
   - `replayed_reasoning_refs` (for the `PERSIST_REASONING_TOKENS="next_reply"` and `"disabled"` cleanup)
 - Runtime context for multimodal conversion:
   - `user_obj`, `event_emitter`
@@ -226,7 +227,7 @@ For old turns, it can prune very large `function_call_output.output` strings by:
 
 When an output carries a picture, only its text is shortened; the picture stays.
 
-This keeps replay payloads smaller while preserving recency and high-level context.
+This keeps replay payloads smaller while preserving recency and high-level context. Only a turn that is still sent can be pruned: an earlier turn beyond `TOOL_TURNS_TO_REMEMBER` sends no tool output at all (§5.5), except the answer of the built-in `ask_user`, which pruning never shortens, so pruning has an effect only at a retention value no larger than `TOOL_TURNS_TO_REMEMBER`.
 
 ### 5.4 The pipe's own copy of each tool round
 
@@ -379,8 +380,8 @@ only through the card Open WebUI keeps for it in the browser, and none with card
   Open WebUI's fixed hand-off sentence and their own photo, and treating it as the round's hand-off would withhold
   the person's picture too. What the caller built is the caller's own posted bytes, so nothing the pipe stores is
   exposed by it (TODO T1163, to reopen only if Open WebUI ever builds the gapped shape). A round of Open WebUI's built-in
-  `ask_user` is the exception: its question and the person's typed answer are always handed over, since the answer
-  is the person's own words. The round is recognised by the tool behind it, not by the name it was advertised under,
+  `ask_user` is the exception: its question and the person's typed answer are always handed over, in every turn however
+  old (`TOOL_TURNS_TO_REMEMBER` does not cut them either, §5.5), since the answer is the person's own words. The round is recognised by the tool behind it, not by the name it was advertised under,
   so a third-party tool that happens to be called `ask_user` is a tool like any other and is withheld -- and that
   is now true on the **write** side as well as the read side, not only where a stored row is judged. The
   identity is carried two ways, and both are read before the request's own tool set: the pipe stamps **every**
@@ -438,7 +439,23 @@ The copy does not depend on reasoning. Tool rounds were accepted without the rea
 Claude Opus 4.8 on `/responses` and `/chat/completions`, so the copy stays when reasoning is dropped from a request and outlives reasoning
 cleanup. It is never published as an output item, so Open WebUI neither draws it nor runs it again.
 
----
+### 5.5 Tool turns to remember (`TOOL_TURNS_TO_REMEMBER`)
+
+`TOOL_TURNS_TO_REMEMBER` (from `0` to `100`, default `5`; a user valve of the same name wins for that user's chats) bounds how many earlier turns hand the model their tool history. A turn is the unit §5.3 counts in: it starts at a person's message that follows the assistant's reply and runs to the next such message, and messages the person sends back to back belong to the same turn. The turn the request ends in, the one being answered, is not counted and is never cut: it goes whole, with every round it has made so far, including a round Open WebUI handed back after running the tools itself, the rounds of an answer that is being continued, and its `ask_user` rounds. Of the turns before it, the most recent `TOOL_TURNS_TO_REMEMBER` keep their tool history; at `0` none does.
+
+Every earlier turn beyond those, if it used tools, sends the conversation text only: the person's messages and the assistant's text, in order. What is left out is everything that belongs to a tool round or to thinking, from each route by which it reaches the request:
+
+- the `tool_calls` of an assistant message and the `tool` messages that answer them, as Open WebUI rebuilds them from a saved message, and the `user` message of pictures Open WebUI hands over after a tool round;
+- the pipe's own stored rows found through hidden markers: tool rounds (`function_call` and `function_call_output` pairs, including a round stored for an OpenRouter server tool or a web search and a round only the pipe holds), the raw advisor, subagent and model-search items, and reasoning rows;
+- the `reasoning_details` an assistant message carries.
+
+The assistant text stays, so a turn that used fifteen tools and wrote one answer is that answer, and a turn with no assistant text leaves only the person's message. Both endpoints are built from the same `input` array, so `/responses` and `/chat/completions` get the same cut, and the cut is made once, in `transform_messages_to_input`, in both tool execution modes.
+
+Two things are not cut. The first is the built-in `ask_user` round: its question and the person's answer go back in every request whatever the limit is, from either route, exactly as `PERSIST_TOOL_RESULTS` already exempts them (§5.4), while the rest of that turn, its thinking included, is left out. The round is recognised by its stored record rather than by the name the request carries, so it keeps going back when the built-in is no longer offered to the model, and a turn that holds one has its stored rows read for that reason. The second is a turn that used no tool at all: it is not trimmed, so a chat without tools sends exactly what it sent before the setting existed, and an older tool-free turn keeps its stored thinking as `PERSIST_REASONING_TOKENS` says (§6). A turn counts as having used a tool when the request carries a tool call or result for it, or when one of its stored rows is a tool round, which is any stored type other than `message` and `reasoning`; a turn that shows neither, because its stored rows have expired for example, cannot be told from one that used none and is sent as such.
+
+Which stored rows are read depends on what the request already carries. The rows of an earlier turn beyond the limit are not read when the request holds that turn's tool rounds itself, as it does for a saved tool card or a round Open WebUI ran. They are read, and then left out, when the request holds no record of the turn's tools (a chat with tool cards off, where the rows are the only record and are what tells whether the turn used tools), when the turn holds an `ask_user` round, when `PERSIST_REASONING_TOKENS` is `next_reply` or `disabled` (§6), and for the turns the picture reuse window still reaches under `IMAGE_INPUT_SELECTION` `user_then_assistant` (`IMAGE_REUSE_MAX_TURNS`), because a tool round ends that window whether or not the round is sent. A chat with tool cards off therefore reads the rows of every turn on each message, as it did before the setting existed, and its request still shrinks.
+
+The limit changes what the model is handed. Saved cards and stored rows are not changed by it, nor is the reasoning cleanup, and raising the value hands older rounds to the model again on the next request, from the saved cards or from the stored rows. Each message renews the retention date (`created_at`) of the stored rows its conversation still points to: the rows it reads are renewed by the read, and the rows it leaves unread by one update per message (`ArtifactStore._refresh_dates`) that takes the markers found in the request's assistant messages, loads no payload, filters on the chat and on the rows' ids in chunks of 500, and rewrites a row only when its date is more than an hour old. A chat that is still in use therefore keeps its stored rows whatever the limit is, and the rows of a deleted message, which no request points at, expire on `ARTIFACT_CLEANUP_DAYS` as before. A failed update is logged at debug level and does not fail the request, the next message tries again, and a temporary chat, which stores nothing, runs none. Each new turn moves the oldest kept turn out of the window, so the request differs from the previous one from that turn on, and a provider's prompt cache, which reuses only an unchanged start of a request, can reuse at most the part before it. An older turn does not change from one request to the next. The budget that empties the earliest calls' arguments when a request is over the model's context limit still acts on whatever this leaves. A round that arrived before the chat's first turn counts as the turn before the first one: it is kept, apart from a built-in `ask_user` round, only while `TOOL_TURNS_TO_REMEMBER` is at least the number of turns in the chat.
 
 ---
 
@@ -449,6 +466,8 @@ When replayed artifacts include reasoning items, the pipe can optionally record 
 `disabled` gates the replay as well as the write. A chat that still holds a reasoning marker from a turn run under another setting reaches the provider with that reasoning withheld: on `/responses` no `reasoning` input item is built from the row, and on `/chat/completions` the message's own `reasoning_details` are not re-attached either. The row is still recorded in `replayed_reasoning_refs`, so the delete above removes it on exactly the terms `next_reply` uses; a row that is never deleted that way waits for the housekeeping sweep, whose `created_at` clock was refreshed by the read that resolved it, so a withheld row keeps ageing from the last turn it was resolved in and is reaped within `ARTIFACT_CLEANUP_DAYS` as usual. The gate is a `continue` over one marker, not a `break` over the message, so the round's own `function_call` / `function_call_output` markers still replay under `PERSIST_TOOL_RESULTS` - an Anthropic tool round therefore goes out with its tool call and result and no thinking block.
 
 System default is `PERSIST_REASONING_TOKENS="conversation"`; see [Valves & Configuration Atlas](valves_and_configuration_atlas.md) for the exact semantics and defaults.
+
+Reasoning stored for an earlier turn that used tools and that `TOOL_TURNS_TO_REMEMBER` cuts (§5.5) is not replayed in any mode, and neither is the `reasoning_details` that turn's assistant message carries; an earlier turn that used no tool keeps its reasoning as the mode says. Under `next_reply` and `disabled` the rows of a cut turn are still read and recorded in `replayed_reasoning_refs`, so the delete above removes them on the same terms; under `conversation` they are read only where §5.5 says the request needs them, and a message renews the retention date of the rows it leaves unread.
 
 A reasoning row keeps the `signature`, `format` and `encrypted_content` the provider sent, on every `/chat/completions` route, streamed or not: an unsigned row is one the next turn cannot replay, and on a later Anthropic turn that costs the whole span rather than the one block. A row the provider reports only in the completed response is taken from there, which is the one shape on which a signature can exist at all — a provider that streams its thought unsigned and signs only the closed block never emits a `response.output_item.done` for it to be read from.
 

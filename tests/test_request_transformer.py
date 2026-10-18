@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import ast
 import base64
+import datetime
 import inspect
 import json
 import struct
@@ -30,10 +31,17 @@ import logging
 import pytest
 
 from tests.log_capture import emitted
+from tests.test_continue_reasoning_order import _real_artifact_store
 
-from open_webui_openrouter_pipe import Pipe
+from open_webui_openrouter_pipe import Pipe, generate_item_id
+from open_webui_openrouter_pipe.api.transforms import _responses_input_to_chat_messages
 from open_webui_openrouter_pipe.core.errors import RequiredInternalFileError
-from open_webui_openrouter_pipe.core.utils import OPEN_WEBUI_TOOL_IMAGES_TEXT, UNRETAINED_TOOL_RESULT
+from open_webui_openrouter_pipe.core.utils import (
+    BUILTIN_ASK_USER_ROUND_KEY,
+    OPEN_WEBUI_TOOL_IMAGES_TEXT,
+    UNRETAINED_TOOL_RESULT,
+    _serialize_marker,
+)
 from open_webui_openrouter_pipe.storage.owui_files import InlinedFile
 from open_webui_openrouter_pipe.requests.fusion_engine import (
     FusionMemberResult,
@@ -988,6 +996,308 @@ class TestTurnComputation:
         assert tool_output is not None
         # Should NOT be pruned
         assert "[tool output pruned:" not in tool_output["output"]
+
+
+def _chat_with_tool_turns(turns: int) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    for turn in range(turns):
+        messages += [
+            {"role": "user", "content": f"Question {turn}"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": f"call-{turn}",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": json.dumps({"q": f"argument {turn}"})},
+                    }
+                ],
+                "reasoning_details": [
+                    {
+                        "type": "reasoning.text",
+                        "text": f"thought {turn}",
+                        "signature": f"sig-{turn}",
+                        "format": "anthropic-claude-v1",
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": f"call-{turn}", "content": f"result {turn}"},
+        ]
+        if turn < turns - 1:
+            messages.append({"role": "assistant", "content": f"Answer {turn}"})
+    return messages
+
+
+def _spoken_texts(items: list[dict[str, Any]]) -> list[str]:
+    return [
+        block["text"]
+        for item in items
+        if item["type"] == "message"
+        for block in item["content"]
+        if block.get("text")
+    ]
+
+
+class TestToolTurnsToRemember:
+    @pytest.mark.asyncio
+    async def test_a_chat_with_cards_sends_tool_calls_for_the_five_latest_earlier_turns_and_the_current_turn(
+        self, pipe_instance
+    ):
+        result = await transform_messages_to_input(pipe_instance, _chat_with_tool_turns(10))
+
+        kept = [f"call-{turn}" for turn in range(4, 10)]
+        assert [i["call_id"] for i in result if i["type"] == "function_call"] == kept
+        outputs = {i["call_id"]: i["output"] for i in result if i["type"] == "function_call_output"}
+        assert list(outputs) == kept
+        assert outputs["call-9"] == "result 9"
+        thoughts = [d["text"] for i in result for d in i.get("reasoning_details", [])]
+        assert thoughts == [f"thought {turn}" for turn in range(4, 10)]
+        assert _spoken_texts(result) == [
+            text for turn in range(10) for text in (f"Question {turn}", f"Answer {turn}")
+        ][:-1]
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_messages_of_an_older_turn_carry_no_tool_calls(self, pipe_instance):
+        items = await transform_messages_to_input(pipe_instance, _chat_with_tool_turns(10))
+
+        chat = await _responses_input_to_chat_messages(
+            items, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext
+        )
+
+        kept = [f"call-{turn}" for turn in range(4, 10)]
+        assert [call["id"] for message in chat for call in message.get("tool_calls", [])] == kept
+        assert [message["tool_call_id"] for message in chat if message["role"] == "tool"] == kept
+        assert [d["text"] for message in chat for d in message.get("reasoning_details", [])] == [
+            f"thought {turn}" for turn in range(4, 10)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_chat_with_stored_rows_sends_the_rows_of_the_remembered_turns_only(self, pipe_instance):
+        rows: dict[str, dict[str, Any]] = {}
+        messages: list[dict[str, Any]] = []
+        for turn in range(10):
+            ulids = [generate_item_id() for _ in range(3)]
+            rows[ulids[0]] = {
+                "type": "reasoning",
+                "id": f"rs-{turn}",
+                "content": [{"type": "reasoning_text", "text": f"thought {turn}"}],
+                "summary": [],
+            }
+            rows[ulids[1]] = {
+                "type": "function_call",
+                "call_id": f"call-{turn}",
+                "name": "lookup",
+                "arguments": json.dumps({"q": f"argument {turn}"}),
+            }
+            rows[ulids[2]] = {"type": "function_call_output", "call_id": f"call-{turn}", "output": f"result {turn}"}
+            tail = "\n".join(_serialize_marker(ulid) for ulid in ulids)
+            messages += [
+                {"role": "user", "content": f"Question {turn}"},
+                {"role": "assistant", "content": f"Answer {turn}\n{tail}"},
+            ]
+
+        async def loader(chat_id, message_id, markers):
+            return {marker: rows[marker] for marker in markers if marker in rows}
+
+        result = await transform_messages_to_input(
+            pipe_instance, messages, chat_id="chat-1", openwebui_model_id="model-1", artifact_loader=loader
+        )
+
+        kept = range(4, 10)
+        assert [i["call_id"] for i in result if i["type"] == "function_call"] == [f"call-{t}" for t in kept]
+        assert [i["call_id"] for i in result if i["type"] == "function_call_output"] == [f"call-{t}" for t in kept]
+        assert [i["id"] for i in result if i["type"] == "reasoning"] == [f"rs-{t}" for t in kept]
+        assert _spoken_texts(result) == [
+            text for turn in range(10) for text in (f"Question {turn}", f"Answer {turn}")
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_users_own_value_wins_and_zero_keeps_only_the_current_turn(self, pipe_instance):
+        valves = pipe_instance._merge_valves(pipe_instance.valves, Pipe.UserValves(TOOL_TURNS_TO_REMEMBER=0))
+
+        result = await transform_messages_to_input(pipe_instance, _chat_with_tool_turns(4), valves=valves)
+
+        assert [i["call_id"] for i in result if i["type"] == "function_call"] == ["call-3"]
+        assert {i["call_id"]: i["output"] for i in result if i["type"] == "function_call_output"} == {
+            "call-3": "result 3"
+        }
+        assert _spoken_texts(result) == [
+            "Question 0", "Answer 0", "Question 1", "Answer 1", "Question 2", "Answer 2", "Question 3",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_the_built_in_ask_user_round_of_an_older_turn_goes_back_whole_and_nothing_else_of_that_turn_does(
+        self, pipe_instance
+    ):
+        ask_arguments = json.dumps({"question": "Which database?"})
+        rows: dict[str, dict[str, Any]] = {}
+
+        def store(rows_of_turn: list[dict[str, Any]]) -> str:
+            ulids = [generate_item_id() for _ in rows_of_turn]
+            rows.update(zip(ulids, rows_of_turn))
+            return "\n".join(_serialize_marker(ulid) for ulid in ulids)
+
+        def round_rows(turn: int) -> list[dict[str, Any]]:
+            return [
+                {"type": "function_call", "call_id": f"ask-{turn}", "name": "ask_user", "arguments": ask_arguments,
+                 BUILTIN_ASK_USER_ROUND_KEY: True},
+                {"type": "function_call_output", "call_id": f"ask-{turn}", "output": f"ANSWER {turn}"},
+                {"type": "function_call", "call_id": f"call-{turn}", "name": "lookup", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": f"call-{turn}", "output": f"result {turn}"},
+            ]
+
+        thought_row = {
+            "type": "reasoning", "id": "rs-1", "content": [{"type": "reasoning_text", "text": "thought 1"}],
+            "summary": [],
+        }
+        card_turn_tail = store(round_rows(0))
+        stored_turn_tail = store([thought_row, *round_rows(1)])
+        messages = [
+            {"role": "user", "content": "Question 0"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "ask-0", "type": "function", "function": {"name": "ask_user", "arguments": ask_arguments}},
+                    {"id": "call-0", "type": "function", "function": {"name": "lookup", "arguments": "{}"}},
+                ],
+                "reasoning_details": [{"type": "reasoning.text", "text": "thought 0", "signature": "sig-0",
+                                       "format": "anthropic-claude-v1"}],
+            },
+            {"role": "tool", "tool_call_id": "ask-0", "content": "ANSWER 0"},
+            {"role": "tool", "tool_call_id": "call-0", "content": "result 0"},
+            {"role": "assistant", "content": f"Answer 0\n{card_turn_tail}"},
+            {"role": "user", "content": "Question 1"},
+            {"role": "assistant", "content": f"Answer 1\n{stored_turn_tail}"},
+            {"role": "user", "content": "Question 2"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "ask-1", "type": "function", "function": {"name": "lookup", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "ask-1", "content": "result 2"},
+            {"role": "assistant", "content": "Answer 2"},
+            *_chat_with_tool_turns(10)[12:],
+        ]
+
+        async def loader(chat_id, message_id, markers):
+            return {marker: rows[marker] for marker in markers if marker in rows}
+
+        result = await transform_messages_to_input(
+            pipe_instance, messages, chat_id="chat-1", openwebui_model_id="model-1", artifact_loader=loader,
+            ask_user_names=frozenset(),
+        )
+
+        assert [i["call_id"] for i in result if i["type"] == "function_call"] == [
+            "ask-0", "ask-1", *[f"call-{turn}" for turn in range(4, 10)]
+        ]
+        outputs = {i["call_id"]: i["output"] for i in result if i["type"] == "function_call_output"}
+        assert outputs["ask-0"] == "ANSWER 0"
+        assert outputs["ask-1"] == "ANSWER 1"
+        assert [i for i in result if i["type"] == "reasoning"] == []
+        assert [d["text"] for i in result for d in i.get("reasoning_details", [])] == [
+            f"thought {turn}" for turn in range(4, 10)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_an_older_turn_that_used_no_tool_keeps_its_thinking(self, pipe_instance):
+        stored_thought = generate_item_id()
+        messages = [
+            {"role": "user", "content": "Question 0"},
+            {
+                "role": "assistant",
+                "content": "Answer 0",
+                "reasoning_details": [{"type": "reasoning.text", "text": "thought 0", "signature": "sig-0",
+                                       "format": "anthropic-claude-v1"}],
+            },
+            {"role": "user", "content": "Question 1"},
+            {"role": "assistant", "content": f"Answer 1\n{_serialize_marker(stored_thought)}"},
+            *_chat_with_tool_turns(10)[8:],
+        ]
+
+        async def loader(chat_id, message_id, markers):
+            return {
+                stored_thought: {
+                    "type": "reasoning", "id": "rs-1",
+                    "content": [{"type": "reasoning_text", "text": "thought 1"}], "summary": [],
+                }
+            }
+
+        result = await transform_messages_to_input(
+            pipe_instance, messages, chat_id="chat-1", openwebui_model_id="model-1", artifact_loader=loader
+        )
+
+        assert [d["text"] for i in result for d in i.get("reasoning_details", [])] == [
+            "thought 0", *[f"thought {turn}" for turn in range(4, 10)]
+        ]
+        assert [i["id"] for i in result if i["type"] == "reasoning"] == ["rs-1"]
+        assert [i["call_id"] for i in result if i["type"] == "function_call"] == [
+            f"call-{turn}" for turn in range(4, 10)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_each_message_refreshes_the_dates_of_the_stored_rows_it_does_not_read(self, pipe_instance_async):
+        old = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=80)
+        turns, per_turn = 60, 12
+        messages: list[dict[str, Any]] = []
+        on_path: dict[int, list[str]] = {}
+        with _real_artifact_store(pipe_instance_async) as store:
+            def stored_row(chat_id: str, message_id: str, ulid: str, payload: dict[str, Any]):
+                return store._item_model(
+                    id=ulid, chat_id=chat_id, message_id=message_id, model_id="model-1",
+                    item_type=payload["type"], payload=payload, is_encrypted=False, created_at=old,
+                )
+
+            with store._session_factory() as session:
+                for turn in range(turns):
+                    ulids = [generate_item_id() for _ in range(per_turn)]
+                    on_path[turn] = ulids
+                    for index, ulid in enumerate(ulids):
+                        kind = "function_call" if index % 2 == 0 else "function_call_output"
+                        session.add(stored_row("chat-1", f"message-{turn}", ulid, {
+                            "type": kind, "call_id": f"call-{turn}-{index // 2}", "name": "lookup",
+                            "arguments": "{}", "output": "result",
+                        }))
+                    messages += [
+                        {"role": "user", "content": f"Question {turn}"},
+                        {
+                            "role": "assistant", "content": "",
+                            "tool_calls": [{"id": f"call-{turn}", "type": "function",
+                                            "function": {"name": "lookup", "arguments": "{}"}}],
+                        },
+                        {"role": "tool", "tool_call_id": f"call-{turn}", "content": f"result {turn}"},
+                        {"role": "assistant",
+                         "content": "Answer\n" + "\n".join(_serialize_marker(ulid) for ulid in ulids)},
+                    ]
+                deleted = [generate_item_id() for _ in range(per_turn)]
+                for ulid in deleted:
+                    session.add(stored_row("chat-1", "message-deleted", ulid, {"type": "reasoning", "id": ulid}))
+                session.commit()
+            messages.append({"role": "user", "content": f"Question {turns}"})
+            asked: list[str] = []
+
+            async def loader(chat_id, message_id, markers):
+                asked.extend(markers)
+                return await store._db_fetch(chat_id, message_id, markers)
+
+            await transform_messages_to_input(
+                pipe_instance_async, messages, chat_id="chat-1", openwebui_model_id="model-1",
+                artifact_loader=loader,
+            )
+
+            with store._session_factory() as session:
+                dates = {row.id: row.created_at for row in session.query(store._item_model).all()}
+
+        def age_in_days(ulid: str) -> float:
+            stamp = dates[ulid]
+            stamp = stamp if stamp.tzinfo else stamp.replace(tzinfo=datetime.UTC)
+            return (datetime.datetime.now(datetime.UTC) - stamp).total_seconds() / 86400
+
+        kept = range(turns - 5, turns)
+        assert sorted(asked) == sorted(ulid for turn in kept for ulid in on_path[turn])
+        assert max(age_in_days(ulid) for turn in on_path for ulid in on_path[turn]) < 1
+        assert min(age_in_days(ulid) for ulid in deleted) > 79
 
 
 # =============================================================================
