@@ -91,6 +91,18 @@ See also: [Persistence, Encryption & Storage](persistence_encryption_and_storage
   - When `ENCRYPT_ALL=True`, *all* persisted artifact types are encrypted.
   - When `ENCRYPT_ALL=False`, only reasoning artifacts are encrypted; other artifacts remain plaintext.
 - `ENCRYPT_ALL` governs what is written. A row written while it was on stays encrypted, in the table and in the replay cache, whatever the valve says afterwards, and the cache entry is written in the form the row was stored in on the buffered flush as well as on a read.
+- While a session log turn is assembled, its records are ordered in a temporary database in the session
+  log directory, and an encrypted staged row is copied there, still encrypted, so that its signature can be
+  checked before anything is decrypted. When the turn's rows are encrypted, each record in the ordering
+  database is written encrypted under a per-pass random key that exists only in the worker's memory; the
+  timestamp and ids the records are ordered by stay readable, so no decrypted conversation text sits on
+  disk in the clear. On Linux these files have no name (each is either never linked or unlinked as soon as
+  it is created), so a killed worker leaves none behind; on macOS the code creates each file and unlinks it
+  at once, so it has a name only for that instant. On Windows an open file cannot be unlinked: the copy of
+  the encrypted row is deleted by the operating system when it is closed or its process ends, and the
+  ordering database keeps its name, `.session-log-sorter-` followed by random characters, until the pass
+  ends and is removed then. A worker killed during a pass leaves that file, and the cleanup sweep removes it
+  once it has sat for one hour or twice `SESSION_LOG_LOCK_STALE_SECONDS`, whichever is longer.
 
 ### Table naming and key rotation implications
 
@@ -451,4 +463,4 @@ For a typical production deployment:
 2. Configure `OPENROUTER_API_KEY` (env) or `API_KEY` (valve).
 3. If you persist artifacts, set `ARTIFACT_ENCRYPTION_KEY` and keep `ENCRYPT_ALL=True` unless you have a clear reason to encrypt reasoning only.
 4. Keep `ENABLE_SSRF_PROTECTION=True`, keep HTTPS-only defaults, and enforce outbound egress policy (only allow HTTP if explicitly allowlisted).
-5. Review retention (`ARTIFACT_CLEANUP_DAYS`, session log retention) and validate it matches your operational requirements. The two are independent: the artifact sweep is scoped to artifacts and never removes the pipe's bookkeeping rows, and its Redis cache-purge batch carries that same scope so a spared row keeps its cached copy as well, so a staged session-log segment is bounded by `SESSION_LOG_RETENTION_DAYS` and a coordination lock by its own stale-lock rule, on the hourly cleanup pass whether or not `SESSION_LOG_STORE_ENABLED` is on — except in a table a key rotation left behind, where no owner can reach them and `ARTIFACT_CLEANUP_DAYS` is the window that bounds them instead. That retired-table pass is also the one that stops while `ARTIFACT_ENCRYPTION_KEY` is unreadable.
+5. Review retention (`ARTIFACT_CLEANUP_DAYS`, session log retention) and validate it matches your operational requirements. The two are independent: the artifact sweep is scoped to artifacts and never removes the pipe's bookkeeping rows, and its Redis cache-purge batch carries that same scope so a spared row keeps its cached copy as well, so a staged session-log segment or an assembly pass's attempt row is bounded by `SESSION_LOG_RETENTION_DAYS` and a coordination lock by its own stale-lock rule, on the hourly cleanup pass whether or not `SESSION_LOG_STORE_ENABLED` is on — except in a table a key rotation left behind, where no owner can reach them and `ARTIFACT_CLEANUP_DAYS` is the window that bounds them instead. That retired-table pass is also the one that stops while `ARTIFACT_ENCRYPTION_KEY` is unreadable.
