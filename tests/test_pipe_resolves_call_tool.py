@@ -176,7 +176,6 @@ async def test_a_pipe_run_reply_resolves_the_models_call_tool_and_answers(monkey
         idle_timeout=None,
         user_id="u1",
         event_emitter=None,
-        batch_cap=1,
     )
     context.workers.append(asyncio.create_task(pipe._ensure_tool_executor()._tool_worker_loop(context)))
     token = pipe._TOOL_CONTEXT.set(context)

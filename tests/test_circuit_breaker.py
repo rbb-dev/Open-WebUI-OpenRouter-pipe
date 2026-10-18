@@ -526,7 +526,6 @@ class TestToolBreaker:
             idle_timeout=None,
             user_id="user-1",
             event_emitter=emitter,
-            batch_cap=1,
         )
 
         await pipe._ensure_tool_executor()._notify_tool_breaker(ctx, "function", "lookup")
@@ -581,7 +580,6 @@ class TestDatabaseBreaker:
             idle_timeout=None,
             user_id=user_id,
             event_emitter=emitter,
-            batch_cap=1,
         )
 
         tool_token = pipe._TOOL_CONTEXT.set(ctx)

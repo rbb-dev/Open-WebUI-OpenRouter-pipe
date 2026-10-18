@@ -482,7 +482,7 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
     if real_executor:
         context = _ToolExecutionContext(queue=asyncio.Queue(maxsize=50), per_request_semaphore=asyncio.Semaphore(1),
                                         global_semaphore=None, timeout=5.0, batch_timeout=5.0, idle_timeout=None,
-                                        user_id="u1", event_emitter=None, batch_cap=1)
+                                        user_id="u1", event_emitter=None)
         context.workers.append(asyncio.create_task(pipe._ensure_tool_executor()._tool_worker_loop(context)))
         token = pipe._TOOL_CONTEXT.set(context)
     try:

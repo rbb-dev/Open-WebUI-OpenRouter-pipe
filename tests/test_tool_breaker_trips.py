@@ -63,9 +63,9 @@ def _call(index: int) -> dict[str, Any]:
 
 
 async def _with_tool_context(
-    pipe, body, *, workers=1, batch_cap=1, request_slots=1, global_slots=None, event_emitter=None
+    pipe, body, *, workers=1, request_slots=1, global_slots=None, event_emitter=None
 ):
-    """Run ``body(executor)`` inside a real tool context; by default one worker, one call per batch and one slot.
+    """Run ``body(executor)`` inside a real tool context; by default one worker and one slot.
 
     ``event_emitter`` is the context's own sink, so a test that wants to read what the tool
     path tells the user attaches a recorder here rather than rebuilding the context. It is
@@ -81,7 +81,6 @@ async def _with_tool_context(
         idle_timeout=None,
         user_id="user-1",
         event_emitter=event_emitter,
-        batch_cap=batch_cap,
     )
     executor = pipe._ensure_tool_executor()
     context.workers.extend(asyncio.create_task(executor._tool_worker_loop(context)) for _ in range(workers))

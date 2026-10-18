@@ -485,7 +485,6 @@ class TestMemberFileCapture:
             idle_timeout=None,
             user_id="u1",
             event_emitter=None,
-            batch_cap=1,
         )
 
     @pytest.mark.asyncio
@@ -1081,7 +1080,6 @@ class TestMemberFileCaptureRobustness:
             idle_timeout=None,
             user_id="u1",
             event_emitter=None,
-            batch_cap=1,
             sync_tools_on_threads=False,
         )
         token = pipe._TOOL_CONTEXT.set(outer_ctx)
@@ -1125,7 +1123,6 @@ class TestMemberFileCaptureRobustness:
             idle_timeout=None,
             user_id="u1",
             event_emitter=None,
-            batch_cap=1,
         )
         token = pipe._TOOL_CONTEXT.set(outer_ctx)
         try:
@@ -1243,7 +1240,7 @@ async def test_no_model_in_a_fusion_turn_is_offered_or_runs_open_webuis_ask_user
         invocation.metadata["_pipe_exposed_to_origin"] = outer_names
     outer_context = _ToolExecutionContext(
         queue=asyncio.Queue(maxsize=50), per_request_semaphore=asyncio.Semaphore(5), global_semaphore=None,
-        timeout=30.0, batch_timeout=60.0, idle_timeout=None, user_id="u1", event_emitter=None, batch_cap=4,
+        timeout=30.0, batch_timeout=60.0, idle_timeout=None, user_id="u1", event_emitter=None,
     )
     token = pipe._TOOL_CONTEXT.set(outer_context)
     try:
@@ -1285,7 +1282,6 @@ def _outer_tool_context(pipe):
         idle_timeout=None,
         user_id="u1",
         event_emitter=None,
-        batch_cap=1,
     )
 
 
@@ -1396,7 +1392,7 @@ async def test_the_tool_search_offer_filter_and_the_member_manifest_and_dispatch
     invocation.metadata = {"chat_id": "outer-chat", "message_id": "outer-msg", "tools": member_tools}
     outer_context = _ToolExecutionContext(
         queue=asyncio.Queue(maxsize=50), per_request_semaphore=asyncio.Semaphore(5), global_semaphore=None,
-        timeout=30.0, batch_timeout=60.0, idle_timeout=None, user_id="u1", event_emitter=None, batch_cap=4,
+        timeout=30.0, batch_timeout=60.0, idle_timeout=None, user_id="u1", event_emitter=None,
     )
     token = pipe._TOOL_CONTEXT.set(outer_context)
     try:

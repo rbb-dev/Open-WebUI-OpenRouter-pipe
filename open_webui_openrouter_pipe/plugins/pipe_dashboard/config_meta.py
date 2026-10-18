@@ -921,11 +921,6 @@ CONFIG_META: dict[str, dict[str, str]] = {
         "group": "Logging/General",
         "detail": "Where timing events are written - one JSON object per line - while function timing capture is on.\n\nIt is used only when `Enable function timing log` is on; with that toggle off (the default) the path sits unused. The file and any missing parent folders are created on first write, and new events are appended rather than overwriting earlier runs. A relative value resolves against wherever the Open WebUI process happens to start, so use an absolute path like `/var/log/openrouter/timing.jsonl` to pin output to a fixed location.\n\n**Warning:** The file is only ever appended - never rotated or size-capped - so it grows without bound while timing capture stays enabled."
     },
-    "TOOL_BATCH_CAP": {
-        "title": "Tool batch size",
-        "group": "Tools/Execution",
-        "detail": "Has no effect.\n\nA round's tool calls run one after another, in the order the model asked for them, so consecutive calls to one tool are no longer grouped into a batch; only the round's `delegate_task` calls start together. Applies to the calls this pipe runs."
-    },
     "TOOL_BATCH_TIMEOUT_SECONDS": {
         "title": "Tool batch timeout",
         "group": "Tools/Execution",

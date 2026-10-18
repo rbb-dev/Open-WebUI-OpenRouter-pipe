@@ -221,7 +221,6 @@ class _QueuedToolCall:
     tool_cfg: dict[str, Any]
     args: dict[str, Any]
     future: asyncio.Future
-    allow_batch: bool
     holds_slot: bool = False
     withdrawn: bool = False
     limit_hit: bool = False
@@ -259,7 +258,6 @@ class _ToolExecutionContext:
     idle_timeout: float | None
     user_id: str
     event_emitter: EventEmitter | None
-    batch_cap: int
     request: Request | None = None
     user: dict[str, Any] | None = None
     resolved_user: Any = None
@@ -487,20 +485,6 @@ class ToolExecutor:
         while len(latch) > _OWUI_RESULT_WARN_CAP:
             latch.popitem(last=False)
         return level
-
-    # Argument parsing helpers
-
-    def _is_batchable_tool_call(self, args: dict[str, Any]) -> bool:
-        """Check if a tool call can be batched or must run sequentially.
-
-        Args:
-            args: Parsed tool arguments dictionary
-
-        Returns:
-            True if the tool call can be batched, False if it has dependency markers
-        """
-        blockers = {"depends_on", "_depends_on", "sequential", "no_batch"}
-        return not any(key in args for key in blockers)
 
     @staticmethod
     def _is_builtin_ask_user(tool_cfg: Any) -> bool:
@@ -838,27 +822,24 @@ class ToolExecutor:
                 context.tool_call_budget -= 1
 
             future: asyncio.Future = loop.create_future()
-            allow_batch = self._is_batchable_tool_call(args)
             queued = _QueuedToolCall(
                 call=call,
                 tool_cfg=tool_cfg,
                 args=args,
                 future=future,
-                allow_batch=allow_batch,
             )
             context.calls.append(queued)
             origin_source = tool_cfg.get("origin_source")
             origin_name = tool_cfg.get("origin_name")
             if isinstance(origin_source, str) and isinstance(origin_name, str):
                 self.logger.debug(
-                    "Enqueued tool %s (origin=%s source=%s batch=%s)",
+                    "Enqueued tool %s (origin=%s source=%s)",
                     call.get("name"),
                     origin_name,
                     origin_source,
-                    allow_batch,
                 )
             else:
-                self.logger.debug("Enqueued tool %s (batch=%s)", call.get("name"), allow_batch)
+                self.logger.debug("Enqueued tool %s", call.get("name"))
             entry = (index, queued, self._ask_user_window(tool_cfg, args))
             if is_sub_agent_call(tool_name, tool_cfg):
                 sub_agent_calls.append(entry)
@@ -1368,28 +1349,3 @@ class ToolExecutor:
                     if not leftover.future.done():
                         leftover.future.set_result(self._cancelled_tool_output(leftover.call))
                 context.queue.task_done()
-
-    def _can_batch_tool_calls(self, first: _QueuedToolCall, candidate: _QueuedToolCall) -> bool:
-        """Check if two tool calls can be batched together."""
-        if resolved_tool_name(first.call) != resolved_tool_name(candidate.call):
-            return False
-
-        first_id = first.call.get("call_id")
-        candidate_id = candidate.call.get("call_id")
-        if first_id and self._args_reference_call(candidate.args, first_id):
-            return False
-        return not (candidate_id and self._args_reference_call(first.args, candidate_id))
-
-    def _args_reference_call(self, args: Any, call_id: str) -> bool:
-        """Check if args contain a reference to another call_id."""
-        stack = [args]
-        while stack:
-            node = stack.pop()
-            if isinstance(node, str):
-                if call_id in node:
-                    return True
-            elif isinstance(node, dict):
-                stack.extend(node.values())
-            elif isinstance(node, list):
-                stack.extend(node)
-        return False

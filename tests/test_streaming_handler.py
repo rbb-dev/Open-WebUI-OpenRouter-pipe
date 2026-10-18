@@ -3372,7 +3372,6 @@ class TestLoopLimitAndFunctionExecution:
             idle_timeout=None,
             user_id="user-123",
             event_emitter=emitter,
-            batch_cap=4,
         )
         executor = pipe._ensure_tool_executor()
         worker = asyncio.create_task(executor._tool_worker_loop(context))
@@ -6206,7 +6205,6 @@ async def test_terminal_frame_reports_last_round_usage_beside_the_totals(monkeyp
         idle_timeout=None,
         user_id="user-123",
         event_emitter=emitter,
-        batch_cap=4,
     )
     executor = pipe._ensure_tool_executor()
     worker = asyncio.create_task(executor._tool_worker_loop(context))
@@ -6306,7 +6304,6 @@ async def test_a_round_without_token_counts_never_becomes_the_counted_round(monk
         idle_timeout=None,
         user_id="user-123",
         event_emitter=emitter,
-        batch_cap=4,
     )
     executor = pipe._ensure_tool_executor()
     worker = asyncio.create_task(executor._tool_worker_loop(context))
@@ -6498,7 +6495,6 @@ async def test_streaming_loop_reasoning_status_and_tools(monkeypatch, pipe_insta
         idle_timeout=None,
         user_id="user-123",
         event_emitter=emitter,
-        batch_cap=4,
     )
     executor = pipe._ensure_tool_executor()
     worker = asyncio.create_task(executor._tool_worker_loop(context))

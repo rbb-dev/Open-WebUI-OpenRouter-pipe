@@ -38,7 +38,6 @@ def create_tool_context(
     idle_timeout: float | None = None,
     batch_timeout: float | None = None,
     event_emitter: Any = None,
-    batch_cap: int = 4,
 ) -> _ToolExecutionContext:
     """Create a _ToolExecutionContext for testing."""
     return _ToolExecutionContext(
@@ -50,7 +49,6 @@ def create_tool_context(
         idle_timeout=idle_timeout,
         user_id=user_id,
         event_emitter=event_emitter,
-        batch_cap=batch_cap,
     )
 
 
@@ -2699,8 +2697,6 @@ class _DummyWorker:
         return {"call_id": call.get("call_id"), "status": status, "message": message}
 
     _tool_worker_loop = ToolExecutor._tool_worker_loop
-    _can_batch_tool_calls = ToolExecutor._can_batch_tool_calls
-    _args_reference_call = ToolExecutor._args_reference_call
     _cancelled_tool_output = ToolExecutor._cancelled_tool_output
 
 
@@ -2708,7 +2704,6 @@ def _make_context(
     queue: asyncio.Queue[list[_QueuedToolCall] | None],
     *,
     idle_timeout: float | None = None,
-    batch_cap: int = 4,
 ) -> _ToolExecutionContext:
     """Create a _ToolExecutionContext for testing."""
     return _ToolExecutionContext(
@@ -2720,188 +2715,7 @@ def _make_context(
         idle_timeout=idle_timeout,
         user_id="test-user",
         event_emitter=None,
-        batch_cap=batch_cap,
     )
-
-
-# _args_reference_call tests
-
-
-class TestArgsReferenceCall:
-    """Tests for _args_reference_call method."""
-
-    def test_string_containing_call_id(self) -> None:
-        """String containing call_id should return True."""
-        worker = _DummyWorker()
-        assert worker._args_reference_call("prefix-call-123-suffix", "call-123") is True
-
-    def test_string_not_containing_call_id(self) -> None:
-        """String not containing call_id should return False."""
-        worker = _DummyWorker()
-        assert worker._args_reference_call("no match here", "call-123") is False
-
-    def test_dict_with_nested_call_id(self) -> None:
-        """Dict containing call_id in nested structure should return True."""
-        worker = _DummyWorker()
-        args = {"outer": {"inner": "data-call-123-more"}}
-        assert worker._args_reference_call(args, "call-123") is True
-
-    def test_dict_without_call_id(self) -> None:
-        """Dict not containing call_id should return False."""
-        worker = _DummyWorker()
-        args = {"outer": {"inner": "no match"}}
-        assert worker._args_reference_call(args, "call-123") is False
-
-    def test_list_with_nested_call_id(self) -> None:
-        """List containing call_id in nested structure should return True."""
-        worker = _DummyWorker()
-        args = ["first", ["second", "call-123-data"]]
-        assert worker._args_reference_call(args, "call-123") is True
-
-    def test_list_without_call_id(self) -> None:
-        """List not containing call_id should return False."""
-        worker = _DummyWorker()
-        args = ["first", ["second", "third"]]
-        assert worker._args_reference_call(args, "call-123") is False
-
-    def test_deeply_nested_structure(self) -> None:
-        """Deeply nested structure containing call_id should return True."""
-        worker = _DummyWorker()
-        args = {
-            "a": [
-                {"b": "no match"},
-                {"c": [{"d": "call-999"}]},
-            ],
-            "e": {"f": {"g": ["call-123"]}},
-        }
-        assert worker._args_reference_call(args, "call-123") is True
-        assert worker._args_reference_call(args, "call-999") is True
-        assert worker._args_reference_call(args, "missing") is False
-
-    def test_integer_returns_false(self) -> None:
-        """Integer type should return False."""
-        worker = _DummyWorker()
-        assert worker._args_reference_call(42, "call-123") is False
-
-    def test_float_returns_false(self) -> None:
-        """Float type should return False."""
-        worker = _DummyWorker()
-        assert worker._args_reference_call(3.14, "call-123") is False
-
-    def test_none_returns_false(self) -> None:
-        """None type should return False."""
-        worker = _DummyWorker()
-        assert worker._args_reference_call(None, "call-123") is False
-
-    def test_bool_returns_false(self) -> None:
-        """Boolean type should return False."""
-        worker = _DummyWorker()
-        assert worker._args_reference_call(True, "call-123") is False
-        assert worker._args_reference_call(False, "call-123") is False
-
-    def test_empty_string(self) -> None:
-        """Empty string should return False."""
-        worker = _DummyWorker()
-        assert worker._args_reference_call("", "call-123") is False
-
-    def test_empty_dict(self) -> None:
-        """Empty dict should return False."""
-        worker = _DummyWorker()
-        assert worker._args_reference_call({}, "call-123") is False
-
-    def test_empty_list(self) -> None:
-        """Empty list should return False."""
-        worker = _DummyWorker()
-        assert worker._args_reference_call([], "call-123") is False
-
-
-# _can_batch_tool_calls tests
-
-
-class TestCanBatchToolCalls:
-    """Tests for _can_batch_tool_calls method."""
-
-    def test_same_name_allows_batching(self) -> None:
-        """Calls with same name should be batchable."""
-        worker = _DummyWorker()
-        loop = asyncio.new_event_loop()
-        try:
-            first = _make_queued(loop, "call-1", "tool_a", args={})
-            candidate = _make_queued(loop, "call-2", "tool_a", args={})
-            assert worker._can_batch_tool_calls(first, candidate) is True
-        finally:
-            loop.close()
-
-    def test_different_names_blocks_batching(self) -> None:
-        """Calls with different names should not be batchable."""
-        worker = _DummyWorker()
-        loop = asyncio.new_event_loop()
-        try:
-            first = _make_queued(loop, "call-1", "tool_a", args={})
-            candidate = _make_queued(loop, "call-2", "tool_b", args={})
-            assert worker._can_batch_tool_calls(first, candidate) is False
-        finally:
-            loop.close()
-
-    def test_candidate_references_first_call_id(self) -> None:
-        """Candidate referencing first's call_id should block batching."""
-        worker = _DummyWorker()
-        loop = asyncio.new_event_loop()
-        try:
-            first = _make_queued(loop, "call-1", "tool_a", args={})
-            candidate = _make_queued(
-                loop, "call-2", "tool_a", args={"input": "use call-1 result"}
-            )
-            assert worker._can_batch_tool_calls(first, candidate) is False
-        finally:
-            loop.close()
-
-    def test_first_references_candidate_call_id(self) -> None:
-        """First referencing candidate's call_id should block batching."""
-        worker = _DummyWorker()
-        loop = asyncio.new_event_loop()
-        try:
-            first = _make_queued(
-                loop, "call-1", "tool_a", args={"input": "need call-2 data"}
-            )
-            candidate = _make_queued(loop, "call-2", "tool_a", args={})
-            assert worker._can_batch_tool_calls(first, candidate) is False
-        finally:
-            loop.close()
-
-    def test_missing_call_id_in_first(self) -> None:
-        """Missing call_id in first should still allow batching check."""
-        worker = _DummyWorker()
-        loop = asyncio.new_event_loop()
-        try:
-            first = _QueuedToolCall(
-                call={"name": "tool_a"},
-                tool_cfg={},
-                args={},
-                future=loop.create_future(),
-                allow_batch=True,
-            )
-            candidate = _make_queued(loop, "call-2", "tool_a", args={})
-            assert worker._can_batch_tool_calls(first, candidate) is True
-        finally:
-            loop.close()
-
-    def test_missing_call_id_in_candidate(self) -> None:
-        """Missing call_id in candidate should still allow batching check."""
-        worker = _DummyWorker()
-        loop = asyncio.new_event_loop()
-        try:
-            first = _make_queued(loop, "call-1", "tool_a", args={})
-            candidate = _QueuedToolCall(
-                call={"name": "tool_a"},
-                tool_cfg={},
-                args={},
-                future=loop.create_future(),
-                allow_batch=True,
-            )
-            assert worker._can_batch_tool_calls(first, candidate) is True
-        finally:
-            loop.close()
 
 
 # _tool_worker_loop tests
@@ -3794,27 +3608,16 @@ class _DummyWorker2:
         return {"call_id": call.get("call_id"), "status": status, "message": message}
 
     _tool_worker_loop = ToolExecutor._tool_worker_loop
-    _can_batch_tool_calls = ToolExecutor._can_batch_tool_calls
-    _args_reference_call = ToolExecutor._args_reference_call
     _cancelled_tool_output = ToolExecutor._cancelled_tool_output
 
 
-def _make_queued(loop, call_id: str, name: str, *, allow_batch: bool = True, args=None):
+def _make_queued(loop, call_id: str, name: str, *, args=None):
     return _QueuedToolCall(
         call={"name": name, "call_id": call_id},
         tool_cfg={},
         args=args or {},
         future=loop.create_future(),
-        allow_batch=allow_batch,
     )
-
-
-def test_args_reference_call_detects_nested_call_ids():
-    worker = _DummyWorker2()
-    args = {"a": ["x", {"b": "call-123"}], "c": {"d": ["nope", "call-999"]}}
-
-    assert worker._args_reference_call(args, "call-123") is True
-    assert worker._args_reference_call(args, "missing") is False
 
 
 # ===== From test_tool_exception_logging.py =====
@@ -3842,7 +3645,6 @@ async def test_tool_exception_logs_stack_trace(caplog, pipe_instance_async):
         args={},
         tool_cfg={"type": "function", "callable": _boom},
         future=future,
-        allow_batch=True,
     )
     context = _ToolExecutionContext(
         queue=asyncio.Queue(),
@@ -3853,7 +3655,6 @@ async def test_tool_exception_logs_stack_trace(caplog, pipe_instance_async):
         idle_timeout=None,
         user_id="user-1",
         event_emitter=None,
-        batch_cap=1,
     )
 
     caplog.set_level(logging.DEBUG, logger="tests.tool_exception_logging")
@@ -3948,7 +3749,6 @@ async def test_shutdown_tool_context_times_out_and_cancels(caplog, pipe_instance
         idle_timeout=None,
         user_id="u",
         event_emitter=None,
-        batch_cap=1,
     )
 
     blocker = asyncio.Event()
@@ -4374,7 +4174,6 @@ class TestToolExecutionContextFields:
             idle_timeout=None,
             user_id="test_user",
             event_emitter=None,
-            batch_cap=10,
             request=None,
             user={"id": "test_user", "name": "Test User"},
             metadata={"chat_id": "123", "session_id": "456"},
@@ -4398,7 +4197,6 @@ class TestToolExecutionContextFields:
             idle_timeout=None,
             user_id="test_user",
             event_emitter=None,
-            batch_cap=10,
         )
 
         assert context.request is None

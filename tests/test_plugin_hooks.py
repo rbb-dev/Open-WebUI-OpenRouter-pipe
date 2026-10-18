@@ -136,7 +136,6 @@ def test_tool_context_carries_request_id():
         idle_timeout=None,
         user_id="u",
         event_emitter=None,
-        batch_cap=1,
         request_id="req-42",
     )
     assert ctx.request_id == "req-42"
@@ -149,7 +148,6 @@ def test_tool_context_carries_request_id():
         idle_timeout=None,
         user_id="u",
         event_emitter=None,
-        batch_cap=1,
     )
     assert default_ctx.request_id == ""
 

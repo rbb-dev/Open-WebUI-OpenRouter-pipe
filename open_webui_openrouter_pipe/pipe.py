@@ -4252,7 +4252,6 @@ class Pipe:
                     idle_timeout=idle_timeout,
                     user_id=job.user_id,
                     event_emitter=_tool_side_emitter(stream_emitter or job.event_emitter),
-                    batch_cap=job.valves.TOOL_BATCH_CAP,
                     request=job.request,
                     user=job.user,
                     metadata=job.metadata,

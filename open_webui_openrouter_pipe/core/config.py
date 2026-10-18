@@ -2575,14 +2575,6 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "clocks."
         ),
     )
-    TOOL_BATCH_CAP: int = Field(
-        default=4,
-        ge=1,
-        le=32,
-        description=(
-            "Has no effect. A round's tool calls run one after another in the order the model asked, so consecutive calls to one tool are no longer grouped into a batch; only the round's delegate_task calls start together."
-        ),
-    )
     TOOL_OUTPUT_RETENTION_TURNS: int = Field(
         default=10,
         ge=0,

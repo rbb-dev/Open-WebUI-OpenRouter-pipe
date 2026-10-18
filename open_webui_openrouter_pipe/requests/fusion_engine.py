@@ -256,7 +256,6 @@ async def run_fusion_member(
             idle_timeout=outer_ctx.idle_timeout,
             user_id=invocation.user_id,
             event_emitter=_files_only_emitter,
-            batch_cap=outer_ctx.batch_cap,
             request=outer_ctx.request,
             user=outer_ctx.user,
             resolved_user=invocation.user_model,

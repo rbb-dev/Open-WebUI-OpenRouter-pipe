@@ -2763,45 +2763,10 @@ class TestParseToolArguments:
             assert executor._parse_tool_arguments("{'q': 1}") == {"q": 1}
 
             # Valid JSON that isn't an object (null/scalar/list) must raise
-            # ValueError, not return a non-dict that crashes downstream
-            # (_is_batchable_tool_call does `key in args`).
+            # ValueError, not return a non-dict that crashes downstream.
             for non_object in ["null", "42", '"hi"', "[1, 2]"]:
                 with pytest.raises(ValueError, match="must be a JSON object"):
                     executor._parse_tool_arguments(non_object)
-        finally:
-            pipe.shutdown()
-
-
-# =============================================================================
-# IS BATCHABLE TOOL CALL TESTS
-# =============================================================================
-
-
-class TestIsBatchableToolCall:
-    """Tests for tool call batching checks."""
-
-    def test_is_batchable_tool_call(self):
-        """Test that _is_batchable_tool_call checks for blocking keys.
-
-        The method checks for specific blocking keys: depends_on, _depends_on, sequential, no_batch
-        """
-        pipe = Pipe()
-        try:
-            executor = pipe._ensure_tool_executor()
-            # No blocking keys - batchable
-            assert executor._is_batchable_tool_call({"query": "search"}) is True
-
-            # With depends_on - not batchable
-            assert executor._is_batchable_tool_call({"depends_on": "prev_call"}) is False
-
-            # With _depends_on - not batchable
-            assert executor._is_batchable_tool_call({"_depends_on": ["call1"]}) is False
-
-            # With sequential - not batchable
-            assert executor._is_batchable_tool_call({"sequential": True}) is False
-
-            # With no_batch - not batchable
-            assert executor._is_batchable_tool_call({"no_batch": True}) is False
         finally:
             pipe.shutdown()
 
@@ -3206,7 +3171,6 @@ class TestToolExecution:
                 tool_cfg={"type": tool_type},
                 args={},
                 future=asyncio.get_event_loop().create_future(),
-                allow_batch=True,
             )
 
             # Create minimal context
@@ -3244,7 +3208,6 @@ class TestToolExecution:
                 tool_cfg={"type": "function", "callable": boom},
                 args={},
                 future=asyncio.get_running_loop().create_future(),
-                allow_batch=True,
             )
             context = Mock(spec=_ToolExecutionContext)
             context.carded_calls = set()
@@ -3276,7 +3239,6 @@ class TestToolExecution:
                 tool_cfg={"type": "mcp", "callable": gone},
                 args={},
                 future=asyncio.get_running_loop().create_future(),
-                allow_batch=True,
             )
             context = Mock(spec=_ToolExecutionContext)
             context.carded_calls = set()
@@ -3315,7 +3277,6 @@ class TestToolExecution:
                     tool_cfg={"type": "function", "callable": boom},
                     args={},
                     future=asyncio.get_running_loop().create_future(),
-                    allow_batch=True,
                 )
                 return item
 
@@ -3356,7 +3317,6 @@ class TestToolExecution:
                 tool_cfg={"type": "function", "callable": down},
                 args={},
                 future=asyncio.get_running_loop().create_future(),
-                allow_batch=True,
             )
             context = Mock(spec=_ToolExecutionContext)
             context.carded_calls = set()
@@ -3394,7 +3354,6 @@ class TestToolExecution:
                 tool_cfg={"type": "mcp", "callable": broken},
                 args={},
                 future=asyncio.get_running_loop().create_future(),
-                allow_batch=True,
             )
             context = Mock(spec=_ToolExecutionContext)
             context.carded_calls = set()
@@ -3434,7 +3393,6 @@ class TestToolExecution:
                 tool_cfg={"type": "mcp", "callable": mcp_tool},
                 args={},
                 future=asyncio.get_running_loop().create_future(),
-                allow_batch=True,
             )
             context = Mock(spec=_ToolExecutionContext)
             context.carded_calls = set()
@@ -3477,7 +3435,6 @@ class TestToolExecution:
                 tool_cfg={"type": "mcp", "callable": mcp_tool},
                 args={},
                 future=asyncio.get_running_loop().create_future(),
-                allow_batch=True,
             )
             context = Mock(spec=_ToolExecutionContext)
             context.carded_calls = set()
@@ -5649,14 +5606,12 @@ async def test_run_tool_with_retries_success_and_missing_callable(pipe_instance)
         tool_cfg={"callable": _tool},
         args={},
         future=loop.create_future(),
-        allow_batch=True,
     )
     bad = _QueuedToolCall(
         call={"name": "tool", "call_id": "2"},
         tool_cfg={},
         args={},
         future=loop.create_future(),
-        allow_batch=True,
     )
 
     context = _ToolExecutionContext(
@@ -5668,7 +5623,6 @@ async def test_run_tool_with_retries_success_and_missing_callable(pipe_instance)
         idle_timeout=None,
         user_id="user",
         event_emitter=None,
-        batch_cap=1,
     )
 
     status, text, files, embeds, _pictures = await pipe._run_tool_with_retries(good, context, "function")
@@ -8302,7 +8256,6 @@ class TestToolBatchExecution:
                 idle_timeout=5.0,
                 user_id="test_user",
                 event_emitter=None,
-                batch_cap=10,
             )
 
             # Empty batch should return immediately
@@ -8329,7 +8282,6 @@ class TestToolBatchExecution:
                 idle_timeout=None,
                 user_id="test_user",
                 event_emitter=None,
-                batch_cap=10,
             )
 
             future = asyncio.get_running_loop().create_future()
@@ -8344,7 +8296,6 @@ class TestToolBatchExecution:
                 tool_cfg={"callable": slow_tool, "type": "function"},
                 args={},
                 future=future,
-                allow_batch=True,
             )
 
             await pipe._execute_tool_batch([item], context)
@@ -8373,7 +8324,6 @@ class TestToolBatchExecution:
                 idle_timeout=None,
                 user_id="test_user",
                 event_emitter=None,
-                batch_cap=10,
             )
 
             future = asyncio.get_running_loop().create_future()
@@ -8387,7 +8337,6 @@ class TestToolBatchExecution:
                 tool_cfg={"callable": failing_tool, "type": "function"},
                 args={},
                 future=future,
-                allow_batch=True,
             )
 
             await pipe._execute_tool_batch([item], context)
@@ -8414,7 +8363,6 @@ class TestToolBatchExecution:
                 idle_timeout=None,
                 user_id="test_user",
                 event_emitter=None,
-                batch_cap=10,
             )
 
             future = asyncio.get_running_loop().create_future()
@@ -8428,7 +8376,6 @@ class TestToolBatchExecution:
                 tool_cfg={"callable": success_tool, "type": "function"},
                 args={},
                 future=future,
-                allow_batch=True,
             )
 
             await pipe._execute_tool_batch([item], context)
@@ -8464,7 +8411,6 @@ class TestRunToolWithoutTenacity:
                 idle_timeout=None,
                 user_id="test_user",
                 event_emitter=None,
-                batch_cap=10,
             )
 
             async def simple_tool(**kwargs):
@@ -8475,7 +8421,6 @@ class TestRunToolWithoutTenacity:
                 tool_cfg={"callable": simple_tool, "type": "function"},
                 args={},
                 future=asyncio.get_running_loop().create_future(),
-                allow_batch=True,
             )
 
             # Mock tenacity import to raise ImportError
@@ -8506,7 +8451,6 @@ class TestRunToolWithoutTenacity:
                 idle_timeout=None,
                 user_id="test_user",
                 event_emitter=None,
-                batch_cap=10,
             )
 
             # Create item without callable
@@ -8515,7 +8459,6 @@ class TestRunToolWithoutTenacity:
                 tool_cfg={"type": "function"},  # No callable
                 args={},
                 future=asyncio.get_running_loop().create_future(),
-                allow_batch=True,
             )
 
             result = await pipe._run_tool_with_retries(item, context, "function")
@@ -8754,7 +8697,6 @@ class TestToolShutdownContext:
                 idle_timeout=None,
                 user_id="test_user",
                 event_emitter=None,
-                batch_cap=10,
             )
 
             # Create a fake worker task
@@ -8792,7 +8734,6 @@ class TestToolShutdownContext:
                 idle_timeout=None,
                 user_id="test_user",
                 event_emitter=None,
-                batch_cap=10,
             )
 
             # Create a worker that will raise during shutdown
@@ -8841,7 +8782,6 @@ class TestInvokeToolCall:
                 idle_timeout=None,
                 user_id="test_user",
                 event_emitter=None,
-                batch_cap=10,
             )
 
             async def simple_tool(**kwargs):
@@ -8852,7 +8792,6 @@ class TestInvokeToolCall:
                 tool_cfg={"callable": simple_tool, "type": "function"},
                 args={},
                 future=asyncio.get_running_loop().create_future(),
-                allow_batch=True,
             )
 
             result = await pipe._invoke_tool_call(item, context)
@@ -9235,7 +9174,6 @@ class TestToolBreakerNotification:
                 idle_timeout=None,
                 user_id="test_user",
                 event_emitter=mock_emitter,
-                batch_cap=10,
             )
 
             await pipe._ensure_tool_executor()._notify_tool_breaker(context, "function", "test_tool")
@@ -9314,37 +9252,12 @@ class TestMiscCoveragePaths:
                 idle_timeout=None,
                 user_id="test_user",
                 event_emitter=None,  # No emitter
-                batch_cap=10,
             )
 
             # Should not crash with None emitter
             await pipe._ensure_tool_executor()._notify_tool_breaker(context, "function", "test_tool")
         finally:
             await pipe.close()
-
-    def test_batchable_tool_call_with_dependency_keys(self):
-        """Test _is_batchable_tool_call returns False for dependent calls."""
-        pipe = Pipe()
-
-        try:
-            executor = pipe._ensure_tool_executor()
-            # Test with depends_on key
-            args_with_depends = {"depends_on": "call123"}
-            assert executor._is_batchable_tool_call(args_with_depends) is False
-
-            # Test with sequential key
-            args_with_sequential = {"sequential": True}
-            assert executor._is_batchable_tool_call(args_with_sequential) is False
-
-            # Test with no_batch key
-            args_with_no_batch = {"no_batch": True}
-            assert executor._is_batchable_tool_call(args_with_no_batch) is False
-
-            # Test with normal args (should be batchable)
-            normal_args = {"arg1": "value1"}
-            assert executor._is_batchable_tool_call(normal_args) is True
-        finally:
-            pipe.shutdown()
 
 
 class TestToolWorkerIntegration:
@@ -9367,7 +9280,6 @@ class TestToolWorkerIntegration:
                 idle_timeout=2.0,
                 user_id="test_user",
                 event_emitter=None,
-                batch_cap=10,
             )
 
             future = asyncio.get_running_loop().create_future()
@@ -9380,7 +9292,6 @@ class TestToolWorkerIntegration:
                 tool_cfg={"callable": success_tool, "type": "function"},
                 args={},
                 future=future,
-                allow_batch=True,
             )
 
             # Put item in queue
@@ -9413,7 +9324,6 @@ class TestToolWorkerIntegration:
                 idle_timeout=0.1,
                 user_id="test_user",
                 event_emitter=None,
-                batch_cap=10,
             )
 
             worker = asyncio.create_task(pipe._ensure_tool_executor()._tool_worker_loop(context))
@@ -9425,67 +9335,6 @@ class TestToolWorkerIntegration:
             assert still_waiting
         finally:
             await pipe.close()
-
-
-class TestToolCanBatch:
-    """Tests for tool batching logic."""
-
-    def test_can_batch_tool_calls_same_name(self):
-        """Test _can_batch_tool_calls with same tool name."""
-        pipe = Pipe()
-
-        try:
-            from open_webui_openrouter_pipe.tools.tool_executor import _QueuedToolCall
-
-            first = _QueuedToolCall(
-                call={"name": "tool_a", "call_id": "call1"},
-                tool_cfg={"type": "function"},
-                args={"arg1": "value1"},
-                future=Mock(),
-                allow_batch=True,
-            )
-
-            candidate = _QueuedToolCall(
-                call={"name": "tool_a", "call_id": "call2"},
-                tool_cfg={"type": "function"},
-                args={"arg1": "value2"},
-                future=Mock(),
-                allow_batch=True,
-            )
-
-            result = pipe._ensure_tool_executor()._can_batch_tool_calls(first, candidate)
-            assert result is True
-        finally:
-            pipe.shutdown()
-
-    def test_can_batch_tool_calls_different_name(self):
-        """Test _can_batch_tool_calls with different tool names."""
-        pipe = Pipe()
-
-        try:
-            from open_webui_openrouter_pipe.tools.tool_executor import _QueuedToolCall
-
-            first = _QueuedToolCall(
-                call={"name": "tool_a", "call_id": "call1"},
-                tool_cfg={"type": "function"},
-                args={"arg1": "value1"},
-                future=Mock(),
-                allow_batch=True,
-            )
-
-            candidate = _QueuedToolCall(
-                call={"name": "tool_b", "call_id": "call2"},
-                tool_cfg={"type": "function"},
-                args={"arg1": "value2"},
-                future=Mock(),
-                allow_batch=True,
-            )
-
-            result = pipe._ensure_tool_executor()._can_batch_tool_calls(first, candidate)
-            assert result is False
-        finally:
-            pipe.shutdown()
-
 
 
 # =============================================================================
@@ -9611,39 +9460,6 @@ class TestDedupeSessionLogEvents:
 
             result = _sorter_stream(events, dedupe=True)
             assert len(result) == 3
-        finally:
-            pipe.shutdown()
-
-
-class TestArgsReferencesCall:
-    """Tests for _args_reference_call method."""
-
-    def test_args_reference_call_with_depends_on(self):
-        """Test _args_reference_call detects depends_on reference."""
-        pipe = Pipe()
-
-        try:
-            first_call_id = "call_123"
-            args = {"depends_on": "call_123"}
-
-            result = pipe._ensure_tool_executor()._args_reference_call(args, first_call_id)
-            assert result is True
-
-            args_different = {"depends_on": "call_456"}
-            result = pipe._ensure_tool_executor()._args_reference_call(args_different, first_call_id)
-            assert result is False
-        finally:
-            pipe.shutdown()
-
-    def test_args_reference_call_no_reference(self):
-        """Test _args_reference_call with no references."""
-        pipe = Pipe()
-
-        try:
-            args = {"param1": "value1"}
-
-            result = pipe._ensure_tool_executor()._args_reference_call(args, "call_123")
-            assert result is False
         finally:
             pipe.shutdown()
 

@@ -190,17 +190,17 @@ async def _run(pipe, monkeypatch, registry, calls, *, timeout=60.0, batch_timeou
     """
     return await _run_with(
         pipe, monkeypatch, registry, calls,
-        maxsize=50, workers=5, batch_cap=4,
+        maxsize=50, workers=5,
         timeout=timeout, batch_timeout=batch_timeout, idle_timeout=idle_timeout,
         on_complete=on_complete, event_emitter=event_emitter,
         card_carries_the_result=card_carries_the_result, drain=drain,
     )
 
 
-async def _run_with(pipe, monkeypatch, registry, calls, *, maxsize=50, workers=5, batch_cap=4, timeout=60.0,
+async def _run_with(pipe, monkeypatch, registry, calls, *, maxsize=50, workers=5, timeout=60.0,
                     batch_timeout=120.0, idle_timeout=None, on_complete=None, event_emitter=None,
                     card_carries_the_result=False, drain=0.0, queue=None):
-    """`_run` with the queue's maxsize, the worker count and the batch cap as parameters.
+    """`_run` with the queue's maxsize and the worker count as parameters.
 
     The enqueue at the end of `_execute_function_calls` blocks on `queue.put`, so a question about
     whether the idle allowance is charged for that wait needs a queue small enough to actually fill
@@ -216,7 +216,6 @@ async def _run_with(pipe, monkeypatch, registry, calls, *, maxsize=50, workers=5
         idle_timeout=idle_timeout,
         user_id="user-1",
         event_emitter=event_emitter,
-        batch_cap=batch_cap,
     )
     context.on_complete = on_complete
     context.carded_calls = {str(call.get("call_id")) for call in calls} if card_carries_the_result else set()
@@ -1070,7 +1069,6 @@ async def test_inside_a_fusion_answer_each_models_calls_run_one_after_another_wh
         idle_timeout=None,
         user_id="user-1",
         event_emitter=None,
-        batch_cap=4,
     )
     invocation = FusionInnerInvocation(
         orchestrator=_ModelCallingTwice(),
@@ -1834,7 +1832,6 @@ async def _tool_context_with_workers(
         idle_timeout=idle_timeout,
         user_id="user-1",
         event_emitter=None,
-        batch_cap=4,
     )
     executor = pipe._ensure_tool_executor()
     context.workers.extend(asyncio.create_task(executor._tool_worker_loop(context)) for _ in range(workers))
