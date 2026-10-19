@@ -16,6 +16,8 @@ from __future__ import annotations
 from functools import lru_cache
 
 import importlib
+import os
+import subprocess
 import importlib.util
 import sys
 from pathlib import Path
@@ -709,3 +711,26 @@ def test_a_function_local_inside_a_guard_is_not_a_module_level_name(tmp_path):
             f"{short} lost the function defined inside the guard, which IS a "
             "module-level binding"
         )
+
+
+def test_names_that_differ_only_in_case_keep_one_order_whatever_the_hash_seed() -> None:
+    script = (
+        "import importlib.util, sys, types\n"
+        f"spec = importlib.util.spec_from_file_location('_bundle_v2_order', {str(BUNDLER)!r})\n"
+        "module = importlib.util.module_from_spec(spec)\n"
+        "sys.modules[spec.name] = module\n"
+        "spec.loader.exec_module(module)\n"
+        "records = [types.SimpleNamespace(external_import_lines=['from sqlalchemy import text', 'from sqlalchemy import Text, select'])]\n"
+        "print(module.collect_and_dedup_external_imports(records)[1])\n"
+    )
+    lines = {
+        subprocess.run(
+            [sys.executable, "-c", script],
+            env={**os.environ, "PYTHONHASHSEED": seed},
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        for seed in ("1", "2")
+    }
+    assert len(lines) == 1, lines

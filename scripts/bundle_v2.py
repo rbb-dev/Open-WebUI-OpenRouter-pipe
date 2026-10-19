@@ -827,9 +827,9 @@ def collect_and_dedup_external_imports(ordered_modules: list[ModuleInfo]) -> tup
     def _is_stdlib(module_path: str) -> bool:
         return _top_module(module_path) in STDLIB_NAMES
 
-    def _sort_key_for_name(name: str) -> str:
+    def _sort_key_for_name(name: str) -> tuple[str, str]:
         """Sort imported names: plain names first, then aliases, case-insensitive."""
-        return name.lower()
+        return name.lower(), name
 
     stdlib_lines: list[str] = []
     third_party_lines: list[str] = []
