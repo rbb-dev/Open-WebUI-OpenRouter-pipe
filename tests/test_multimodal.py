@@ -3591,6 +3591,14 @@ class TestConversationRebuild:
                 "message_id": "u-2",
                 "content": [{"type": "text", "text": "Latest question"}],
             },
+            {"role": "assistant", "content": [{"type": "text", "text": "Filler 1"}]},
+            {"role": "user", "content": [{"type": "text", "text": "Filler 2"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "Filler 2"}]},
+            {"role": "user", "content": [{"type": "text", "text": "Filler 3"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "Filler 3"}]},
+            {"role": "user", "content": [{"type": "text", "text": "Filler 4"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "Filler 4"}]},
+            {"role": "user", "content": [{"type": "text", "text": "Filler 5"}]},
         ]
 
         async def artifact_loader(chat_id, message_id, markers):
@@ -3628,7 +3636,7 @@ class TestConversationRebuild:
             artifact_loader=artifact_loader,
             pruning_turns=1,
             replayed_reasoning_refs=[],
-            valves=pipe_instance.valves.model_copy(update={"PERSIST_TOOL_RESULTS": True}),
+            valves=pipe_instance.valves.model_copy(update={"PERSIST_TOOL_RESULTS": True, "IMAGE_REUSE_MAX_TURNS": 8}),
         )
 
         system_msg = next(item for item in transformed if item.get("role") == "system")
@@ -3643,7 +3651,11 @@ class TestConversationRebuild:
         assert artifact is not None, f"transformed conversation missing artifact: {transformed}"
         assert "[tool output pruned" in artifact["output"]
 
-        final_user = [item for item in transformed if item.get("role") == "user"][-1]
+        final_user = next(
+            item
+            for item in reversed([item for item in transformed if item.get("role") == "user"])
+            if any(block["type"] == "input_image" for block in item["content"])
+        )
         image_blocks = [block for block in final_user["content"] if block["type"] == "input_image"]
         expected_image = f"data:image/png;base64,{sample_image_base64}"
         assert image_blocks and image_blocks[0]["image_url"] == expected_image

@@ -1719,9 +1719,16 @@ async def transform_messages_to_input(
                 return False
             return turn_index is None or _withheld(turn_index)
 
+        def _stepped_first_kept(sliding_first_kept: int, step: int) -> int:
+            if step <= 0 or sliding_first_kept <= 0:
+                return sliding_first_kept
+            return sliding_first_kept - sliding_first_kept % step
+
         prune_before_turn: int | None = None
         if pruning_turns > 0 and total_turns > pruning_turns:
-            prune_before_turn = total_turns - pruning_turns
+            prune_before_turn = _stepped_first_kept(
+                total_turns - pruning_turns, max(active_valves.TOOL_TURNS_TO_REMEMBER, 0)
+            ) or None
 
         picture_window_starts_at = (
             total_turns - 1 - image_reuse_turns
@@ -1733,7 +1740,8 @@ async def transform_messages_to_input(
             return -1 if turn_index is None else turn_index
 
         def _beyond_tool_window(turn_index: int | None) -> bool:
-            return _turn_number(turn_index) < total_turns - 1 - max(active_valves.TOOL_TURNS_TO_REMEMBER, 0)
+            step = max(active_valves.TOOL_TURNS_TO_REMEMBER, 0)
+            return _turn_number(turn_index) < _stepped_first_kept(total_turns - 1 - step, step)
 
         tool_message_turns = {
             _turn_number(turn_indices[position])

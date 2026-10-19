@@ -913,10 +913,18 @@ class TestTurnComputation:
                 {"role": "user", "content": "Turn 0 user"},
                 *_round("c0", long["c0"]),
                 {"role": "assistant", "content": "Turn 0 assistant"},
-                {"role": "user", "content": "Turn 1 user"},
+                {"role": "user", "content": "Filler 1"},
+                {"role": "assistant", "content": "Filler 1"},
+                {"role": "user", "content": "Filler 2"},
+                {"role": "assistant", "content": "Filler 2"},
+                {"role": "user", "content": "Filler 3"},
+                {"role": "assistant", "content": "Filler 3"},
+                {"role": "user", "content": "Filler 4"},
+                {"role": "assistant", "content": "Filler 4"},
+                {"role": "user", "content": "Turn 5 user"},
                 *_round("c1", long["c1"]),
-                {"role": "assistant", "content": "Turn 1 assistant"},
-                {"role": "user", "content": "Turn 2 user"},
+                {"role": "assistant", "content": "Turn 5 assistant"},
+                {"role": "user", "content": "Turn 6 user"},
             ],
             pruning_turns=2,
             valves=pipe_instance.valves.model_copy(update={"PERSIST_TOOL_RESULTS": True}),
@@ -948,8 +956,19 @@ class TestTurnComputation:
 
         # All messages should be present
         assert len(result) == 7
-        inside_window = await transform_messages_to_input(pipe_instance, messages, pruning_turns=3, valves=valves)
-        outside_window = await transform_messages_to_input(pipe_instance, messages, pruning_turns=1, valves=valves)
+        padded = [
+            *messages,
+            {"role": "assistant", "content": "Filler 1"},
+            {"role": "user", "content": "Filler 2"},
+            {"role": "assistant", "content": "Filler 2"},
+            {"role": "user", "content": "Filler 3"},
+            {"role": "assistant", "content": "Filler 3"},
+            {"role": "user", "content": "Filler 4"},
+            {"role": "assistant", "content": "Filler 4"},
+            {"role": "user", "content": "Filler 5"},
+        ]
+        inside_window = await transform_messages_to_input(pipe_instance, padded, pruning_turns=3, valves=valves)
+        outside_window = await transform_messages_to_input(pipe_instance, padded, pruning_turns=1, valves=valves)
 
         assert _round_verdicts(inside_window, whole=whole) == {"c0": "intact"}
         assert _round_verdicts(outside_window, whole=whole) == {"c0": "pruned"}
@@ -1041,42 +1060,75 @@ def _spoken_texts(items: list[dict[str, Any]]) -> list[str]:
 
 class TestToolTurnsToRemember:
     @pytest.mark.asyncio
+    async def test_consecutive_requests_reuse_the_history_prefix_between_trims_and_trim_in_steps_of_five(
+        self, pipe_instance
+    ):
+        results = {
+            turns: await transform_messages_to_input(pipe_instance, _chat_with_tool_turns(turns))
+            for turns in range(2, 17)
+        }
+
+        def history_portion(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            last_user = max(
+                index
+                for index, item in enumerate(items)
+                if item["type"] == "message" and item["role"] == "user"
+            )
+            return items[:last_user]
+
+        for turns in (6, 7, 8, 9, 11, 12, 13, 14):
+            earlier, later = history_portion(results[turns]), history_portion(results[turns + 1])
+            assert later[: len(earlier)] == earlier
+
+        def kept_turns(turns: int) -> list[int]:
+            return [
+                int(item["call_id"][len("call-") :])
+                for item in results[turns]
+                if item["type"] == "function_call"
+            ]
+
+        assert kept_turns(10) == list(range(10))
+        assert kept_turns(11) == list(range(5, 11))
+        assert kept_turns(15) == list(range(5, 15))
+        assert kept_turns(16) == list(range(10, 16))
+
+    @pytest.mark.asyncio
     async def test_a_chat_with_cards_sends_tool_calls_for_the_five_latest_earlier_turns_and_the_current_turn(
         self, pipe_instance
     ):
-        result = await transform_messages_to_input(pipe_instance, _chat_with_tool_turns(10))
+        result = await transform_messages_to_input(pipe_instance, _chat_with_tool_turns(16))
 
-        kept = [f"call-{turn}" for turn in range(4, 10)]
+        kept = [f"call-{turn}" for turn in range(10, 16)]
         assert [i["call_id"] for i in result if i["type"] == "function_call"] == kept
         outputs = {i["call_id"]: i["output"] for i in result if i["type"] == "function_call_output"}
         assert list(outputs) == kept
-        assert outputs["call-9"] == "result 9"
+        assert outputs["call-15"] == "result 15"
         thoughts = [d["text"] for i in result for d in i.get("reasoning_details", [])]
-        assert thoughts == [f"thought {turn}" for turn in range(4, 10)]
+        assert thoughts == [f"thought {turn}" for turn in range(10, 16)]
         assert _spoken_texts(result) == [
-            text for turn in range(10) for text in (f"Question {turn}", f"Answer {turn}")
+            text for turn in range(16) for text in (f"Question {turn}", f"Answer {turn}")
         ][:-1]
 
     @pytest.mark.asyncio
     async def test_chat_completions_messages_of_an_older_turn_carry_no_tool_calls(self, pipe_instance):
-        items = await transform_messages_to_input(pipe_instance, _chat_with_tool_turns(10))
+        items = await transform_messages_to_input(pipe_instance, _chat_with_tool_turns(16))
 
         chat = await _responses_input_to_chat_messages(
             items, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext
         )
 
-        kept = [f"call-{turn}" for turn in range(4, 10)]
+        kept = [f"call-{turn}" for turn in range(10, 16)]
         assert [call["id"] for message in chat for call in message.get("tool_calls", [])] == kept
         assert [message["tool_call_id"] for message in chat if message["role"] == "tool"] == kept
         assert [d["text"] for message in chat for d in message.get("reasoning_details", [])] == [
-            f"thought {turn}" for turn in range(4, 10)
+            f"thought {turn}" for turn in range(10, 16)
         ]
 
     @pytest.mark.asyncio
     async def test_a_chat_with_stored_rows_sends_the_rows_of_the_remembered_turns_only(self, pipe_instance):
         rows: dict[str, dict[str, Any]] = {}
         messages: list[dict[str, Any]] = []
-        for turn in range(10):
+        for turn in range(16):
             ulids = [generate_item_id() for _ in range(3)]
             rows[ulids[0]] = {
                 "type": "reasoning",
@@ -1104,12 +1156,12 @@ class TestToolTurnsToRemember:
             pipe_instance, messages, chat_id="chat-1", openwebui_model_id="model-1", artifact_loader=loader
         )
 
-        kept = range(4, 10)
+        kept = range(10, 16)
         assert [i["call_id"] for i in result if i["type"] == "function_call"] == [f"call-{t}" for t in kept]
         assert [i["call_id"] for i in result if i["type"] == "function_call_output"] == [f"call-{t}" for t in kept]
         assert [i["id"] for i in result if i["type"] == "reasoning"] == [f"rs-{t}" for t in kept]
         assert _spoken_texts(result) == [
-            text for turn in range(10) for text in (f"Question {turn}", f"Answer {turn}")
+            text for turn in range(16) for text in (f"Question {turn}", f"Answer {turn}")
         ]
 
     @pytest.mark.asyncio
@@ -1178,7 +1230,7 @@ class TestToolTurnsToRemember:
             },
             {"role": "tool", "tool_call_id": "ask-1", "content": "result 2"},
             {"role": "assistant", "content": "Answer 2"},
-            *_chat_with_tool_turns(10)[12:],
+            *_chat_with_tool_turns(16)[12:],
         ]
 
         async def loader(chat_id, message_id, markers):
@@ -1190,14 +1242,14 @@ class TestToolTurnsToRemember:
         )
 
         assert [i["call_id"] for i in result if i["type"] == "function_call"] == [
-            "ask-0", "ask-1", *[f"call-{turn}" for turn in range(4, 10)]
+            "ask-0", "ask-1", *[f"call-{turn}" for turn in range(10, 16)]
         ]
         outputs = {i["call_id"]: i["output"] for i in result if i["type"] == "function_call_output"}
         assert outputs["ask-0"] == "ANSWER 0"
         assert outputs["ask-1"] == "ANSWER 1"
         assert [i for i in result if i["type"] == "reasoning"] == []
         assert [d["text"] for i in result for d in i.get("reasoning_details", [])] == [
-            f"thought {turn}" for turn in range(4, 10)
+            f"thought {turn}" for turn in range(10, 16)
         ]
 
     @pytest.mark.asyncio
@@ -1213,7 +1265,7 @@ class TestToolTurnsToRemember:
             },
             {"role": "user", "content": "Question 1"},
             {"role": "assistant", "content": f"Answer 1\n{_serialize_marker(stored_thought)}"},
-            *_chat_with_tool_turns(10)[8:],
+            *_chat_with_tool_turns(16)[8:],
         ]
 
         async def loader(chat_id, message_id, markers):
@@ -1229,11 +1281,11 @@ class TestToolTurnsToRemember:
         )
 
         assert [d["text"] for i in result for d in i.get("reasoning_details", [])] == [
-            "thought 0", *[f"thought {turn}" for turn in range(4, 10)]
+            "thought 0", *[f"thought {turn}" for turn in range(10, 16)]
         ]
         assert [i["id"] for i in result if i["type"] == "reasoning"] == ["rs-1"]
         assert [i["call_id"] for i in result if i["type"] == "function_call"] == [
-            f"call-{turn}" for turn in range(4, 10)
+            f"call-{turn}" for turn in range(10, 16)
         ]
 
     @pytest.mark.asyncio
@@ -2392,6 +2444,12 @@ class TestMarkerBasedArtifactReplay:
             {"role": "user", "content": "Turn 1"},
             {"role": "assistant", "content": "Response 1"},
             {"role": "user", "content": "Turn 2"},
+            {"role": "assistant", "content": "Filler 1"},
+            {"role": "user", "content": "Filler 2"},
+            {"role": "assistant", "content": "Filler 2"},
+            {"role": "user", "content": "Filler 3"},
+            {"role": "assistant", "content": "Filler 3"},
+            {"role": "user", "content": "Filler 4"},
         ]
 
         # Results are kept: with them not kept an old round reaches the model as the not-retained placeholder
@@ -3513,6 +3571,14 @@ class TestPruningEdgeCases:
             {"role": "assistant", "content": f"[{self.MARKER1}]: #\n[{self.MARKER2}]: #"},
             {"role": "user", "content": "Turn 1"},
             {"role": "user", "content": "Turn 2"},
+            {"role": "assistant", "content": "Filler 1"},
+            {"role": "user", "content": "Filler 2"},
+            {"role": "assistant", "content": "Filler 2"},
+            {"role": "user", "content": "Filler 3"},
+            {"role": "assistant", "content": "Filler 3"},
+            {"role": "user", "content": "Filler 4"},
+            {"role": "assistant", "content": "Filler 4"},
+            {"role": "user", "content": "Filler 5"},
         ]
 
         # Results are kept: with them not kept an old round reaches the model as the not-retained placeholder
@@ -3802,6 +3868,14 @@ class TestPruneToolOutputEdgeCases:
             {"role": "assistant", "content": f"[{self.MARKER1}]: #\n[{self.MARKER2}]: #"},
             {"role": "user", "content": "Turn 1"},
             {"role": "user", "content": "Turn 2"},
+            {"role": "assistant", "content": "Filler 1"},
+            {"role": "user", "content": "Filler 2"},
+            {"role": "assistant", "content": "Filler 2"},
+            {"role": "user", "content": "Filler 3"},
+            {"role": "assistant", "content": "Filler 3"},
+            {"role": "user", "content": "Filler 4"},
+            {"role": "assistant", "content": "Filler 4"},
+            {"role": "user", "content": "Filler 5"},
         ]
 
         # Results are kept: with them not kept an old round reaches the model as the not-retained placeholder
