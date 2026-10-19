@@ -1726,9 +1726,12 @@ async def transform_messages_to_input(
 
         prune_before_turn: int | None = None
         if pruning_turns > 0 and total_turns > pruning_turns:
-            prune_before_turn = _stepped_first_kept(
-                total_turns - pruning_turns, max(active_valves.TOOL_TURNS_TO_REMEMBER, 0)
-            ) or None
+            if pruning_turns > max(active_valves.TOOL_TURNS_TO_REMEMBER, 0):
+                prune_before_turn = _stepped_first_kept(
+                    total_turns - pruning_turns, max(active_valves.TOOL_TURNS_TO_REMEMBER, 0)
+                ) or None
+            else:
+                prune_before_turn = _stepped_first_kept(total_turns - 1 - pruning_turns, pruning_turns) + 1
 
         picture_window_starts_at = (
             total_turns - 1 - image_reuse_turns

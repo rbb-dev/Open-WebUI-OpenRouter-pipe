@@ -956,19 +956,8 @@ class TestTurnComputation:
 
         # All messages should be present
         assert len(result) == 7
-        padded = [
-            *messages,
-            {"role": "assistant", "content": "Filler 1"},
-            {"role": "user", "content": "Filler 2"},
-            {"role": "assistant", "content": "Filler 2"},
-            {"role": "user", "content": "Filler 3"},
-            {"role": "assistant", "content": "Filler 3"},
-            {"role": "user", "content": "Filler 4"},
-            {"role": "assistant", "content": "Filler 4"},
-            {"role": "user", "content": "Filler 5"},
-        ]
-        inside_window = await transform_messages_to_input(pipe_instance, padded, pruning_turns=3, valves=valves)
-        outside_window = await transform_messages_to_input(pipe_instance, padded, pruning_turns=1, valves=valves)
+        inside_window = await transform_messages_to_input(pipe_instance, messages, pruning_turns=3, valves=valves)
+        outside_window = await transform_messages_to_input(pipe_instance, messages, pruning_turns=1, valves=valves)
 
         assert _round_verdicts(inside_window, whole=whole) == {"c0": "intact"}
         assert _round_verdicts(outside_window, whole=whole) == {"c0": "pruned"}
@@ -1091,6 +1080,74 @@ class TestToolTurnsToRemember:
         assert kept_turns(11) == list(range(5, 11))
         assert kept_turns(15) == list(range(5, 15))
         assert kept_turns(16) == list(range(10, 16))
+
+    @pytest.mark.asyncio
+    async def test_the_shortening_keeps_the_last_results_whole_between_its_own_steps(
+        self, pipe_instance
+    ):
+        limit = _TOOL_OUTPUT_PRUNE_MIN_LENGTH
+
+        def chat(turns: int) -> list[dict[str, Any]]:
+            messages: list[dict[str, Any]] = []
+            for turn in range(turns):
+                messages += [
+                    {"role": "user", "content": f"Question {turn}"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {"id": f"call-{turn}", "type": "function", "function": {"name": "lookup", "arguments": "{}"}}
+                        ],
+                    },
+                    {"role": "tool", "tool_call_id": f"call-{turn}", "content": f"result {turn} {'x' * (limit + 200)}"},
+                ]
+            return messages
+
+        def history_portion(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            last_user = max(
+                index
+                for index, item in enumerate(items)
+                if item["type"] == "message" and item["role"] == "user"
+            )
+            return items[:last_user]
+
+        def whole_earlier(items: list[dict[str, Any]]) -> int:
+            return sum(
+                1
+                for item in items
+                if item["type"] == "function_call_output" and "[tool output pruned" not in item["output"]
+            ) - 1
+
+        for remember, retention in ((20, 3), (10, 5)):
+            valves = pipe_instance.valves.model_copy(
+                update={"TOOL_TURNS_TO_REMEMBER": remember, "PERSIST_TOOL_RESULTS": True}
+            )
+            histories: dict[int, list[dict[str, Any]]] = {}
+            wholes: dict[int, int] = {}
+            for turns in range(2, 42):
+                result = await transform_messages_to_input(
+                    pipe_instance, chat(turns), valves=valves, pruning_turns=retention
+                )
+                histories[turns] = history_portion(result)
+                wholes[turns] = whole_earlier(result)
+
+            predicted = {
+                turns
+                for turns in range(3, 42)
+                if (turns % retention == 1 and turns > retention)
+                or (turns % remember == 1 and turns > 2 * remember)
+            }
+            changed = {
+                turns
+                for turns in range(3, 42)
+                if histories[turns][: len(histories[turns - 1])] != histories[turns - 1]
+            }
+            assert changed == predicted
+            for turns, whole in wholes.items():
+                if turns <= retention:
+                    assert whole == turns - 1
+                else:
+                    assert retention - 1 <= whole <= 2 * retention - 2
 
     @pytest.mark.asyncio
     async def test_a_chat_with_cards_sends_tool_calls_for_the_five_latest_earlier_turns_and_the_current_turn(

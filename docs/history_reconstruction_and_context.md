@@ -227,7 +227,7 @@ For old turns, it can prune very large `function_call_output.output` strings by:
 
 When an output carries a picture, only its text is shortened; the picture stays.
 
-This keeps replay payloads smaller while preserving recency and high-level context. Only a turn that is still sent can be pruned: an earlier turn beyond `TOOL_TURNS_TO_REMEMBER` sends no tool output at all (§5.5), except the answer of the built-in `ask_user`, which pruning never shortens, so pruning has an effect only at a retention value no larger than `TOOL_TURNS_TO_REMEMBER`.
+This keeps replay payloads smaller while preserving recency and high-level context. Only a turn that is still sent can be pruned: an earlier turn beyond `TOOL_TURNS_TO_REMEMBER` sends no tool output at all (§5.5), except the answer of the built-in `ask_user`, which pruning never shortens, so pruning has an effect only at a retention value no larger than `TOOL_TURNS_TO_REMEMBER`. The prune boundary moves only every `TOOL_OUTPUT_RETENTION_TURNS`-th turn: between moves the results of the last up to twice that minus one turns, the one being answered included, go whole.
 
 ### 5.4 The pipe's own copy of each tool round
 
