@@ -122,13 +122,20 @@ _REJECTED_IDS_LOGGED = 20
 
 _REDIS_DELETE_MARKER_ALL = "owui:dropped:all"
 _REDIS_DELETE_MARKER_KEEP = "owui:dropped:keep:"
+_REDIS_CLEARED_MARKER_ALL = "owui:cleared:all"
+_REDIS_CLEARED_MARKER_KEEP = "owui:cleared:keep:"
 _LEGACY_REDIS_DELETE_MARKER_ALL = "1"
 
 
-def _delete_marker_value(keep_message_id: str | None) -> str:
+def _delete_marker_value(keep_message_id: str | None, cleared: bool = False) -> str:
+    all_token, keep_prefix = (
+        (_REDIS_CLEARED_MARKER_ALL, _REDIS_CLEARED_MARKER_KEEP)
+        if cleared
+        else (_REDIS_DELETE_MARKER_ALL, _REDIS_DELETE_MARKER_KEEP)
+    )
     if keep_message_id:
-        return f"{_REDIS_DELETE_MARKER_KEEP}{keep_message_id}"
-    return _REDIS_DELETE_MARKER_ALL
+        return f"{keep_prefix}{keep_message_id}"
+    return all_token
 
 
 def _webui_secret_key() -> str:
@@ -176,13 +183,18 @@ def raw_valve_column_decodes(raw: Any) -> bool:
 def _marker_spares_row(marker: Any, message_id: Any) -> bool:
     if not isinstance(marker, str) or not marker:
         return False
-    if marker == _REDIS_DELETE_MARKER_ALL:
+    if marker in (_REDIS_DELETE_MARKER_ALL, _LEGACY_REDIS_DELETE_MARKER_ALL, _REDIS_CLEARED_MARKER_ALL):
         return False
-    if marker == _LEGACY_REDIS_DELETE_MARKER_ALL:
-        return False
-    if marker.startswith(_REDIS_DELETE_MARKER_KEEP):
-        return message_id == marker[len(_REDIS_DELETE_MARKER_KEEP):]
+    for keep_prefix in (_REDIS_DELETE_MARKER_KEEP, _REDIS_CLEARED_MARKER_KEEP):
+        if marker.startswith(keep_prefix):
+            return message_id == marker[len(keep_prefix):]
     return message_id == marker
+
+
+def _marker_is_cleared(marker: Any) -> bool:
+    return isinstance(marker, str) and (
+        marker == _REDIS_CLEARED_MARKER_ALL or marker.startswith(_REDIS_CLEARED_MARKER_KEEP)
+    )
 
 
 _CANCEL_REQUEUE_POLL_SECONDS = 0.05
@@ -2858,7 +2870,7 @@ class ArtifactStore:
         if not ids or not self._db_executor:
             return True
         owners = await self._redis_cached_owners(refs)
-        await self._mark_rows_dropped(ids, keep_message_id)
+        await self._mark_rows_dropped(ids, keep_message_id, cleared=tombstone)
 
         from open_webui_openrouter_pipe.core.logging_system import SessionLogger
 
@@ -3478,7 +3490,9 @@ class ArtifactStore:
     def _redis_active(self) -> bool:
         return bool(self._redis_enabled and self.valves.ENABLE_REDIS_CACHE)
 
-    async def _mark_rows_dropped(self, row_ids: list[str], keep_message_id: str | None = None) -> None:
+    async def _mark_rows_dropped(
+        self, row_ids: list[str], keep_message_id: str | None = None, *, cleared: bool = False
+    ) -> None:
         if not (row_ids and self._redis_client):
             return
         try:
@@ -3487,7 +3501,7 @@ class ArtifactStore:
                 pipe.setex(
                     self._redis_deleted_key(row_id),
                     _REDIS_DELETE_MARKER_TTL_SECONDS,
-                    _delete_marker_value(keep_message_id),
+                    _delete_marker_value(keep_message_id, cleared),
                 )
             await _await_if_needed(pipe.execute())
         except Exception as exc:
@@ -3535,17 +3549,24 @@ class ArtifactStore:
                 mget_many(self._redis_client, [self._redis_deleted_key(row_id) for row_id in row_ids])
             )
             owners = {row.get("id"): row.get("message_id") for row in rows if row.get("id")}
-            deleted = [
-                row_id
+            retired = [
+                (row_id, marker)
                 for row_id, marker in zip(row_ids, markers or [])
                 if marker is not None and not _marker_spares_row(marker, owners.get(row_id))
             ]
+            cleared = [row_id for row_id, marker in retired if _marker_is_cleared(marker)]
+            deleted = [row_id for row_id, marker in retired if not _marker_is_cleared(marker)]
+            loop = asyncio.get_running_loop()
+            if cleared:
+                await loop.run_in_executor(
+                    self._db_executor,
+                    functools.partial(self._delete_artifacts_sync, cleared, tombstone=True),
+                )
             if deleted:
-                loop = asyncio.get_running_loop()
                 await loop.run_in_executor(
                     self._db_executor, functools.partial(self._delete_artifacts_sync, deleted)
                 )
-            return deleted
+            return [*cleared, *deleted]
         except Exception as exc:
             self.logger.warning(
                 "Removing flushed artifacts deleted while queued failed: %s", exc, exc_info=True

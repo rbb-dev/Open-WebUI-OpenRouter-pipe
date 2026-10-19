@@ -29,6 +29,7 @@ from open_webui_openrouter_pipe.storage import persistence as persistence_mod
 from open_webui_openrouter_pipe.storage.owui_files import temporary_chat_prefixes
 from open_webui_openrouter_pipe.storage.persistence import (
     ArtifactStore,
+    _CLEARED_REASONING_PAYLOAD,
     _delete_marker_value,
     _sanitize_table_fragment,
     generate_item_id,
@@ -3271,6 +3272,40 @@ async def test_rows_cleaned_up_while_waiting_to_be_written_never_stay_in_the_tab
         assert store._redis_client.lists[store._redis_pending_key] == []
         assert sorted(store._db_fetch_sync("chat", None, ids)) == [ids_by_message["m-writing"]]
         assert sorted(await store._db_fetch("chat", None, ids)) == [ids_by_message["m-writing"]]
+
+
+@pytest.mark.asyncio
+async def test_a_queued_row_retired_by_a_clearing_cleanup_becomes_a_cleared_marker_and_one_retired_by_a_delete_stays_gone(
+    pipe_instance,
+) -> None:
+    with _write_behind_store(pipe_instance) as store:
+        ids_by_message = await _queued_rows(store)
+        cleared_id = ids_by_message["m-earlier"]
+        deleted_id = ids_by_message["m-writing"]
+
+        await store._delete_artifacts([("chat", cleared_id)], keep_message_id="m-keep", tombstone=True)
+        await store._delete_artifacts([("chat", deleted_id)], keep_message_id="m-keep")
+        assert (
+            store._redis_client.values[store._redis_deleted_key(cleared_id)]
+            == "owui:cleared:keep:m-keep"
+        )
+
+        await store._flush_redis_queue()
+        assert store._redis_client.lists[store._redis_pending_key] == []
+
+        with store._session_factory() as session:
+            rows = {
+                row.id: row.payload
+                for row in session.query(store._item_model)
+                .filter(store._item_model.id.in_([cleared_id, deleted_id]))
+                .all()
+            }
+        assert rows.get(cleared_id) == dict(_CLEARED_REASONING_PAYLOAD) and cleared_id in rows
+        assert deleted_id not in rows
+
+        fetched = await store._db_fetch("chat", None, [cleared_id, deleted_id])
+        assert fetched.get(cleared_id) == dict(_CLEARED_REASONING_PAYLOAD)
+        assert deleted_id not in fetched
 
 
 @pytest.mark.asyncio
