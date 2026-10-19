@@ -100,7 +100,9 @@
   reasoning guide is the reason for the default — the GPT-5.6 model family supports
   `all_turns` and uses it by default, which needs the complete history replayed, and that is
   what `conversation` does where `next_reply` keeps only the previous turn's. `disabled` and
-  `next_reply` themselves, their cleanups, and the administrator's default are unchanged.
+  `next_reply` themselves, the terms their cleanups run on, and the administrator's default are
+  unchanged; the rows the cleanups retire are cleared to empty markers rather than deleted, the
+  marker left for the normal retention cleanup.
 
 - **Tools are no longer sent in strict mode by default** — `ENABLE_STRICT_TOOL_CALLING` now starts off, so a
   tool schema reaches the provider as its author wrote it, with an explicit `strict: false` rather than being
