@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 from typing import Any, cast
 
 import pytest
@@ -25,6 +26,7 @@ from sqlalchemy.pool import StaticPool
 
 from open_webui_openrouter_pipe import Pipe, ResponsesBody, generate_item_id
 from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
+from tests.log_capture import emitted
 from tests.test_continue_stores_once import _open_webui_convert_output_to_messages
 from tests.test_storage import _install_internal_db
 
@@ -315,12 +317,15 @@ def _real_artifact_store(pipe):
         engine.dispose()
 
 
-def _rows_of(store, message_id: str, item_type: str | None = None) -> int:
+def _live_rows_of(store, message_id: str, item_type: str | None = None) -> int:
     with store._session_factory() as session:
         query = session.query(store._item_model).filter(store._item_model.message_id == message_id)
         if item_type is not None:
             query = query.filter(store._item_model.item_type == item_type)
-        return query.count()
+        rows = query.all()
+        return sum(
+            1 for row in rows if not (isinstance(row.payload, dict) and row.payload.get("cleared"))
+        )
 
 
 async def _replay_from_store(pipe, valves, messages, refs=None) -> list[dict[str, Any]]:
@@ -363,19 +368,19 @@ async def test_next_reply_cleanup_keeps_the_rows_of_the_message_a_continue_is_st
 
         earlier = await reply([{"role": "user", "content": "q0"}], [("answer", "THINK-0", "Earlier answer.")], "m0",
                               continued=False)
-        assert _rows_of(store, "m0") == 1
+        assert _live_rows_of(store, "m0") == 1
         history = [{"role": "user", "content": "q0"}, {"role": "assistant", "content": earlier},
                    {"role": "user", "content": "q1"}]
 
         first = await reply(history, first_rounds, "m1", continued=False)
         # The reply to q1 replayed the earlier message's reasoning, so those rows are gone ...
-        assert _rows_of(store, "m0") == 0
-        rows_after_the_first_generation = _rows_of(store, "m1")
+        assert _live_rows_of(store, "m0") == 0
+        rows_after_the_first_generation = _live_rows_of(store, "m1")
         assert rows_after_the_first_generation > 0
 
         second = await reply([*history, {"role": "assistant", "content": first}], second_rounds, "m1", continued=True)
         # ... while the Continue, still writing m1, keeps the rows it replayed from m1's first generation.
-        assert _rows_of(store, "m1") > rows_after_the_first_generation
+        assert _live_rows_of(store, "m1") > rows_after_the_first_generation
 
         replay = await _replay_from_store(
             pipe, valves,
@@ -384,6 +389,54 @@ async def test_next_reply_cleanup_keeps_the_rows_of_the_message_a_continue_is_st
 
     _assert_replays_exactly_and_apart(replay, WHOLE_TURN[shape])
 
+
+@pytest.mark.asyncio
+async def test_the_turn_after_a_next_reply_cleanup_warns_only_for_the_row_nobody_cleared(
+    monkeypatch, pipe_instance_async, caplog
+):
+    pipe = pipe_instance_async
+    next_reply_valves = _valves(pipe).model_copy(update={"PERSIST_REASONING_TOKENS": "next_reply"})
+    with _real_artifact_store(pipe) as store:
+        first_body = await _replay_from_store(pipe, next_reply_valves, [{"role": "user", "content": "q0"}])
+        first = await _generation(
+            pipe, monkeypatch, next_reply_valves, None,
+            rounds=[("answer", "THINK-0", "First answer.")],
+            listing="with-reasoning", continued=False, message_id="m0", body_input=first_body,
+        )
+        history = [
+            {"role": "user", "content": "q0"},
+            {"role": "assistant", "content": first},
+            {"role": "user", "content": "q1"},
+        ]
+        refs: list[tuple[str, str]] = []
+        second_body = await _replay_from_store(pipe, next_reply_valves, history, refs)
+        cleared_id = refs[0][1]
+        second = await _generation(
+            pipe, monkeypatch, next_reply_valves, None,
+            rounds=[("answer", "THINK-1", "Second answer.")],
+            listing="with-reasoning", continued=False, message_id="m1", refs=refs, body_input=second_body,
+        )
+        with store._session_factory() as session:
+            lost_row = (
+                session.query(store._item_model)
+                .filter(store._item_model.message_id == "m1")
+                .filter(store._item_model.item_type == "reasoning")
+                .one()
+            )
+            lost_id = lost_row.id
+            session.query(store._item_model).filter(store._item_model.id == lost_id).delete()
+            session.commit()
+
+        with caplog.at_level(logging.WARNING):
+            await _replay_from_store(
+                pipe, _valves(pipe),
+                [*history, {"role": "assistant", "content": second}, {"role": "user", "content": "q2"}],
+            )
+
+    records = emitted(caplog, level=logging.WARNING, containing="Missing")
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert lost_id in message and cleared_id not in message, message
 
 
 # --- a Continue that is not streamed -----------------------------------------------------------------------------------

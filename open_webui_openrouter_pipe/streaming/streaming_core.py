@@ -5416,7 +5416,9 @@ class StreamingHandler:
         refs = getattr(body, "_replayed_reasoning_refs", None)
         if not refs:
             return
-        deleted = await self._pipe._artifact_store._delete_artifacts(refs, keep_message_id=message_id)
+        deleted = await self._pipe._artifact_store._delete_artifacts(
+            refs, keep_message_id=message_id, tombstone=True
+        )
         if deleted:
             setattr(body, "_replayed_reasoning_refs", [])  # noqa: B010 - undeclared dynamic attribute; setattr keeps pyright quiet
 

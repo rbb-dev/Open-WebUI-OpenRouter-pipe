@@ -205,6 +205,8 @@ _PIPE_OWNED_ROW_TYPES = frozenset({
     "dashboard_purge_lock",
 })
 
+_CLEARED_REASONING_PAYLOAD: dict[str, Any] = {"type": "reasoning", "cleared": True}
+
 _RETENTION_CACHE_PURGE_BATCH = 500
 _REFRESH_BATCH_IDS = 500
 _REFRESH_AFTER = datetime.timedelta(hours=1)
@@ -2769,6 +2771,7 @@ class ArtifactStore:
         keep_message_id: str | None = None,
         *,
         purge_cache: bool = True,
+        tombstone: bool = False,
     ) -> set[str]:
         """Synchronously delete artifacts by ULID."""
         if not (artifact_ids and self._session_factory and self._item_model):
@@ -2790,7 +2793,13 @@ class ArtifactStore:
                 if keep_message_id:
                     owned_query = owned_query.filter(model.message_id != keep_message_id)
                 owned = [(row_id, chat_id) for row_id, chat_id in owned_query.all()]
-            query.delete(synchronize_session=False)
+            if tombstone:
+                query.update(
+                    {"payload": dict(_CLEARED_REASONING_PAYLOAD), "is_encrypted": False},
+                    synchronize_session=False,
+                )
+            else:
+                query.delete(synchronize_session=False)
             session.commit()
         if owned:
             self._schedule_cache_purge(owned)
@@ -2835,7 +2844,13 @@ class ArtifactStore:
             )
 
     @timed
-    async def _delete_artifacts(self, refs: list[tuple[str, str]], keep_message_id: str | None = None) -> bool:
+    async def _delete_artifacts(
+        self,
+        refs: list[tuple[str, str]],
+        keep_message_id: str | None = None,
+        *,
+        tombstone: bool = False,
+    ) -> bool:
         """Delete persisted artifacts (and cached copies) once they have been replayed."""
         if not refs:
             return True
@@ -2884,7 +2899,7 @@ class ArtifactStore:
                     return False
 
         delete_call = functools.partial(
-            self._delete_artifacts_sync, ids, keep_message_id, purge_cache=False
+            self._delete_artifacts_sync, ids, keep_message_id, purge_cache=False, tombstone=tombstone
         )
         try:
             async for attempt in _db_retryer():

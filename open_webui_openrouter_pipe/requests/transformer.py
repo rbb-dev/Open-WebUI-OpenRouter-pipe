@@ -3742,6 +3742,8 @@ async def transform_messages_to_input(
                         if artifact_payload is None:
                             missing_artifact_markers.append(segment["marker"])
                             continue
+                        if artifact_payload.get("cleared"):
+                            continue
                         if artifact_payload.get("type") == "reasoning":
                             row_producer = group_producers.get(segment["marker"])
                             if (
