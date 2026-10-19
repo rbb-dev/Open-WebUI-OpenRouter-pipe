@@ -872,6 +872,38 @@ def _merged_pipe_builtin_tools(
     return (merged or None), (sorted(named | seeded) or None)
 
 
+def _reclaim_pipe_media_defaults(meta_dict: dict, pipe_capabilities: Any) -> bool:
+    if not isinstance(pipe_capabilities, dict):
+        return False
+    if pipe_capabilities.get("video_generation") or pipe_capabilities.get("image_output"):
+        return False
+    caps = meta_dict.get("capabilities")
+    if not (
+        isinstance(caps, dict)
+        and caps.get("builtin_tools") is False
+        and caps.get("file_context") is False
+        and meta_dict.get("builtinTools") == {"files": False}
+    ):
+        return False
+    pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
+    marked = pipe_meta.get(_BUILTIN_TOOL_DEFAULTS_KEY) if isinstance(pipe_meta, dict) else None
+    named = {key for key in marked if isinstance(key, str)} if isinstance(marked, list) else set()
+    remaining_caps = {
+        key: value
+        for key, value in caps.items()
+        if key not in ("builtin_tools", "file_context")
+    }
+    if remaining_caps:
+        meta_dict["capabilities"] = remaining_caps
+    else:
+        del meta_dict["capabilities"]
+    del meta_dict["builtinTools"]
+    _ensure_pipe_meta(meta_dict)[_BUILTIN_TOOL_DEFAULTS_KEY] = sorted(
+        named | {"capabilities:builtin_tools", "capabilities:file_context"}
+    )
+    return True
+
+
 def _merged_capabilities(
     base_caps: dict[str, Any] | None,
     capabilities: dict[str, Any] | None,
@@ -3355,6 +3387,11 @@ class ModelCatalogManager:
                     else:
                         _ensure_pipe_meta(meta_dict)[_BUILTIN_TOOL_DEFAULTS_KEY] = merged_marked
                     meta_updated = True
+
+            if update_capabilities and _reclaim_pipe_media_defaults(
+                meta_dict, openrouter_pipe_capabilities
+            ):
+                meta_updated = True
 
             if (
                 update_images and profile_image_url

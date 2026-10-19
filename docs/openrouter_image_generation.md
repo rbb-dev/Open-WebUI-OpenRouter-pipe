@@ -404,14 +404,16 @@ re-registered as image-only. They answer with both a picture and text.
   through this pipe. Open WebUI behaves the same way on its own connection, and it
   never sends `modalities`.
 
-  Upgrading has two visible effects on a router row, neither of which the sync
-  repairs by itself. The per-model image panel it was given before this change is
+  Upgrading has two visible effects on a router row, both of which the sync
+  settles on its own. The per-model image panel it was given before this change is
   removed on the next sync, from the model's filters and from their default-on
   list both, because a panel left attached keeps writing controls for a contract the
-  router does not have. And a row that synced before this change keeps its `File
-  context` and `Built-in tools` boxes cleared: the sync only fills a box that is
-  still empty, so tick them back by hand if you want attachments and built-in tools
-  on it. Nothing else on the row moves.
+  router does not have. And a row that synced before this change carries `File
+  context` and `Built-in tools` cleared by the pipe's own earlier pass; the sync
+  takes that pair back on the next refresh as well, so the boxes return on their
+  own, while boxes a model-editor save wrote keep every tick. Nothing else on the
+  row moves beyond that pair, the `Files` flag seeded with it, and the reclaim's
+  record in `openrouter_pipe`.
 
 ## Per-model deep dive
 

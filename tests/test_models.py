@@ -2017,6 +2017,143 @@ async def test_insert_new_model_with_openrouter_pipe_capabilities(pipe_instance_
 
 
 @pytest.mark.asyncio
+async def test_update_reclaims_stale_media_pair_and_spares_editor_capabilities(pipe_instance_async) -> None:
+    """Reclaims the pipe's stale media pair on a now-text-only model and leaves editor-saved capabilities alone."""
+    pipe = pipe_instance_async
+    pipe._ensure_catalog_manager()
+    pipe_caps = {
+        "file_input": False,
+        "audio_input": False,
+        "video_input": False,
+        "video_generation": False,
+        "image_output": False,
+        "vision": False,
+    }
+    era_row = _make_existing_model(
+        "test_pipe.openrouter/auto",
+        meta={
+            "capabilities": {
+                "usage": True,
+                "vision": True,
+                "citations": True,
+                "web_search": False,
+                "file_upload": True,
+                "file_context": False,
+                "builtin_tools": False,
+                "status_updates": True,
+                "code_interpreter": True,
+                "image_generation": False,
+            },
+            "builtinTools": {"files": False},
+        },
+    )
+    era_update = AsyncMock()
+
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=era_row)), \
+         patch("open_webui.models.models.Models.update_model_by_id", new=era_update), \
+         patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
+         patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
+         patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+            "test_pipe.openrouter/auto",
+            "OpenRouter Auto",
+            None,
+            None,
+            True,
+            False,
+            openrouter_pipe_capabilities=dict(pipe_caps),
+            new_model_access_control="admins",
+        )
+
+    era_meta = dict(era_update.call_args[0][1].meta)
+    era_caps = era_meta.get("capabilities") or {}
+    assert "builtin_tools" not in era_caps
+    assert "file_context" not in era_caps
+    assert era_caps["usage"] is True
+    assert era_caps["web_search"] is False
+    assert "builtinTools" not in era_meta
+    assert era_meta["openrouter_pipe"]["builtin_tool_defaults"] == [
+        "capabilities:builtin_tools",
+        "capabilities:file_context",
+    ]
+
+    era_row = _make_existing_model("test_pipe.openrouter/auto", meta=era_meta)
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=era_row)), \
+         patch("open_webui.models.models.Models.update_model_by_id", new=era_update), \
+         patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
+         patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
+         patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+            "test_pipe.openrouter/auto",
+            "OpenRouter Auto",
+            None,
+            None,
+            True,
+            False,
+            openrouter_pipe_capabilities=dict(pipe_caps),
+            new_model_access_control="admins",
+        )
+
+    assert era_update.call_count == 1
+
+    editor_row = _make_existing_model(
+        "test_pipe.openai.gpt-5.4-nano",
+        meta={
+            "capabilities": {
+                "usage": True,
+                "vision": True,
+                "citations": True,
+                "web_search": True,
+                "file_upload": True,
+                "file_context": False,
+                "builtin_tools": False,
+                "status_updates": True,
+                "code_interpreter": True,
+                "image_generation": True,
+            },
+            "builtinTools": {
+                "time": True,
+                "chats": True,
+                "notes": True,
+                "memory": True,
+                "channels": True,
+                "knowledge": True,
+                "web_search": True,
+                "code_interpreter": True,
+                "image_generation": True,
+            },
+        },
+    )
+    editor_update = AsyncMock()
+
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=editor_row)), \
+         patch("open_webui.models.models.Models.update_model_by_id", new=editor_update), \
+         patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
+         patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
+         patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+            "test_pipe.openai.gpt-4o",
+            "GPT-4o",
+            None,
+            None,
+            True,
+            False,
+            openrouter_pipe_capabilities=dict(pipe_caps),
+            new_model_access_control="admins",
+        )
+
+    editor_meta = dict(editor_update.call_args[0][1].meta)
+    editor_caps = editor_meta["capabilities"]
+    assert editor_caps["builtin_tools"] is False
+    assert editor_caps["file_context"] is False
+    assert editor_caps["vision"] is True
+    assert len(editor_caps) == 10
+    assert editor_meta["builtinTools"]["chats"] is True
+    assert len(editor_meta["builtinTools"]) == 9
+    assert "builtin_tool_defaults" not in editor_meta.get("openrouter_pipe", {})
+
+
+@pytest.mark.asyncio
 async def test_update_existing_model_with_existing_params(pipe_instance_async) -> None:
     """Updates model preserving existing params, and stamps the scanner verdict.
 
