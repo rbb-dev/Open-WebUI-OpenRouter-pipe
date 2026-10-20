@@ -132,6 +132,7 @@ def _hand_back_file_id(pipe: Pipe, file_id: str) -> list[dict[str, Any]]:
         chat_id: str | None = None,
         message_id: str | None = None,
         owui_user_id: str | None = None,
+        refusals: list[str] | None = None,
     ) -> str:
         uploads.append(
             {
@@ -239,13 +240,13 @@ async def test_a_failed_image_generation_reaches_open_webui_on_the_channel_it_ac
                 self,
                 payload: dict[str, Any],
                 *,
-                max_decoded_bytes: int = 0,
+                spool: Any = None,
                 on_progress: Any = None,
             ) -> Any:
                 attempted.append(
                     {
                         "payload": payload,
-                        "max_decoded_bytes": max_decoded_bytes,
+                        "spool": spool,
                         "on_progress": on_progress,
                     }
                 )

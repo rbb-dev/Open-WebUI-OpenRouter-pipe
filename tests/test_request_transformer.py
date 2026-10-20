@@ -1865,7 +1865,7 @@ class TestImageSelection:
                 return None
 
             pipe_instance._file_gateway.inline_owui_file_id = mock_inline
-            pipe_instance._multimodal_handler._download_remote_url = mock_download
+            pipe_instance._multimodal_handler._download_remote_url_streaming = _as_streaming(mock_download)
 
             messages = [
                 {"role": "assistant", "content": "Here's an image: ![alt](https://example.com/img.png)"},
@@ -1908,7 +1908,7 @@ class TestImageSelection:
                 return None
 
             pipe_instance._file_gateway.inline_owui_file_id = mock_inline
-            pipe_instance._multimodal_handler._download_remote_url = mock_download
+            pipe_instance._multimodal_handler._download_remote_url_streaming = _as_streaming(mock_download)
 
             messages = [
                 {"role": "user", "content": "draw a green frog"},
@@ -3533,7 +3533,7 @@ class TestRemoteImageDownload:
             async def mock_download(url, **kwargs):
                 return {"data": image_bytes, "mime_type": "image/png", "url": url}
 
-            pipe_instance._multimodal_handler._download_remote_url = mock_download
+            pipe_instance._multimodal_handler._download_remote_url_streaming = _as_streaming(mock_download)
 
             messages = [
                 {"role": "user", "content": [
@@ -4011,7 +4011,7 @@ class TestRemoteImageDownloadFailure:
             async def mock_download_fail(url, **_kwargs):
                 raise ConnectionError("Network timeout")
 
-            pipe_instance._multimodal_handler._download_remote_url = mock_download_fail
+            pipe_instance._multimodal_handler._download_remote_url_streaming = _as_streaming(mock_download_fail)
 
             messages = [
                 {"role": "user", "content": [
@@ -4284,7 +4284,7 @@ class TestAssistantImageFallbackException:
                 return None
 
             pipe_instance._file_gateway.inline_owui_file_id = raise_on_inline
-            pipe_instance._multimodal_handler._download_remote_url = mock_download
+            pipe_instance._multimodal_handler._download_remote_url_streaming = _as_streaming(mock_download)
 
             messages = [
                 {"role": "assistant", "content": "Here's an image: ![alt](https://example.com/img.png)"},
@@ -4617,6 +4617,26 @@ class TestVisionWarningLatestUserMessage:
             assert any("does not accept image" in msg for msg in status_messages)
 
 
+
+
+def _as_streaming(inner):
+    """Adapt a data-returning download double to the streaming downloader's contract."""
+    async def adapter(url, dest_path, **kwargs):
+        result = await inner(url, **kwargs)
+        if not result:
+            return None
+        data = result.get("data") or b""
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest_path.write_bytes(data)
+        return {
+            "path": dest_path,
+            "mime_type": result.get("mime_type"),
+            "url": url,
+            "size_bytes": len(data),
+        }
+    return adapter
+
+
 class TestImageReuseRegister:
     """The picture offered back when the user attaches nothing.
 
@@ -4665,7 +4685,7 @@ class TestImageReuseRegister:
 
             pipe_instance._file_gateway.inline_owui_file_id = gateway or none
             pipe_instance._multimodal_handler._is_safe_url = permit if safe_url else deny
-            pipe_instance._multimodal_handler._download_remote_url = downloader or none
+            pipe_instance._multimodal_handler._download_remote_url_streaming = _as_streaming(downloader) or none
             return await transform_messages_to_input(
                 pipe_instance, messages, chat_id=chat_id, event_emitter=emitter
             )
@@ -5607,7 +5627,7 @@ class TestTransformerFeedsTheBudget:
                 return None
 
             pipe_instance._file_gateway.inline_owui_file_id = none
-            pipe_instance._multimodal_handler._download_remote_url = none
+            pipe_instance._multimodal_handler._download_remote_url_streaming = _as_streaming(none)
             produced = await transform_messages_to_input(
                 pipe_instance,
                 [{"role": "user", "content": [
@@ -5670,7 +5690,7 @@ async def test_one_chat_s_download_is_not_handed_to_another(pipe_instance):
     pipe_instance._file_gateway.resolve_storage_context = none
     pipe_instance._file_gateway.inline_owui_file_id = none
     pipe_instance._multimodal_handler._is_safe_url = permit
-    pipe_instance._multimodal_handler._download_remote_url = counting_download
+    pipe_instance._multimodal_handler._download_remote_url_streaming = _as_streaming(counting_download)
 
     messages = [
         {"role": "assistant", "content": f"Done: ![a]({url})"},

@@ -406,7 +406,6 @@ class TestMaterialiseFramePlan:
         from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
         pipe = MagicMock()
         pipe.valves.VIDEO_MAX_SIZE_MB = 500
-        pipe.valves.ALLOW_UNKNOWN_SIZE_CLOUD_READS = False
         pipe._file_gateway.upload_to_owui_storage = AsyncMock(return_value="uploaded_id")
         pipe._file_gateway.resolve_storage_context = AsyncMock(
             side_effect=_resolve_storage_context

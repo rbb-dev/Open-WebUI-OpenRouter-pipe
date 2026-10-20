@@ -9,13 +9,10 @@ import aiohttp
 import httpx
 
 from .config import (
-    _REMOTE_FILE_MAX_SIZE_MAX_MB,
     DEFAULT_OPENROUTER_ERROR_TEMPLATE,
 )
 from .utils import (
-    _coerce_positive_int,
     _data_url_log_subject,
-    _get_open_webui_config_module,
     _normalize_optional_str,
     _normalize_string_list,
     _pretty_json,
@@ -23,7 +20,6 @@ from .utils import (
     _resolve_retry_after_seconds,
     _retry_after_seconds,
     _safe_json_loads,
-    _unwrap_config_value,
     scrub_surrogates,
     wrap_code_block,
 )
@@ -91,6 +87,18 @@ class StatusMessages:
     )
     IMAGES_SKIPPED_UNCHECKED = (
         "Images: skipped {count} (could not be checked in time, so it was not sent)."
+    )
+    IMAGES_PAST_RECEIVE_CEILING = (
+        "Images: {count} received past the pipe's per-item receive ceiling of 2048 MiB "
+        "were not kept; everything else in the reply was received and its cost is recorded."
+    )
+    IMAGES_REFUSED_BY_MAX_UPLOAD_SIZE = (
+        "Images: {count} not saved, larger than Open WebUI's Max Upload Size "
+        "(Admin Panel > Settings > Documents); the cost of the reply is recorded."
+    )
+    IMAGES_NOT_STORED = (
+        "Images: {count} could not be saved to Open WebUI storage; the cost of the reply "
+        "is recorded."
     )
 
     VIDEO_BASE64 = "🎥 Processing base64 video input"
@@ -808,65 +816,3 @@ def _resolve_error_model_context(
         "context_limit": context_limit,
         "max_output_tokens": max_output_tokens,
     }
-
-
-_OPEN_WEBUI_CONFIG_STORE: Any | None = None
-
-
-def _get_open_webui_config_store() -> Any | None:
-    global _OPEN_WEBUI_CONFIG_STORE
-    if _OPEN_WEBUI_CONFIG_STORE is not None:
-        return _OPEN_WEBUI_CONFIG_STORE
-    try:
-        from open_webui.models.config import Config  # type: ignore
-    except Exception:  # noqa: BLE001
-        return None
-    _OPEN_WEBUI_CONFIG_STORE = Config
-    return Config
-
-
-async def _read_rag_file_max_size_mb() -> int | None:
-    module = _get_open_webui_config_module()
-    if module is None:
-        return None
-
-    store = _get_open_webui_config_store()
-    live: dict[str, Any] | None = None
-    if store is not None:
-        try:
-            rows = await store.get_many("rag.file.max_size")
-            if isinstance(rows, dict):
-                live = rows
-        except Exception:  # noqa: BLE001
-            live = None
-
-    source = _LiveRow(live) if live is not None else _ModuleAttrs(module)
-    return _cap_at_ceiling(
-        _coerce_positive_int(_unwrap_config_value(source.file_max_size()))
-    )
-
-
-class _LiveRow:
-    __slots__ = ("_row",)
-
-    def __init__(self, row: dict[str, Any]) -> None:
-        self._row = row
-
-    def file_max_size(self) -> Any:
-        return self._row.get("rag.file.max_size")
-
-
-class _ModuleAttrs:
-    __slots__ = ("_module",)
-
-    def __init__(self, module: Any) -> None:
-        self._module = module
-
-    def file_max_size(self) -> Any:
-        return getattr(self._module, "RAG_FILE_MAX_SIZE", None)
-
-
-def _cap_at_ceiling(limit_mb: int | None) -> int | None:
-    if limit_mb is not None:
-        return min(limit_mb, _REMOTE_FILE_MAX_SIZE_MAX_MB)
-    return limit_mb

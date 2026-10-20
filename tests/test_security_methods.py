@@ -158,11 +158,12 @@ async def test_is_safe_url_respects_disabled_valve(pipe_instance_async):
 
 
 @pytest.mark.asyncio
-async def test_download_remote_url_halts_when_ssrf_blocks(pipe_instance_async, monkeypatch):
-    """_download_remote_url should short-circuit when SSRF validation fails.
+async def test_download_remote_url_halts_when_ssrf_blocks(pipe_instance_async, monkeypatch, tmp_path):
+    """The streaming downloader short-circuits when SSRF validation fails.
 
     The gate is _prepare_pinned_request (returns None when blocked); no HTTP
-    client may be created before that decision.
+    client may be created before that decision, and the refusal is raised, not
+    returned as a None result.
     """
     guard = AsyncMock(return_value=None)
     monkeypatch.setattr(pipe_instance_async._multimodal_handler, "_prepare_pinned_request", guard)
@@ -176,8 +177,12 @@ async def test_download_remote_url_halts_when_ssrf_blocks(pipe_instance_async, m
             raise AssertionError("HTTP client should not be created when SSRF blocks the URL")
 
     monkeypatch.setattr(multimodal_module.httpx, "AsyncClient", _RecordingClient)
-    result = await pipe_instance_async._multimodal_handler._download_remote_url("https://internal.local/secret.png")
-    assert result is None
+    from open_webui_openrouter_pipe.core.errors import RemoteDownloadRefused
+
+    with pytest.raises(RemoteDownloadRefused):
+        await pipe_instance_async._multimodal_handler._download_remote_url_streaming(
+            "https://internal.local/secret.png", tmp_path / "out.bin"
+        )
     assert created == [], f"an HTTP client was created for a URL the SSRF check blocked: {created}"
     guard.assert_awaited_once()
 

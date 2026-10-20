@@ -7,10 +7,13 @@ import contextlib
 import hashlib
 import json
 import logging
+import os
+import tempfile
 import time
 from collections import OrderedDict, defaultdict, deque
 from collections.abc import Awaitable, Callable, Iterable, Iterator
 from contextvars import ContextVar
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 from ..core.config import (
@@ -80,8 +83,9 @@ from ..storage.multimodal import (
     _SNIFF_PREFIX_BYTES,
     ADDRESS_CHECK_BUDGET_SECONDS,
     ADDRESS_CHECK_SECONDS,
+    RECEIVE_ITEM_MAX_BYTES,
+    RequestReceiveScope,
     _sniff_evidence,
-    remote_file_limit_scope,
     resolve_download_type,
 )
 from ..storage.owui_files import (
@@ -298,31 +302,55 @@ class _ReuseDownloadMemo(OrderedDict):
         return sum(self._value_bytes(value) for value in self.values())
 
     @staticmethod
-    def _value_bytes(value: tuple[str | None, bytes, str]) -> int:
-        return len(value[1])
+    def _value_bytes(value: tuple[str | None, str, str]) -> int:
+        try:
+            return os.path.getsize(value[1])
+        except OSError:
+            return 0
+
+    @staticmethod
+    def _discard_picture(path: str) -> None:
+        if not path:
+            return
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
     def __setitem__(self, key, value) -> None:
+        previous = self.get(key)
         super().__setitem__(key, value)
         self.fetched_at.setdefault(key, time.monotonic())
+        if previous is not None and previous[1] != value[1]:
+            self._discard_picture(previous[1])
+
+    def _drop(self, key, value) -> None:
+        self.fetched_at.pop(key, None)
+        if value is not None:
+            self._discard_picture(value[1])
 
     def __delitem__(self, key) -> None:
+        value = self.get(key)
         super().__delitem__(key)
-        self.fetched_at.pop(key, None)
+        self._drop(key, value)
 
     _pop_sentinel: Any = object()
 
     def pop(self, key, default=_pop_sentinel):
-        self.fetched_at.pop(key, None)
+        value = self.get(key)
+        self._drop(key, value)
         if default is self._pop_sentinel:
             return super().pop(key)
         return super().pop(key, default)
 
     def popitem(self, last: bool = True):
         key, value = super().popitem(last=last)
-        self.fetched_at.pop(key, None)
+        self._drop(key, value)
         return key, value
 
     def clear(self) -> None:
+        for value in list(self.values()):
+            self._discard_picture(value[1])
         super().clear()
         self.fetched_at.clear()
 
@@ -330,6 +358,26 @@ class _ReuseDownloadMemo(OrderedDict):
         if key not in self:
             return float("inf")
         return time.monotonic() - self.fetched_at[key]
+
+
+_MEMO_PICTURE_DIR: str | None = None
+
+
+def _claim_memo_picture(path: str) -> str:
+    global _MEMO_PICTURE_DIR
+    if _MEMO_PICTURE_DIR is None:
+        _MEMO_PICTURE_DIR = tempfile.mkdtemp(prefix="openrouter-imgmemo-")
+    fd, claimed = tempfile.mkstemp(dir=_MEMO_PICTURE_DIR)
+    os.close(fd)
+    try:
+        os.replace(path, claimed)
+    except OSError:
+        try:
+            os.unlink(claimed)
+        except OSError:
+            pass
+        return path
+    return claimed
 
 
 _reuse_download_memo: _ReuseDownloadMemo = _ReuseDownloadMemo()
@@ -1320,7 +1368,7 @@ def _memo_owner_key(user_obj: Any | None) -> str | None:
 
 def _note_memo_use(
     memo_key: Any,
-    remembered: tuple[str | None, bytes, str] | None,
+    remembered: tuple[str | None, str, str] | None,
     *,
     mode: str,
     temporary_chat: bool,
@@ -1368,13 +1416,9 @@ class _AddressBudget:
             self.charge(time.monotonic() - started)
 
 
-async def _effective_remote_bytes(pipe: Pipe, seen: list[int | None] | None) -> int:
-    if seen is not None and seen[0] is not None:
-        return seen[0]
-    limit = await pipe._multimodal_handler._get_effective_remote_file_limit_mb() * 1024 * 1024
-    if seen is not None:
-        seen[0] = limit
-    return limit
+def _read_picture(path: str) -> bytes:
+    with open(path, "rb") as picture_fh:
+        return picture_fh.read()
 
 
 async def _memo_hit_is_still_permitted(
@@ -1383,13 +1427,7 @@ async def _memo_hit_is_still_permitted(
     url: str,
     seen: dict[str, bool | None] | None = None,
     budget: _AddressBudget | None = None,
-    *,
-    payload_bytes: int | None = None,
-    size_seen: list[int | None] | None = None,
 ) -> bool:
-    if payload_bytes is not None and payload_bytes > await _effective_remote_bytes(pipe, size_seen):
-        _reuse_download_memo.pop(memo_key, None)
-        return False
     if budget is None:
         budget = _AddressBudget(ADDRESS_CHECK_BUDGET_SECONDS)
     if seen is not None and url in seen:
@@ -1448,7 +1486,7 @@ async def transform_messages_to_input(
     history_left_out_rounds: list[int] | None = None,
     tool_history_self_names: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
-    async with remote_file_limit_scope():
+    async with RequestReceiveScope() as request_receive:
 
         active_valves = valves or pipe.valves
         image_limit = active_valves.MAX_INPUT_IMAGES_PER_REQUEST
@@ -1592,14 +1630,7 @@ async def transform_messages_to_input(
         temporary_chat = is_temporary_chat(chat_id) if temporary_chat is None else temporary_chat
         _set_memo_writes(not temporary_chat)
         memo_owner = _memo_owner_key(user_obj)
-        request_memo: dict[tuple[str, str], tuple[str | None, bytes, str]] = {}
-
-        async def _remote_limit_bytes() -> int:
-            return (
-                await pipe._multimodal_handler._get_effective_remote_file_limit_mb()
-                * 1024
-                * 1024
-            )
+        request_memo: dict[tuple[str, str], tuple[str | None, str, str]] = {}
 
         from ..tools.tool_executor import _request_address_budget
 
@@ -1611,7 +1642,6 @@ async def transform_messages_to_input(
             _shared_budget if _shared_budget is not None
             else _AddressBudget(ADDRESS_CHECK_BUDGET_SECONDS)
         )
-        reuse_limit_seen: list[int | None] = [None]
         tool_name_at, issuer_at = _tool_names_by_position(messages)
         history_note_state: (
             tuple[defaultdict[Any, int], defaultdict[str, deque], defaultdict[str, deque]] | None
@@ -2129,9 +2159,6 @@ async def transform_messages_to_input(
                             return None
 
                         owui_internal = names_an_owui_file_path(url)
-                        held_len: int | None = None
-                        held_over_cap = False
-
                         if (
                             is_cleartext_http_url(url)
                             and not owui_internal
@@ -2201,16 +2228,16 @@ async def transform_messages_to_input(
                                     )
                             if remembered is not None and remembered[0] != memo_owner:
                                 remembered = None
-                            held_len = len(remembered[1]) if remembered is not None else None
-                            held_over_cap = (
-                                held_len is not None
+                            if (
+                                remembered is not None
                                 and memo_key is not None
-                                and held_len > await _remote_limit_bytes()
-                            )
+                                and not os.path.isfile(remembered[1])
+                            ):
+                                _reuse_download_memo.pop(memo_key, None)
+                                remembered = None
                             if remembered is not None and not await (
                                 _memo_hit_is_still_permitted(
                                     pipe, memo_key, url, address_verdicts, address_budget,
-                                    payload_bytes=len(remembered[1]), size_seen=reuse_limit_seen,
                                 )
                             ):
                                 remembered = None
@@ -2219,33 +2246,42 @@ async def transform_messages_to_input(
                                 mode=mode, temporary_chat=temporary_chat,
                                 owner=memo_owner,
                             )
-                            if remembered is not None:
-                                downloaded = {
-                                    "data": remembered[1], "mime_type": remembered[2],
-                                }
-                            elif address_budget.has_room():
-                                try:
-                                    downloaded = await pipe._multimodal_handler._download_remote_url(
-                                        url,
-                                        seconds=address_budget.take(),
-                                        charge=address_budget.charge,
-                                        refused=transfer_refused,
+                            held_path: str | None = (
+                                remembered[1] if remembered is not None else None
+                            )
+                            fetch_path: Path | None = None
+                            held_mime: str | None = (
+                                remembered[2] if remembered is not None else None
+                            )
+                            if held_path is None:
+                                if address_budget.has_room():
+                                    fetch_path = request_receive.new_path()
+                                    try:
+                                        fetched = await pipe._multimodal_handler._download_remote_url_streaming(
+                                            url,
+                                            fetch_path,
+                                            seconds=address_budget.take(),
+                                            charge=address_budget.charge,
+                                            refused=transfer_refused,
+                                        )
+                                    except Exception:
+                                        pipe.logger.exception(
+                                            "Failed to download remote image %s", loggable_link(url)
+                                        )
+                                        fetched = None
+                                    if fetched is not None:
+                                        held_path = str(fetch_path)
+                                        held_mime = fetched.get("mime_type") or held_mime
+                                    else:
+                                        fetch_path = None
+                                else:
+                                    return _refuse(
+                                        _ADDRESS_CHECK_CEILING_REASON,
+                                        "address_ceiling_picture",
+                                        subject=loggable_link(url),
                                     )
-                                except Exception:
-                                    pipe.logger.exception(
-                                        "Failed to download remote image %s", loggable_link(url)
-                                    )
-                                    downloaded = None
-                            else:
-                                return _refuse(
-                                    _ADDRESS_CHECK_CEILING_REASON,
-                                    "address_ceiling_picture",
-                                    subject=loggable_link(url),
-                                )
-                            if downloaded and not downloaded.get("data"):
-                                downloaded = None
                             over_cap_transfer = transfer_refused.get(url) == "too_large"
-                            if not downloaded:
+                            if held_path is None:
                                 if url in address_verdicts:
                                     _cold_verdict = address_verdicts[url]
                                 else:
@@ -2263,33 +2299,28 @@ async def transform_messages_to_input(
                                         "remote_unfetched",
                                         subject=loggable_link(url),
                                     )
-                            if not downloaded and held_over_cap:
-                                return _refuse(
-                                    f"{held_len} bytes, over the "
-                                    f"{await _remote_limit_bytes()}-byte download limit, "
-                                    "so it was not sent",
-                                    "oversized_remote",
-                                    subject=loggable_link(url),
-                                )
-                            if not downloaded and over_cap_transfer:
-                                return _refuse(
-                                    "could not be fetched, so it was not sent",
-                                    "oversized_remote",
-                                    subject=loggable_link(url),
-                                )
-                            if downloaded:
-                                oversized = len(downloaded["data"]) > max_inline_bytes
+                                if over_cap_transfer:
+                                    return _refuse(
+                                        "past the pipe's per-item receive ceiling of "
+                                        f"{RECEIVE_ITEM_MAX_BYTES // (1024 * 1024)} MiB, "
+                                        "so it was not sent",
+                                        "oversized_remote",
+                                        subject=loggable_link(url),
+                                    )
+                            if held_path is not None:
+                                picture = await asyncio.to_thread(_read_picture, held_path)
+                                oversized = len(picture) > max_inline_bytes
                                 if oversized:
                                     return _refuse(
-                                        f"{len(downloaded['data'])} bytes, over the "
+                                        f"{len(picture)} bytes, over the "
                                         f"{max_inline_bytes}-byte limit, so it was not sent",
                                         "oversized_remote",
                                         subject=loggable_link(url),
                                     )
-                                declared_type = str(downloaded.get("mime_type") or "").split(";", 1)[0].strip().lower()
+                                declared_type = str(held_mime or "").split(";", 1)[0].strip().lower()
                                 resolved_type = resolve_download_type(
                                     declared_type,
-                                    _sniff_evidence(bytes(downloaded["data"][:_SNIFF_PREFIX_BYTES])),
+                                    _sniff_evidence(picture[:_SNIFF_PREFIX_BYTES]),
                                 )
                                 if not _is_forwardable_image_type(resolved_type):
                                     return _refuse(
@@ -2300,32 +2331,32 @@ async def transform_messages_to_input(
                                 if mode == "reuse" and memo_key is not None:
                                     request_memo[memo_key] = (
                                         memo_owner,
-                                        downloaded["data"],
-                                        downloaded.get("mime_type") or "",
+                                        held_path,
+                                        held_mime or "",
                                     )
                                 if (
                                     mode == "reuse"
                                     and not temporary_chat
                                     and remembered is None
                                     and memo_key is not None
-                                    and len(downloaded["data"])
+                                    and len(picture)
                                     <= _REUSE_DOWNLOAD_MEMO_MAX_BYTES
                                 ):
                                     held = _reuse_download_memo.held
                                     while (
                                         _reuse_download_memo
-                                        and held + len(downloaded["data"])
+                                        and held + len(picture)
                                         > _REUSE_DOWNLOAD_MEMO_MAX_BYTES
                                     ):
                                         _reuse_download_memo.popitem(last=False)
                                         held = _reuse_download_memo.held
                                     _reuse_download_memo[memo_key] = (
                                         memo_owner,
-                                        downloaded["data"],
-                                        downloaded.get("mime_type") or "",
+                                        _claim_memo_picture(held_path),
+                                        held_mime or "",
                                     )
                                 url = f"data:{resolved_type};base64," + await asyncio.to_thread(
-                                    _b64encode_ascii, downloaded["data"]
+                                    _b64encode_ascii, picture
                                 )
                         owui_file_id = extract_internal_file_id(url) if owui_internal else None
                         if owui_internal and not owui_file_id:

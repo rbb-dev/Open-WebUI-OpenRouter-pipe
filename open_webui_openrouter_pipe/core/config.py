@@ -194,9 +194,6 @@ _RAW_REPLAYED_SERVER_TOOLS = frozenset(
 )
 
 _EMPTY_TOOL_SCHEMA: dict[str, Any] = {"type": "object", "properties": {}}
-
-_REMOTE_FILE_MAX_SIZE_DEFAULT_MB = 50
-_REMOTE_FILE_MAX_SIZE_MAX_MB = 500
 _INTERNAL_FILE_ID_PATTERN = re.compile(r"/files/([A-Za-z0-9-]+)(?:[/?#]|$)")
 _RUN = r"(?:[^ \t()\n]++|\n(?![\"'(]))"
 _MARKDOWN_IMAGE_RE = re.compile(
@@ -1275,17 +1272,11 @@ class Valves(BaseModel):
         ),
     )
 
-    REMOTE_FILE_MAX_SIZE_MB: int = Field(
-        default=_REMOTE_FILE_MAX_SIZE_DEFAULT_MB,
-        ge=1,
-        le=_REMOTE_FILE_MAX_SIZE_MAX_MB,
-        description="Maximum size in MB for downloading a picture from a link: one in the conversation, or one a model returns for a picture it generated. A picture over this limit is not downloaded. A picture the pipe is already holding from an earlier turn is measured against this limit again on every send, exactly as one just downloaded is; one that no longer fits is given up and fetched once more, which this limit then refuses, and the refusal names the limit in force and the byte count it is over. The Open WebUI Max Upload Size counts the same way on that leg as on a fresh download. A file link a person attaches is not downloaded, so this limit does not apply to it; it is passed on to the provider instead, subject to the SSRF valve and the plaintext-HTTP policy, which can refuse it first. The pipe also holds downloads to the cap the Open WebUI admin last saved under Admin > Settings > Documents > Max Upload Size, whether or not Open WebUI's RAG bypass is on: that flag switches off embedding, not the admin's ceiling, and Open WebUI applies the stored size on its own upload leg with no reference to it. That setting is read from Open WebUI's own store, so changing it takes effect without restarting anything. Normally the smaller of the two wins, with one exception: this valve left at its 50 MB default gives way to a larger admin cap, clipped to the pipe's own 500 MB ceiling. Set it away from its default to keep full control in both directions; a valve off its default is never overridden. Clearing the admin's box lifts Open WebUI's cap, not the pipe's, so with this valve at its 50 MB default a cleared box still refuses anything over 50 MB. An environment variable set before Open WebUI first started is used only if that store cannot be read, so a RAG_FILE_MAX_SIZE value set after Open WebUI's first boot no longer has any effect: the stored admin value wins.",
-    )
     BASE64_MAX_SIZE_MB: int = Field(
         default=50,
         ge=1,
         le=500,
-        description="Maximum size in MB for inline files, images and audio. A base64 payload is measured as its decoded size; any other inline payload is measured as its own length. A payload inside a content block whose type the pipe does not recognise is measured on those same terms and refused the same way, so choosing an unusual block type is not a way past this limit. Larger payloads are dropped, to prevent memory issues and excessive HTTP request sizes: an uploaded payload is left out with a note, a file a tool returned that the pipe could not store is not shown, and a warning names the tool that returned it, and a picture inside one generated-image reply is dropped from that reply and named in the chat, while the pictures in that reply that did fit are still delivered. Every entry in such a reply is named for what it is, over that ceiling or not a picture, and raising this limit cannot make a non-picture entry fit: an entry that is not a picture does not count against the reply's ceiling at all, so a bad entry cannot displace a good one. A generated-image reply is also read only up to a size derived from this limit: its base64 form for each picture asked for, plus 8 MB for the rest of the reply. A reply larger than that is refused while it is being read, and so is a streamed reply with a single event larger than that, so none of its pictures are delivered and its cost is not recorded, although OpenRouter has already billed it; the person is told so, and the remedies are the same: raise this limit, ask for fewer images, or ask for a smaller picture. It bounds a tool's file result too, which is then neither stored nor shown. A picture a tool returns is capped here on every path, as its own picture: it is left out of that round and named on the turn whose round carries it, while the round's text result still goes out; a replayed round keeps its images message. A picture a tool returns as an inline `data:` URL is capped where a file link a person attaches is not: the pipe forwards such a picture as it stands rather than downloading it, so the cap is what stands between it and the request.",
+        description="Maximum size in MB for inline payloads on the send side, where the pipe builds a request: inline files, images and audio carried as base64 or data URLs in a request the pipe assembles. A base64 payload is measured as its decoded size; any other inline payload is measured as its own length. A payload inside a content block whose type the pipe does not recognise is measured on those same terms and refused the same way, so choosing an unusual block type is not a way past this limit. A payload over this limit is left out of the request with a note. A picture a tool returns is capped here as its own picture when it would be sent inline: it is left out of that round and named on the turn whose round carries it, while the round's text result still goes out; a replayed round keeps its images message. A picture a tool returns as an inline `data:` URL is capped where a file link a person attaches is not: the pipe forwards such a picture as it stands rather than downloading it, so the cap is what stands between it and the request. A stored file the pipe raises into a request is capped by this valve as well: past it, the inline is refused. Received media is not capped by this valve: everything the pipe receives is streamed to disk behind the fixed 2 GiB per-item receive ceiling, and OpenRouter enforces the providers' own limits and reports them.",
     )
     IMAGE_UPLOAD_CHUNK_BYTES: int = Field(
         default=1 * 1024 * 1024,
@@ -1297,7 +1288,7 @@ class Valves(BaseModel):
         default=100,
         ge=1,
         le=1000,
-        description="Maximum size in MB for inline (data:) video payloads. A base64 payload is measured as its decoded size; a token-free payload is measured as its own length, and is a real gate on it. An oversized video is not sent at all: the block is dropped from the turn and the refusal is reported; remote http(s) and YouTube video links are forwarded to the provider unmeasured. This bounds the inline payload only, which is decoded into this process's memory. A stored clip the pipe itself downloaded is not read back under this valve: that read is bounded by REMOTE_VIDEO_MAX_SIZE_MB, the valve that admitted it, so a clip in the chat can always be read back for a frame.",
+        description="Maximum size in MB for inline (data:) video payloads. A base64 payload is measured as its decoded size; a token-free payload is measured as its own length, and is a real gate on it. An oversized video is not sent at all: the block is dropped from the turn and the refusal is reported; remote http(s) and YouTube video links are forwarded to the provider unmeasured. This bounds the inline payload only, which is decoded into this process's memory. A stored clip the pipe itself downloaded is not read back under this valve: received media is kept under the pipe's fixed 2 GiB per-item receive ceiling, so a clip in the chat can always be read back for a frame.",
     )
     FALLBACK_STORAGE_EMAIL: str = Field(
         default=(os.getenv("OPENROUTER_STORAGE_USER_EMAIL") or "openrouter-pipe@system.local"),
@@ -1363,16 +1354,6 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "unlike the Plaintext HTTP host allowlist, which is exact-match rather than "
             "parent-domain. There is no media relay on this path, so no exemption applies "
             "to anything: a host address typed by a user is never exempt."
-        ),
-    )
-    ALLOW_UNKNOWN_SIZE_CLOUD_READS: bool = Field(
-        default=False,
-        description=(
-            "Allow reading an Open WebUI file from a cloud or unrecognised storage provider when its "
-            "recorded file size is missing or invalid. Default false to avoid an unbounded "
-            "download. When true, the file is still copied to a private temporary file and capped by "
-            "BASE64_MAX_SIZE_MB after download. Operator recovery path for legacy rows without size "
-            "metadata; not an authorization bypass."
         ),
     )
 
@@ -3235,12 +3216,6 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "The record kept in the finished message is written separately and is not this "
             "template."
         ),
-    )
-    REMOTE_VIDEO_MAX_SIZE_MB: int = Field(
-        default=500,
-        ge=1,
-        le=2048,
-        description="Maximum downloaded generated video size in MB before the lifecycle is failed. It bites in two places: the download that stores the clip, and the read-back that copies a stored clip out again to extract a frame from an earlier turn. Both use this valve, so a clip this one admitted is always readable for its own frame reuse rather than being shown in the chat and then reported as unloadable.",
     )
     VIDEO_DOWNLOAD_CHUNK_SIZE: int = Field(
         default=1024 * 1024,

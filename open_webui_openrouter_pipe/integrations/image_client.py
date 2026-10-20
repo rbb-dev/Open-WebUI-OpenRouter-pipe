@@ -3,7 +3,8 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-from typing import Any, NamedTuple
+from pathlib import Path
+from typing import Any
 
 import aiohttp
 
@@ -35,6 +36,7 @@ from ..storage.multimodal import (
     canonical_image_mime,
     head_is_not_a_picture,
 )
+from ..storage.receive_spool import PartRef, ReceiveSpool, attach_parts
 
 _CATALOG_TIMEOUT_SECONDS = 15
 from .image_types import (
@@ -75,13 +77,6 @@ def _not_a_picture_reason(byte_count: int, declared: str, head: bytes) -> str:
     )
 
 
-def _over_ceiling_reason(what: str, max_decoded_bytes: int) -> str:
-    return (
-        f"{what} pushed this reply past the {max_decoded_bytes // (1024 * 1024)} MB "
-        "BASE64_MAX_SIZE_MB ceiling for one generated-image reply"
-    )
-
-
 def _own_decoded(blob: str) -> int:
     length = len(blob)
     if length < 4:
@@ -103,62 +98,25 @@ def _image_body_not_an_object(resp: Any, payload: Any) -> UpstreamBodyUnreadable
 
 _IMAGE_BODY_CHUNK_BYTES = 1 << 20
 
-_IMAGE_BODY_SLACK_BYTES = 8 << 20
+_IMAGE_LINE_SCAN_CHARS = 256 * 1024
 
-
-class _ReplyBound(NamedTuple):
-    limit: int
-    ceiling: int
-    pictures: int
-
-    def refusal(self) -> ImageGenerationError:
-        noun = "picture" if self.pictures == 1 else "pictures"
-        return ImageGenerationError(
-            "OpenRouter generated the image and billed it, but the reply was more than "
-            f"{self.limit // (1024 * 1024)} MB, past the most this deployment reads for "
-            f"{self.pictures} requested {noun} under its {self.ceiling // (1024 * 1024)} MB "
-            "BASE64_MAX_SIZE_MB limit. The reply was not read, so no picture was delivered and "
-            "its cost could not be recorded: raise that limit, ask for fewer images, or ask for "
-            "a smaller picture."
-        )
-
-
-def _reply_bound(payload: Any, max_decoded_bytes: int) -> _ReplyBound | None:
-    if max_decoded_bytes <= 0:
-        return None
-    requested = payload.get("n") if isinstance(payload, dict) else None
-    pictures = (
-        requested
-        if isinstance(requested, int) and not isinstance(requested, bool) and requested > 1
-        else 1
-    )
-    return _ReplyBound(
-        limit=(max_decoded_bytes + 2) // 3 * 4 * pictures + _IMAGE_BODY_SLACK_BYTES,
-        ceiling=max_decoded_bytes,
-        pictures=pictures,
-    )
-
-
-async def _read_image_body(resp: Any, bound: _ReplyBound | None) -> bytes | bytearray:
-    if bound is None:
-        return await resp.read()
-    declared = resp.content_length
-    if isinstance(declared, int) and declared > bound.limit:
-        raise bound.refusal()
-    body = bytearray()
-    async for chunk in resp.content.iter_chunked(_IMAGE_BODY_CHUNK_BYTES):
-        body += chunk
-        if len(body) > bound.limit:
-            raise bound.refusal()
-    return body
+_IMAGE_LINE_MEDIA_HINTS = ('"b64_json"', '"base64"', "data:image/")
 
 
 async def _decode_image_json_body(
-    resp: Any, logger: Any, bound: _ReplyBound | None = None
+    resp: Any, logger: Any, spool: ReceiveSpool | None = None
 ) -> Any:
+    scanner = spool.scanner() if spool is not None else None
+    body: bytes | bytearray = b""
+    parts: dict[str, PartRef] = {}
     try:
-        body = await _read_image_body(resp, bound)
-    except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError, ImageGenerationError):
+        if scanner is None:
+            body = await resp.read()
+        else:
+            async for chunk in resp.content.iter_chunked(_IMAGE_BODY_CHUNK_BYTES):
+                scanner.feed(chunk)
+            body, parts = scanner.finish()
+    except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError):
         raise
     except Exception as exc:
         raise UpstreamBodyUnreadable(
@@ -169,7 +127,7 @@ async def _decode_image_json_body(
     if not body or body.isspace():
         return None
     try:
-        return json.loads(body)
+        parsed = json.loads(body)
     except (ValueError, RecursionError) as exc:
         logger.debug("OpenRouter image response was not decodable JSON", exc_info=True)
         raise UpstreamBodyUnreadable(
@@ -177,6 +135,7 @@ async def _decode_image_json_body(
             body_excerpt=bytes(body[:_IMAGE_BODY_EXCERPT_CHARS]).decode("utf-8", "replace"),
             content_type=getattr(resp, "content_type", None),
         ) from exc
+    return attach_parts(parsed, parts)
 
 
 class _ProgressCallbackFailed(BaseException):
@@ -204,17 +163,11 @@ def _image_stream_text(event: dict[str, Any], state: dict[str, Any]) -> str:
 
 
 def _image_stream_completed(event: dict[str, Any], state: dict[str, Any]) -> str:
-    blob = event.get("b64_json")
-    own = _own_decoded(blob) if isinstance(blob, str) and blob else 0
-    if state["over_ceiling_seen"] or 0 < state["max_decoded_bytes"] < own:
-        state["over_ceiling_seen"] = True
-        state["data"].append({"_over_ceiling": True, "decoded": own})
-    else:
-        entry: dict[str, Any] = {"b64_json": blob, "_decoded": own}
-        media_type = event.get("media_type")
-        if isinstance(media_type, str) and media_type:
-            entry["media_type"] = media_type
-        state["data"].append(entry)
+    entry: dict[str, Any] = {"b64_json": event.get("b64_json")}
+    media_type = event.get("media_type")
+    if isinstance(media_type, str) and media_type:
+        entry["media_type"] = media_type
+    state["data"].append(entry)
     usage = event.get("usage")
     if isinstance(usage, dict):
         state["usage"] = usage
@@ -271,6 +224,7 @@ class OpenRouterImageClient:
         self._http_referer = http_referer or _OPENROUTER_REFERER
         self._user = user
         self._owui_chat_id = owui_chat_id
+        self._spool: ReceiveSpool | None = None
 
     def _timeout(self) -> aiohttp.ClientTimeout:
         return http_timeout(self._valves if self._valves is not None else _DEFAULT_VALVES)
@@ -328,6 +282,21 @@ class OpenRouterImageClient:
             raise ImageGenerationError("Image endpoint response carried no endpoint list.")
         return [item for item in records if isinstance(item, dict)]
 
+    def _parse_stream_event(self, payload: str) -> Any:
+        scan = (
+            len(payload) > _IMAGE_LINE_SCAN_CHARS
+            or any(hint in payload for hint in _IMAGE_LINE_MEDIA_HINTS)
+        )
+        if not scan or self._spool is None:
+            return None
+        try:
+            line_scan = self._spool.scanner()
+            line_scan.feed(payload.encode("utf-8"))
+            slim, parts = line_scan.finish()
+            return attach_parts(json.loads(slim), parts)
+        except (ValueError, RecursionError):
+            return None
+
     async def _consume_stream_line(
         self, raw_line: str, state: dict[str, Any], on_progress: Any
     ) -> None:
@@ -337,11 +306,18 @@ class OpenRouterImageClient:
         payload = line[len(_IMAGE_SSE_PREFIX) :].strip()
         if not payload or payload == _IMAGE_SSE_DONE:
             return
-        try:
-            event = json.loads(payload)
-        except ValueError:
-            self._logger.debug("Image stream chunk was not readable JSON", exc_info=True)
-            return
+        event = self._parse_stream_event(payload)
+        if event is None:
+            try:
+                event = json.loads(payload)
+            except ValueError:
+                self._logger.debug("Image stream chunk was not readable JSON", exc_info=True)
+                return
+        await self._dispatch_stream_event(event, state, on_progress)
+
+    async def _dispatch_stream_event(
+        self, event: Any, state: dict[str, Any], on_progress: Any
+    ) -> None:
         if not isinstance(event, dict):
             return
         handler = _IMAGE_STREAM_HANDLERS.get(str(event.get("type")))
@@ -354,26 +330,70 @@ class OpenRouterImageClient:
             except Exception as exc:
                 raise _ProgressCallbackFailed(exc) from exc
 
+    async def _consume_scanned_line(
+        self, scan: Any, state: dict[str, Any], on_progress: Any
+    ) -> None:
+        slim, parts = scan.finish()
+        try:
+            event = attach_parts(json.loads(slim), parts)
+        except (ValueError, RecursionError, UnicodeDecodeError):
+            self._logger.debug(
+                "Image stream event parse failed after its streamed scan", exc_info=True
+            )
+            return
+        await self._dispatch_stream_event(event, state, on_progress)
+
     async def _read_stream_as_buffered_response(
         self,
         resp: Any,
         on_progress: Any,
         state: dict[str, Any],
-        bound: _ReplyBound | None = None,
     ) -> dict[str, Any]:
         buffer = ""
+        line_scan = None
         _utf8 = utf8_stream_decoder()
         try:
             async for chunk in resp.content.iter_any():
                 piece = _utf8.decode(chunk)
+                if line_scan is not None:
+                    scan = line_scan
+                    newline_at = piece.find("\n")
+                    if newline_at < 0:
+                        scan.feed(piece.encode("utf-8"))
+                        continue
+                    scan.feed(piece[:newline_at].encode("utf-8"))
+                    line_scan = None
+                    await self._consume_scanned_line(scan, state, on_progress)
+                    piece = piece[newline_at + 1 :]
+                    if not piece:
+                        continue
                 buffer += piece
-                if bound is not None and len(buffer) > bound.limit:
-                    raise bound.refusal()
                 if "\n" not in piece:
+                    if (
+                        line_scan is None
+                        and self._spool is not None
+                        and len(buffer) > _IMAGE_LINE_SCAN_CHARS
+                        and buffer.startswith(_IMAGE_SSE_PREFIX)
+                    ):
+                        line_scan = self._spool.scanner()
+                        line_scan.feed(buffer[len(_IMAGE_SSE_PREFIX) :].lstrip().encode("utf-8"))
+                        buffer = ""
                     continue
                 while "\n" in buffer:
                     line, buffer = buffer.split("\n", 1)
                     await self._consume_stream_line(line, state, on_progress)
+                if (
+                    line_scan is None
+                    and self._spool is not None
+                    and len(buffer) > _IMAGE_LINE_SCAN_CHARS
+                    and buffer.startswith(_IMAGE_SSE_PREFIX)
+                ):
+                    line_scan = self._spool.scanner()
+                    line_scan.feed(buffer[len(_IMAGE_SSE_PREFIX) :].lstrip().encode("utf-8"))
+                    buffer = ""
+            if line_scan is not None:
+                await self._consume_scanned_line(line_scan, state, on_progress)
+                line_scan = None
             buffer += _utf8.decode(b"", True)
             await self._consume_stream_line(buffer, state, on_progress)
         except _ProgressCallbackFailed as failed:
@@ -421,7 +441,7 @@ class OpenRouterImageClient:
         return {"data": state["data"], "usage": state["usage"]}
 
     async def generate(
-        self, payload: dict[str, Any], *, max_decoded_bytes: int = 0, on_progress: Any = None
+        self, payload: dict[str, Any], *, spool: ReceiveSpool | None = None, on_progress: Any = None
     ) -> ImageGenerationResult:
         url = f"{self._base_url}/images"
         headers = self._headers()
@@ -438,13 +458,12 @@ class OpenRouterImageClient:
             state: dict[str, Any] = {
                 "data": [], "usage": None, "previews": 0, "drawing": False, "warning": "",
                 "stream_broken": False,
-                "max_decoded_bytes": max_decoded_bytes, "over_ceiling_seen": False,
             }
-            bound = _reply_bound(payload, max_decoded_bytes)
+            self._spool = spool
             if resp.content_type == _IMAGE_SSE_CONTENT_TYPE:
                 try:
                     data = await self._read_stream_as_buffered_response(
-                        resp, on_progress, state, bound
+                        resp, on_progress, state
                     )
                 except (ImageGenerationError, aiohttp.ClientError, TimeoutError) as exc:
                     if not state["data"]:
@@ -466,7 +485,7 @@ class OpenRouterImageClient:
                         )
                     data = {"data": state["data"], "usage": state["usage"]}
             else:
-                data = await _decode_image_json_body(resp, self._logger, bound)
+                data = await _decode_image_json_body(resp, self._logger, spool)
         _debug_print_response(data, logger=self._logger)
         if not isinstance(data, dict):
             raise _image_body_not_an_object(resp, data)
@@ -479,49 +498,44 @@ class OpenRouterImageClient:
 
         images: list[GeneratedImage] = []
         rejected: list[str] = []
-        decoded_total = 0
-        over_ceiling = 0
-        over_ceiling_own = 0
-        latched = False
-        for index, entry in enumerate(entries):
+        over_guard_count = 0
+        for entry in entries:
             if not isinstance(entry, dict):
                 rejected.append(clamp_text(f"an entry of type {type(entry).__name__} carried no image"))
                 continue
-            if entry.get("_over_ceiling"):
-                own_decoded = int(entry["decoded"])
-                over_ceiling += 1
-                if 0 < max_decoded_bytes < own_decoded:
-                    over_ceiling_own += 1
-                latched = True
-                rejected.append(
-                    clamp_text(
-                        _over_ceiling_reason(f"entry {index + 1} of {len(entries)}", max_decoded_bytes)
-                    )
+            blob = entry.get("b64_json")
+            raw_media_type = entry.get("media_type")
+            declared = raw_media_type if isinstance(raw_media_type, str) else ""
+            if isinstance(blob, PartRef):
+                if blob.broken:
+                    rejected.append(clamp_text("an entry was not decodable base64"))
+                    continue
+                if blob.over_guard:
+                    over_guard_count += 1
+                    rejected.append(clamp_text(blob.refusal()))
+                    continue
+                if not blob.exists():
+                    rejected.append(clamp_text("an entry's received image was no longer available"))
+                    continue
+                try:
+                    head = blob.read_head(_IMAGE_DECODE_PREFIX_BYTES)
+                except OSError:
+                    rejected.append(clamp_text("an entry's received image could not be read"))
+                    continue
+                mime_type = _classify(head, declared) if head else None
+                if mime_type is None:
+                    rejected.append(_not_a_picture_reason(blob.decoded_bytes, declared, head))
+                    continue
+                images.append(
+                    GeneratedImage(data=b"", mime_type=mime_type, source_path=Path(blob.path))
                 )
                 continue
-            blob = entry.get("b64_json")
             if not isinstance(blob, str) or not blob:
                 rejected.append(clamp_text(f"an entry with keys {sorted(entry)} carried no inline base64"))
                 continue
-            own_decoded = entry.get("_decoded")
-            if not isinstance(own_decoded, int):
-                own_decoded = _own_decoded(blob)
-            raw_media_type = entry.get("media_type")
-            declared = raw_media_type if isinstance(raw_media_type, str) else ""
             probe = _decoded_prefix(blob)
             if probe is not None and _classify(probe, declared) is None:
-                rejected.append(_not_a_picture_reason(own_decoded, declared, probe))
-                continue
-            if latched or 0 < max_decoded_bytes < decoded_total + own_decoded:
-                over_ceiling += 1
-                if 0 < max_decoded_bytes < own_decoded:
-                    over_ceiling_own += 1
-                latched = True
-                rejected.append(
-                    clamp_text(
-                        _over_ceiling_reason(f"entry {index + 1} of {len(entries)}", max_decoded_bytes)
-                    )
-                )
+                rejected.append(_not_a_picture_reason(_own_decoded(blob), declared, probe))
                 continue
             try:
                 raw = await _decode_base64_in_quanta(blob)
@@ -533,7 +547,6 @@ class OpenRouterImageClient:
                 rejected.append(_not_a_picture_reason(len(raw), declared, raw))
                 continue
             images.append(GeneratedImage(data=raw, mime_type=mime_type))
-            decoded_total += len(raw)
 
         if not images:
             detail = f" ({summarise_names(rejected)})" if rejected else ""
@@ -543,6 +556,6 @@ class OpenRouterImageClient:
 
         return ImageGenerationResult(
             images=images, usage=billed, rejected=rejected, warning=state.get("warning", ""),
-            over_ceiling=over_ceiling, over_ceiling_own=over_ceiling_own,
+            over_ceiling=over_guard_count, over_ceiling_own=over_guard_count,
             stream_broken=bool(state.get("stream_broken")),
         )

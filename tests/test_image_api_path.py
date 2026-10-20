@@ -95,6 +95,10 @@ class _StubGateway:
         self.calls.append(kwargs)
         return f"file-{len(self.calls)}"
 
+    async def upload_to_owui_storage_from_path(self, **kwargs):
+        self.calls.append(kwargs)
+        return f"file-{len(self.calls)}"
+
 
 class _StubResponsesBody:
     def __init__(self, items, provider: dict[str, Any] | None = None):
@@ -296,4 +300,89 @@ def _seed_contract(
     adapter._endpoint_cache[adapter._endpoint_cache_key(adapter._pipe.valves, model_id)] = (
         at,
         records,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_paid_picture_past_the_old_reply_cap_is_delivered_with_its_cost_recorded(
+    monkeypatch,
+):
+    """A generated picture over the old 50 MB reply ceiling used to be dropped after
+    OpenRouter had billed it: the reply could be refused while it was read, and an
+    over-cap entry was skipped inside the reply, in both cases after the cost. On the
+    default valves the picture now reaches the caller from the disk it was spooled to,
+    no single spool write ever holds the whole picture, and the reply's cost survives.
+    """
+    import logging
+    from typing import cast
+
+    import aiohttp
+    from aiohttp import web
+    from open_webui_openrouter_pipe.integrations.image_client import OpenRouterImageClient
+    from open_webui_openrouter_pipe.storage import receive_spool
+    from tests.vetting_helpers import open_live_listener
+
+    tail = b"\x89PNG\r\n\x1a\n" + bytes(range(251))
+    picture = (tail * ((50 * 1024 * 1024 + 1) // len(tail) + 1))[: 50 * 1024 * 1024 + 1]
+    reply = json.dumps(
+        {
+            "created": 1,
+            "data": [{"b64_json": _b64(picture), "media_type": "image/png"}],
+            "usage": {"cost": 0.5, "total_tokens": 11},
+        }
+    ).encode()
+
+    writes: list[int] = []
+    original_feed = receive_spool._ItemSink.feed
+
+    def recording_feed(sink, chunk):
+        writes.append(len(chunk))
+        return original_feed(sink, chunk)
+
+    monkeypatch.setattr(receive_spool._ItemSink, "feed", recording_feed)
+
+    async def serve(request: web.Request) -> web.Response:
+        return web.Response(body=reply, content_type="application/json")
+
+    app = web.Application()
+    app.router.add_post("/images", serve)
+    runner = web.AppRunner(app, shutdown_timeout=0.5)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = cast(Any, site._server).sockets[0].getsockname()[1]
+
+    spooled = None
+    try:
+        async with aiohttp.ClientSession() as session:
+            client = OpenRouterImageClient(
+                session,
+                base_url=f"http://127.0.0.1:{port}",
+                api_key="sk-invented-for-a-test",
+                logger=logging.getLogger("tests.image-api-regression"),
+            )
+            with receive_spool.ReceiveSpool() as spool:
+                result = await client.generate(
+                    {"model": "vendor/invented-image", "prompt": "a leaf", "n": 1},
+                    spool=spool,
+                )
+                image = result.images[0]
+                assert image.source_path is not None, (
+                    "the picture was decoded into memory, not spooled"
+                )
+                spooled = image.source_path.read_bytes()
+                mime_type = image.mime_type
+                usage = result.usage
+    finally:
+        await runner.cleanup()
+
+    assert len(result.images) == 1
+    assert spooled == picture
+    assert mime_type == "image/png"
+    assert usage, "the reply's usage was lost"
+    assert writes, "the spool writer was never fed"
+    assert sum(writes) == len(picture)
+    assert max(writes) <= 2 * 1024 * 1024, (
+        f"a single spool write held {max(writes)} bytes of the "
+        f"{len(picture)}-byte picture: the decode is not chunk-bounded"
     )

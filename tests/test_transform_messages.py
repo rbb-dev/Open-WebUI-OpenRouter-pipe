@@ -477,10 +477,14 @@ async def test_an_insecure_http_image_url_is_dropped_unless_allowed(
     # The allowed https rows are kept only if the download SUCCEEDS: a download the pipe
     # could not make is now refused (H142-2), so a row that kept the image while stubbing
     # the downloader to None was asserting the old fall-through, not the cleartext gate.
-    async def _download(url, *_a, **_k):
+    async def _download(url, dest_path=None, *_a, **_k):
+        if dest_path is not None:
+            data = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+            dest_path.write_bytes(data)
+            return {"path": dest_path, "mime_type": "image/png", "url": url, "size_bytes": len(data)}
         return {"data": b"\x89PNG\r\n\x1a\n" + b"\x00" * 32, "mime_type": "image/png"}
 
-    monkeypatch.setattr(pipe._multimodal_handler, "_download_remote_url", _download)
+    monkeypatch.setattr(pipe._multimodal_handler, "_download_remote_url_streaming", _download)
 
     async def _emitter(_event):
         return None

@@ -96,7 +96,7 @@ def transport(monkeypatch):
 
 async def _download(pipe, tmp_path, **kwargs) -> Any:
     handler = pipe._multimodal_handler
-    async def _pinned(url):
+    async def _pinned(url, seconds=None, charge=None):
         return (url, {}, {})
 
     handler._prepare_pinned_request = _pinned  # type: ignore[method-assign]
@@ -298,13 +298,13 @@ async def test_the_video_path_passes_both_valves_to_the_downloader(monkeypatch):
     import time
 
     from open_webui_openrouter_pipe.integrations.video_types import VideoLifecycleResult
+    from open_webui_openrouter_pipe.storage.receive_spool import RECEIVE_ITEM_MAX_BYTES
 
     pipe = Pipe()
     pipe.valves.API_KEY = EncryptedStr("test")
     pipe.valves.VIDEO_INITIAL_POLL_DELAY_SECONDS = 0
     pipe.valves.VIDEO_POLL_INTERVAL_SECONDS = 0
     pipe.valves.VIDEO_POLL_INTERVAL_MAX_SECONDS = 0
-    pipe.valves.REMOTE_VIDEO_MAX_SIZE_MB = 7
     pipe.valves.VIDEO_OUTPUT_MIME_ALLOWLIST = "video/x-probe"
     adapter = pipe._ensure_video_generation_adapter()
 
@@ -374,9 +374,10 @@ async def test_the_video_path_passes_both_valves_to_the_downloader(monkeypatch):
         "nothing about either valve"
     )
     kwargs = received[0]
-    assert kwargs.get("max_size_bytes") == 7 * 1024 * 1024, (
-        f"the downloader was given max_size_bytes={kwargs.get('max_size_bytes')!r} for "
-        "REMOTE_VIDEO_MAX_SIZE_MB=7. The operator's cap is not the cap being enforced."
+    assert kwargs.get("max_size_bytes") == RECEIVE_ITEM_MAX_BYTES, (
+        f"the downloader was given max_size_bytes={kwargs.get('max_size_bytes')!r}, not the "
+        "fixed per-item receive ceiling. A cap the operator can tune here would drop a paid "
+        "clip the pipe already promised."
     )
     assert kwargs.get("extra_headers") == {"Authorization": "Bearer test"}, (
         f"the download was issued with extra_headers={kwargs.get('extra_headers')!r}. "
@@ -466,14 +467,19 @@ def test_the_admin_is_sent_to_the_valves_that_really_bound_an_attachment():
     pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
     from open_webui_openrouter_pipe.plugins.pipe_dashboard.config_meta import CONFIG_META
 
-    detail = CONFIG_META["REMOTE_VIDEO_MAX_SIZE_MB"]["detail"]
-    for real in ("VIDEO_FRAME_IMAGE_MAX_BYTES", "MEDIA_FILE_HOST_MAX_SIZE_MB"):
-        assert CONFIG_META[real]["title"] in detail, (
-            f"{real} is what really bounds an attachment and the admin is not sent to it: "
-            f"{detail}"
-        )
-    assert "clip or sound file attached" not in detail, (
-        f"this valve bounds the generated video coming back, not anything attached: {detail}"
+    host_detail = CONFIG_META["MEDIA_FILE_HOST_MAX_SIZE_MB"]["detail"]
+    assert CONFIG_META["VIDEO_FRAME_IMAGE_MAX_BYTES"]["title"] in host_detail, (
+        "VIDEO_FRAME_IMAGE_MAX_BYTES is what really bounds a reference picture and the admin "
+        f"is not sent to it: {host_detail}"
+    )
+    base64_detail = CONFIG_META["BASE64_MAX_SIZE_MB"]["detail"]
+    assert "per-item receive ceiling" in base64_detail, (
+        "the received-media ceiling is where a generated clip's size is decided, and the "
+        "admin is not sent there from the attachment valves"
+    )
+    assert CONFIG_META["MEDIA_FILE_HOST_MAX_SIZE_MB"]["title"] in base64_detail, (
+        "the file-host cap is what bounds a large attachment on the send, and the inline "
+        f"limit's entry does not say so: {base64_detail}"
     )
 
 

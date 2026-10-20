@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from ..requests.fusion_engine import item_text, latest_user_text
@@ -210,6 +211,7 @@ class ImageGenerationError(RuntimeError):
 class GeneratedImage:
     data: bytes
     mime_type: str
+    source_path: Path | None = None
 
     @property
     def extension(self) -> str:

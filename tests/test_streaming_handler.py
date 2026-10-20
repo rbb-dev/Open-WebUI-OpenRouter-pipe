@@ -7505,11 +7505,11 @@ class TestStreamingCoreAdditionalCoverage:
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
 
-        async def _fake_download(self, url, **_kwargs):
+        async def _fake_download(self, url, *args, **kwargs):
             return None
 
         monkeypatch.setattr(
-            "open_webui_openrouter_pipe.storage.multimodal.MultimodalHandler._download_remote_url",
+            "open_webui_openrouter_pipe.storage.multimodal.MultimodalHandler._download_remote_url_streaming",
             _fake_download,
         )
 
@@ -10637,7 +10637,7 @@ class TestMaterializeImageFromStr:
             return None
 
         monkeypatch.setattr(
-            "open_webui_openrouter_pipe.storage.multimodal.MultimodalHandler._download_remote_url",
+            "open_webui_openrouter_pipe.storage.multimodal.MultimodalHandler._download_remote_url_streaming",
             _spy,
         )
 

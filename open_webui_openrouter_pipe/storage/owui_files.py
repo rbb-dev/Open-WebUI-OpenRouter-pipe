@@ -215,6 +215,7 @@ async def _linked_ok(result: Any, chat_id: str, message_id: str, file_id: str) -
 
 
 _CHANNEL_CHAT_PREFIX = "channel:"
+OPEN_WEBUI_MAX_UPLOAD_SIZE = "open_webui_max_upload_size"
 _UNLINKABLE_CHAT_PREFIXES = ("temporary:", "local:", _CHANNEL_CHAT_PREFIX)
 
 
@@ -533,7 +534,6 @@ async def materialize_owui_file_to_temp(
     user: Any,
     logger: logging.Logger,
     max_bytes: int,
-    allow_unknown_size: bool,
     require_auth: bool = True,
     allowed_suffixes: set[str] | None = None,
     suffix: str = "",
@@ -556,11 +556,6 @@ async def materialize_owui_file_to_temp(
         raise RequiredInternalFileError(
             "A referenced file exceeds the configured size limit.", kind="size"
         )
-    if declared is None and owui_storage_provider_kind() != "local" and not allow_unknown_size:
-        raise RequiredInternalFileError(
-            "A referenced file has an unknown size and cannot be safely fetched from cloud storage."
-        )
-
     storage = get_owui_storage()
     if storage is None:
         raise RequiredInternalFileError("Open WebUI storage is not available.")
@@ -971,9 +966,6 @@ class OwuiFileGateway:
                     user=user,
                     logger=self.logger,
                     max_bytes=max_bytes,
-                    allow_unknown_size=bool(
-                        getattr(self.valves, "ALLOW_UNKNOWN_SIZE_CLOUD_READS", False)
-                    ),
                     require_auth=False,
                 )
                 try:
@@ -1220,6 +1212,7 @@ class OwuiFileGateway:
         chat_id: str | None = None,
         message_id: str | None = None,
         owui_user_id: str | None = None,
+        refusals: list[str] | None = None,
     ) -> str | None:
         if upload_file_handler is None:
             self.logger.error("Open WebUI file upload helpers are unavailable; skipping OWUI storage upload.")
@@ -1279,7 +1272,9 @@ class OwuiFileGateway:
                 f"Uploaded {filename} ({len(file_data):,} bytes) to OWUI storage: /api/v1/files/{file_id}"
             )
             return file_id
-        except Exception:
+        except Exception as exc:
+            if self._refused_for_size(exc, filename, refusals):
+                return None
             self.logger.exception("Failed to upload %s to OWUI storage", filename)
             return None
 
@@ -1293,6 +1288,7 @@ class OwuiFileGateway:
         chat_id: str | None = None,
         message_id: str | None = None,
         owui_user_id: str | None = None,
+        refusals: list[str] | None = None,
     ) -> str | None:
         if upload_file_handler is None:
             self.logger.error("Open WebUI file upload helpers are unavailable; skipping OWUI storage upload.")
@@ -1359,9 +1355,21 @@ class OwuiFileGateway:
                 f"Streaming-uploaded {filename} ({size_bytes:,} bytes) to OWUI storage: /api/v1/files/{file_id}"
             )
             return file_id
-        except Exception:
+        except Exception as exc:
+            if self._refused_for_size(exc, filename, refusals):
+                return None
             self.logger.exception("Failed to streaming-upload %s to OWUI storage", source_path)
             return None
+
+    def _refused_for_size(self, exc: Exception, filename: str, refusals: list[str] | None) -> bool:
+        if getattr(exc, "status_code", None) != 413:
+            return False
+        self.logger.warning(
+            "Open WebUI's Max Upload Size refused %s, so it was not stored", filename
+        )
+        if refusals is not None:
+            refusals.append(OPEN_WEBUI_MAX_UPLOAD_SIZE)
+        return True
 
     @timed
     async def try_link_file_to_chat(

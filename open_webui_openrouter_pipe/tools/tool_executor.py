@@ -38,6 +38,7 @@ from ..storage.owui_files import (
     owui_file_content_url,
 )
 from ..storage.persistence import generate_item_id
+from ..storage.receive_spool import RECEIVE_ITEM_MAX_BYTES
 from .tool_registry import OWUI_OWNS_KEY, RESOLVER_ERROR_KEY
 from .tool_schema import _advertised_root_params, _declared_parameter_names
 
@@ -1128,7 +1129,7 @@ class ToolExecutor:
         payload_chars = base64_data_url_payload_chars(url)
         if payload_chars is None:
             return None
-        if not self._pipe._file_gateway.validate_base64_length(payload_chars):
+        if (payload_chars * 3) / 4 > RECEIVE_ITEM_MAX_BYTES:
             return None
         parsed = split_base64_data_url(url)
         if parsed is None:
@@ -1196,7 +1197,7 @@ class ToolExecutor:
         if not is_linkable_chat(metadata.get("chat_id")):
             return None
         payload_chars = base64_data_url_payload_chars(url)
-        if payload_chars is None or not self._pipe._file_gateway.validate_base64_length(payload_chars):
+        if payload_chars is None or (payload_chars * 3) / 4 > RECEIVE_ITEM_MAX_BYTES:
             return None
         parsed = split_base64_data_url(url)
         if parsed is None:

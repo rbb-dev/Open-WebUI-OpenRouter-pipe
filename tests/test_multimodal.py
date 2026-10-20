@@ -26,10 +26,6 @@ import pytest
 import pytest_asyncio
 
 from open_webui_openrouter_pipe import Pipe
-from open_webui_openrouter_pipe.core.config import (
-    _REMOTE_FILE_MAX_SIZE_DEFAULT_MB,
-    _REMOTE_FILE_MAX_SIZE_MAX_MB,
-)
 from open_webui_openrouter_pipe.core.url_scheme import url_scheme
 from open_webui_openrouter_pipe.requests import transformer as transformer_module
 from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
@@ -38,6 +34,7 @@ from open_webui_openrouter_pipe.storage.multimodal import (
     _extract_openrouter_og_image,
     _guess_image_mime_type,
 )
+from open_webui_openrouter_pipe.core.errors import RemoteDownloadRefused
 from open_webui_openrouter_pipe.storage.owui_files import (
     InlinedFile,
     extract_internal_file_id as _extract_internal_file_id,
@@ -1576,278 +1573,6 @@ class TestEnsureStorageUser:
             owui_files_module.Users = original_users
 
 
-class TestDownloadRemoteUrl:
-    """Tests for _download_remote_url coverage."""
-
-    @pytest.mark.asyncio
-    async def test_uses_default_timeout_when_none(self, pipe_instance_async):
-        """Should use default timeout when timeout_seconds is None and valve is None."""
-        pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
-        pipe_instance_async.valves.HTTP_CONNECT_TIMEOUT_SECONDS = None
-
-        with patch("httpx.AsyncClient") as mock_client:
-            mock_response = Mock()
-            mock_response.headers = {"content-type": "text/plain"}
-            mock_response.raise_for_status = Mock()
-
-            async def _aiter():
-                yield b"data"
-            mock_response.aiter_bytes = _aiter
-
-            client_instance = AsyncMock()
-            client_instance.stream = Mock(return_value=AsyncMock(
-                __aenter__=AsyncMock(return_value=mock_response),
-                __aexit__=AsyncMock(return_value=False)
-            ))
-            mock_client.return_value.__aenter__ = AsyncMock(return_value=client_instance)
-            mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
-
-            await pipe_instance_async._multimodal_handler._download_remote_url(
-                "https://example.com/file.txt"
-            )
-
-    @pytest.mark.asyncio
-    async def test_returns_none_for_ftp_url(self, pipe_instance_async):
-        """Should return None for FTP URLs."""
-        result = await pipe_instance_async._multimodal_handler._download_remote_url("ftp://example.com/file.txt")
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_returns_none_for_file_url(self, pipe_instance_async):
-        """Should return None for file:// URLs."""
-        result = await pipe_instance_async._multimodal_handler._download_remote_url("file:///etc/passwd")
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_returns_none_for_empty_url(self, pipe_instance_async):
-        """Should return None for empty URL."""
-        result = await pipe_instance_async._multimodal_handler._download_remote_url("")
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_returns_none_when_ssrf_blocked(self, pipe_instance_async):
-        """Should return None when SSRF protection blocks the URL."""
-        pipe_instance_async.valves.ENABLE_SSRF_PROTECTION = True
-
-        result = await pipe_instance_async._multimodal_handler._download_remote_url("https://127.0.0.1/file")
-
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_normalizes_image_jpg_to_jpeg(self, pipe_instance_async):
-        """Should normalize image/jpg to image/jpeg."""
-        pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
-
-        with patch("httpx.AsyncClient") as mock_client:
-            mock_response = AsyncMock()
-            mock_response.headers = {"content-type": "image/jpg"}
-            mock_response.raise_for_status = Mock()
-
-            async def mock_aiter():
-                yield b"image data"
-
-            mock_response.aiter_bytes = mock_aiter
-
-            mock_context = AsyncMock()
-            mock_context.__aenter__ = AsyncMock(return_value=mock_response)
-            mock_context.__aexit__ = AsyncMock(return_value=False)
-
-            client_instance = AsyncMock()
-            client_instance.stream = Mock(return_value=mock_context)
-
-            mock_client.return_value.__aenter__ = AsyncMock(return_value=client_instance)
-            mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
-
-            result = await pipe_instance_async._multimodal_handler._download_remote_url(
-                "https://example.com/image.jpg"
-            )
-
-            if result:
-                assert result["mime_type"] == "image/jpeg"
-
-    @pytest.mark.asyncio
-    async def test_rejects_content_length_exceeding_limit(self, pipe_instance_async):
-        """Should reject files when Content-Length exceeds limit."""
-        pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
-        pipe_instance_async.valves.REMOTE_FILE_MAX_SIZE_MB = 1
-
-        with patch("httpx.AsyncClient") as mock_client:
-            mock_response = AsyncMock()
-            mock_response.headers = {
-                "content-type": "application/octet-stream",
-                "content-length": str(10 * 1024 * 1024)
-            }
-            mock_response.raise_for_status = Mock()
-
-            mock_context = AsyncMock()
-            mock_context.__aenter__ = AsyncMock(return_value=mock_response)
-            mock_context.__aexit__ = AsyncMock(return_value=False)
-
-            client_instance = AsyncMock()
-            client_instance.stream = Mock(return_value=mock_context)
-
-            mock_client.return_value.__aenter__ = AsyncMock(return_value=client_instance)
-            mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
-
-            result = await pipe_instance_async._multimodal_handler._download_remote_url(
-                "https://example.com/large-file.bin"
-            )
-
-            assert result is None
-
-    @pytest.mark.asyncio
-    async def test_handles_invalid_content_length(self, pipe_instance_async):
-        """Should handle non-integer Content-Length gracefully."""
-        pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
-
-        with patch("httpx.AsyncClient") as mock_client:
-            mock_response = AsyncMock()
-            mock_response.headers = {
-                "content-type": "text/plain",
-                "content-length": "not-a-number"
-            }
-            mock_response.raise_for_status = Mock()
-
-            async def mock_aiter():
-                yield b"data"
-
-            mock_response.aiter_bytes = mock_aiter
-
-            mock_context = AsyncMock()
-            mock_context.__aenter__ = AsyncMock(return_value=mock_response)
-            mock_context.__aexit__ = AsyncMock(return_value=False)
-
-            client_instance = AsyncMock()
-            client_instance.stream = Mock(return_value=mock_context)
-
-            mock_client.return_value.__aenter__ = AsyncMock(return_value=client_instance)
-            mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
-
-            result = await pipe_instance_async._multimodal_handler._download_remote_url(
-                "https://example.com/file.txt"
-            )
-
-            if result:
-                assert result["data"] == b"data"
-
-    @pytest.mark.asyncio
-    async def test_skips_empty_chunks(self, pipe_instance_async):
-        """Should skip empty chunks during streaming."""
-        pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
-
-        with patch("httpx.AsyncClient") as mock_client:
-            mock_response = AsyncMock()
-            mock_response.headers = {"content-type": "text/plain"}
-            mock_response.raise_for_status = Mock()
-
-            async def mock_aiter():
-                yield b""
-                yield b"actual data"
-                yield b""
-
-            mock_response.aiter_bytes = mock_aiter
-
-            mock_context = AsyncMock()
-            mock_context.__aenter__ = AsyncMock(return_value=mock_response)
-            mock_context.__aexit__ = AsyncMock(return_value=False)
-
-            client_instance = AsyncMock()
-            client_instance.stream = Mock(return_value=mock_context)
-
-            mock_client.return_value.__aenter__ = AsyncMock(return_value=client_instance)
-            mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
-
-            result = await pipe_instance_async._multimodal_handler._download_remote_url(
-                "https://example.com/file.txt"
-            )
-
-            if result:
-                assert result["data"] == b"actual data"
-
-    @pytest.mark.asyncio
-    async def test_aborts_when_streaming_exceeds_limit(self, pipe_instance_async):
-        """Should abort download when streaming data exceeds size limit."""
-        pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
-        pipe_instance_async.valves.REMOTE_FILE_MAX_SIZE_MB = 0.001
-
-        with patch("httpx.AsyncClient") as mock_client:
-            mock_response = AsyncMock()
-            mock_response.headers = {"content-type": "application/octet-stream"}
-            mock_response.raise_for_status = Mock()
-
-            async def mock_aiter():
-                yield b"X" * 500
-                yield b"X" * 500
-                yield b"X" * 500
-
-            mock_response.aiter_bytes = mock_aiter
-
-            mock_context = AsyncMock()
-            mock_context.__aenter__ = AsyncMock(return_value=mock_response)
-            mock_context.__aexit__ = AsyncMock(return_value=False)
-
-            client_instance = AsyncMock()
-            client_instance.stream = Mock(return_value=mock_context)
-
-            mock_client.return_value.__aenter__ = AsyncMock(return_value=client_instance)
-            mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
-
-            result = await pipe_instance_async._multimodal_handler._download_remote_url(
-                "https://example.com/large-file.bin"
-            )
-
-            assert result is None
-
-    @pytest.mark.asyncio
-    async def test_returns_none_on_final_exception(self, pipe_instance_async):
-        """Should return None and log error on unrecoverable exception."""
-        pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
-
-        with patch("httpx.AsyncClient") as mock_client:
-            mock_client.return_value.__aenter__ = AsyncMock(
-                side_effect=RuntimeError("Connection pool exhausted")
-            )
-            mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
-
-            result = await pipe_instance_async._multimodal_handler._download_remote_url(
-                "https://example.com/file.txt"
-            )
-
-            assert result is None
-
-    @pytest.mark.asyncio
-    async def test_handles_http_404_error(self, pipe_instance_async):
-        """Should return None on non-retryable HTTP errors like 404."""
-        pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
-
-        with patch("httpx.AsyncClient") as mock_client:
-            mock_response = AsyncMock()
-            mock_response.headers = {"content-type": "text/html"}
-
-            def raise_404():
-                request = httpx.Request("GET", "https://example.com/missing.txt")
-                response = httpx.Response(404, request=request)
-                raise httpx.HTTPStatusError("Not Found", request=request, response=response)
-
-            mock_response.raise_for_status = Mock(side_effect=raise_404)
-
-            mock_context = AsyncMock()
-            mock_context.__aenter__ = AsyncMock(return_value=mock_response)
-            mock_context.__aexit__ = AsyncMock(return_value=False)
-
-            client_instance = AsyncMock()
-            client_instance.stream = Mock(return_value=mock_context)
-
-            mock_client.return_value.__aenter__ = AsyncMock(return_value=client_instance)
-            mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
-
-            result = await pipe_instance_async._multimodal_handler._download_remote_url(
-                "https://example.com/missing.txt"
-            )
-
-            assert result is None
-
-
 class TestRequestIpsBlocking:
     """Tests for SSRF protection."""
 
@@ -2028,13 +1753,13 @@ class TestValidateBase64Size:
 class TestParseDataUrl:
     """Tests for _parse_data_url."""
 
-    def test_returns_none_when_validation_fails(self, pipe_instance):
-        """Should return None when base64 size validation fails."""
-        pipe_instance.valves.BASE64_MAX_SIZE_MB = 0.00001
+    def test_parses_large_payload_without_a_size_gate(self, pipe_instance):
+        """A data URL's size no longer gates the parse: received media is guard-bounded."""
         large_b64 = "A" * 100000
         data_url = f"data:image/png;base64,{large_b64}"
         result = pipe_instance._multimodal_handler._parse_data_url(data_url)
-        assert result is None
+        assert result is not None
+        assert result["mime_type"] == "image/png"
 
     def test_returns_none_for_none_input(self, pipe_instance):
         """Should return None for None input."""
@@ -2439,60 +2164,6 @@ class TestIsSafeUrlAsync:
         assert result is False
 
 
-class TestGetEffectiveRemoteFileLimit:
-    """Test RAG constraint handling in file size limits."""
-
-    @pytest.mark.asyncio
-    async def test_returns_base_limit_when_rag_disabled(self, pipe_instance):
-        """Should return base limit when RAG is disabled."""
-        pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 100
-
-        with patch(
-            "open_webui_openrouter_pipe.storage.multimodal._read_rag_file_max_size_mb",
-            return_value=None
-        ):
-            result = await pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb()
-            assert result == 100
-
-    @pytest.mark.asyncio
-    async def test_returns_rag_limit_when_lower(self, pipe_instance):
-        """Should return RAG limit when it's lower than base."""
-        pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 100
-
-        with patch(
-            "open_webui_openrouter_pipe.storage.multimodal._read_rag_file_max_size_mb",
-            return_value=50
-        ):
-            result = await pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb()
-            assert result == 50
-
-    @pytest.mark.asyncio
-    async def test_upgrades_default_to_rag_limit(self, pipe_instance):
-        """Should upgrade default limit to RAG limit when RAG limit is higher."""
-        from open_webui_openrouter_pipe.core.config import _REMOTE_FILE_MAX_SIZE_DEFAULT_MB
-
-        pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = _REMOTE_FILE_MAX_SIZE_DEFAULT_MB
-
-        with patch(
-            "open_webui_openrouter_pipe.storage.multimodal._read_rag_file_max_size_mb",
-            return_value=200
-        ):
-            result = await pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb()
-            assert result == 200
-
-    @pytest.mark.asyncio
-    async def test_returns_base_limit_when_non_default_and_lower_than_rag(self, pipe_instance):
-        """Should return base limit when it's non-default and lower than RAG."""
-        pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 30
-
-        with patch(
-            "open_webui_openrouter_pipe.storage.multimodal._read_rag_file_max_size_mb",
-            return_value=100
-        ):
-            result = await pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb()
-            assert result == 30
-
-
 class TestUploadToOwuiStorage:
     """Tests for OWUI storage upload functionality."""
 
@@ -2690,7 +2361,7 @@ def _make_stream_context(response=None, error=None):
 
 
 def _set_aiter_bytes(mock_response, chunks):
-    async def _iterator():
+    async def _iterator(*_args, **_kwargs):
         for chunk in chunks:
             yield chunk
 
@@ -2773,11 +2444,11 @@ class TestFileEncoding:
 
 
 class TestRemoteURLDownloading:
-    """Tests for _download_remote_url helper method."""
+    """Tests for the streaming downloader the pipe downloads media through."""
 
     @pytest.mark.asyncio
-    async def test_download_successful(self, pipe_instance_async):
-        """Should download remote file successfully."""
+    async def test_download_successful(self, pipe_instance_async, tmp_path):
+        """Should download remote file to disk and report its type."""
         pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
         test_content = b"fake image data"
 
@@ -2789,17 +2460,17 @@ class TestRemoteURLDownloading:
             client_ctx = mock_client.return_value.__aenter__.return_value
             client_ctx.stream = Mock(return_value=_make_stream_context(response=mock_response))
 
-            result = await pipe_instance_async._multimodal_handler._download_remote_url(
-                "https://example.com/image.jpg"
+            result = await pipe_instance_async._multimodal_handler._download_remote_url_streaming(
+                "https://example.com/image.jpg", tmp_path / "out.bin"
             )
 
             assert result is not None
-            assert result["data"] == test_content
+            assert (tmp_path / "out.bin").read_bytes() == test_content
             assert result["mime_type"] == "image/jpeg"
             assert result["url"] == "https://example.com/image.jpg"
 
     @pytest.mark.asyncio
-    async def test_download_normalizes_mime_type(self, pipe_instance_async):
+    async def test_download_normalizes_mime_type(self, pipe_instance_async, tmp_path):
         """Should normalize image/jpg to image/jpeg."""
         pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
         with patch("httpx.AsyncClient") as mock_client:
@@ -2810,45 +2481,30 @@ class TestRemoteURLDownloading:
             client_ctx = mock_client.return_value.__aenter__.return_value
             client_ctx.stream = Mock(return_value=_make_stream_context(response=mock_response))
 
-            result = await pipe_instance_async._multimodal_handler._download_remote_url(
-                "https://example.com/image.jpg"
+            result = await pipe_instance_async._multimodal_handler._download_remote_url_streaming(
+                "https://example.com/image.jpg", tmp_path / "out.bin"
             )
 
             assert result["mime_type"] == "image/jpeg"
 
     @pytest.mark.asyncio
-    async def test_download_rejects_files_over_default_limit(self, pipe_instance_async):
-        """Should reject files larger than the configured limit (default 50MB)."""
-        pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
-        pipe_instance_async.valves.REMOTE_FILE_MAX_SIZE_MB = 1
-        limit_bytes = await pipe_instance_async._multimodal_handler._get_effective_remote_file_limit_mb() * 1024 * 1024
-
-        with patch("httpx.AsyncClient") as mock_client:
-            mock_response = Mock()
-            mock_response.headers = {
-                "content-type": "image/jpeg",
-                "content-length": str(limit_bytes + 1),
-            }
-            mock_response.raise_for_status = Mock()
-            _set_aiter_bytes(mock_response, [b"x"])
-            client_ctx = mock_client.return_value.__aenter__.return_value
-            client_ctx.stream = Mock(return_value=_make_stream_context(response=mock_response))
-
-            result = await pipe_instance_async._multimodal_handler._download_remote_url(
-                "https://example.com/huge.jpg"
+    async def test_download_invalid_url_is_refused(self, pipe_instance_async, tmp_path):
+        """Should refuse non-HTTP URLs instead of downloading them."""
+        with pytest.raises(RemoteDownloadRefused):
+            await pipe_instance_async._multimodal_handler._download_remote_url_streaming(
+                "file:///local/path", tmp_path / "a.bin"
+            )
+        with pytest.raises(RemoteDownloadRefused):
+            await pipe_instance_async._multimodal_handler._download_remote_url_streaming(
+                "ftp://example.com/file", tmp_path / "b.bin"
+            )
+        with pytest.raises(RemoteDownloadRefused):
+            await pipe_instance_async._multimodal_handler._download_remote_url_streaming(
+                "", tmp_path / "c.bin"
             )
 
-            assert result is None
-
     @pytest.mark.asyncio
-    async def test_download_invalid_url_returns_none(self, pipe_instance_async):
-        """Should return None for non-HTTP URLs."""
-        assert await pipe_instance_async._multimodal_handler._download_remote_url("file:///local/path") is None
-        assert await pipe_instance_async._multimodal_handler._download_remote_url("ftp://example.com/file") is None
-        assert await pipe_instance_async._multimodal_handler._download_remote_url("") is None
-
-    @pytest.mark.asyncio
-    async def test_download_network_error_returns_none(self, pipe_instance_async):
+    async def test_download_network_error_returns_none(self, pipe_instance_async, tmp_path):
         """Should retry on network errors and return None when exhausted."""
         pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
         pipe_instance_async.valves.REMOTE_DOWNLOAD_MAX_RETRIES = 1
@@ -2858,83 +2514,85 @@ class TestRemoteURLDownloading:
             client_ctx = mock_client.return_value.__aenter__.return_value
             client_ctx.stream = Mock(side_effect=httpx.NetworkError("Network error"))
 
-            result = await pipe_instance_async._multimodal_handler._download_remote_url(
-                "https://example.com/image.jpg"
+            result = await pipe_instance_async._multimodal_handler._download_remote_url_streaming(
+                "https://example.com/image.jpg", tmp_path / "out.bin"
             )
 
             assert result is None
             assert client_ctx.stream.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_download_does_not_retry_on_client_errors(self, pipe_instance_async):
-        """Should not retry on non-429 HTTP 4xx errors."""
+    async def test_download_does_not_retry_on_client_errors(self, pipe_instance_async, tmp_path):
+        """Should give up on a non-retryable HTTP status without a second try."""
         pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
-        url = "https://example.com/forbidden.png"
-        request = httpx.Request("GET", url)
-        response = httpx.Response(status_code=403, request=request)
-        error = httpx.HTTPStatusError("Forbidden", request=request, response=response)
-
+        url = "https://example.com/missing.jpg"
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = Mock()
             mock_response.headers = {"content-type": "image/jpeg"}
-            mock_response.raise_for_status = Mock(side_effect=error)
-            _set_aiter_bytes(mock_response, [b"x"])
+            mock_response.raise_for_status = Mock(
+                side_effect=httpx.HTTPStatusError("404", request=Mock(), response=Mock())
+            )
             client_ctx = mock_client.return_value.__aenter__.return_value
             client_ctx.stream = Mock(return_value=_make_stream_context(response=mock_response))
 
-            result = await pipe_instance_async._multimodal_handler._download_remote_url(url)
+            result = await pipe_instance_async._multimodal_handler._download_remote_url_streaming(
+                url, tmp_path / "out.bin"
+            )
 
             assert result is None
             assert client_ctx.stream.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_download_blocks_unsafe_url(self, pipe_instance_async):
-        """SSRF guard should abort before making any HTTP request."""
+    async def test_download_blocks_unsafe_url(self, pipe_instance_async, tmp_path):
+        """Should refuse to fetch when the address check yields nothing."""
         pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(return_value=None)
-
         with patch("httpx.AsyncClient") as mock_client:
-            result = await pipe_instance_async._multimodal_handler._download_remote_url("https://example.com/image.jpg")
-            assert result is None
+            with pytest.raises(RemoteDownloadRefused):
+                await pipe_instance_async._multimodal_handler._download_remote_url_streaming(
+                    "https://example.com/image.jpg", tmp_path / "out.bin"
+                )
             mock_client.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_download_retries_on_429_then_succeeds(self, pipe_instance_async):
-        """HTTP 429 should trigger a retry and succeed on a later attempt."""
+    async def test_download_retries_on_429_then_succeeds(self, pipe_instance_async, tmp_path):
+        """Should retry a 429 once and deliver the body from the later try."""
         pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
         pipe_instance_async.valves.REMOTE_DOWNLOAD_MAX_RETRIES = 1
         pipe_instance_async.valves.REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS = 0
         pipe_instance_async.valves.REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS = 5
+        url = "https://example.com/image.jpg"
+        attempts: list[int] = []
 
-        url = "https://example.com/limited.png"
-        request = httpx.Request("GET", url)
-        limited_response = httpx.Response(status_code=429, headers={"Retry-After": "0"}, request=request)
-        limited_error = httpx.HTTPStatusError("Too Many Requests", request=request, response=limited_response)
-
-        with patch("httpx.AsyncClient") as mock_client:
-            first = Mock()
-            first.headers = {"content-type": "image/png"}
-            first.raise_for_status = Mock(side_effect=limited_error)
-            _set_aiter_bytes(first, [b"ignored"])
-
+        def stream_response(*_args, **_kwargs):
+            attempts.append(1)
+            if len(attempts) == 1:
+                first = Mock()
+                first.headers = {"content-type": "image/jpeg", "retry-after": "0"}
+                first.raise_for_status = Mock(
+                    side_effect=httpx.HTTPStatusError(
+                        "429",
+                        request=Mock(),
+                        response=Mock(status_code=429, headers={"retry-after": "0"}),
+                    )
+                )
+                return _make_stream_context(response=first)
             second = Mock()
-            second.headers = {"content-type": "image/png"}
+            second.headers = {"content-type": "image/jpeg"}
             second.raise_for_status = Mock()
             _set_aiter_bytes(second, [b"ok"])
+            return _make_stream_context(response=second)
 
+        with patch("httpx.AsyncClient") as mock_client:
             client_ctx = mock_client.return_value.__aenter__.return_value
-            client_ctx.stream = Mock(
-                side_effect=[
-                    _make_stream_context(response=first),
-                    _make_stream_context(response=second),
-                ]
+            client_ctx.stream = Mock(side_effect=stream_response)
+
+            result = await pipe_instance_async._multimodal_handler._download_remote_url_streaming(
+                url, tmp_path / "out.bin"
             )
 
-            result = await pipe_instance_async._multimodal_handler._download_remote_url(url)
-
             assert result is not None
-            assert result["data"] == b"ok"
-            assert result["mime_type"] == "image/png"
-            assert client_ctx.stream.call_count == 2
+            assert (tmp_path / "out.bin").read_bytes() == b"ok"
+            assert len(attempts) == 2
 
 
 class TestSSRFIPv6Validation:
@@ -2974,124 +2632,6 @@ class TestSSRFIPv6Validation:
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
         assert await pipe_instance_async._multimodal_handler._is_safe_url("https://example.com/resource")
 
-
-class TestRemoteFileLimitResolution:
-    """Tests for resolving the effective remote download size limit."""
-
-    def _prepare_config(self, monkeypatch):
-        config = sys.modules["open_webui.config"]
-        monkeypatch.setattr(
-            pipe_module,
-            "_OPEN_WEBUI_CONFIG_MODULE",
-            config,
-            raising=False,
-        )
-        return config
-
-    def _no_store(self, monkeypatch):
-        """Force the store-unavailable fallback for the arms that exercise it.
-
-        The harness *does* register a working `open_webui.models.config.Config`: its
-        `_Config` class in `owui_stubs.py`, with an async `get_many` over
-        module-global rows that a conftest sweep clears per test. So
-        `_get_open_webui_config_store()` hands back that stub, and `get_many` answers
-        `{}` for the RAG size key -- a present-but-empty store, which the resolver
-        prefers over the start-up module value.
-
-        Patching the accessor to `None` is therefore what makes these four arms reach
-        the start-up fallback at all. The patch is load-bearing: neuter it to a bare
-        `return` and `test_caps_to_rag_when_smaller` and `test_adopts_rag_when_default_and_larger`
-        go red, because the empty row shadows the module attributes and every arm would
-        read the bare valve.
-        """
-        from open_webui_openrouter_pipe.core import errors as ow_errors
-
-        monkeypatch.setattr(
-            ow_errors, "_get_open_webui_config_store", lambda: None, raising=False
-        )
-
-    @pytest.mark.asyncio
-    async def test_caps_to_rag_when_smaller(self, pipe_instance, monkeypatch):
-        self._no_store(monkeypatch)
-        config = self._prepare_config(monkeypatch)
-        monkeypatch.setattr(config.BYPASS_EMBEDDING_AND_RETRIEVAL, "value", False, raising=False)
-        monkeypatch.setattr(config.RAG_FILE_MAX_SIZE, "value", 25, raising=False)
-        pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 50
-
-        assert await pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb() == 25
-
-    @pytest.mark.asyncio
-    async def test_adopts_rag_when_default_and_larger(self, pipe_instance, monkeypatch):
-        self._no_store(monkeypatch)
-        config = self._prepare_config(monkeypatch)
-        monkeypatch.setattr(config.BYPASS_EMBEDDING_AND_RETRIEVAL, "value", False, raising=False)
-        monkeypatch.setattr(config.RAG_FILE_MAX_SIZE, "value", 120, raising=False)
-        pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 50
-
-        assert await pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb() == 120
-
-    @pytest.mark.asyncio
-    async def test_respects_custom_limit_when_lower_than_rag(self, pipe_instance, monkeypatch):
-        self._no_store(monkeypatch)
-        config = self._prepare_config(monkeypatch)
-        monkeypatch.setattr(config.BYPASS_EMBEDDING_AND_RETRIEVAL, "value", False, raising=False)
-        monkeypatch.setattr(config.RAG_FILE_MAX_SIZE, "value", 150, raising=False)
-        pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 80
-
-        assert await pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb() == 80
-
-    # -- the cap Open WebUI's own admin box set, read from its store ----------------
-
-    def _start_up(self, monkeypatch, *, bypass, size):
-        """The import-time env snapshot: what `open_webui.config` holds forever.
-
-        A `SimpleNamespace` of the two module attributes, because `RAG_FILE_MAX_SIZE`
-        is one `os.getenv` evaluated at import (`config.py:983`) and never revisited --
-        the whole defect is that the pipe reads this instead of the store.
-        """
-        from open_webui_openrouter_pipe.core import errors as ow_errors
-
-        module = SimpleNamespace(
-            BYPASS_EMBEDDING_AND_RETRIEVAL=SimpleNamespace(value=bypass),
-            RAG_FILE_MAX_SIZE=SimpleNamespace(value=size),
-        )
-        return module
-
-    def _store_of(self, values):
-        """The store stub for one row, as `test_open_terminal_parity.py:557-570` builds
-        `_OwuiConfig`.
-
-        `get_many(*keys)` returns what `values` holds for exactly the keys it was asked
-        for, so a caller can pass `None` and the key still counts as *present* -- which
-        is the whole point of the cleared row, and the distinction a plain `{}` cannot
-        express. A key `values` does not name is simply absent.
-        """
-        class _Store:
-            @staticmethod
-            async def get_many(*keys: str) -> dict:
-                return {k: values[k] for k in keys if k in values}
-
-        return _Store()
-
-    def _patch_both(self, monkeypatch, *, bypass, size, values):
-        """Patch both accessors together -- the pattern `test_helpers.py:1334` uses.
-
-        Both are always patched, so no row can read the real store or the real module by
-        accident. The difference between a fallback row and a store row is the *value* of
-        the store accessor, never whether it was patched. `values=None` models the
-        import failing, which is the one fallback a deployment can actually reach.
-        """
-        from open_webui_openrouter_pipe.core import errors as ow_errors
-
-        module = self._start_up(monkeypatch, bypass=bypass, size=size)
-        store = None if values is None else self._store_of(values)
-        monkeypatch.setattr(
-            ow_errors, "_get_open_webui_config_store", lambda: store, raising=False
-        )
-        monkeypatch.setattr(
-            ow_errors, "_get_open_webui_config_module", lambda: module, raising=False
-        )
-        return module
 
 class TestRetryHelpers:
     """Unit tests for retry helper utilities."""
@@ -3674,6 +3214,7 @@ class TestMultimodalIntegration:
         mock_user,
         sample_image_base64,
         monkeypatch,
+        tmp_path,
     ) -> None:
         """Should handle message with text, image, and file, storing neither."""
         pipe_instance._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
@@ -3684,7 +3225,7 @@ class TestMultimodalIntegration:
         )
         upload_mock = AsyncMock(side_effect=["img123", "file123"])
         inline_mock = AsyncMock(return_value=InlinedFile(data_url="data:image/png;base64,INLINE", filename="test.png"))
-        monkeypatch.setattr(pipe_instance._multimodal_handler, "_download_remote_url", download_mock)
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_download_remote_url_streaming", download_mock)
         monkeypatch.setattr(pipe_instance._file_gateway, "upload_to_owui_storage", upload_mock)
         monkeypatch.setattr(pipe_instance._file_gateway, "inline_owui_file_id", inline_mock)
 
@@ -3876,7 +3417,7 @@ class TestDownloadRetryTimeoutExceeded:
     """Tests for download retry timeout exceeded path."""
 
     @pytest.mark.asyncio
-    async def test_download_retry_timeout_exceeded(self, pipe_instance_async):
+    async def test_download_retry_timeout_exceeded(self, pipe_instance_async, tmp_path):
         """Should return None when retry timeout is exceeded."""
         pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
         pipe_instance_async.valves.REMOTE_DOWNLOAD_MAX_RETRIES = 3
@@ -3912,7 +3453,9 @@ class TestDownloadRetryTimeoutExceeded:
             mock_client.return_value.__aenter__ = AsyncMock(return_value=client_instance)
             mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            result = await pipe_instance_async._multimodal_handler._download_remote_url(url)
+            result = await pipe_instance_async._multimodal_handler._download_remote_url_streaming(
+                url, tmp_path / "out.bin"
+            )
             assert result is None
 
 
@@ -4397,7 +3940,7 @@ class TestSSRFConnectionPinning:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_download_connects_to_pinned_ip_not_hostname(self, pipe_instance_async):
+    async def test_download_connects_to_pinned_ip_not_hostname(self, pipe_instance_async, tmp_path):
         """End-to-end: the httpx request targets the validated IP, with the
         original Host header and SNI — so httpx never re-resolves the host."""
         handler = pipe_instance_async._multimodal_handler
@@ -4415,7 +3958,9 @@ class TestSSRFConnectionPinning:
             mock_client.return_value.__aenter__ = AsyncMock(return_value=client_instance)
             mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            result = await handler._download_remote_url("https://example.com/img.png")
+            result = await handler._download_remote_url_streaming(
+                "https://example.com/img.png", tmp_path / "out.bin"
+            )
 
         assert result is not None
         assert result["url"] == "https://example.com/img.png"

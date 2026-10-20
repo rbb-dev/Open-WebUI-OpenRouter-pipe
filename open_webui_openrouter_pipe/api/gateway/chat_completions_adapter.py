@@ -41,6 +41,12 @@ from ...storage.owui_files import (
     names_an_owui_file_path,
 )
 from ...storage.persistence import generate_item_id
+from ...storage.receive_spool import (
+    EVENT_SCAN_BYTES,
+    ReceiveSpool,
+    attach_parts,
+    scan_event,
+)
 from ...streaming.nagle_coalescer import nagle_coalesce_stream
 from ..transforms import (
     _filter_openrouter_chat_request,
@@ -369,6 +375,7 @@ class ChatCompletionsAdapter:
         owui_chat_id: str | None = None,
         files_inlined: bool = False,
         event_emitter: Any = None,
+        receive_spool: ReceiveSpool | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         effective_valves = valves or self._pipe.valves
         responses_payload = responses_request_body or {}
@@ -611,28 +618,35 @@ class ChatCompletionsAdapter:
                     out.append(clean)
             return out
 
-        def _consume_blob(data_blob: bytes):
+        def _consume_blob(data_blob: bytes | None, preparsed: Any | None = None):
             nonlocal received_any, latest_usage, reasoning_item_id, reasoning_text_seen, \
                 latest_message_annotations, image_item_id, \
                 image_output_item, images_emitted, refusal_text_seen, provider_refusal_full, \
                 tool_calls_completed, \
                 truncating_reason, delivered_any, saw_choice_chunk, assistant_text_seen, \
                 unhandled_citation_types, message_text_published, message_refusal_published
-            try:
-                chunk_obj = json.loads(data_blob.decode("utf-8"))
-            except (RecursionError, UnicodeDecodeError, ValueError) as exc:
-                self.logger.log(
-                    warn_level(
-                        _warned_chat_chunk_parse,
-                        "chunk_parse",
-                        cooldown_s=_CHAT_CHUNK_PARSE_WARN_COOLDOWN_S,
-                    ),
-                    "Chunk parse failed; the affected event is "
-                    "discarded: %s",
-                    exc,
-                    exc_info=True,
-                )
-                return
+            if preparsed is not None:
+                chunk_obj = preparsed
+            elif data_blob is not None:
+                chunk_obj = scan_event(data_blob, receive_spool)
+            else:
+                chunk_obj = None
+            if chunk_obj is None:
+                try:
+                    chunk_obj = json.loads((data_blob or b"").decode("utf-8"))
+                except (RecursionError, UnicodeDecodeError, ValueError) as exc:
+                    self.logger.log(
+                        warn_level(
+                            _warned_chat_chunk_parse,
+                            "chunk_parse",
+                            cooldown_s=_CHAT_CHUNK_PARSE_WARN_COOLDOWN_S,
+                        ),
+                        "Chunk parse failed; the affected event is "
+                        "discarded: %s",
+                        exc,
+                        exc_info=True,
+                    )
+                    return
             reported_error = self._pipe._ensure_error_formatter()._extract_streaming_error_event(
                 chunk_obj, chat_payload.get("model")
             )
@@ -1017,6 +1031,33 @@ class ChatCompletionsAdapter:
                             scanned = 0
                             excerpt = bytearray()
                             event_data_parts: list[bytes] = []
+                            event_scan = None
+                            event_scan_size = 0
+                            scan_line_live = False
+
+                            async def _flush_event_scan() -> Any | None:
+                                nonlocal event_scan, event_scan_size
+                                if event_scan is None:
+                                    return None
+                                scan, event_scan = event_scan, None
+                                event_scan_size = 0
+                                slim, scan_parts = scan.finish()
+                                try:
+                                    return attach_parts(json.loads(slim), scan_parts)
+                                except (ValueError, RecursionError, UnicodeDecodeError):
+                                    self.logger.log(
+                                        warn_level(
+                                            _warned_chat_chunk_parse,
+                                            "chunk_parse",
+                                            cooldown_s=_CHAT_CHUNK_PARSE_WARN_COOLDOWN_S,
+                                        ),
+                                        "Scanned event parse failed; the affected event is "
+                                        "discarded: slim %r",
+                                        bytes(slim[:120]),
+                                        exc_info=True,
+                                    )
+                                    return None
+
                             done = False
 
                             async def _chunks():
@@ -1042,6 +1083,21 @@ class ChatCompletionsAdapter:
                                     first_chunk_received = True
                                     timing_mark("chat_first_chunk")
                                 body_bytes_seen = True
+                                if scan_line_live:
+                                    scan = event_scan
+                                    if scan is None:
+                                        scan_line_live = False
+                                        continue
+                                    newline_at = chunk.find(b"\n")
+                                    if newline_at < 0:
+                                        scan.feed(chunk)
+                                        continue
+                                    scan.feed(chunk[:newline_at])
+                                    scan_line_live = False
+                                    buf.clear()
+                                    buf.extend(chunk[newline_at + 1 :])
+                                    scanned = 0
+                                    continue
                                 buf.extend(chunk)
                                 if not synthetic and len(excerpt) < _BODY_EXCERPT_CHARS:
                                     excerpt.extend(chunk[: _BODY_EXCERPT_CHARS - len(excerpt)])
@@ -1049,6 +1105,11 @@ class ChatCompletionsAdapter:
                                 for stripped in sse_lines:
 
                                     if not stripped:
+                                        scanned_obj = await _flush_event_scan()
+                                        if scanned_obj is not None:
+                                            for ev in _consume_blob(None, scanned_obj):
+                                                yield ev
+                                            continue
                                         if not event_data_parts:
                                             continue
                                         data_blob = b"\n".join(event_data_parts).strip()
@@ -1068,6 +1129,10 @@ class ChatCompletionsAdapter:
                                         saw_data_line = True
                                         payload = bytes(stripped[5:].lstrip())
                                         if payload == _CHAT_SSE_DONE_SENTINEL:
+                                            scanned_obj = await _flush_event_scan()
+                                            if scanned_obj is not None:
+                                                for ev in _consume_blob(None, scanned_obj):
+                                                    yield ev
                                             if event_data_parts:
                                                 data_blob = b"\n".join(event_data_parts).strip()
                                                 event_data_parts.clear()
@@ -1077,12 +1142,37 @@ class ChatCompletionsAdapter:
                                             done = True
                                             timing_mark("chat_stream_done")
                                             break
-                                        event_data_parts.append(payload)
+                                        event_scan_size += len(payload)
+                                        if event_scan is not None:
+                                            event_scan.feed(payload)
+                                        else:
+                                            event_data_parts.append(payload)
                                         continue
 
+                                if (
+                                    event_scan is None
+                                    and receive_spool is not None
+                                    and buf
+                                    and event_scan_size + len(buf) > EVENT_SCAN_BYTES
+                                    and buf.startswith(b"data:")
+                                ):
+                                    event_scan = receive_spool.scanner()
+                                    for prior in event_data_parts:
+                                        event_scan.feed(prior)
+                                    del event_data_parts[:]
+                                    event_scan.feed(bytes(buf[5:].lstrip()))
+                                    scan_line_live = True
+                                    buf.clear()
+                                    scanned = 0
                                 if done:
                                     break
                             body_complete = True
+                            if not done:
+                                scanned_obj = await _flush_event_scan()
+                                if scanned_obj is not None:
+                                    saw_data_line = True
+                                    for ev in _consume_blob(None, scanned_obj):
+                                        yield ev
                             if event_data_parts and not done:
                                 saw_data_line = True
                                 data_blob = b"\n".join(event_data_parts).strip()
@@ -1244,6 +1334,7 @@ class ChatCompletionsAdapter:
         transient_retry: bool = True,
         files_inlined: bool = False,
         event_emitter: Any = None,
+        receive_spool: ReceiveSpool | None = None,
     ) -> dict[str, Any]:
         effective_valves = valves or self._pipe.valves
         responses_payload = responses_request_body or {}
@@ -1316,7 +1407,7 @@ class ChatCompletionsAdapter:
                                 requested_model=chat_payload.get("model"),
                                 extra_metadata=extra_meta or None,
                             )
-                        data = await _decode_json_body(resp, self.logger, "/chat/completions")
+                        data = await _decode_json_body(resp, self.logger, "/chat/completions", receive_spool)
                         if not isinstance(data, dict):
                             _debug_print_response(data, logger=self.logger)
                             raise _body_not_an_object("/chat/completions", data, resp)
@@ -1364,6 +1455,7 @@ class ChatCompletionsAdapter:
         user: Any = None,
         owui_chat_id: str | None = None,
         event_emitter: Any = None,
+        receive_spool: ReceiveSpool | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         effective_valves = valves or self._pipe.valves
         idle_flush_seconds = float(idle_flush_ms) / 1000 if idle_flush_ms > 0 else None

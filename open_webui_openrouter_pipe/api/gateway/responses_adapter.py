@@ -45,6 +45,12 @@ from ...requests.debug import (
     _debug_print_response,
 )
 from ...storage.owui_files import loggable_session_id
+from ...storage.receive_spool import (
+    EVENT_SCAN_BYTES,
+    ReceiveSpool,
+    attach_parts,
+    scan_event,
+)
 from ...streaming.nagle_coalescer import (
     _MAX_DRAIN_PER_CYCLE,
     NagleCoalescer,
@@ -57,6 +63,8 @@ if TYPE_CHECKING:
 _RESPONSES_CHUNK_PARSE_WARN_COOLDOWN_S = 30.0
 _BACKLOG_DEBUG_SAMPLE_INTERVAL_S = 1.0
 _BODY_EXCERPT_CHARS = 200
+
+_BODY_SCAN_CHUNK_BYTES = 64 * 1024
 _RESPONSES_SSE_DONE_SENTINEL = b"[DONE]"
 _warned_responses_chunk_parse: dict[str, float] = {}
 _warned_queue_backlog: dict[str, float] = {}
@@ -121,7 +129,14 @@ def _responses_event_is_user_visible(event: dict[str, Any]) -> bool:
 _UNREADABLE = object()
 
 
-def _decode_frame(data_blob: bytes, logger: logging.Logger | None = None) -> Any:
+def _decode_frame(
+    data_blob: bytes,
+    logger: logging.Logger | None = None,
+    receive_spool: ReceiveSpool | None = None,
+) -> Any:
+    scanned = scan_event(data_blob, receive_spool)
+    if scanned is not None:
+        return scanned
     try:
         return json.loads(data_blob.decode("utf-8"))
     except (RecursionError, UnicodeDecodeError, ValueError):
@@ -198,7 +213,33 @@ def _transient_retry_policy(valves: Any, *, retry: Any) -> AsyncRetrying:
     )
 
 
-async def _decode_json_body(resp: Any, logger: Any, endpoint: str) -> Any:
+async def _decode_json_body(
+    resp: Any, logger: Any, endpoint: str, receive_spool: ReceiveSpool | None = None
+) -> Any:
+    if receive_spool is not None:
+        scanner = receive_spool.scanner()
+        parts: dict[str, Any] = {}
+        body: bytes = b""
+        try:
+            async for chunk in resp.content.iter_chunked(_BODY_SCAN_CHUNK_BYTES):
+                scanner.feed(chunk)
+            body, parts = scanner.finish()
+            parsed = json.loads(body)
+        except _LOST_BODY_READ_ERRORS as exc:
+            raise AcceptedResponseLostBody(str(exc)) from exc
+        except (ValueError, RecursionError) as exc:
+            logger.debug(
+                "OpenRouter response was not decodable JSON after its receive scan",
+                exc_info=True,
+            )
+            raise UpstreamBodyUnreadable(
+                endpoint=endpoint,
+                body_excerpt=bytes(body[:_BODY_EXCERPT_CHARS]).decode("utf-8", "replace"),
+                content_type=getattr(resp, "content_type", None),
+            ) from exc
+        except Exception as exc:
+            raise AcceptedResponseLostBody(str(exc)) from exc
+        return attach_parts(parsed, parts)
     try:
         return await resp.json()
     except _LOST_BODY_READ_ERRORS as exc:
@@ -341,6 +382,7 @@ class ResponsesAdapter:
         owui_chat_id: str | None = None,
         files_inlined: bool = False,
         charge_holder: _FailureCharge | None = None,
+        receive_spool: ReceiveSpool | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         _backlog_request_id = SessionLogger.request_id.get() or ""
         effective_valves = valves or self._pipe.valves
@@ -426,13 +468,53 @@ class ResponsesAdapter:
                             scanned = 0
                             excerpt = bytearray()
                             event_data_parts: list[bytes] = []
+                            event_scan = None
+                            event_scan_size = 0
+                            scan_line_live = False
+
+                            async def _flush_event_scan() -> Any | None:
+                                nonlocal event_scan, event_scan_size
+                                if event_scan is None:
+                                    return None
+                                scan, event_scan = event_scan, None
+                                event_scan_size = 0
+                                slim, scan_parts = scan.finish()
+                                try:
+                                    return attach_parts(json.loads(slim), scan_parts)
+                                except (ValueError, RecursionError, UnicodeDecodeError):
+                                    self.logger.log(
+                                        warn_level(
+                                            _warned_responses_chunk_parse,
+                                            "producer_frame_decode",
+                                            cooldown_s=_RESPONSES_CHUNK_PARSE_WARN_COOLDOWN_S,
+                                        ),
+                                        "Scanned frame parse failed; the affected event is "
+                                        "discarded: slim %r",
+                                        bytes(slim[:120]),
+                                        exc_info=True,
+                                    )
+                                    return None
+
                             stream_complete = False
                             held: list[Any] = []
                             first_event_queued = False
 
-                            async def _dispatch(data_blob: bytes, _held: list[Any] = held) -> bool:
+                            async def _dispatch_parsed(
+                                event_obj: Any, _held: list[Any] = held
+                            ) -> None:
+                                await _dispatch(b"", _held, event_obj)
+
+                            async def _dispatch(
+                                data_blob: bytes,
+                                _held: list[Any] = held,
+                                preparsed: Any | None = None,
+                            ) -> bool:
                                 nonlocal queued_any, delivered_any, first_event_queued
-                                event_obj = _decode_frame(data_blob, self.logger)
+                                event_obj = (
+                                    preparsed
+                                    if preparsed is not None
+                                    else _decode_frame(data_blob, self.logger, receive_spool)
+                                )
                                 if event_obj is _UNREADABLE:
                                     return False
                                 queued_any = True
@@ -491,6 +573,21 @@ class ResponsesAdapter:
                                         if not first_chunk_received:
                                             first_chunk_received = True
                                             timing_mark("responses_first_chunk")
+                                        if scan_line_live:
+                                            scan = event_scan
+                                            if scan is None:
+                                                scan_line_live = False
+                                                continue
+                                            newline_at = chunk.find(b"\n")
+                                            if newline_at < 0:
+                                                scan.feed(chunk)
+                                                continue
+                                            scan.feed(chunk[:newline_at])
+                                            scan_line_live = False
+                                            buf.clear()
+                                            buf.extend(chunk[newline_at + 1 :])
+                                            scanned = 0
+                                            continue
                                         view = memoryview(chunk)
                                         buf.extend(view)
                                         if len(excerpt) < _BODY_EXCERPT_CHARS:
@@ -498,6 +595,10 @@ class ResponsesAdapter:
                                         sse_lines, scanned = _split_sse_lines(buf, scanned)
                                         for stripped in sse_lines:
                                             if not stripped:
+                                                scanned_obj = await _flush_event_scan()
+                                                if scanned_obj is not None:
+                                                    await _dispatch_parsed(scanned_obj)
+                                                    continue
                                                 if event_data_parts:
                                                     data_blob = b"\n".join(event_data_parts).strip()
                                                     event_data_parts.clear()
@@ -515,6 +616,9 @@ class ResponsesAdapter:
                                                 saw_data_line = True
                                                 payload = bytes(stripped[5:].lstrip())
                                                 if payload == _RESPONSES_SSE_DONE_SENTINEL:
+                                                    scanned_obj = await _flush_event_scan()
+                                                    if scanned_obj is not None:
+                                                        await _dispatch_parsed(scanned_obj)
                                                     if event_data_parts:
                                                         data_blob = b"\n".join(event_data_parts).strip()
                                                         event_data_parts.clear()
@@ -523,8 +627,27 @@ class ResponsesAdapter:
                                                     stream_complete = True
                                                     timing_mark("responses_stream_done")
                                                     break
-                                                event_data_parts.append(payload)
+                                                event_scan_size += len(payload)
+                                                if event_scan is not None:
+                                                    event_scan.feed(payload)
+                                                else:
+                                                    event_data_parts.append(payload)
                                                 continue
+                                        if (
+                                            event_scan is None
+                                            and receive_spool is not None
+                                            and buf
+                                            and event_scan_size + len(buf) > EVENT_SCAN_BYTES
+                                            and buf.startswith(b"data:")
+                                        ):
+                                            event_scan = receive_spool.scanner()
+                                            for prior in event_data_parts:
+                                                event_scan.feed(prior)
+                                            del event_data_parts[:]
+                                            event_scan.feed(bytes(buf[5:].lstrip()))
+                                            scan_line_live = True
+                                            buf.clear()
+                                            scanned = 0
                                         if stream_complete:
                                             break
 
@@ -542,6 +665,11 @@ class ResponsesAdapter:
                                         saw_data_line = True
                                         event_data_parts.append(bytes(tail_line[5:].lstrip()))
 
+                                if not stream_complete:
+                                    scanned_obj = await _flush_event_scan()
+                                    if scanned_obj is not None:
+                                        saw_data_line = True
+                                        await _dispatch_parsed(scanned_obj)
                                 if event_data_parts and not stream_complete:
                                     data_blob = event_data_parts[0].strip()
                                     trailing = [p.strip() for p in event_data_parts[1:]]
@@ -815,6 +943,7 @@ class ResponsesAdapter:
         transient_retry: bool = True,
         files_inlined: bool = False,
         charge_holder: _FailureCharge | None = None,
+        receive_spool: ReceiveSpool | None = None,
     ) -> dict[str, Any]:
         effective_valves = valves or self._pipe.valves
         if not files_inlined:
@@ -870,7 +999,7 @@ class ResponsesAdapter:
                                 requested_model=request_params.get("model"),
                                 extra_metadata=extra_meta or None,
                             )
-                        payload = await _decode_json_body(resp, self.logger, "/responses")
+                        payload = await _decode_json_body(resp, self.logger, "/responses", receive_spool)
                         if not isinstance(payload, dict):
                             raise _body_not_an_object("/responses", payload, resp)
                         _debug_print_response(payload, logger=self.logger)

@@ -718,7 +718,7 @@ async def test_image_client_list_models_handles_missing_data_field():
 
 
 @pytest.mark.asyncio
-async def test_an_image_reply_past_what_the_pipe_could_keep_is_refused_while_it_is_read():
+async def test_an_image_reply_is_read_to_its_end_and_its_picture_delivered():
     import base64
     from typing import cast
 
@@ -727,9 +727,9 @@ async def test_an_image_reply_past_what_the_pipe_could_keep_is_refused_while_it_
 
     from open_webui_openrouter_pipe.integrations.image_client import OpenRouterImageClient
     from open_webui_openrouter_pipe.integrations.image_types import ImageGenerationError
+    from open_webui_openrouter_pipe.storage.receive_spool import ReceiveSpool
     from tests.vetting_helpers import open_live_listener
 
-    ceiling_bytes = 1024 * 1024
     under_the_cap = 5_000_000
     over_the_cap = 12_000_000
     picture = (
@@ -806,18 +806,21 @@ async def test_an_image_reply_past_what_the_pipe_could_keep_is_refused_while_it_
             )
             return await client.generate(
                 {"model": "vendor/invented-image", "prompt": "a leaf", "stream": shape.startswith("sse")},
-                max_decoded_bytes=ceiling_bytes,
+                spool=ReceiveSpool(),
             )
 
     try:
-        kept = [await generate("json_under"), await generate("sse_under")]
-        for shape in ("json_honest", "json_chunked", "sse_over"):
-            with pytest.raises(ImageGenerationError):
-                await generate(shape)
+        kept = [
+            await generate("json_under"),
+            await generate("json_honest"),
+            await generate("json_chunked"),
+            await generate("sse_under"),
+            await generate("sse_over"),
+        ]
     finally:
         await runner.cleanup()
 
-    assert [[image.data for image in result.images] for result in kept] == [[picture], [picture]]
+    assert [[image.data for image in result.images] for result in kept] == [[picture]] * 5
 
 
 @pytest.mark.asyncio

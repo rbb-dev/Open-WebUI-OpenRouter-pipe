@@ -265,7 +265,6 @@ async def _materialize_snapshot(record: Any) -> Any:
         user=None,
         logger=logger,
         max_bytes=_PD_UPDATE_SIZE_CAP,
-        allow_unknown_size=True,
         require_auth=False,
     )
 

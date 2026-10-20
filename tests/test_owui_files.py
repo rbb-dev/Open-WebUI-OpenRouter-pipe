@@ -316,7 +316,7 @@ async def test_materialize_denies_unauthorized_real_record(
     with pytest.raises(RequiredInternalFileError) as ei:
         await materialize_owui_file_to_temp(
             fobj, user=SimpleNamespace(id="other", role="user"),
-            logger=logger, max_bytes=1000, allow_unknown_size=False,
+            logger=logger, max_bytes=1000,
         )
     assert ei.value.denied is True
 
@@ -329,7 +329,7 @@ async def test_materialize_missing_path_raises(logger: logging.Logger, monkeypat
     with pytest.raises(RequiredInternalFileError) as ei:
         await materialize_owui_file_to_temp(
             fobj, user=SimpleNamespace(id="u1", role="user"),
-            logger=logger, max_bytes=1000, allow_unknown_size=False,
+            logger=logger, max_bytes=1000,
         )
     assert ei.value.denied is False
 
@@ -349,20 +349,20 @@ async def test_materialize_declared_size_over_limit_raises(
     with pytest.raises(RequiredInternalFileError):
         await materialize_owui_file_to_temp(
             fobj, user=SimpleNamespace(id="u1", role="user"),
-            logger=logger, max_bytes=100, allow_unknown_size=False,
+            logger=logger, max_bytes=100,
         )
     assert called["storage"] is False
 
 
 @pytest.mark.asyncio
-async def test_materialize_unknown_size_cloud_denied_when_not_allowed(
+@pytest.mark.asyncio
+async def test_materialize_unknown_size_cloud_reads_without_a_valve(
     logger: logging.Logger, monkeypatch: pytest.MonkeyPatch, upload_dir: Path
 ):
-    """Unknown declared size + non-local provider + not allowed => rejected.
+    """Unknown declared size on a cloud provider reads through the same guard as any size.
 
-    The refusal must be the unknown-size arm specifically, not any of the other
-    ten raises the function can produce, so the reason, the not-denied flag and
-    the absence of any storage read are all asserted.
+    The old allowUnknown valve is gone, so the read must reach storage and succeed
+    with no valve set at all.
     """
     monkeypatch.setattr(owui_files, "authorize_file_read", AsyncMock(return_value=True))
     monkeypatch.setattr(owui_files, "_OWUI_STORAGE_PROVIDER", "s3")
@@ -379,32 +379,12 @@ async def test_materialize_unknown_size_cloud_denied_when_not_allowed(
         lambda: SimpleNamespace(get_file=_get_file),
     )
     fobj = _file_obj(id="f1", user_id="u1", path="key", meta={})
-    with pytest.raises(RequiredInternalFileError) as ei:
-        await materialize_owui_file_to_temp(
-            fobj, user=SimpleNamespace(id="u1", role="user"),
-            logger=logger, max_bytes=1000, allow_unknown_size=False,
-        )
-    assert "unknown size and cannot be safely fetched from cloud storage" in str(ei.value)
-    assert ei.value.denied is not True
-    assert called["storage"] is False
-
-
-@pytest.mark.asyncio
-async def test_materialize_unknown_size_cloud_allowed_succeeds(
-    logger: logging.Logger, monkeypatch: pytest.MonkeyPatch, upload_dir: Path
-):
-    """Unknown size on cloud succeeds when allow_unknown_size=True."""
-    monkeypatch.setattr(owui_files, "authorize_file_read", AsyncMock(return_value=True))
-    monkeypatch.setattr(owui_files, "_OWUI_STORAGE_PROVIDER", "s3")
-    backing = upload_dir / "blob.bin"
-    backing.write_bytes(b"cloud-bytes")
-    _install_storage(monkeypatch, str(backing))
-    fobj = _file_obj(id="f1", user_id="u1", path="key", meta={})
     out = await materialize_owui_file_to_temp(
         fobj, user=SimpleNamespace(id="u1", role="user"),
-        logger=logger, max_bytes=1000, allow_unknown_size=True,
+        logger=logger, max_bytes=1000,
     )
     try:
+        assert called["storage"] is True
         assert out.read_bytes() == b"cloud-bytes"
     finally:
         out.unlink(missing_ok=True)
@@ -422,7 +402,7 @@ async def test_materialize_success_returns_private_temp_under_systmp(
     fobj = _file_obj(id="f1", user_id="u1", path="key", meta={"size": 9})
     out = await materialize_owui_file_to_temp(
         fobj, user=SimpleNamespace(id="u1", role="user"),
-        logger=logger, max_bytes=1000, allow_unknown_size=False,
+        logger=logger, max_bytes=1000,
     )
     try:
         assert out != backing.resolve()
@@ -451,7 +431,7 @@ async def test_materialize_path_escaping_upload_dir_raises(
     with pytest.raises(RequiredInternalFileError):
         await materialize_owui_file_to_temp(
             fobj, user=SimpleNamespace(id="u1", role="user"),
-            logger=logger, max_bytes=1000, allow_unknown_size=False,
+            logger=logger, max_bytes=1000,
         )
 
 
@@ -468,7 +448,7 @@ async def test_materialize_unsupported_suffix_raises(
     with pytest.raises(RequiredInternalFileError):
         await materialize_owui_file_to_temp(
             fobj, user=SimpleNamespace(id="u1", role="user"),
-            logger=logger, max_bytes=1000, allow_unknown_size=False,
+            logger=logger, max_bytes=1000,
             allowed_suffixes={".png", ".jpg"},
         )
 
@@ -485,7 +465,7 @@ async def test_materialize_supported_suffix_passes(
     fobj = _file_obj(id="f1", user_id="u1", path="key", meta={"size": 7})
     out = await materialize_owui_file_to_temp(
         fobj, user=SimpleNamespace(id="u1", role="user"),
-        logger=logger, max_bytes=1000, allow_unknown_size=False,
+        logger=logger, max_bytes=1000,
         allowed_suffixes={".png", ".jpg"},
     )
     try:
@@ -516,7 +496,7 @@ async def test_materialize_post_copy_stat_over_limit_unlinks_and_raises(
     with pytest.raises(RequiredInternalFileError):
         await materialize_owui_file_to_temp(
             fobj, user=SimpleNamespace(id="u1", role="user"),
-            logger=logger, max_bytes=4, allow_unknown_size=False,
+            logger=logger, max_bytes=4,
         )
     assert captured["temp"].exists() is False
 
@@ -536,7 +516,7 @@ async def test_materialize_storage_get_file_failure_raises(
     with pytest.raises(RequiredInternalFileError):
         await materialize_owui_file_to_temp(
             fobj, user=SimpleNamespace(id="u1", role="user"),
-            logger=logger, max_bytes=1000, allow_unknown_size=False,
+            logger=logger, max_bytes=1000,
         )
 
 
@@ -552,8 +532,7 @@ async def test_materialize_require_auth_false_skips_authorization(
     _install_storage(monkeypatch, str(backing))
     fobj = _file_obj(id="f1", user_id="owner", path="key", meta={"size": 4})
     out = await materialize_owui_file_to_temp(
-        fobj, user=None, logger=logger, max_bytes=1000,
-        allow_unknown_size=False, require_auth=False,
+        fobj, user=None, logger=logger, max_bytes=1000, require_auth=False,
     )
     try:
         assert out.read_bytes() == b"data"
@@ -573,7 +552,7 @@ async def test_materialize_storage_unavailable_raises(
     with pytest.raises(RequiredInternalFileError):
         await materialize_owui_file_to_temp(
             fobj, user=SimpleNamespace(id="u1", role="user"),
-            logger=logger, max_bytes=1000, allow_unknown_size=False,
+            logger=logger, max_bytes=1000,
         )
 
 

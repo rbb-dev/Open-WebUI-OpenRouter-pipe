@@ -9,8 +9,11 @@ import functools
 import io
 import ipaddress
 import logging
+import os
 import re
+import shutil
 import socket
+import tempfile
 import time
 from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -18,7 +21,7 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from enum import Enum, auto
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple, Self
 from urllib.parse import quote, urljoin
 
 import aiohttp
@@ -37,13 +40,11 @@ from ..core.config import (
     _MAX_MODEL_PROFILE_IMAGE_PIXELS,
     _OPENROUTER_HOST,
     _OPENROUTER_SITE_URL,
-    _REMOTE_FILE_MAX_SIZE_DEFAULT_MB,
     _select_openrouter_http_referer,
 )
 from ..core.errors import (
     RemoteDownloadRefused,
     _classify_retryable_http_error,
-    _read_rag_file_max_size_mb,
     _RetryableHTTPStatusError,
     _RetryWait,
 )
@@ -58,6 +59,7 @@ from ..core.url_scheme import (
     url_scheme,
 )
 from ..core.warn_latch import warn_level
+from .receive_spool import RECEIVE_ITEM_MAX_BYTES
 
 if TYPE_CHECKING:
     from .owui_files import OwuiFileGateway
@@ -213,18 +215,25 @@ REQUEST_VALIDATED_IPS: ContextVar[dict[tuple[str, int | None], list[str] | None]
     ContextVar("request_validated_ips", default=None)
 )
 
-_request_remote_limit_mb: ContextVar[list[int] | None] = ContextVar(
-    "request_remote_limit_mb", default=None
-)
+_REQUEST_RECV_PREFIX = "openrouter-reqrecv-"
 
 
-@asynccontextmanager
-async def remote_file_limit_scope() -> AsyncIterator[None]:
-    token = _request_remote_limit_mb.set([])
-    try:
-        yield
-    finally:
-        _request_remote_limit_mb.reset(token)
+class RequestReceiveScope:
+    __slots__ = ("directory",)
+
+    def __init__(self) -> None:
+        self.directory = tempfile.mkdtemp(prefix=_REQUEST_RECV_PREFIX)
+
+    def new_path(self) -> Path:
+        fd, name = tempfile.mkstemp(dir=self.directory)
+        os.close(fd)
+        return Path(name)
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        shutil.rmtree(self.directory, ignore_errors=True)
 
 
 def _pipe_pool(
@@ -835,159 +844,6 @@ class MultimodalHandler:
         self._artifact_store = store
 
 
-    @timed
-    async def _download_remote_url(
-        self,
-        url: str,
-        timeout_seconds: int | None = None,
-        seconds: float | None = None,
-        charge: Callable[[float], None] | None = None,
-        *,
-        refused: dict[str, str] | None = None
-    ) -> dict[str, Any] | None:
-        url = (url or "").strip()
-        if not is_http_or_https_url(url):
-            return None
-
-        pinned = await self._prepare_pinned_request(url, seconds, charge)
-        if pinned is None:
-            self.logger.error(
-                "Remote download blocked by security policy (SSRF or HTTP disabled by default): %s",
-                loggable_link(url),
-            )
-            return None
-        request_url, pin_headers, pin_extensions = pinned
-
-        max_retries = self.valves.REMOTE_DOWNLOAD_MAX_RETRIES
-        initial_delay = self.valves.REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS
-        max_retry_time = self.valves.REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS
-
-        if timeout_seconds is None:
-            timeout_seconds = self.valves.HTTP_CONNECT_TIMEOUT_SECONDS
-        if timeout_seconds is None:
-            timeout_seconds = 60
-        connect_budget = _seeded_connect_budget(timeout_seconds)
-
-        effective_limit_mb = await self._get_effective_remote_file_limit_mb()
-        max_size_bytes = effective_limit_mb * 1024 * 1024
-
-        attempt = 0
-        start_time = time.perf_counter()
-
-        try:
-            async for attempt_info in AsyncRetrying(
-                retry=retry_if_exception_type((_RetryableHTTPStatusError, httpx.NetworkError, httpx.TimeoutException)),
-                stop=stop_after_attempt(max_retries + 1),
-                wait=_RetryWait(
-                    wait_exponential(
-                        multiplier=initial_delay,
-                        min=min(initial_delay, max_retry_time),
-                        max=max_retry_time,
-                    ),
-                    max_delay=max_retry_time,
-                ),
-                reraise=True
-            ):
-                with attempt_info:
-                    attempt += 1
-
-                    elapsed = time.perf_counter() - start_time
-                    if attempt > 1 and elapsed > max_retry_time:
-                        self.logger.warning(
-                            "Download retry timeout exceeded for %s after %.1fs",
-                            loggable_link(url),
-                            elapsed,
-                        )
-                        return None
-
-                    if attempt > 1:
-                        self.logger.info(
-                            "Retry attempt %d/%d for %s after %.1fs",
-                            attempt - 1,
-                            max_retries,
-                            loggable_link(url),
-                            elapsed,
-                        )
-
-                    async with (
-                        httpx.AsyncClient(timeout=httpx.Timeout(connect=connect_budget, read=connect_budget, write=connect_budget, pool=connect_budget)) as client,
-                        client.stream(
-                            "GET",
-                            request_url,
-                            headers=pin_headers or None,
-                            extensions=pin_extensions or None,
-                        ) as response,
-                    ):
-                        try:
-                            response.raise_for_status()
-                        except httpx.HTTPStatusError as exc:
-                            retryable, retry_after = _classify_retryable_http_error(exc)
-                            if retryable:
-                                raise _RetryableHTTPStatusError(exc, retry_after=retry_after) from exc
-                            raise
-
-                        mime_type = response.headers.get("content-type", "").split(";")[0].lower().strip()
-                        if mime_type == "image/jpg":
-                            mime_type = "image/jpeg"
-
-                        content_length = response.headers.get("content-length")
-                        if content_length:
-                            try:
-                                if int(content_length) > max_size_bytes:
-                                    self.logger.warning(
-                                        "Remote file %s exceeds configured limit based on Content-Length header "
-                                        "(%s bytes > %s bytes); aborting download.",
-                                        loggable_link(url),
-                                        content_length,
-                                        max_size_bytes,
-                                    )
-                                    if refused is not None:
-                                        refused[url] = "too_large"
-                                    return None
-                            except ValueError:
-                                pass
-
-                        payload = bytearray()
-                        async for chunk in response.aiter_bytes():
-                            if not chunk:
-                                continue
-                            projected_size = len(payload) + len(chunk)
-                            if projected_size > max_size_bytes:
-                                size_mb = projected_size / (1024 * 1024)
-                                self.logger.warning(
-                                    "Remote file %s exceeds configured limit "
-                                    "(%.1fMB > %dMB), aborting download.",
-                                    loggable_link(url),
-                                    size_mb,
-                                    effective_limit_mb,
-                                )
-                                if refused is not None:
-                                    refused[url] = "too_large"
-                                return None
-                            payload.extend(chunk)
-
-                    if attempt > 1:
-                        elapsed = time.perf_counter() - start_time
-                        self.logger.info(
-                            "Successfully downloaded %s after %d attempt(s) in %.1fs",
-                            loggable_link(url),
-                            attempt,
-                            elapsed,
-                        )
-
-                    return {
-                        "data": bytes(payload),
-                        "mime_type": mime_type,
-                        "url": url
-                    }
-
-        except Exception:
-            elapsed = time.perf_counter() - start_time
-            self.logger.exception(
-                "Failed to download %s after %d attempt(s) in %.1fs", loggable_link(url), attempt, elapsed
-            )
-            return None
-
     async def _download_remote_url_streaming(
         self,
         url: str,
@@ -999,6 +855,8 @@ class MultimodalHandler:
         mime_allowlist: set[str] | None = None,
         extra_headers: dict[str, str] | None = None,
         trusted_base_url: str | None = None,
+        seconds: float | None = None,
+        charge: Callable[[float], None] | None = None,
         refused: dict[str, str] | None = None,
     ) -> dict[str, Any] | None:
         url = (url or "").strip()
@@ -1020,7 +878,7 @@ class MultimodalHandler:
             self.logger.debug("Skipping the address policy for the admin's own base URL origin")
             request_url, pin_headers, pin_extensions = url, {}, {}
         else:
-            pinned = await self._prepare_pinned_request(url)
+            pinned = await self._prepare_pinned_request(url, seconds, charge)
             if pinned is None:
                 self.logger.error(
                     "Remote streaming download blocked by security policy (SSRF or HTTP disabled by default): %s",
@@ -1043,11 +901,7 @@ class MultimodalHandler:
             timeout_seconds = 60
         connect_budget = _seeded_connect_budget(timeout_seconds)
 
-        effective_max = (
-            max_size_bytes
-            if max_size_bytes is not None
-            else await self._get_effective_remote_file_limit_mb() * 1024 * 1024
-        )
+        effective_max = RECEIVE_ITEM_MAX_BYTES if max_size_bytes is None else max_size_bytes
 
         attempt = 0
         start_time = time.perf_counter()
@@ -1679,31 +1533,6 @@ class MultimodalHandler:
 
         return any(re.match(pattern, url, re.IGNORECASE) for pattern in patterns)
 
-    async def _get_effective_remote_file_limit_mb(self) -> int:
-        memo = _request_remote_limit_mb.get()
-        if memo:
-            return memo[0]
-        base_limit_mb = self.valves.REMOTE_FILE_MAX_SIZE_MB
-        rag_limit_mb = await _read_rag_file_max_size_mb()
-        if rag_limit_mb is None:
-            return base_limit_mb
-
-        if base_limit_mb > rag_limit_mb:
-            return self._remember_remote_limit_mb(memo, rag_limit_mb)
-
-        if (
-            base_limit_mb == _REMOTE_FILE_MAX_SIZE_DEFAULT_MB
-            and rag_limit_mb > base_limit_mb
-        ):
-            return self._remember_remote_limit_mb(memo, rag_limit_mb)
-        return self._remember_remote_limit_mb(memo, base_limit_mb)
-
-    @staticmethod
-    def _remember_remote_limit_mb(memo: list[int] | None, limit_mb: int) -> int:
-        if memo is not None and not memo:
-            memo.append(limit_mb)
-        return limit_mb
-
     @timed
     async def _fetch_image_as_data_url(self, url: str) -> str | None:
         url = (url or "").strip()
@@ -1955,9 +1784,6 @@ class MultimodalHandler:
 
             b64_data = split[1]
             measured = "".join(b64_data.split())
-
-            if not self._file_gateway.validate_base64_size(measured):
-                return None
 
             file_data = _decode_strict_base64(measured)
             if file_data is None:

@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from open_webui_openrouter_pipe.storage.receive_spool import RECEIVE_ITEM_MAX_BYTES
+
 from open_webui_openrouter_pipe.core.errors import RequiredInternalFileError
 from open_webui_openrouter_pipe.core.utils import (
     _safe_marker_body,
@@ -202,8 +204,6 @@ class TestResolveOwuiFilePath:
         from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
         pipe = MagicMock()
         pipe.valves.VIDEO_MAX_SIZE_MB = 500
-        pipe.valves.REMOTE_VIDEO_MAX_SIZE_MB = 500
-        pipe.valves.ALLOW_UNKNOWN_SIZE_CLOUD_READS = False
         pipe.logger = logging.getLogger("test")
         return VideoGenerationAdapter(pipe=pipe, logger=logging.getLogger("test"))
 
@@ -232,7 +232,7 @@ class TestResolveOwuiFilePath:
         assert mat.await_args is not None
         kwargs = mat.await_args.kwargs
         assert kwargs["user"] == SimpleNamespace(id="user_A")
-        assert kwargs["max_bytes"] == 500 * 1024 * 1024
+        assert kwargs["max_bytes"] == RECEIVE_ITEM_MAX_BYTES
         assert set(kwargs["allowed_suffixes"]) == set(_INPUT_DEMUXER)
 
     @pytest.mark.asyncio

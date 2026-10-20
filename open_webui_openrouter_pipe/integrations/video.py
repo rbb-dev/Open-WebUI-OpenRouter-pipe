@@ -88,6 +88,7 @@ from ..storage.owui_files import (
     is_temporary_chat,
     materialize_owui_file_to_temp,
 )
+from ..storage.receive_spool import RECEIVE_ITEM_MAX_BYTES
 from ..storage.video_persistence import VideoPersistence
 from .image_types import capability_declared_off, prompt_with_system, system_prompt_text
 from .media_relay import (
@@ -226,7 +227,7 @@ _CLIP_REFUSAL_CLAUSES = {
         "the pipe's own download policy refused the clip before any byte was sent "
         "(`ALLOW_INSECURE_HTTP` and `ENABLE_SSRF_PROTECTION`)"
     ),
-    "too_large": "the clip is over `REMOTE_VIDEO_MAX_SIZE_MB`",
+    "too_large": "the clip is past the pipe's per-item receive ceiling of 2048 MiB",
     "mime_not_allowed": "the clip's type is not in `VIDEO_OUTPUT_MIME_ALLOWLIST`",
 }
 
@@ -1692,7 +1693,7 @@ class VideoGenerationAdapter:
                         "Video job %s reported %d outputs; downloading the first %d",
                         job_id, reported, outputs,
                     )
-                max_bytes = int(valves.REMOTE_VIDEO_MAX_SIZE_MB) * 1024 * 1024
+                max_bytes = RECEIVE_ITEM_MAX_BYTES
                 allowed_mimes = _csv_set(valves.VIDEO_OUTPUT_MIME_ALLOWLIST)
                 await self._emit_status(event_emitter, "Downloading generated video...", done=False, progress=80)
                 bearer = client.bearer_header()
@@ -1762,6 +1763,7 @@ class VideoGenerationAdapter:
                 raise VideoGenerationError(
                     "Generated video could not be stored in Open WebUI; the upload failed."
                 )
+            refusals: list[str] = []
             for index, clip in enumerate(downloads):
                 suffix = "" if len(downloads) == 1 else f"-{index}"
                 stored = await self._pipe._file_gateway.upload_to_owui_storage_from_path(
@@ -1776,6 +1778,7 @@ class VideoGenerationAdapter:
                     chat_id=chat_id,
                     message_id=message_id,
                     owui_user_id=user_id,
+                    refusals=refusals,
                 )
                 if stored:
                     file_ids.append(stored)
@@ -1789,6 +1792,11 @@ class VideoGenerationAdapter:
                         len(downloads),
                         index,
                     )
+            if not file_ids and refusals:
+                raise VideoGenerationError(
+                    "Generated video was not stored: it is larger than Open WebUI's Max Upload "
+                    "Size (Admin Panel > Settings > Documents); its cost is recorded."
+                )
             if not file_ids:
                 raise VideoGenerationError(
                     "Generated video could not be stored in Open WebUI; the upload failed."
@@ -2828,7 +2836,7 @@ class VideoGenerationAdapter:
         if not raw:
             return []
         image_max = int(valves.VIDEO_FRAME_IMAGE_MAX_BYTES)
-        asset_max = int(getattr(valves, "REMOTE_VIDEO_MAX_SIZE_MB", 500)) * 1024 * 1024
+        asset_max = RECEIVE_ITEM_MAX_BYTES
         total_max = int(valves.VIDEO_FRAME_TOTAL_MAX_BYTES)
         relay_max = int(getattr(valves, "MEDIA_FILE_HOST_MAX_SIZE_MB", 200)) * 1024 * 1024
         chunk_size = int(getattr(valves, "IMAGE_UPLOAD_CHUNK_BYTES", 1024 * 1024))
@@ -4101,20 +4109,12 @@ class VideoGenerationAdapter:
             file_obj = await get_file_by_id(file_id, self._pipe.logger)
             if file_obj is None:
                 return None
-            max_bytes = (
-                    int(getattr(self._pipe.valves, "REMOTE_VIDEO_MAX_SIZE_MB", 500))
-                    * 1024
-                    * 1024
-                )
             try:
                 temp = await materialize_owui_file_to_temp(
                     file_obj,
                     user=user_obj,
                     logger=self._pipe.logger,
-                    max_bytes=max_bytes,
-                    allow_unknown_size=bool(
-                        getattr(self._pipe.valves, "ALLOW_UNKNOWN_SIZE_CLOUD_READS", False)
-                    ),
+                    max_bytes=RECEIVE_ITEM_MAX_BYTES,
                     allowed_suffixes=set(_INPUT_DEMUXER),
                 )
             except RequiredInternalFileError as exc:

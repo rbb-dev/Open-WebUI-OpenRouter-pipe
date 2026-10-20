@@ -7,11 +7,14 @@ import copy
 import functools
 import json
 import logging
+import os
 import random
 import re
+import tempfile
 import time
 import uuid
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -205,6 +208,7 @@ from ..storage.persistence import (
     generate_item_id,
     normalize_persisted_item,
 )
+from ..storage.receive_spool import PartRef
 from ..tools.citation_harvester import (
     BUILTIN_CITATION_TOOLS,
     UNCITED_TOOLS,
@@ -1049,8 +1053,34 @@ class StreamingHandler:
                     storage_context_cache = await self._pipe._file_gateway.resolve_storage_context(request_context, user_obj)
                 return storage_context_cache or (None, None)
 
+            def _read_picture_head(path: str) -> bytes:
+                with open(path, "rb") as picture_fh:
+                    return picture_fh.read(_SNIFF_PREFIX_BYTES)
+
             @timed
-            async def _persist_generated_image(data: bytes, mime_type: str) -> str | None:
+            async def _persist_generated_image_from_path(
+                source: Path, mime_type: str, refusals: list[str] | None = None
+            ) -> str | None:
+                upload_request, upload_user = await _get_storage_context()
+                if not upload_request or not upload_user:
+                    return None
+                filename = f"generated-image-{uuid.uuid4().hex}.{image_extension_for_mime(mime_type)}"
+                return await self._pipe._file_gateway.upload_to_owui_storage_from_path(
+                    request=upload_request,
+                    user=upload_user,
+                    source_path=source,
+                    filename=filename,
+                    mime_type=mime_type,
+                    chat_id=persist_chat_id if isinstance(persist_chat_id, str) else None,
+                    message_id=message_id if isinstance(message_id, str) else None,
+                    owui_user_id=user_id,
+                    refusals=refusals,
+                )
+
+            @timed
+            async def _persist_generated_image(
+                data: bytes, mime_type: str, refusals: list[str] | None = None
+            ) -> str | None:
                 upload_request, upload_user = await _get_storage_context()
                 if not upload_request or not upload_user:
                     return None
@@ -1064,6 +1094,7 @@ class StreamingHandler:
                     chat_id=persist_chat_id if isinstance(persist_chat_id, str) else None,
                     message_id=message_id if isinstance(message_id, str) else None,
                     owui_user_id=user_id,
+                    refusals=refusals,
                 )
 
             def _resolved_stored_mime(declared: str | None, decoded: bytes) -> str | None:
@@ -1094,32 +1125,49 @@ class StreamingHandler:
                 text = (data_str or "").strip()
                 if not text:
                     return None
+                refusals: list[str] = []
                 if text.startswith("data:"):
                     parsed = await asyncio.to_thread(self._pipe._multimodal_handler._parse_data_url, text)
                     if parsed:
                         mime_type = _resolved_stored_mime(parsed["mime_type"], parsed["data"])
                         if mime_type is None:
                             return None
-                        stored = await _persist_generated_image(parsed["data"], mime_type)
+                        stored = await _persist_generated_image(parsed["data"], mime_type, refusals)
                         if stored:
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
                             return f"/api/v1/files/{stored}/content"
+                        if refusals:
+                            skipped_image_reasons.append("max_upload_size")
+                            return None
                         return text
                     return None
                 if is_http_or_https_url(text):
-                    downloaded = await self._pipe._multimodal_handler._download_remote_url(
-                        text,
-                        seconds=address_budget.take(),
-                        charge=address_budget.charge,
-                    )
-                    if downloaded:
-                        mime_type = _resolved_stored_mime(downloaded["mime_type"], downloaded["data"])
-                        if mime_type is None:
-                            return None
-                        stored = await _persist_generated_image(downloaded["data"], mime_type)
-                        if stored:
-                            await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_REMOTE_SAVED, done=False)
-                            return f"/api/v1/files/{stored}/content"
+                    fd, fetch_name = tempfile.mkstemp(prefix="openrouter-imgrecv-")
+                    os.close(fd)
+                    try:
+                        fetched = await self._pipe._multimodal_handler._download_remote_url_streaming(
+                            text,
+                            Path(fetch_name),
+                            seconds=address_budget.take(),
+                            charge=address_budget.charge,
+                        )
+                        if fetched:
+                            head = await asyncio.to_thread(_read_picture_head, fetch_name)
+                            mime_type = _resolved_stored_mime(fetched.get("mime_type"), head)
+                            if mime_type is None:
+                                return None
+                            stored = await _persist_generated_image_from_path(
+                                Path(fetch_name), mime_type, refusals
+                            )
+                            if stored:
+                                await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_REMOTE_SAVED, done=False)
+                                return f"/api/v1/files/{stored}/content"
+                            if refusals:
+                                skipped_image_reasons.append("max_upload_size")
+                                return None
+                    finally:
+                        with contextlib.suppress(OSError):
+                            os.unlink(fetch_name)
                     with address_budget.address_check() as _recheck_seconds:
                         rechecks = await self._pipe._multimodal_handler._is_safe_url(
                             text,
@@ -1139,8 +1187,6 @@ class StreamingHandler:
                 cleaned = cleaned.strip()
                 if not cleaned:
                     return None
-                if not self._pipe._file_gateway.validate_base64_size(cleaned):
-                    return None
                 try:
                     decoded = await _decode_base64_in_quanta(cleaned)
                 except (binascii.Error, ValueError):
@@ -1148,21 +1194,50 @@ class StreamingHandler:
                 mime_type = _resolved_stored_mime(None, decoded)
                 if mime_type is None:
                     return None
-                stored = await _persist_generated_image(decoded, mime_type)
+                stored = await _persist_generated_image(decoded, mime_type, refusals)
                 if stored:
                     await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
                     return f"/api/v1/files/{stored}/content"
+                if refusals:
+                    skipped_image_reasons.append("max_upload_size")
+                    return None
                 return f"data:{mime_type};base64,{cleaned}"
 
             @timed
+            async def _materialize_part_ref(part: PartRef) -> str | None:
+                if part.over_guard:
+                    skipped_image_reasons.append("past_receive_ceiling")
+                    return None
+                if not part.exists():
+                    skipped_image_reasons.append("spool_unreadable")
+                    return None
+                head = await asyncio.to_thread(_read_picture_head, part.path)
+                mime_type = _resolved_stored_mime(part.mime, head)
+                if mime_type is None:
+                    return None
+                refusals: list[str] = []
+                stored = await _persist_generated_image_from_path(Path(part.path), mime_type, refusals)
+                if stored:
+                    await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
+                    return f"/api/v1/files/{stored}/content"
+                skipped_image_reasons.append("max_upload_size" if refusals else "not_stored")
+                return None
+
             async def _materialize_image_entry(entry: Any) -> str | None:
                 if entry is None:
                     return None
+                if isinstance(entry, PartRef):
+                    return await _materialize_part_ref(entry)
                 if isinstance(entry, str):
                     return await _materialize_image_from_str(entry)
                 if isinstance(entry, dict):
                     for key in ("url", "image_url", "imageUrl", "content_url"):
                         candidate = entry.get(key)
+                        if isinstance(candidate, PartRef):
+                            resolved = await _materialize_part_ref(candidate)
+                            if resolved:
+                                return resolved
+                            continue
                         if isinstance(candidate, str) and candidate.strip():
                             return await _materialize_image_from_str(candidate.strip())
                         if isinstance(candidate, dict):
@@ -1171,10 +1246,13 @@ class StreamingHandler:
                                 return nested
                     for key in ("b64_json", "b64", "base64", "data", "image_base64", "imageB64"):
                         b64_val = entry.get(key)
+                        if isinstance(b64_val, PartRef):
+                            resolved = await _materialize_part_ref(b64_val)
+                            if resolved:
+                                return resolved
+                            continue
                         if isinstance(b64_val, str) and b64_val.strip():
                             cleaned = b64_val.strip()
-                            if not self._pipe._file_gateway.validate_base64_size(cleaned):
-                                continue
                             try:
                                 decoded = await _decode_base64_in_quanta(cleaned)
                             except (binascii.Error, ValueError):
@@ -1238,7 +1316,23 @@ class StreamingHandler:
                     markdowns.append(f"![{alt_text}]({url})")
                 if skipped_image_reasons:
                     unchecked = skipped_image_reasons.count("unchecked")
-                    unfetched = len(skipped_image_reasons) - unchecked
+                    past_ceiling = skipped_image_reasons.count("past_receive_ceiling")
+                    refused = skipped_image_reasons.count("max_upload_size")
+                    not_stored = skipped_image_reasons.count("not_stored") + skipped_image_reasons.count(
+                        "spool_unreadable"
+                    )
+                    unfetched = len(skipped_image_reasons) - unchecked - past_ceiling - refused - not_stored
+                    for lost, notice in (
+                        (past_ceiling, StatusMessages.IMAGES_PAST_RECEIVE_CEILING),
+                        (refused, StatusMessages.IMAGES_REFUSED_BY_MAX_UPLOAD_SIZE),
+                        (not_stored, StatusMessages.IMAGES_NOT_STORED),
+                    ):
+                        if lost:
+                            named_gap = notice.format(count=lost)
+                            markdowns.append(f"_{named_gap}_")
+                            await self._pipe._event_emitter_handler._emit_status(
+                                event_emitter, named_gap, done=False
+                            )
                     if unfetched:
                         await self._pipe._event_emitter_handler._emit_status(
                             event_emitter,

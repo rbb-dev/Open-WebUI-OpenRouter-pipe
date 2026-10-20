@@ -240,7 +240,7 @@ async def test_cleartext_http_images_are_gated_however_the_scheme_is_typed(
     downloaded = AsyncMock(
         return_value={"data": b"\x89PNG", "mime_type": "image/png"}
     )
-    monkeypatch.setattr(pipe._multimodal_handler, "_download_remote_url", downloaded)
+    monkeypatch.setattr(pipe._multimodal_handler, "_download_remote_url_streaming", downloaded)
 
     url = f"{scheme}://{INSECURE_HOST}/a.png"
     images = _images(await _transform_block(pipe, _image_block(url)))
@@ -387,7 +387,7 @@ async def test_a_remote_video_url_is_ssrf_checked_however_the_scheme_is_typed(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "entry", ["_download_remote_url", "_download_remote_url_streaming"]
+    "entry", ["_download_remote_url_streaming"]
 )
 @pytest.mark.parametrize(
     ("url", "fetched"),
@@ -420,11 +420,8 @@ async def test_both_downloaders_admit_the_same_schemes(
 
     monkeypatch.setattr(pipe._multimodal_handler, "_prepare_pinned_request", _spy)
     call = getattr(pipe._multimodal_handler, entry)
-    if entry == "_download_remote_url_streaming":
-        with pytest.raises(RemoteDownloadRefused):
-            await call(url, tmp_path / "out.bin")
-    else:
-        assert await call(url) is None
+    with pytest.raises(RemoteDownloadRefused):
+        await call(url, tmp_path / "out.bin")
 
     assert reached == ([url] if fetched else []), (
         f"{entry}({url!r}) reached the pinned-request boundary: {reached!r}"
@@ -454,7 +451,7 @@ async def test_a_scheme_split_by_control_characters_still_reaches_the_gate(
     """
     pipe = _vision_pipe(pipe_instance_async)
     monkeypatch.setattr(
-        pipe._multimodal_handler, "_download_remote_url", AsyncMock(return_value=None)
+        pipe._multimodal_handler, "_download_remote_url_streaming", AsyncMock(return_value=None)
     )
     url = raw.format(host=INSECURE_HOST)
 

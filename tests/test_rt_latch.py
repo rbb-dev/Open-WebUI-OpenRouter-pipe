@@ -77,7 +77,7 @@ async def test_distinct_image_sizes_each_add_a_permanent_latch_entry(monkeypatch
     monkeypatch.setattr(vm, "probe_video", _probe)
 
     valves = SimpleNamespace(
-        VIDEO_FRAME_IMAGE_MAX_BYTES=1 << 20, REMOTE_VIDEO_MAX_SIZE_MB=1,
+        VIDEO_FRAME_IMAGE_MAX_BYTES=1 << 20,
         VIDEO_FRAME_TOTAL_MAX_BYTES=1 << 20, IMAGE_UPLOAD_CHUNK_BYTES=1024,
         VIDEO_FRAME_IMAGE_MIME_ALLOWLIST="image/png,image/jpeg",
         SEND_MEDIA_VIA_FILE_HOST=True,

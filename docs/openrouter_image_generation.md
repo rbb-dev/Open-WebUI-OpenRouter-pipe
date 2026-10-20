@@ -1466,16 +1466,18 @@ saved to Open WebUI's file store and shown inline, exactly as one from
 a dedicated image model is; a picture that arrives on the dedicated
 image route is stored and delivered the same way, and every rule below
 that says where a picture is kept says which of the two routes it is
-about. Anything larger
-than `BASE64_MAX_SIZE_MB` is rejected rather than stored, and the same
+about. A picture past the pipe's fixed 2 GiB per-item receive ceiling is
+refused with a message naming the ceiling rather than stored, and the same
 now holds of a tool's picture, which is left out of its round and named on
-the turn whose round carries it. An entry in a generated-image reply that is
-not a picture is refused as such and does not count against that reply's
-ceiling, so a bad entry cannot displace a good one, and every entry is named
-for what it is — over the ceiling or not a picture — whatever the limit is
-set to. The reply that carries the pictures is itself read only up to a size
-derived from the same limit, on the plain and the streamed form of the request
-alike; see [The reply was too large to read](#the-reply-was-too-large-to-read). A blob that is not a picture is not stored
+the turn whose round carries it. A picture larger than the Open WebUI
+admin's Max Upload Size (Admin Panel > Settings > Documents), which Open
+WebUI's own upload handler applies to every stored file, is not stored
+either: the reply names it with that setting, so the admin can raise it,
+and the reply's cost is recorded. An entry in a generated-image reply that is
+not a picture is refused as such, and every entry is named
+for what it is — over the ceiling or not a picture. The reply that carries
+the pictures is always read to its end, on the plain and the streamed form of
+the request alike; see [The reply was too large to read](#the-reply-was-too-large-to-read). A blob that is not a picture is not stored
 either: the type written into the file name and the file's `content_type`
 is resolved from the bytes wherever the bytes identify themselves, the
 declaration decides only where they say nothing and the head could still be
@@ -1501,11 +1503,19 @@ The rendered message looks like:
 ![Generated image](/api/v1/files/01HX2K3D5N4P9F8GZQ2WV3R5BC/content)
 ```
 
-and, on the chat route, where the store did not succeed, like this:
+and, on the chat route, where a picture small enough to arrive inside an
+ordinary reply event (under 1 MiB) could not be stored, like this:
 
 ```markdown
 ![Generated image](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...)
 ```
+
+A larger picture, received to disk as it arrives, is never written into
+the reply as base64: when Open WebUI's storage refuses or fails it, the
+reply names the gap in its place, naming the Max Upload Size setting when
+that limit refused it, and the reply's cost is recorded. A picture
+fetched from a link that the Max Upload Size refuses is named the same
+way rather than published as the provider's link.
 
 A reply with more than one image numbers them in the order they are
 shown, consecutively from 1:
@@ -1596,7 +1606,7 @@ Related (existing) valves:
 | Valve | Default | Purpose |
 |-------|---------|---------|
 | `MODEL_CATALOG_REFRESH_SECONDS` | `3600` | TTL governing how often the image catalog is re-fetched from `/api/v1/models?output_modalities=image`. A change of `API_KEY` refetches immediately rather than waiting the window out: both the model-list clock and the contract-sweep clock are stamped with the credential that asked, so the new account is never answered from the previous one's state, and the same account inside the window still reads from cache. |
-| `BASE64_MAX_SIZE_MB` | (multimodal section) | Cap on decoded image size before file persistence. |
+| `BASE64_MAX_SIZE_MB` | (multimodal section) | Send-side cap on inline payloads; received images are bounded by the fixed 2 GiB per-item receive ceiling instead. |
 
 Tuning hints:
 
@@ -1770,26 +1780,20 @@ is nothing to salvage, and the failure surfaces as what it is.
 
 ### The reply was too large to read
 
-The answer says OpenRouter generated and billed the image, but the reply was
-more than some number of MB and was not read. The pipe reads the reply of an
-image generation only up to a size it derives from `BASE64_MAX_SIZE_MB`: that
-limit written as base64, which is a third larger than the picture itself, for
-each picture the request asked for, plus 8 MB for the rest of the reply. At the
-default 50 MB and one picture that is 74.67 MB. A reply past it is refused as it
-is read, whether or not OpenRouter announced its size first, and the pipe closes
-the connection without reading the rest. On the streamed form of the request
-(the previews described under [The picture appeared in
-stages](#the-picture-appeared-in-stages-or-the-status-line-kept-moving)) the same
-bound applies to each event of the stream: previews and the stream's total
-length are not limited, and a finished picture past the bound is refused the
-same way. The image has by then been generated and billed, but the pipe holds no
-picture from it and no usage figures for it, so nothing is delivered and the
-generation's cost is not recorded.
+The pipe lost the reply while reading it, most often because the connection to
+OpenRouter broke partway. The pipe reads the whole reply of an image generation
+either way: the reply is received in bounded chunks and each picture in it is
+streamed to disk as it arrives, behind a fixed 2 GiB per-item receive ceiling, so
+a large picture is not refused for its size and the reply is always read to its
+end. A picture past that ceiling is refused with a message naming it, after the
+reply's usage has been recorded; everything else in the reply is unaffected.
 
-Raise `BASE64_MAX_SIZE_MB`, ask for fewer images in one request, or ask for a
-smaller picture. A reply the per-picture limit alone would have refused still
-arrives as before when it is inside the bound: the pictures that fit are
-delivered and the rest are named in the answer.
+If the connection itself dropped before the finished image arrived, the image
+has by then been generated and billed, but the pipe holds no picture from it and
+no usage figures for it, so nothing is delivered and the generation's cost is not
+recorded.
+
+Ask for fewer images in one request, or ask for a smaller picture, and try again.
 
 ### Image generation succeeds but no image renders inline
 
@@ -1797,9 +1801,9 @@ Check:
 
 - The OpenRouter response has `message.images` populated (not an
   empty list).
-- `BASE64_MAX_SIZE_MB` is large enough — if the decoded image
-  exceeds it, persistence fails silently and the markdown contains a
-  broken file reference.
+- The image made it through the pipe's 2 GiB per-item receive
+  ceiling — a larger one is refused with a message naming the ceiling
+  rather than stored.
 - The pipe has filesystem write access to its temp dir and OWUI
   storage (Local/S3/GCS/Azure) is healthy.
 - Check the pipe logs for storage errors.

@@ -80,6 +80,7 @@ class NonStreamingAdapter:
         transient_retry: bool = True,
         task_request: bool = False,
         event_emitter: Any = None,
+        receive_spool: Any = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         effective_valves = valves or self._pipe.valves
         model_id = (responses_request_body or {}).get("model") or ""
@@ -133,6 +134,7 @@ class NonStreamingAdapter:
                 transient_retry=transient_retry,
                 files_inlined=True,
                 charge_holder=responses_charge,
+                receive_spool=receive_spool,
             )
             output_items = response.get("output") if isinstance(response, dict) else None
             if isinstance(output_items, list):
@@ -178,6 +180,7 @@ class NonStreamingAdapter:
                 transient_retry=transient_retry,
                 files_inlined=True,
                 event_emitter=event_emitter,
+                receive_spool=receive_spool,
             )
             choices = chat_response.get("choices") if isinstance(chat_response, dict) else None
             message = None

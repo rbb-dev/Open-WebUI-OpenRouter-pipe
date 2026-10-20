@@ -1558,7 +1558,7 @@ pipe cannot declare, a file over the cap, an empty file, or the turn's
 upload budget already spent — because it would refuse the same file for
 the same reason. The refusal is reported once and no second host is
 announced for an attempt that never begins.
-`REMOTE_VIDEO_MAX_SIZE_MB` bounds only the finished video coming back, not
+The pipe's fixed 2 GiB per-item receive ceiling bounds only the finished video coming back, not
 anything you attach — and the read-back that reuses a frame from a clip
 this pipe generated is bounded by it too, so the valve that admits a clip
 is the one that reads it. A request carries at most 16 references, and a
@@ -2027,14 +2027,14 @@ download step reports why it refused, and the card repeats that reason:
 ### Video generation failed
 
 None of the 3 clips this job delivered could be fetched: the clip is
-over `REMOTE_VIDEO_MAX_SIZE_MB`.
+over the pipe's per-item receive ceiling.
 ```
 
 - **`blocked_by_policy`** — the pipe's own download policy refused the
   clip before any byte was sent, and the card names
   `ALLOW_INSECURE_HTTP` and `ENABLE_SSRF_PROTECTION` as the two valves
   behind that decision.
-- **`too_large`** — the clip is over `REMOTE_VIDEO_MAX_SIZE_MB`.
+- **`too_large`** — the clip is over the pipe's per-item receive ceiling of 2 GiB.
 - **`mime_not_allowed`** — the clip's type is not in
   `VIDEO_OUTPUT_MIME_ALLOWLIST`.
 - **`http_error`** — the request went out and OpenRouter answered with
@@ -2385,7 +2385,6 @@ Functions → OpenRouter pipe → Valves; the per-model filter ones live on each
 | `VIDEO_POLL_INTERVAL_MAX_SECONDS` | `20.0` | 1.0–120.0 | Cap on the polling interval after backoff. |
 | `VIDEO_MAX_POLL_TIME_SECONDS` | `1800` | 30–7200 | Max time a job may go silent — reset by every status check that reports the job still running. On expiry the card is persisted as still running, not failed. Floored at `VIDEO_POLL_INTERVAL_MAX_SECONDS` + the HTTP read timeout. |
 | `VIDEO_STATUS_POLL_MAX_ERRORS` | `5` | 1–25 | Tolerable consecutive status-endpoint failures or error answers, and (as a multiple of this value) such failures in total across one watch, before the pipe stops polling; the job is not failed. A fault of the pipe's own code is not counted and is not retried. |
-| `REMOTE_VIDEO_MAX_SIZE_MB` | `500` | 1–2048 | Max downloaded video size; oversized aborts streaming. Bounds the generated video only, never an attachment — and bounds the read-back that reuses a frame from a stored generated clip. |
 | `VIDEO_DOWNLOAD_CHUNK_SIZE` | `1048576` | 65536–8388608 | Chunk size in bytes for streaming download. |
 | `MAX_CONCURRENT_VIDEO_GENS` | `2` | 1–100 | Global concurrency cap per pipe process. Applies on the next generation, with no restart; a lower value binds from that moment and jobs already running finish first. |
 | `MAX_CONCURRENT_VIDEO_GENS_PER_USER` | `2` | 1–25 | Per-user concurrency cap. |
@@ -2423,8 +2422,7 @@ Tuning hints:
   that keeps reporting progress runs to completion at any length.
 - **Slow networks** to OpenRouter: bump `VIDEO_POLL_INTERVAL_MAX_SECONDS`
   to reduce poll storm.
-- **Smaller storage budgets**: lower `REMOTE_VIDEO_MAX_SIZE_MB` to
-  reject an oversized generated video before it hits your file backend.
+- **Smaller storage budgets**: the per-item receive ceiling is fixed, so an oversized generated video is refused with a message that names the ceiling, before it reaches the file backend.
   To bound what users send *out*, lower `MEDIA_FILE_HOST_MAX_SIZE_MB`.
 
 ---

@@ -101,6 +101,7 @@ from .storage.persistence import (
     _RedisClient,
     _valve_column_decode_verdict,
 )
+from .storage.receive_spool import ReceiveSpool
 from .storage.redis_client import build_redis_client, parse_redis_target
 
 try:
@@ -4781,18 +4782,23 @@ class Pipe:
         files_inlined: bool = False,
         charge_holder: _FailureCharge | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        async for event in self._ensure_responses_adapter().send_openai_responses_streaming_request(
-            session, request_body, api_key, base_url, valves=valves, workers=workers,
-            breaker_key=breaker_key, delta_char_limit=delta_char_limit, idle_flush_ms=idle_flush_ms,
-            nagle_min_chars=nagle_min_chars,
-            chunk_queue_maxsize=chunk_queue_maxsize, chunk_queue_warn_size=chunk_queue_warn_size,
-            event_queue_maxsize=event_queue_maxsize, event_queue_warn_size=event_queue_warn_size,
-            user=user,
-            owui_chat_id=owui_chat_id,
-            files_inlined=files_inlined,
-            charge_holder=charge_holder,
-        ):
-            yield event
+        receive_spool = ReceiveSpool()
+        try:
+            async for event in self._ensure_responses_adapter().send_openai_responses_streaming_request(
+                session, request_body, api_key, base_url, valves=valves, workers=workers,
+                breaker_key=breaker_key, delta_char_limit=delta_char_limit, idle_flush_ms=idle_flush_ms,
+                nagle_min_chars=nagle_min_chars,
+                chunk_queue_maxsize=chunk_queue_maxsize, chunk_queue_warn_size=chunk_queue_warn_size,
+                event_queue_maxsize=event_queue_maxsize, event_queue_warn_size=event_queue_warn_size,
+                user=user,
+                owui_chat_id=owui_chat_id,
+                files_inlined=files_inlined,
+                charge_holder=charge_holder,
+                receive_spool=receive_spool,
+            ):
+                yield event
+        finally:
+            receive_spool.close()
 
     async def send_openai_chat_completions_streaming_request(
         self,
@@ -4808,14 +4814,19 @@ class Pipe:
         files_inlined: bool = False,
         event_emitter: Any = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        async for event in self._ensure_chat_completions_adapter().send_openai_chat_completions_streaming_request(
-            session, responses_request_body, api_key, base_url, valves=valves, breaker_key=breaker_key,
-            user=user,
-            owui_chat_id=owui_chat_id,
-            files_inlined=files_inlined,
-            event_emitter=event_emitter,
-        ):
-            yield event
+        receive_spool = ReceiveSpool()
+        try:
+            async for event in self._ensure_chat_completions_adapter().send_openai_chat_completions_streaming_request(
+                session, responses_request_body, api_key, base_url, valves=valves, breaker_key=breaker_key,
+                user=user,
+                owui_chat_id=owui_chat_id,
+                files_inlined=files_inlined,
+                event_emitter=event_emitter,
+                receive_spool=receive_spool,
+            ):
+                yield event
+        finally:
+            receive_spool.close()
 
     async def send_openai_chat_completions_nonstreaming_request(
         self,
@@ -4831,7 +4842,17 @@ class Pipe:
         transient_retry: bool = True,
         files_inlined: bool = False,
         event_emitter: Any = None,
+        receive_spool: ReceiveSpool | None = None,
     ) -> dict[str, Any]:
+        if receive_spool is None:
+            return await self._ensure_chat_completions_adapter().send_openai_chat_completions_nonstreaming_request(
+                session, responses_request_body, api_key, base_url, valves=valves, breaker_key=breaker_key,
+                user=user,
+                owui_chat_id=owui_chat_id,
+                transient_retry=transient_retry,
+                files_inlined=files_inlined,
+                event_emitter=event_emitter,
+            )
         return await self._ensure_chat_completions_adapter().send_openai_chat_completions_nonstreaming_request(
             session, responses_request_body, api_key, base_url, valves=valves, breaker_key=breaker_key,
             user=user,
@@ -4839,6 +4860,7 @@ class Pipe:
             transient_retry=transient_retry,
             files_inlined=files_inlined,
             event_emitter=event_emitter,
+            receive_spool=receive_spool,
         )
 
     async def send_openrouter_nonstreaming_request_as_events(
@@ -4857,21 +4879,26 @@ class Pipe:
         task_request: bool = False,
         event_emitter: Any = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        async for event in self._ensure_nonstreaming_adapter().send_openrouter_nonstreaming_request_as_events(
-            session,
-            responses_request_body,
-            api_key,
-            base_url,
-            valves=valves,
-            endpoint_override=endpoint_override,
-            breaker_key=breaker_key,
-            user=user,
-            owui_chat_id=owui_chat_id,
-            transient_retry=transient_retry,
-            task_request=task_request,
-            event_emitter=event_emitter,
-        ):
-            yield event
+        receive_spool = ReceiveSpool()
+        try:
+            async for event in self._ensure_nonstreaming_adapter().send_openrouter_nonstreaming_request_as_events(
+                session,
+                responses_request_body,
+                api_key,
+                base_url,
+                valves=valves,
+                endpoint_override=endpoint_override,
+                breaker_key=breaker_key,
+                user=user,
+                owui_chat_id=owui_chat_id,
+                transient_retry=transient_retry,
+                task_request=task_request,
+                event_emitter=event_emitter,
+                receive_spool=receive_spool,
+            ):
+                yield event
+        finally:
+            receive_spool.close()
 
     async def send_openrouter_streaming_request(
         self,
@@ -4895,18 +4922,23 @@ class Pipe:
         user: Any = None,
         owui_chat_id: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        async for event in self._ensure_chat_completions_adapter().send_openrouter_streaming_request(
-            session, responses_request_body, api_key, base_url, valves=valves,
-            endpoint_override=endpoint_override, workers=workers, breaker_key=breaker_key,
-            delta_char_limit=delta_char_limit, idle_flush_ms=idle_flush_ms,
-            nagle_min_chars=nagle_min_chars,
-            chunk_queue_maxsize=chunk_queue_maxsize, chunk_queue_warn_size=chunk_queue_warn_size,
-            event_queue_maxsize=event_queue_maxsize, event_queue_warn_size=event_queue_warn_size,
-            user=user,
-            owui_chat_id=owui_chat_id,
-            event_emitter=event_emitter,
-        ):
-            yield event
+        receive_spool = ReceiveSpool()
+        try:
+            async for event in self._ensure_chat_completions_adapter().send_openrouter_streaming_request(
+                session, responses_request_body, api_key, base_url, valves=valves,
+                endpoint_override=endpoint_override, workers=workers, breaker_key=breaker_key,
+                delta_char_limit=delta_char_limit, idle_flush_ms=idle_flush_ms,
+                nagle_min_chars=nagle_min_chars,
+                chunk_queue_maxsize=chunk_queue_maxsize, chunk_queue_warn_size=chunk_queue_warn_size,
+                event_queue_maxsize=event_queue_maxsize, event_queue_warn_size=event_queue_warn_size,
+                user=user,
+                owui_chat_id=owui_chat_id,
+                event_emitter=event_emitter,
+                receive_spool=receive_spool,
+            ):
+                yield event
+        finally:
+            receive_spool.close()
 
     async def _terminal_files_shown_inline(self, user: Any) -> bool:
         settings = user.get("settings") if isinstance(user, dict) else None
@@ -5461,6 +5493,7 @@ class Pipe:
         transient_retry: bool = True,
         files_inlined: bool = False,
         charge_holder: _FailureCharge | None = None,
+        receive_spool: ReceiveSpool | None = None,
     ) -> dict[str, Any]:
         return await self._ensure_responses_adapter().send_openai_responses_nonstreaming_request(
             session, request_body, api_key, base_url, valves=valves, breaker_key=breaker_key,
@@ -5469,6 +5502,7 @@ class Pipe:
             transient_retry=transient_retry,
             files_inlined=files_inlined,
             charge_holder=charge_holder,
+            receive_spool=receive_spool,
         )
 
 

@@ -21,7 +21,12 @@ from ..core.error_formatter import (
     _api_caller_error_response,
     _unreadable_body_failure_response,
 )
-from ..core.errors import OpenRouterAPIError, UpstreamBodyUnreadable, is_sign_in_failure
+from ..core.errors import (
+    OpenRouterAPIError,
+    StatusMessages,
+    UpstreamBodyUnreadable,
+    is_sign_in_failure,
+)
 from ..core.logging_system import SessionLogger
 from ..core.utils import clamp_text, summarise_names
 from ..core.warn_latch import warn_level
@@ -37,6 +42,7 @@ from ..storage.multimodal import (
     ADDRESS_CHECK_SECONDS,
     _address_verdict,
 )
+from ..storage.receive_spool import RECEIVE_ITEM_MAX_BYTES, ReceiveSpool
 from .image_client import OpenRouterImageClient
 from .image_types import (
     SCHEMA_ENUMS,
@@ -95,23 +101,16 @@ def _label_for_generated_image(shown: int, total: int) -> str:
     return "Generated image" if total == 1 else f"Generated image {shown}"
 
 
-def _rejected_image_note(result: ImageGenerationResult, ceiling_mb: int) -> str:
+def _rejected_image_note(result: ImageGenerationResult) -> str:
     unreadable = len(result.rejected)
     over = result.over_ceiling
-    on_its_own = result.over_ceiling_own
     total = len(result.images) + unreadable
-    limit = megabytes(ceiling_mb * 1024 * 1024)
     size_clause = ""
     if over:
-        own_phrase = ""
-        if on_its_own == 1:
-            own_phrase = f" ({on_its_own} of the {unreadable} on its own)"
-        elif on_its_own:
-            own_phrase = f" ({on_its_own} of the {unreadable} on their own)"
         size_clause = (
-            f" {over} of the {unreadable} pushed the reply past the {limit} size limit "
-            f"this deployment applies to one generated-image reply{own_phrase}: raise "
-            "that limit, ask for fewer images, or ask for a smaller picture."
+            f" {over} of the {unreadable} were past the pipe's per-item receive ceiling of "
+            f"{megabytes(RECEIVE_ITEM_MAX_BYTES)} and were not kept; everything else in the "
+            "reply was received and its cost is recorded."
         )
     return (
         f"_{unreadable} of {total} generated image(s) arrived in a form the pipe could "
@@ -1100,6 +1099,7 @@ class ImageGenerationAdapter:
         user_obj: Any,
         metadata: dict[str, Any] | None,
         requester_id: str,
+        refusals: list[str] | None = None,
     ) -> str | None:
         meta = metadata if isinstance(metadata, dict) else {}
         upload_request, upload_user = await self._pipe._file_gateway.resolve_storage_context(
@@ -1108,17 +1108,30 @@ class ImageGenerationAdapter:
         if not upload_request or not upload_user:
             return None
         fusion_inner = bool((meta.get(_PIPE_METADATA_KEY) or {}).get("fusion_inner"))
-        file_id = await self._pipe._file_gateway.upload_to_owui_storage(
+        filename = f"generated-image-{uuid.uuid4().hex}.{image.extension}"
+        if image.source_path is not None:
+            return await self._pipe._file_gateway.upload_to_owui_storage_from_path(
+                request=upload_request,
+                user=upload_user,
+                source_path=image.source_path,
+                filename=filename,
+                mime_type=image.mime_type,
+                chat_id=None if fusion_inner else meta.get("chat_id"),
+                message_id=meta.get("message_id"),
+                owui_user_id=requester_id or None,
+                refusals=refusals,
+            )
+        return await self._pipe._file_gateway.upload_to_owui_storage(
             request=upload_request,
             user=upload_user,
             file_data=image.data,
-            filename=f"generated-image-{uuid.uuid4().hex}.{image.extension}",
+            filename=filename,
             mime_type=image.mime_type,
             chat_id=None if fusion_inner else meta.get("chat_id"),
             message_id=meta.get("message_id"),
             owui_user_id=requester_id or None,
+            refusals=refusals,
         )
-        return file_id
 
     def _final_status(self, *, elapsed: float, usage: dict[str, Any], valves: Any) -> str:
         try:
@@ -1474,39 +1487,49 @@ class ImageGenerationAdapter:
 
         started_at = time.monotonic()
         client = self._client(session, valves, user=user_obj, owui_chat_id=chat_id)
-        outcome["sent"] = True
-        result: ImageGenerationResult = await client.generate(
-            payload,
-            max_decoded_bytes=int(getattr(valves, "BASE64_MAX_SIZE_MB", 0) or 0) * 1024 * 1024,
-            on_progress=self._status_reporter(event_emitter),
-        )
-
-        outcome["usage"] = result.usage
-        outcome["costed"] = True
-        await asyncio.shield(
-            self._record_cost(
-                valves, result.usage, user=user, metadata=metadata, user_obj=user_obj,
-                api_model_id=api_model_id,
+        spool = ReceiveSpool()
+        try:
+            outcome["sent"] = True
+            result: ImageGenerationResult = await client.generate(
+                payload,
+                spool=spool,
+                on_progress=self._status_reporter(event_emitter),
             )
-        )
 
-        snippets: list[str] = []
-        unsaved = 0
-        shown = 0
-        for image in result.images:
-            file_id = await self._persist(
-                image,
-                request=request,
-                user_obj=user_obj,
-                metadata=metadata,
-                requester_id=self._requester_id(user, metadata),
+            outcome["usage"] = result.usage
+            outcome["costed"] = True
+            await asyncio.shield(
+                self._record_cost(
+                    valves, result.usage, user=user, metadata=metadata, user_obj=user_obj,
+                    api_model_id=api_model_id,
+                )
             )
-            if not file_id:
-                unsaved += 1
-                continue
-            shown += 1
-            label = _label_for_generated_image(shown, len(result.images))
-            snippets.append(f"![{label}](/api/v1/files/{file_id}/content)")
+
+            snippets: list[str] = []
+            unsaved = 0
+            refused = 0
+            shown = 0
+            for image in result.images:
+                refusals: list[str] = []
+                file_id = await self._persist(
+                    image,
+                    request=request,
+                    user_obj=user_obj,
+                    metadata=metadata,
+                    requester_id=self._requester_id(user, metadata),
+                    refusals=refusals,
+                )
+                if not file_id:
+                    if refusals:
+                        refused += 1
+                    else:
+                        unsaved += 1
+                    continue
+                shown += 1
+                label = _label_for_generated_image(shown, len(result.images))
+                snippets.append(f"![{label}](/api/v1/files/{file_id}/content)")
+        finally:
+            spool.close()
         if result.rejected:
             self._logger.warning(
                 "%d generated image(s) for %r were discarded before storage: %s",
@@ -1522,13 +1545,13 @@ class ImageGenerationAdapter:
                 api_model_id,
             )
         if result.rejected and snippets:
-            snippets.append(
-                _rejected_image_note(
-                    result, int(getattr(valves, "BASE64_MAX_SIZE_MB", 0) or 0)
-                )
-            )
+            snippets.append(_rejected_image_note(result))
         if unsaved and snippets:
             snippets.append(f"_{unsaved} generated image(s) could not be saved to storage._")
+        if refused and snippets:
+            snippets.append(
+                f"_{StatusMessages.IMAGES_REFUSED_BY_MAX_UPLOAD_SIZE.format(count=refused)}_"
+            )
         if result.warning and snippets:
             snippets.append(f"_{result.warning}_")
 
@@ -1537,7 +1560,10 @@ class ImageGenerationAdapter:
             outcome["reported"] = True
             await self._report_generation(result.usage, "failed", metadata)
             return await self._emit_failure(
-                event_emitter, "The generated image could not be saved to Open WebUI storage."
+                event_emitter,
+                StatusMessages.IMAGES_REFUSED_BY_MAX_UPLOAD_SIZE.format(count=refused)
+                if refused
+                else "The generated image could not be saved to Open WebUI storage.",
             )
 
         content = "\n\n".join(snippets)
