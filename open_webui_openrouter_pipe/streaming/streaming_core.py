@@ -1051,8 +1051,6 @@ class StreamingHandler:
 
             @timed
             async def _persist_generated_image(data: bytes, mime_type: str) -> str | None:
-                if not is_linkable_chat(chat_id):
-                    return None
                 upload_request, upload_user = await _get_storage_context()
                 if not upload_request or not upload_user:
                     return None
@@ -1109,20 +1107,6 @@ class StreamingHandler:
                         return text
                     return None
                 if is_http_or_https_url(text):
-                    if not is_linkable_chat(chat_id):
-                        with address_budget.address_check() as _unlinkable_seconds:
-                            unlinkable_verdict = await self._pipe._multimodal_handler._is_safe_url(
-                                text,
-                                seconds=_unlinkable_seconds,
-                            )
-                        if unlinkable_verdict is not True:
-                            skipped_image_reasons.append(
-                                "unlinkable_chat_unchecked"
-                                if unlinkable_verdict is None
-                                else "unlinkable_chat_unvetted"
-                            )
-                            return None
-                        return text
                     downloaded = await self._pipe._multimodal_handler._download_remote_url(
                         text,
                         seconds=address_budget.take(),
@@ -1253,7 +1237,7 @@ class StreamingHandler:
                     alt_text = re.sub(r"[\r\n]+", " ", str(label)).strip() or f"Generated image {generated_image_count}"
                     markdowns.append(f"![{alt_text}]({url})")
                 if skipped_image_reasons:
-                    unchecked = skipped_image_reasons.count("unchecked") + skipped_image_reasons.count("unlinkable_chat_unchecked")
+                    unchecked = skipped_image_reasons.count("unchecked")
                     unfetched = len(skipped_image_reasons) - unchecked
                     if unfetched:
                         await self._pipe._event_emitter_handler._emit_status(

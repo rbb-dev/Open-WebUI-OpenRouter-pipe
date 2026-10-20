@@ -7505,7 +7505,7 @@ class TestStreamingCoreAdditionalCoverage:
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
 
-        async def _fake_download(self, url):
+        async def _fake_download(self, url, **_kwargs):
             return None
 
         monkeypatch.setattr(

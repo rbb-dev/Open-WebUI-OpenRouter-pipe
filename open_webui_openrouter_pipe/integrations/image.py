@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
 import time
 import uuid
@@ -38,7 +37,6 @@ from ..storage.multimodal import (
     ADDRESS_CHECK_SECONDS,
     _address_verdict,
 )
-from ..storage.owui_files import is_linkable_chat
 from .image_client import OpenRouterImageClient
 from .image_types import (
     SCHEMA_ENUMS,
@@ -95,14 +93,6 @@ def _image_family(where: str) -> str:
 
 def _label_for_generated_image(shown: int, total: int) -> str:
     return "Generated image" if total == 1 else f"Generated image {shown}"
-
-
-def _chat_cannot_hold_a_link(chat_id: Any) -> bool:
-    return (
-        isinstance(chat_id, str)
-        and bool(chat_id.strip())
-        and not is_linkable_chat(chat_id)
-    )
 
 
 def _rejected_image_note(result: ImageGenerationResult, ceiling_mb: int) -> str:
@@ -1112,8 +1102,6 @@ class ImageGenerationAdapter:
         requester_id: str,
     ) -> str | None:
         meta = metadata if isinstance(metadata, dict) else {}
-        if _chat_cannot_hold_a_link(meta.get("chat_id")):
-            return None
         upload_request, upload_user = await self._pipe._file_gateway.resolve_storage_context(
             request, user_obj
         )
@@ -1514,18 +1502,7 @@ class ImageGenerationAdapter:
                 requester_id=self._requester_id(user, metadata),
             )
             if not file_id:
-                inline = (
-                    None
-                    if not _chat_cannot_hold_a_link(meta.get("chat_id"))
-                    else f"data:{image.mime_type};base64,"
-                    f"{base64.b64encode(image.data).decode('ascii')}"
-                )
-                if inline is None:
-                    unsaved += 1
-                    continue
-                shown += 1
-                label = _label_for_generated_image(shown, len(result.images))
-                snippets.append(f"![{label}]({inline})")
+                unsaved += 1
                 continue
             shown += 1
             label = _label_for_generated_image(shown, len(result.images))
