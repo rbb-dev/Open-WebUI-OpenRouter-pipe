@@ -2238,6 +2238,36 @@ def test_per_load_remnants_are_copied_then_dropped(pipe_instance, pipe_id):
         ], rows
 
 
+def test_a_pipe_id_longer_than_the_identifier_limit_still_gets_its_tables(pipe_instance):
+    import sqlalchemy
+
+    engine = create_engine("sqlite://")
+    engine.dialect.max_identifier_length = 63
+    long_id = "openrouter_responses_manifold_pipe_development"
+    store = pipe_instance._artifact_store
+    store.id = long_id
+    with _install_internal_db(engine):
+        store._artifact_store_signature = None
+        store._init_artifact_store()
+        assert store._item_model is not None
+        long_name = store._artifact_table_name
+        assert long_name in sqlalchemy.inspect(engine).get_table_names()
+        assert len(long_name) <= 63
+        assert (
+            f"response_items_{store.table_suffix('open_webui_openrouter_pipe')}"
+            == "response_items_open_webui_openrouter_pipe_2653b5fd"
+        )
+
+        usage_store = pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard.usage_store")
+        usage = usage_store.UsageStore()
+        assert usage.ensure(store)
+        assert usage._table_name in sqlalchemy.inspect(engine).get_table_names()
+
+        for name in sqlalchemy.inspect(engine).get_table_names():
+            if name.startswith(("response_items_", "dashboard_")):
+                assert len(name) <= 63, name
+
+
 def test_a_per_load_table_the_current_key_cannot_read_is_left_alone(pipe_instance):
     import sqlalchemy
 

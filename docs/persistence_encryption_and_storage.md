@@ -65,7 +65,7 @@ On subsequent turns, the pipe scans prior assistant messages for marker lines, f
 ### Table naming
 The pipe stores artifacts in a per-pipe SQL table whose name includes:
 
-- a sanitized fragment derived from the pipe/function ID, and
+- a sanitized fragment derived from the pipe/function ID — capped at 62 characters, and cut further only where the connected database's identifier limit leaves no room for the longest name built from it, as PostgreSQL's 63-character limit does for ids past 39 characters — and
 - a short hash derived from `(ARTIFACT_ENCRYPTION_KEY + pipe_identifier)`.
 
 Pattern:

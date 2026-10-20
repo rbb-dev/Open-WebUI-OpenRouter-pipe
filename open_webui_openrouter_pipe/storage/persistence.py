@@ -297,6 +297,31 @@ def _sanitize_table_fragment(value: str) -> str:
     return fragment
 
 
+_LONGEST_TABLE_NAME_PREFIX = "response_items_"
+_KEY_HASH_SUFFIX_LENGTH = 8
+_LONGEST_TABLE_NAME_OVERHEAD = len(_LONGEST_TABLE_NAME_PREFIX) + 1 + _KEY_HASH_SUFFIX_LENGTH
+
+
+def _table_fragment_for_identifier_limit(fragment: str, max_identifier_length: int | None) -> str:
+    if not max_identifier_length:
+        return fragment
+    cap = max_identifier_length - _LONGEST_TABLE_NAME_OVERHEAD
+    if cap >= len(fragment) or cap < 1:
+        return fragment
+    return fragment[:cap].rstrip("_") or "pipe"
+
+
+def _store_identifier_limit(store: Any) -> int | None:
+    limit = getattr(
+        getattr(getattr(store, "_engine", None), "dialect", None),
+        "max_identifier_length",
+        None,
+    )
+    if isinstance(limit, int) and limit > 0:
+        return limit
+    return None
+
+
 def _other_installed_fragments(store: Any) -> set[str] | None:
     session_factory = getattr(store, "_session_factory", None)
     if session_factory is None:
@@ -316,8 +341,9 @@ def _other_installed_fragments(store: Any) -> set[str] | None:
             "the installed function ids could not be read", exc_info=True
         )
         return None
+    limit = _store_identifier_limit(store)
     return {
-        _sanitize_table_fragment(str(row[0]))
+        _table_fragment_for_identifier_limit(_sanitize_table_fragment(str(row[0])), limit)
         for row in rows
         if row and row[0] is not None and str(row[0]) != own_id
     }
@@ -1282,8 +1308,11 @@ class ArtifactStore:
         if not pipe_identifier:
             raise RuntimeError("Pipe identifier is required to initialize the artifact store.")
         table_fragment = table_fragment or _sanitize_table_fragment(pipe_identifier)
-        suffix = self.table_suffix(pipe_identifier, table_fragment=table_fragment)
-        table_name = f"response_items_{suffix}"
+        identifier_fragment = _table_fragment_for_identifier_limit(
+            table_fragment, _store_identifier_limit(self)
+        )
+        suffix = self.table_suffix(pipe_identifier, table_fragment=identifier_fragment)
+        table_name = f"{_LONGEST_TABLE_NAME_PREFIX}{suffix}"
         class_name = f"ResponseItem_{table_fragment}_{suffix.rsplit('_', 1)[-1][:4]}"
 
         existing_table = base.metadata.tables.get(table_name)
@@ -1369,7 +1398,7 @@ class ArtifactStore:
 
         self._item_model = item_model
         self._artifact_table_name = table_name
-        self._artifact_table_fragment = table_fragment
+        self._artifact_table_fragment = identifier_fragment
         self._artifact_store_signature = (table_fragment, self._table_key)
         if not table_exists:
             self.logger.info("Artifact table ready: %s (key hash: %s). Changing ARTIFACT_ENCRYPTION_KEY creates a new table; old artifacts become inaccessible.", table_name, suffix.rsplit("_", 1)[-1])
@@ -1420,9 +1449,10 @@ class ArtifactStore:
         if not identifier:
             raise RuntimeError("Pipe identifier is required to derive the table suffix.")
         fragment = table_fragment or _sanitize_table_fragment(identifier)
+        fragment = _table_fragment_for_identifier_limit(fragment, _store_identifier_limit(self))
         hash_source = f"{self._table_key}{identifier}".encode("utf-8", "ignore")
         key_hash = hashlib.sha256(hash_source).hexdigest()
-        return f"{fragment}_{key_hash[:8]}"
+        return f"{fragment}_{key_hash[:_KEY_HASH_SUFFIX_LENGTH]}"
 
     @staticmethod
     def _is_table_exists_error(exc: Exception) -> bool:
