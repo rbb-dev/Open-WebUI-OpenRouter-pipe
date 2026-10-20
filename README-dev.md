@@ -9,17 +9,19 @@ This guide explains the branching, tagging, and release workflow for this projec
 | `dev` | Active development, can be unstable |
 | `main` | Stable, tested code ready for release |
 
+`dev` is also a tag: the Development Build release's tag, which the workflow moves to each commit pushed to the `dev` branch. In a git command that takes a ref, a bare `dev` can mean the tag rather than the branch: `git merge dev` can merge the tag's commit, and `git push origin dev` fails with `src refspec dev matches more than one`. So every command below that names the branch writes `refs/heads/dev`, and `git switch dev` checks it out. A clone keeps the tag where it first fetched it; refresh it with `git fetch origin --force refs/tags/dev:refs/tags/dev`.
+
 ## Daily Development (on `dev` branch)
 
 ```bash
 # You're on dev, making changes
-git checkout dev
+git switch dev
 
 # Edit files, test locally...
 
 # Commit and push
 git add -A && git commit -m "feat: add cool feature"
-git push origin dev
+git push origin refs/heads/dev:refs/heads/dev
 ```
 
 **What happens automatically:**
@@ -28,33 +30,40 @@ git push origin dev
   - `open_webui_openrouter_pipe_bundled_compressed.py` (compressed)
   - `open_webui_openrouter_pipe_bundled_no_plugins.py` (readable, plugins omitted)
   - `open_webui_openrouter_pipe_bundled_compressed_no_plugins.py` (compressed, plugins omitted)
-- Updates the `dev` pre-release with the new bundle
+- Moves the `dev` tag to the pushed commit and updates the `dev` pre-release with the new bundle
 - Bleeding-edge users can download from the `dev` release
 
 ---
 
 ## Releasing a New Version
 
+Before tagging, commit the version bump on `dev`. The version lives in four places:
+
+- `open_webui_openrouter_pipe.py` manifest header: the `version:` field and the tag in the `requirements:` release-archive URL (`.../archive/refs/tags/vX.Y.Z.zip`)
+- `pyproject.toml`: `version`
+- `open_webui_openrouter_pipe/__init__.py`: `_FALLBACK_VERSION`
+- `README.md`: the version badge
+
+Regenerate the changelog before tagging: `git cliff --tag v2.0.4 -o CHANGELOG.md` (git-cliff, configured by `cliff.toml`).
+
+The release notes open with the text of `RELEASE_NOTES_PENDING.md`, the running list of user-facing changes since the previous release, followed by the list of commits since the previous tag. When the two together would not fit in a GitHub release, the notes become a link to the file as it stands at the tag. After the tag is pushed, empty the file down to its `# Release notes pending` heading in the next commit on `dev`, so the next release starts from its own changes.
+
 ```bash
-# 1. Merge dev → main
-git checkout main
-git pull                              # Get latest main
-git merge dev                         # Merge your changes
-git push origin main                  # Push to main (no release created)
+# 1. Fast-forward main to dev
+git switch main
+git pull --ff-only                    # Get latest main
+git merge --ff-only refs/heads/dev    # main takes exactly dev's commits
+git push origin refs/heads/main:refs/heads/main   # Push to main (no release created)
 
 # 2. Create version tag
 git tag v2.0.4                        # Create tag
-git push origin v2.0.4                # Push tag
-# → This creates the v2.0.4 release automatically!
-
-# Version bump checklist (before tagging):
-# - Update `open_webui_openrouter_pipe.py` manifest header:
-#   - `version:` field
-#   - the tag in the `requirements:` release-archive URL (`.../archive/refs/tags/vX.Y.Z.zip`)
+git rev-parse v2.0.4 refs/heads/main refs/heads/dev   # all three must print the same commit
+git push origin refs/tags/v2.0.4      # Push tag
+# → This creates the v2.0.4 release automatically, with notes listing the commits since the previous tag
 
 # 3. Go back to dev for next work
-git checkout dev
-git merge main                        # Keep dev in sync
+git switch dev
+# Empty RELEASE_NOTES_PENDING.md down to its heading, commit, push
 ```
 
 ---
@@ -64,11 +73,11 @@ git merge main                        # Keep dev in sync
 ```mermaid
 flowchart LR
     subgraph dev ["dev branch"]
-        D1[Daily work] --> D2[git push dev]
+        D1[Daily work] --> D2[push refs/heads/dev]
     end
 
     subgraph main ["main branch"]
-        M1[git merge dev] --> M2[git push main]
+        M1[fast-forward to dev] --> M2[git push main]
         M2 --> M3[git tag v2.0.4]
         M3 --> M4[git push tag]
     end
@@ -93,7 +102,7 @@ flowchart LR
 | **dev branch** | Your working area, can be messy | Updates `dev` pre-release |
 | **main branch** | Stable, tested code (staging for tags) | Artifact only |
 | **Tags (v2.0.4)** | Permanent version markers | Creates versioned release |
-| **dev release** | "Bleeding edge" for adventurous users | `.../download/dev/...` |
+| **dev release** | "Bleeding edge" for adventurous users; its `dev` tag follows the `dev` branch | `.../download/dev/...` |
 | **v2.0.4 release** | Stable version for most users | `.../releases/latest/download/...` |
 
 ---
@@ -102,21 +111,22 @@ flowchart LR
 
 ```bash
 # Daily work
-git checkout dev
+git switch dev
 # ... edit, commit, push ...
-git push origin dev                    # → updates "dev" pre-release
+git push origin refs/heads/dev:refs/heads/dev     # → moves the dev tag, updates "dev" pre-release
 
-# Ready to release
-git checkout main && git merge dev && git push    # → artifact only
-git tag v2.0.4 && git push origin v2.0.4          # → creates v2.0.4 release
-git checkout dev && git merge main                 # → sync dev
+# Ready to release (version bump and changelog already committed on dev)
+git switch main && git merge --ff-only refs/heads/dev && git push origin refs/heads/main:refs/heads/main   # → artifact only
+git tag v2.0.4 && git rev-parse v2.0.4 refs/heads/main refs/heads/dev   # → all three the same commit
+git push origin refs/tags/v2.0.4                   # → creates v2.0.4 release
+git switch dev                                     # then empty RELEASE_NOTES_PENDING.md down to its heading
 
 # Hotfix on main (rare)
-git checkout main
+git switch main
 # ... fix bug ...
-git push origin main                   # → artifact only
-git tag v2.0.5 && git push origin v2.0.5          # → creates v2.0.5 release
-git checkout dev && git merge main                 # → sync dev
+git push origin refs/heads/main:refs/heads/main    # → artifact only
+git tag v2.0.5 && git push origin refs/tags/v2.0.5  # → creates v2.0.5 release
+git switch dev && git merge refs/heads/main        # → bring the fix into dev
 ```
 
 ---
@@ -185,6 +195,6 @@ It writes only the files whose bytes differ and prints what it changed. `tests/t
 
 **Branches are for work, tags are for releases.**
 
-- Push to `dev` → updates the `dev` pre-release
+- Push to `dev` → moves the `dev` tag and updates the `dev` pre-release
 - Push to `main` → creates artifact only (staging area)
 - Push a `v*` tag → creates a new versioned stable release

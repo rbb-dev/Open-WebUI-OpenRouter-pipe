@@ -87,7 +87,20 @@ jobs:
             echo ""
             echo ""
             echo "**Full list:** https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${GITHUB_REF_NAME}"
-          } > release-notes.md
+          } > changes.md
+
+          # The pending notes open the release; a GitHub release body holds at most 125,000 characters
+          NOTES=""
+          if [ -f RELEASE_NOTES_PENDING.md ]; then
+            NOTES=$(sed '1{/^# Release notes pending$/d}' RELEASE_NOTES_PENDING.md | sed '/./,$!d')
+          fi
+          if [ -z "$(printf '%s' "$NOTES" | tr -d '[:space:]')" ]; then
+            cp changes.md release-notes.md
+          elif [ $(( $(printf '%s\n\n' "$NOTES" | wc -c) + $(wc -c < changes.md) )) -le 120000 ]; then
+            { printf '%s\n\n' "$NOTES"; cat changes.md; } > release-notes.md
+          else
+            { echo "**Release notes:** https://github.com/${{ github.repository }}/blob/${GITHUB_REF_NAME}/RELEASE_NOTES_PENDING.md"; echo ""; cat changes.md; } > release-notes.md
+          fi
 
       # Create versioned release on tag push (v2.0.3, v2.1.0, etc.)
       - name: Create versioned release
@@ -100,6 +113,12 @@ jobs:
             open_webui_openrouter_pipe_bundled_no_plugins.py
             open_webui_openrouter_pipe_bundled_compressed_no_plugins.py
           body_path: release-notes.md
+
+      - name: Move the dev tag to this commit
+        if: github.ref == 'refs/heads/dev'
+        run: |
+          git tag -f dev "$GITHUB_SHA"
+          git push -f origin refs/tags/dev
 
       # Update "dev" pre-release on dev branch push
       - name: Update dev release
