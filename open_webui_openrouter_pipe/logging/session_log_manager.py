@@ -1,15 +1,3 @@
-"""Session log management with worker threads and archive handling.
-
-This module provides the SessionLogManager class which handles:
-- Background worker threads for log archival (writer, cleanup, assembler)
-- Session log queue management
-- DB-backed segment persistence and assembly
-- Archive file management and retention cleanup
-
-The manager coordinates between in-memory session logs (from SessionLogger)
-and persistent storage (encrypted zip archives via pyzipper).
-"""
-
 from __future__ import annotations
 
 import contextlib
@@ -666,7 +654,6 @@ def resolve_message_id(metadata: Any) -> str:
     return ""
 
 
-# Optional pyzipper support for session log encryption
 try:
     import pyzipper  # pyright: ignore[reportMissingImports]
 except ImportError:
@@ -678,20 +665,6 @@ if TYPE_CHECKING:
 
 
 class SessionLogManager:
-    """Manages session log background workers and archive operations.
-
-    This class owns:
-    - Worker threads: writer, cleanup, and assembler
-    - Queue for archive jobs
-    - Lock for thread-safe state access
-    - Archive settings and directories
-
-    It coordinates with:
-    - ArtifactStore for DB persistence
-    - SessionLogger/write_session_log_archive for actual archive writing
-    - Pipe instance for live valve configuration access
-    """
-
     _FAULT_LATCHES = (
         "_listing_fault_warnings",
         "_unreadable_archive_warnings",
@@ -708,20 +681,12 @@ class SessionLogManager:
         pipe: Pipe,
         artifact_store: ArtifactStore | None = None,
     ) -> None:
-        """Initialize the session log manager.
-
-        Args:
-            logger: Logger instance for debug/warning messages
-            pipe: Pipe instance for accessing live valves configuration
-            artifact_store: Optional ArtifactStore for DB operations
-        """
         from ..core.logging_system import _SessionLogArchiveJob
 
         self.logger = logger
         self._pipe = pipe
         self._artifact_store: ArtifactStore | None = artifact_store
 
-        # Worker thread state
         self._queue: queue.Queue[_SessionLogArchiveJob] | None = None
         self._stop_event: threading.Event | None = None
         self._worker_thread: threading.Thread | None = None
@@ -730,7 +695,6 @@ class SessionLogManager:
         self._retiring_threads: list[threading.Thread] = []
         self._joined_threads: set[threading.Thread] = set()
 
-        # Thread-safe configuration access
         self._lock = threading.Lock()
         self._dirs: set[str] = set()
         self._assembler_recent_failures: dict[tuple[str, str], float] = {}
@@ -784,57 +748,42 @@ class SessionLogManager:
                 turns[key] = n - 1
 
     def set_artifact_store(self, artifact_store: ArtifactStore) -> None:
-        """Set the artifact store reference."""
         self._artifact_store = artifact_store
 
     @property
     def valves(self) -> Any:
-        """Access live valves from the Pipe instance.
-
-        This ensures we always read current valve values, not a stale snapshot
-        captured at initialization time. Open WebUI replaces the valves object
-        when settings are saved, so we must access via pipe reference.
-        """
         return self._pipe.valves
 
     @property
     def queue(self) -> queue.Queue | None:
-        """Access the archive job queue (for tests)."""
         return self._queue
 
     @property
     def stop_event(self) -> threading.Event | None:
-        """Access the stop event (for tests)."""
         return self._stop_event
 
     @property
     def worker_thread(self) -> threading.Thread | None:
-        """Access the writer thread (for tests)."""
         return self._worker_thread
 
     @property
     def cleanup_thread(self) -> threading.Thread | None:
-        """Access the cleanup thread (for tests)."""
         return self._cleanup_thread
 
     @property
     def assembler_thread(self) -> threading.Thread | None:
-        """Access the assembler thread (for tests)."""
         return self._assembler_thread
 
     @property
     def dirs(self) -> set[str]:
-        """Access the tracked log directories."""
         return self._dirs
 
     @property
     def retention_days(self) -> int:
-        """Access the retention days setting."""
         return int(self.valves.SESSION_LOG_RETENTION_DAYS)
 
     @property
     def warning_emitted(self) -> bool:
-        """Access the warning emitted flag."""
         return self._warning_emitted
 
     @warning_emitted.setter
@@ -956,12 +905,7 @@ class SessionLogManager:
             else:
                 self._warned.clear()
 
-    # =========================================================================
-    # Worker Thread Management
-    # =========================================================================
-
     def stop_workers(self) -> None:
-        """Stop session log background threads (best effort)."""
         signalled = self._stop_event
         if signalled:
             with contextlib.suppress(Exception):
@@ -996,7 +940,6 @@ class SessionLogManager:
 
     @timed
     def start_workers(self) -> None:
-        """Start session log writer + cleanup threads if not already running."""
         with self._lock:
             if self._queue is None:
                 self._queue = queue.Queue(maxsize=500)
@@ -1031,7 +974,6 @@ class SessionLogManager:
 
     @timed
     def start_assembler_worker(self) -> None:
-        """Start the DB-backed session log assembler thread (multi-worker safe)."""
         with self._lock:
             stop_was_set = bool(self._stop_event is not None and self._stop_event.is_set())
             if self._assembler_thread and self._assembler_thread.is_alive() and not stop_was_set:
@@ -1050,24 +992,15 @@ class SessionLogManager:
             )
             self._assembler_thread.start()
 
-    # =========================================================================
-    # Archive Writing
-    # =========================================================================
-
     def _write_archive(self, job: Any) -> None:
         from ..core.logging_system import write_session_log_archive
         return write_session_log_archive(job)
-
-    # =========================================================================
-    # Archive Settings Resolution
-    # =========================================================================
 
     @timed
     def resolve_archive_settings(
         self,
         valves: Any,
     ) -> tuple[str, bytes, str, int | None] | None:
-        """Resolve the session log archive settings required for eventual zip writing."""
         from ..core.config import EncryptedStr
 
         if not valves.SESSION_LOG_STORE_ENABLED:
@@ -1121,10 +1054,6 @@ class SessionLogManager:
         except Exception:
             self.logger.debug("Failed to enqueue session log archive job", exc_info=True)
 
-    # =========================================================================
-    # DB Segment Persistence
-    # =========================================================================
-
     @timed
     async def persist_segment_to_db(
         self,
@@ -1142,11 +1071,6 @@ class SessionLogManager:
         pipe_identifier: str | None = None,
         task: str = "",
     ) -> None:
-        """Persist one invocation's session log events into the DB for later assembly.
-
-        The assembler thread merges all segments for a (chat_id, message_id) into a
-        single `<SESSION_LOG_DIR>/<user_id>/<chat_id>/<message_id>.zip`.
-        """
         from ..core.logging_system import _SessionLogArchiveJob
         from ..storage.owui_files import is_linkable_chat, is_temporary_chat
         from ..storage.persistence import _names_a_conversation, generate_item_ids
@@ -1222,7 +1146,6 @@ class SessionLogManager:
                 )
             return
 
-        # Ensure ArtifactStore is initialized so multi-worker assemblers can coordinate.
         if self._artifact_store is not None:
             with contextlib.suppress(Exception):
                 self._artifact_store._ensure_artifact_store(valves, pipe_identifier)
@@ -1263,8 +1186,6 @@ class SessionLogManager:
 
         persisted: list[str] = []
         try:
-            # Best-effort: background workers may not be long-lived in some OWUI deployment
-            # modes, so we also attempt to assemble terminal bundles inline (below).
             self.start_workers()
             self.start_assembler_worker()
             persisted = await self._artifact_store._db_persist(rows) if self._artifact_store else []
@@ -1299,8 +1220,6 @@ class SessionLogManager:
             )
             return
         if not persisted:
-            # Survivability guarantee: if DB staging isn't available (or breaker blocks writes),
-            # fall back to direct zip persistence so operators still get logs.
             self.logger.warning(
                 "Session log DB staging returned no staged segment; falling back to a queued zip write (chat_id=%s message_id=%s request_id=%s).",
                 chat_id,
@@ -1332,21 +1251,12 @@ class SessionLogManager:
                 )
             )
 
-    # =========================================================================
-    # DB Handles
-    # =========================================================================
-
     def _db_handles(self) -> tuple[Any | None, Any | None]:
-        """Return (model, session_factory) for direct DB queries (best effort)."""
         if self._artifact_store is None:
             return None, None
         model = getattr(self._artifact_store, "_item_model", None)
         session_factory = getattr(self._artifact_store, "_session_factory", None)
         return model, session_factory
-
-    # =========================================================================
-    # Assembler Logic
-    # =========================================================================
 
     @timed
     def reap_staged_rows(self) -> None:
@@ -1362,7 +1272,6 @@ class SessionLogManager:
 
     @timed
     def run_assembler_once(self, stop_event: threading.Event | None = None) -> None:
-        """One assembler tick: cleanup stale locks, assemble terminal + stale bundles."""
         model, session_factory = self._db_handles()
         if not model or not session_factory:
             return
@@ -1696,7 +1605,6 @@ class SessionLogManager:
         _page = int(limit) + len(set_aside)
         while True:
             try:
-                # Candidates (best effort): any message that has at least one segment.
                 with _db_session(session_factory) as session:
                     terminal_count = func.sum(
                         case((model.item_type == "session_log_segment_terminal", 1), else_=0)  # type: ignore[attr-defined]
@@ -1733,10 +1641,6 @@ class SessionLogManager:
             if _page > 100_000:
                 break
         return [*offered, *held]
-
-    # =========================================================================
-    # Archive Event Helpers
-    # =========================================================================
 
     def read_archive(
         self,
@@ -1778,10 +1682,6 @@ class SessionLogManager:
         return meta, events()
 
     def _convert_jsonl_to_internal(self, evt: dict[str, Any]) -> dict[str, Any]:
-        """Convert JSONL archive format back to internal event format.
-
-        JSONL uses 'ts' (ISO timestamp), internal uses 'created' (epoch float).
-        """
         internal = dict(evt)
         if "ts" in internal and "created" not in internal:
             try:
@@ -1791,10 +1691,6 @@ class SessionLogManager:
             except (AttributeError, TypeError, ValueError, OSError, OverflowError):
                 internal["created"] = time.time()
         return internal
-
-    # =========================================================================
-    # Bundle Assembly
-    # =========================================================================
 
     def _truncate_capture_record(self) -> None:
         keep = int(_MAX_DRAIN_LATCH_KEYS)
@@ -2217,7 +2113,6 @@ class SessionLogManager:
         archive_settings: tuple[str, bytes, str, int | None] | None = None,
         stop_event: threading.Event | None = None,
     ) -> bool | _LockContended:
-        """Assemble all segments for one message into a single zip, then delete DB rows."""
         from ..core.logging_system import (
             _archive_file_path,
             _archive_publish_changed_file,
@@ -2260,8 +2155,6 @@ class SessionLogManager:
                 "thread": threading.get_ident(),
             },
         }
-        # Use upsert-based lock acquisition (INSERT ON CONFLICT DO NOTHING)
-        # to avoid noisy duplicate key errors in multi-worker environments
         if not self._artifact_store._try_acquire_lock_sync(lock_row):
             return _LOCK_CONTENDED
 
@@ -2279,7 +2172,6 @@ class SessionLogManager:
         sorter: _EventSorter | None = None
         attempt_ids: list[str] = []
         try:
-            # Fetch all segment ids for this message (including any terminal markers).
             with _db_session(session_factory) as session:
                 rows = (
                     session.query(model.id, model.is_encrypted)  # type: ignore[attr-defined]
@@ -2472,7 +2364,6 @@ class SessionLogManager:
                 with contextlib.suppress(Exception):
                     before_stat = out_path.stat()
 
-                # Merge with existing archive events if the zip already exists.
                 existing_total = existing_markers = 0
                 existing_meta: dict[str, Any] = {}
                 read_failed = False
@@ -2799,16 +2690,11 @@ class SessionLogManager:
             sorter.regroup(str(header["user_id"]).strip(), rank)
         return header if header.get("type") in _SEGMENT_ROW_TYPES else None
 
-    # =========================================================================
-    # Archive Cleanup
-    # =========================================================================
-
     @timed
     def _sweep_enabled(self) -> bool:
         return bool(self.valves.SESSION_LOG_STORE_ENABLED)
 
     def cleanup_archives(self) -> None:
-        """Delete expired session log archives and prune empty directories."""
         if not self._sweep_enabled():
             return
         with self._lock:

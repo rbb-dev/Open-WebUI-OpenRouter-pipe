@@ -1,40 +1,13 @@
-"""Renderer for the standalone OWUI "OpenRouter Fusion" filter.
-
-This module emits the *source code* of a self-contained Open WebUI Filter
-function (installed separately into OWUI's Functions table). The rendered filter
-configures OpenRouter's Fusion multi-model judge panel by injecting a
-``{"id": "fusion", ...}`` entry into ``body["plugins"]``, and optionally forces
-Fusion to run via ``tool_choice="required"``.
-
-Design:
-- Gated to the ``openrouter/fusion`` model unless ``ALLOW_ON_NON_FUSION_MODELS``.
-- Configuration (preset / panel / judge / max_tool_calls) maps to the Fusion
-  plugin object; sentinels (empty string / 0) mean "use Fusion's default".
-- ``FUSION_FORCE_TOOL_CALL`` (default off) sets ``tool_choice="required"`` on the
-  request — exactly as OpenRouter documents for forcing Fusion. On the fusion
-  models this is redundant: the pipe forces ``required`` on every chat request
-  itself, so the switch only matters on non-fusion models an admin attached the
-  filter to. If the caller adds other tools the model may pick one of those
-  instead (documented OpenRouter behaviour, see docs/openrouter_fusion.md).
-"""
 from __future__ import annotations
 
 import re
 
 from ..core.utils import _ADAPTER_CACHE, _KEEP_WHAT_STILL_FITS, _PRIORITY_FIELD
 
-# Canonical id of the dedicated Fusion model and the OWUI function id.
 FUSION_MODEL_SLUG = "openrouter/fusion"
 FUSION_FILTER_FUNCTION_ID = "openrouter_fusion"
 FUSION_FILTER_DISPLAY_NAME = "OpenRouter Fusion"
 
-# The fusion model appears in several id forms across the pipe:
-#   raw slug            "openrouter/fusion"                              (catalog original_id, /v1/models id)
-#   pipe-prefixed slug  "openrouter.openrouter/fusion"                   (prefix + raw slug)
-#   sanitized id        "openrouter.fusion"                              (sanitize_model_id rewrites '/'->'.')
-#   OWUI full model id  "open_webui_openrouter_pipe.openrouter.fusion"  (runtime body["model"])
-# The first two keep the vendor/model slash; the last two are all-dots. Match both
-# shapes — the slash form via the anchored pattern, the dotted form via a suffix match.
 _FUSION_MODEL_PATTERN = re.compile(r"^~?openrouter/fusion(?:-flash)?(?::[^@\s][^@]*)?$")
 _FUSION_DOTTED_PATTERN = re.compile(r"(?:^|\.)~?openrouter\.fusion(?:-flash)?(?::[^@\s][^@]*)?$")
 
@@ -48,7 +21,6 @@ def _fusion_dotted_pattern(pipe_id: str | None = None) -> re.Pattern[str]:
 
 
 def canonical_model_slug(raw: str) -> str:
-    """Strip the OWUI pipe prefix (``openrouter.openrouter/fusion`` -> ``openrouter/fusion``)."""
     if not isinstance(raw, str) or "/" not in raw:
         return raw if isinstance(raw, str) else ""
     head, slash, tail = raw.partition("/")
@@ -56,12 +28,6 @@ def canonical_model_slug(raw: str) -> str:
 
 
 def is_fusion_model(model_id: str, *, pipe_id: str | None = None) -> bool:
-    """True if ``model_id`` is the dedicated openrouter/fusion model, in any id form the
-    pipe produces: raw slug, pipe-prefixed slug, sanitized dot-form, or full OWUI id.
-
-    The single source of truth for "which model gets the Fusion filter auto-wired",
-    reused by FilterManager/catalog attach decisions and the rendered filter inlet.
-    """
     if not isinstance(model_id, str) or not model_id:
         return False
     if _FUSION_MODEL_PATTERN.match(canonical_model_slug(model_id)):
@@ -80,9 +46,6 @@ def _fusion_base_model_id(model_id: str) -> str:
     return model_id
 
 
-# The rendered filter source. ``__MARKER__`` / ``__FILTER_ID__`` are substituted
-# by render_openrouter_fusion_filter_source(). The body is a plain string (not an
-# f-string) so dict/brace literals need no escaping.
 _FUSION_FILTER_TEMPLATE = '''"""
 title: OpenRouter Fusion
 author: Open-WebUI-OpenRouter-pipe
@@ -314,7 +277,6 @@ __KEEP_WHAT_STILL_FITS__
 
 
 def render_openrouter_fusion_filter_source(*, marker: str, pipe_id: str | None = None) -> str:
-    """Return the canonical OWUI filter source for the OpenRouter Fusion filter."""
     return (
         _FUSION_FILTER_TEMPLATE
         .replace("__MARKER__", marker)

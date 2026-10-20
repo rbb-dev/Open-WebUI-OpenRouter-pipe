@@ -1,10 +1,3 @@
-"""Error formatting, template selection, and emission.
-
-This module handles OpenRouter error formatting and user-facing error messages,
-including template selection based on HTTP status codes, SSE error event parsing,
-and final status description formatting with usage metrics.
-"""
-
 from __future__ import annotations
 
 import json
@@ -16,7 +9,6 @@ from starlette.responses import StreamingResponse
 
 from ..core.timing_logger import timed
 
-# Use deferred import to avoid circular dependency
 if TYPE_CHECKING:
     from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
 
@@ -38,8 +30,6 @@ from .utils import (
     join_answer_and_card,
 )
 
-# Simple fallback template used when no valve template is available.
-# The canonical DEFAULT_OPENROUTER_ERROR_TEMPLATE lives in core/config.py.
 _FALLBACK_ERROR_TEMPLATE = """**Provider Error**
 
 The model provider returned an error:
@@ -59,13 +49,13 @@ The model provider returned an error:
 """
 
 _DEFAULT_USAGE_STATUS_ICONS: tuple[str, ...] = (
-    "⧗",  # time
-    "$",  # cost
-    "⇅",  # total tokens
-    "▲",  # input tokens
-    "▼",  # output tokens
-    "↺",  # cached tokens
-    "▽",  # reasoning tokens
+    "⧗",
+    "$",
+    "⇅",
+    "▲",
+    "▼",
+    "↺",
+    "▽",
 )
 _USAGE_ICON_FIELDS = ("time", "cost", "total", "input", "output", "cached", "reasoning")
 
@@ -210,8 +200,6 @@ def _api_caller_error_response(
 
 
 class ErrorFormatter:
-    """Handles error formatting, template selection, and emission."""
-
     def __init__(
         self,
         pipe: Pipe,
@@ -225,10 +213,6 @@ class ErrorFormatter:
     @property
     def valves(self) -> Any:
         return self._pipe.valves
-
-    # ======================================================================
-    # Error Emission Methods
-    # ======================================================================
 
     def _safe_detail(self, reason: str) -> str:
         return reason
@@ -286,10 +270,6 @@ class ErrorFormatter:
             return "", {}
         return self._event_emitter_handler._create_error_context()
 
-    # ======================================================================
-    # Template Selection
-    # ======================================================================
-
     def _select_openrouter_template(
         self,
         status: int | None,
@@ -313,18 +293,12 @@ class ErrorFormatter:
             return self.valves.SERVICE_ERROR_TEMPLATE
         return self.valves.OPENROUTER_ERROR_TEMPLATE
 
-    # ======================================================================
-    # Error Building and Extraction
-    # ======================================================================
-
     def _build_streaming_openrouter_error(
         self,
         event: dict[str, Any],
         *,
         requested_model: str | None,
     ) -> OpenRouterAPIError:
-        """Normalize SSE error events into an OpenRouterAPIError."""
-        # Runtime import to avoid circular dependency
         from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
 
         response_value = event.get("response")
@@ -432,7 +406,6 @@ class ErrorFormatter:
         event: dict[str, Any] | None,
         requested_model: str | None,
     ) -> OpenRouterAPIError | None:
-        """Return an OpenRouterAPIError for SSE error payloads, if present."""
         if not isinstance(event, dict):
             return None
         event_data: dict[str, Any] = event
@@ -452,10 +425,6 @@ class ErrorFormatter:
             return None
         return self._build_streaming_openrouter_error(event_data, requested_model=requested_model)
 
-    # ======================================================================
-    # Error Reporting
-    # ======================================================================
-
     @timed
     async def _report_openrouter_error(
         self,
@@ -468,7 +437,6 @@ class ErrorFormatter:
         partial_answer: str = "",
         terminal: bool = True,
     ) -> str:
-        """Emit a user-facing markdown message for OpenRouter 400 responses."""
         sign_in_failure = is_sign_in_failure(exc)
         if sign_in_failure:
             self._pipe._note_auth_failure()
@@ -549,10 +517,6 @@ class ErrorFormatter:
             )
         return shown
 
-    # ======================================================================
-    # Status Formatting
-    # ======================================================================
-
     def _format_final_status_description(
         self,
         *,
@@ -561,11 +525,6 @@ class ErrorFormatter:
         valves: Pipe.Valves,
         stream_duration: float | None = None,
     ) -> str:
-        """Return the final status line respecting valve + available metrics.
-
-        ``stream_duration`` is expected to mirror provider dashboards (request
-        start -> last output event, which includes first-token latency).
-        """
         default_description = f"Thought for {elapsed:.1f} seconds"
         if not valves.SHOW_FINAL_USAGE_STATUS:
             return default_description
@@ -596,7 +555,6 @@ class ErrorFormatter:
             segments.append(cost_segment)
 
         def _to_int(value: Any) -> int | None:
-            """Best-effort conversion to ``int`` for usage counters."""
             if isinstance(value, bool):
                 return int(value)
             if isinstance(value, int):

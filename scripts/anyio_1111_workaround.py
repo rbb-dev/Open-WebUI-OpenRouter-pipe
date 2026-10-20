@@ -5,22 +5,6 @@ def _apply_anyio_1111_workaround() -> None:
     from importlib.metadata import version as _pkg_version
 
     def _pipe_logger():
-        """Resolve the logger under whatever root the pipe wires its handlers onto.
-
-        This file is emitted into the bundle HEAD in both bundle shapes, but the two
-        disagree about where the package lives: the flat bundle collapses everything
-        into the host module, while the compressed bundle keeps the real dotted names.
-        A name fixed at import time is therefore wrong in one shape or the other --
-        the literal orphaned every record in flat mode, and deriving it from __name__
-        orphaned them in compressed mode.
-
-        Resolving per call follows the package once it exists. It cannot help the
-        apply-time messages below: the head calls this function before importing any
-        pipe module, so the package is not yet in sys.modules and the fallback wins.
-        Those records also predate Pipe wiring its handlers, so they reach the host's
-        root handlers either way -- the name matters only for the cleanup warning at
-        the bottom, which fires long afterwards and re-resolves.
-        """
         module = _sys.modules.get("open_webui_openrouter_pipe")
         root = getattr(module, "__name__", None) or __name__
         return _logging.getLogger(f"{root.split('.')[0]}.anyio_1111_workaround")
@@ -99,11 +83,6 @@ def _apply_anyio_1111_workaround() -> None:
                     handle.cancel()
                     self._cancel_handle = None
         except Exception:
-            # Inlined rather than calling core.warn_latch. Not because of ordering --
-            # this runs when anyio delivers a cancellation, long after load -- but
-            # because this file is the BUNDLE HEAD, and bundle_v2's validator rejects
-            # any absolute internal import surviving there ("leftover absolute internal
-            # import").
             _seen = getattr(_patched_deliver_cancellation, "_cleanup_failure_logged", False)
             _patched_deliver_cancellation._cleanup_failure_logged = True  # type: ignore[attr-defined]
             with _contextlib.suppress(Exception):

@@ -1,15 +1,3 @@
-"""Nagle-inspired multi-buffer delta coalescer (RFC 896).
-
-Provides adaptive backpressure-driven batching for SSE delta events.
-When the downstream consumer (OWUI) is fast, events pass through with
-minimal latency. When the consumer is slow, events accumulate and are
-delivered in larger batches --- reducing the number of expensive
-``serialize_output()`` calls on the OWUI side.
-
-Two independent buffers (text and reasoning) prevent reasoning floods
-from blocking text output, tool cards, or other structural events.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -18,10 +6,6 @@ from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Batchable event type sets
-# ---------------------------------------------------------------------------
 
 _BATCHABLE_TEXT_TYPES = frozenset({"response.output_text.delta"})
 _BATCHABLE_REASONING_TYPES = frozenset({
@@ -32,19 +16,8 @@ _TEXT_ROUTING_KEYS = ("item_id", "output_index", "content_index")
 
 _MAX_DRAIN_PER_CYCLE = 32
 
-# ---------------------------------------------------------------------------
-# NagleCoalescer — multi-buffer state machine
-# ---------------------------------------------------------------------------
-
 
 class NagleCoalescer:
-    """Multi-buffer state machine for Nagle-style delta coalescing.
-
-    Separates text and reasoning into independent buffers.  Flushes on
-    type boundaries, ``item_id`` boundaries, non-batchable events, and
-    end-of-drain-cycle (gated by *min_flush_chars*).
-    """
-
     __slots__ = (
         "min_flush_chars",
         "reasoning_buffer",
@@ -68,13 +41,9 @@ class NagleCoalescer:
         self.reasoning_length: int = 0
         self.min_flush_chars: int = max(1, min_flush_chars)
 
-    # -- properties ---------------------------------------------------------
-
     @property
     def has_buffered(self) -> bool:
         return bool(self.text_buffer or self.reasoning_buffer)
-
-    # -- flush helpers ------------------------------------------------------
 
     def flush_text(self, force: bool = True) -> dict[str, Any] | None:
         if not self.text_buffer:
@@ -109,13 +78,10 @@ class NagleCoalescer:
         *,
         force: bool = True,
     ) -> None:
-        """Flush both buffers into *target*, preserving text-before-reasoning order."""
         for flush_fn in (self.flush_text, self.flush_reasoning):
             flushed = flush_fn(force=force)
             if flushed:
                 target.append(flushed)
-
-    # -- event routing ------------------------------------------------------
 
     def process_event(
         self,
@@ -124,17 +90,14 @@ class NagleCoalescer:
         *,
         passthrough: bool = False,
     ) -> None:
-        """Route one event: buffer batchable deltas, pass through the rest."""
         etype = event.get("type")
 
-        # --- Batchable text delta ---
         if etype in _BATCHABLE_TEXT_TYPES:
             delta_chunk = event.get("delta", "")
             if passthrough:
                 if delta_chunk:
                     yield_queue.append(event)
                 return
-            # Type boundary: flush reasoning before buffering text
             flushed = self.flush_reasoning(force=True)
             if flushed:
                 yield_queue.append(flushed)
@@ -153,7 +116,6 @@ class NagleCoalescer:
                     }
             return
 
-        # --- Batchable reasoning delta ---
         if etype in _BATCHABLE_REASONING_TYPES:
             delta_chunk = event.get("delta", "")
             current_item_id = event.get("item_id")
@@ -161,11 +123,9 @@ class NagleCoalescer:
                 if delta_chunk:
                     yield_queue.append(event)
                 return
-            # Type boundary: flush text before buffering reasoning
             flushed = self.flush_text(force=True)
             if flushed:
                 yield_queue.append(flushed)
-            # Item_id boundary: flush reasoning if switching items
             if self.reasoning_buffer and self.reasoning_item_id != current_item_id:
                 flushed = self.flush_reasoning(force=True)
                 if flushed:
@@ -180,29 +140,11 @@ class NagleCoalescer:
                     }
             return
 
-        # --- Non-batchable: flush everything, pass through ---
         self.flush_all_to(yield_queue)
         yield_queue.append(event)
 
 
-# ---------------------------------------------------------------------------
-# nagle_coalesce_stream — async generator wrapper
-# ---------------------------------------------------------------------------
-
-
 def idle_flush_timeout(coalescer: Any, idle_flush_seconds: float | None) -> float | None:
-    """How long to wait for the next upstream event before flushing what is buffered.
-
-    None means "block indefinitely" -- correct only when there is nothing to flush.
-    Returning None while text is buffered holds it until the next upstream event, so a
-    model that pauses leaves the user watching a stalled reply; the final flush at
-    end-of-stream still delivers every byte, which is why asserting the concatenation
-    cannot detect it.
-
-    Shared because this decision is made in two consumer loops -- here and in
-    api/gateway/responses_adapter.py, which serves /responses, the default endpoint --
-    and the surrounding loops differ enough that only the decision is worth unifying.
-    """
     if idle_flush_seconds and coalescer.has_buffered:
         return idle_flush_seconds
     return None
@@ -217,14 +159,6 @@ async def nagle_coalesce_stream(
     warn_size: int = 0,
     warn_sink: Callable[[int], None] | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
-    """Wrap an async generator with Nagle-style multi-buffer coalescing.
-
-    Used for streams that lack their own internal queue (e.g. the Chat
-    Completions SSE path).  Creates a lightweight pump task to drain
-    *source* into a :class:`asyncio.Queue`, then applies the standard
-    Nagle drain + :class:`NagleCoalescer` processing on the consumer
-    side.
-    """
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
     coalescer = NagleCoalescer(min_flush_chars=min_flush_chars)
 
@@ -236,12 +170,11 @@ async def nagle_coalesce_stream(
             logger.debug("nagle_coalesce_stream pump error", exc_info=True)
             raise
         finally:
-            await queue.put(None)  # sentinel
+            await queue.put(None)
 
     pump_task = asyncio.create_task(_pump(), name="nagle-pump")
     try:
         while True:
-            # Idle timeout when buffers have content
             timeout = idle_flush_timeout(coalescer, idle_flush_seconds)
             timed_out = False
 
@@ -256,15 +189,13 @@ async def nagle_coalesce_stream(
             else:
                 event = await queue.get()
 
-            # -- idle flush --
             if timed_out:
                 yield_queue: list[dict[str, Any]] = []
-                coalescer.flush_all_to(yield_queue)  # force=True (default)
+                coalescer.flush_all_to(yield_queue)
                 for item in yield_queue:
                     yield item
                 continue
 
-            # -- sentinel: source exhausted --
             if event is None:
                 break
 
@@ -299,16 +230,11 @@ async def nagle_coalesce_stream(
             if source_done:
                 break
 
-        # -- final flush (unconditional) --
         final: list[dict[str, Any]] = []
-        coalescer.flush_all_to(final)  # force=True
+        coalescer.flush_all_to(final)
         for item in final:
             yield item
 
-        # -- propagate source exceptions --
-        # The pump sends a None sentinel even on error (via finally), so the
-        # consumer loop exits normally.  We must check the pump task for a
-        # stored exception and re-raise it so callers see the original error.
         if pump_task.done() and not pump_task.cancelled():
             pump_exc = pump_task.exception()
             if pump_exc is not None:

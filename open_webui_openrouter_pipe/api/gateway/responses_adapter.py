@@ -1,8 +1,3 @@
-"""Responses API adapter for OpenRouter.
-
-This module handles Responses API streaming and non-streaming requests.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -92,14 +87,6 @@ def _drop_backlog_latch(request_id: str) -> None:
 
 
 def _should_retry_stream(emitted_any: bool, exc: BaseException | None) -> bool:
-    """Decide whether a streaming attempt may be retried.
-
-    Retry is only safe BEFORE any event has reached the consumer. Once output
-    has been emitted, a retry re-POSTs and re-streams the whole response with
-    fresh (higher) sequence numbers, duplicating content the user already saw —
-    so never retry after the first emitted event. Pre-output network failures
-    (no event delivered yet) are still safely retried.
-    """
     if emitted_any:
         return False
     if isinstance(exc, AcceptedResponseLostBody):
@@ -324,16 +311,8 @@ async def _count_failed_call(
 
 
 class ResponsesAdapter:
-    """Adapter for OpenRouter /responses API endpoint."""
-
     @timed
     def __init__(self, pipe: Pipe, logger: logging.Logger):
-        """Initialize ResponsesAdapter.
-
-        Args:
-            pipe: Parent Pipe instance for accessing configuration and methods
-            logger: Logger instance for debugging
-        """
         self._pipe = pipe
         self.logger = logger
 
@@ -363,8 +342,6 @@ class ResponsesAdapter:
         files_inlined: bool = False,
         charge_holder: _FailureCharge | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        """Producer/worker SSE pipeline with configurable delta batching."""
-
         _backlog_request_id = SessionLogger.request_id.get() or ""
         effective_valves = valves or self._pipe.valves
         if not files_inlined:
@@ -462,7 +439,7 @@ class ResponsesAdapter:
                                 if not first_event_queued:
                                     first_event_queued = True
                                     timing_mark("producer_first_event_queued")
-                                if not delivered_any:  # noqa: B023 - shares the attempt's state by design
+                                if not delivered_any:  # noqa: B023
                                     _probe_inband(event_obj)
                                 if _responses_event_is_user_visible(event_obj):
                                     await _emit(event_obj, True, _held)
@@ -629,7 +606,6 @@ class ResponsesAdapter:
                     if not first_chunk_got:
                         first_chunk_got = True
                         timing_mark(f"worker_{worker_idx}_first_chunk_got")
-                    # Non-spammy chunk queue monitoring
                     if self._pipe._should_warn_event_queue_backlog(
                         chunk_queue.qsize(), chunk_queue_warn_size
                     ):
@@ -840,7 +816,6 @@ class ResponsesAdapter:
         files_inlined: bool = False,
         charge_holder: _FailureCharge | None = None,
     ) -> dict[str, Any]:
-        """Send a blocking request to the Responses API and return the JSON payload."""
         effective_valves = valves or self._pipe.valves
         if not files_inlined:
             request_params = await self._pipe._file_gateway.inline_internal_responses_input_files(

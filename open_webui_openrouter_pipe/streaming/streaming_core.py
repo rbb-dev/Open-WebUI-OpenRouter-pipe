@@ -1,9 +1,3 @@
-"""Core streaming loop and response handling.
-
-This module provides StreamingHandler for SSE streaming, non-streaming responses,
-and endpoint selection.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -31,8 +25,6 @@ else:
     Pipe = Any
     ResponsesBody = Any
 
-# Import error classes
-# Import transform functions
 from ..api.transforms import (
     _apply_disable_native_websearch_to_payload,
     _apply_identifier_valves_to_payload,
@@ -46,8 +38,6 @@ from ..api.transforms import (
     _unhandled_citation_types,
     responses_refusal_text,
 )
-
-# Import config classes
 from ..core.config import (
     _NON_REPLAYABLE_TOOL_ARTIFACTS,
     _PIPE_METADATA_KEY,
@@ -64,8 +54,6 @@ from ..core.context_budget import (
     omitted_tool_names,
     record_chars_per_token,
 )
-
-# Import costs helper
 from ..core.costs import maybe_dump_costs_snapshot
 from ..core.errors import (
     OpenRouterAPIError,
@@ -73,15 +61,9 @@ from ..core.errors import (
     StatusMessages,
     UpstreamBodyUnreadable,
 )
-
-# Import SessionLogger
 from ..core.logging_system import SessionLogger, bounded_log_record_text
-
-# Import timing instrumentation
 from ..core.timing_logger import timed, timing_mark
 from ..core.url_scheme import is_http_or_https_url, loggable_link
-
-# Imports from core.utils
 from ..core.utils import (
     BUILTIN_ASK_USER_ROUND_KEY,
     CONTINUED_REPLY,
@@ -127,18 +109,12 @@ from ..core.web_search_record import (
     render_search_result,
     search_source_urls,
 )
-
-# Import Anthropic integration
 from ..integrations.anthropic import _maybe_apply_anthropic_prompt_caching
-
-# Imports from models.registry
 from ..models.registry import (
     ModelFamily,
     _matches_any_model_pattern,
     _parse_model_patterns,
 )
-
-# Import request sanitizer
 from ..requests.sanitizer import (
     _request_overhead_chars,
     _sanitize_request_input,
@@ -206,7 +182,6 @@ def _member_notice_text(event: Any) -> str:
     return text if isinstance(text, str) and text else ""
 
 
-# Imports from storage.persistence
 from ..storage.multimodal import (
     _SNIFF_PREFIX_BYTES,
     ADDRESS_CHECK_BUDGET_SECONDS,
@@ -248,8 +223,6 @@ from .constants import (
     FUSION_EMBED_ATTEMPTS,
     ReasoningStatusThrottle,
 )
-
-# Import EventEmitter type alias
 from .event_emitter import _UNGUARDED_ATTR, EventEmitter
 from .fusion_embed import (
     FusionDeliberationState,
@@ -257,7 +230,6 @@ from .fusion_embed import (
     build_fusion_embed_html,
 )
 
-# Import Open WebUI models
 try:
     from open_webui.models.chats import Chats  # type: ignore[import-not-found]
 except ImportError:
@@ -359,7 +331,6 @@ def _owui_citations_enabled(model_block: Any) -> bool:
 
 
 def _append_hidden_marker_block(text: str, marker: str) -> str:
-    """Append a hidden marker line to text using the same spacing as ULID markers."""
     if text:
         if not text.endswith("\n"):
             text += "\n"
@@ -372,7 +343,6 @@ def _append_hidden_marker_block(text: str, marker: str) -> str:
 
 
 def _append_hidden_marker_lines(text: str, markers: list[str]) -> str:
-    """Append multiple hidden marker lines to text."""
     updated = text
     for marker in markers:
         updated = _append_hidden_marker_block(updated, marker)
@@ -380,7 +350,6 @@ def _append_hidden_marker_lines(text: str, markers: list[str]) -> str:
 
 
 def _phase_marker_for_output_item(item: dict[str, Any]) -> str | None:
-    """Return the hidden phase marker for a stored assistant output item."""
     if item.get("type") != "message" or item.get("role") != "assistant":
         return None
     if "phase" not in item:
@@ -569,22 +538,6 @@ def _handover_usage(
 
 
 class StreamingHandler:
-    """Manages streaming response processing.
-
-    This class encapsulates the core streaming logic including:
-    - SSE event parsing and delta accumulation
-    - Tool call extraction
-    - Reasoning status tracking
-    - Usage metrics aggregation
-    - Endpoint selection (/responses vs /chat/completions)
-
-    Dependencies:
-        - logger: Logger instance for diagnostic output
-        - valves: Configuration valves (Pipe.Valves instance)
-        - model_registry: Model capability registry
-        - Various Pipe methods and utilities
-    """
-    
     def __init__(
         self,
         logger: logging.Logger,
@@ -593,14 +546,6 @@ class StreamingHandler:
         pipe_instance: Any,
         valves_owner: Any | None = None,
     ):
-        """Initialize StreamingHandler with dependencies.
-
-        Args:
-            logger: Logger instance for diagnostic output
-            valves: Configuration valves (Pipe.Valves instance)
-            model_registry: Model capability registry
-            pipe_instance: Reference to parent Pipe instance for helper methods
-        """
         self.logger = logger
         self._valves = valves
         self._valves_owner = valves_owner
@@ -617,11 +562,6 @@ class StreamingHandler:
         emitted_tool_call_items: set[str],
         emitted_tool_output_items: set[str],
     ) -> None:
-        """Warn when a tool-card start was emitted without a matching function_call_output.
-
-        Extracted from the closure-local audit so it's directly testable without
-        having to desync internal sets through the public stream surface.
-        """
         unmatched = emitted_tool_call_items - emitted_tool_output_items
         if unmatched:
             self.logger.warning(
@@ -712,9 +652,6 @@ class StreamingHandler:
         retry_handoff: dict[str, Any] | None = None,
         emitter_supplied: bool | None = None,
     ):
-        """
-        Stream assistant responses incrementally, handling function calls, status updates, and tool usage.
-        """
         from ..tools.tool_executor import _request_address_budget
 
         metadata = {} if metadata is None else metadata
@@ -1074,7 +1011,6 @@ class StreamingHandler:
                     self.logger.debug("Failed to emit fusion event", exc_info=True)
 
             async def _emit_fusion_sources(raw_sources: Any) -> None:
-                """Emit openrouter:fusion item-level sources as citations (per-URL dedup)."""
                 if not isinstance(raw_sources, list):
                     return
                 for src in raw_sources:
@@ -1101,7 +1037,6 @@ class StreamingHandler:
                     emitted_citations.append(citation)
 
             async def _maybe_emit_reasoning_status(delta_text: str, *, force: bool = False) -> None:
-                """Emit readable status updates for reasoning text without flooding."""
                 if not thinking_status_enabled or not event_emitter:
                     return
                 text = reasoning_throttle.feed(delta_text, force=force)
@@ -1605,12 +1540,6 @@ class StreamingHandler:
                 model_call: bool = True,
                 provider_function: dict[str, Any] | None = None,
             ) -> str:
-                """Emit a function_call tool card. Returns the effective call_id (UUID-generated if input was empty).
-
-                CALLERS MUST capture the return value and pass it to _emit_tool_result for correct pairing.
-                If the caller threads the wrong id, _emit_tool_result will short-circuit and the card will
-                stay in spinner state indefinitely.
-                """
                 nonlocal emitted_response_output_items
                 if not event_emitter or not (valves.SHOW_TOOL_CARDS or _shows_a_file_inline(_origin_tool_name(name))):
                     return call_id
@@ -1651,13 +1580,6 @@ class StreamingHandler:
                 pictures: list[str] | None = None,
                 current_text: str,
             ) -> None:
-                """Emit a tool result card. Used by both pipeline and server tools.
-
-                The status is a parameter, not a constant: this is the display card for
-                EVERY output, including the failure stubs built when a tool raises or the
-                call loop is cut short. Open WebUI appends the item verbatim into the
-                persisted message, so hardcoding "completed" stores a failure as a success.
-                """
                 nonlocal emitted_response_output_items
                 if not event_emitter or not call_id or call_id in emitted_tool_output_items:
                     return
@@ -1786,7 +1708,6 @@ class StreamingHandler:
                 return current_text
 
             def _normalize_surrogate_chunk(text: str, bucket: str) -> str:
-                """Coalesce surrogate pairs in streaming chunks to keep UTF-8 happy."""
                 prev = surrogate_carry.get(bucket, "")
                 combined = f"{prev}{text or ''}"
                 if not combined:
@@ -1806,7 +1727,6 @@ class StreamingHandler:
                 return normalized
 
             def _extract_reasoning_text(event: dict[str, Any]) -> str:
-                """Return best-effort reasoning text from assorted event payloads."""
                 if not isinstance(event, dict):
                     return ""
                 for key in ("delta", "text"):
@@ -1833,7 +1753,6 @@ class StreamingHandler:
                 return ""
 
             def _reasoning_stream_key(event: dict[str, Any], etype: str | None) -> str:
-                """Associate reasoning deltas/snapshots with a stable upstream item id when possible."""
                 item_id = event.get("item_id")
                 if isinstance(item_id, str) and item_id:
                     return item_id
@@ -1848,7 +1767,6 @@ class StreamingHandler:
                 return "__reasoning__"
 
             def _extract_reasoning_text_from_item(item: dict[str, Any]) -> str:
-                """Extract reasoning content/summary from a completed output item."""
                 if not isinstance(item, dict):
                     return ""
                 content = item.get("content")
@@ -1872,7 +1790,6 @@ class StreamingHandler:
             def _append_reasoning_text(
                 key: str, incoming: str, *, allow_misaligned: bool, consumed: str = ""
             ) -> str:
-                """Coalesce cumulative/snapshot reasoning payloads into a single stream without replay."""
                 candidate = (incoming or "")
                 if not candidate:
                     return ""
@@ -2146,7 +2063,6 @@ class StreamingHandler:
             thinking_cancelled = False
             if event_emitter and not is_continuation:
                 async def _later(delay: float, msg: str) -> None:
-                    """Emit a delayed status update to reassure the user during long thoughts."""
                     try:
                         await asyncio.wait_for(model_started.wait(), timeout=delay)
                         return
@@ -2171,7 +2087,6 @@ class StreamingHandler:
                     )
 
             def cancel_thinking() -> None:
-                """Cancel any scheduled reasoning status updates once the loop completes."""
                 nonlocal thinking_cancelled
                 if thinking_cancelled:
                     return
@@ -2180,13 +2095,11 @@ class StreamingHandler:
                     t.cancel()
 
             def note_model_activity() -> None:
-                """Mark the stream as active and stop any pending thinking statuses."""
                 if not model_started.is_set():
                     model_started.set()
                     cancel_thinking()
 
             def note_generation_activity() -> None:
-                """Record when output tokens start/continue streaming."""
                 nonlocal generation_started_at, generation_last_event_at
                 now = perf_counter()
                 generation_last_event_at = now
@@ -2236,7 +2149,6 @@ class StreamingHandler:
                 return current_text
 
             def _extract_call_id(item: Any) -> str:
-                """Best-effort call_id extraction for tool call/output items."""
                 if not isinstance(item, dict):
                     return ""
                 candidate = item.get("call_id") or item.get("id")
@@ -2256,8 +2168,6 @@ class StreamingHandler:
                 return (call_id, (call.get("name") or "").strip(), args_text)
 
             async def _notify_unhandled_citations(raw_annotations: Any) -> None:
-                """Warn (status + toast) once if the response carries a citation type we can't
-                render yet (e.g. file_citation). Never alters or halts the answer."""
                 nonlocal unhandled_citation_notified
                 if unhandled_citation_notified:
                     return
@@ -2280,7 +2190,6 @@ class StreamingHandler:
                 )
 
             async def _emit_annotation_citations(raw_annotations: Any) -> None:
-                """Emit url_citation citations, skipping any URL already emitted (per-URL dedup)."""
                 await _notify_unhandled_citations(raw_annotations)
                 if not isinstance(raw_annotations, list) or not raw_annotations:
                     return
@@ -2931,7 +2840,6 @@ class StreamingHandler:
                             )
                         continue
 
-                    # --- Emit reasoning summary once done -----------------------
                     if etype == "response.reasoning_summary_text.done":
                         raw_text = (event.get("text") or "").strip()
                         if raw_text:
@@ -4778,7 +4686,7 @@ class StreamingHandler:
                 handed_back_for_retry = True
                 _record_outcome()
                 raise
-        except Exception as e:  # pragma: no cover - network errors
+        except Exception as e:  # pragma: no cover
             error_occurred = True
             session_log_reason = str(e)
             self.logger.exception("Unexpected error in streaming loop")
@@ -5293,7 +5201,6 @@ class StreamingHandler:
                         exc_info=True,
                     )
 
-            # Clear logs
             if request_id:
                 SessionLogger.release(request_id)
             SessionLogger.cleanup()
@@ -5352,12 +5259,6 @@ class StreamingHandler:
         outcome_sink: dict[str, Any] | None = None,
         retry_handoff: dict[str, Any] | None = None,
     ) -> str | dict[str, Any]:
-        """Reuse the streaming loop logic, but honour `stream=False` at the HTTP layer.
-
-        This delegates to `_run_streaming_loop` with a wrapped emitter so incremental
-        `chat:message` frames are suppressed while still running all value-add logic
-        (tools, citations, usage snapshots, persistence).
-        """
         metadata = {} if metadata is None else metadata
 
         emitter_supplied = event_emitter is not None
@@ -5410,7 +5311,6 @@ class StreamingHandler:
     async def _cleanup_replayed_reasoning(
         self, body: ResponsesBody, valves: Pipe.Valves, message_id: str | None = None
     ) -> None:
-        """Delete once-used reasoning artifacts when retention is limited to the next reply."""
         if valves.PERSIST_REASONING_TOKENS == "conversation":
             return
         refs = getattr(body, "_replayed_reasoning_refs", None)
@@ -5420,7 +5320,7 @@ class StreamingHandler:
             refs, keep_message_id=message_id, tombstone=True
         )
         if deleted:
-            setattr(body, "_replayed_reasoning_refs", [])  # noqa: B010 - undeclared dynamic attribute; setattr keeps pyright quiet
+            setattr(body, "_replayed_reasoning_refs", [])  # noqa: B010
 
 
     def _resolve_llm_endpoint(
@@ -5484,13 +5384,11 @@ class StreamingHandler:
         *,
         valves: Pipe.Valves,
     ) -> tuple[Literal["responses", "chat_completions"], bool]:
-        """Return (endpoint, forced) where forced=True when a FORCE_* valve matched the model id."""
         return self._resolve_llm_endpoint(model_id, valves=valves)
 
 
     @staticmethod
     def _looks_like_responses_unsupported(exc: BaseException) -> bool:
-        """Heuristic: detect 'model doesn't support /responses' so we can retry via /chat/completions."""
         if getattr(exc, "is_streaming_error", False):
             return False
         if isinstance(exc, OpenRouterAPIError):
@@ -5544,22 +5442,13 @@ def _wrap_event_emitter(
     suppress_completion: bool = False,
     suppress_status: bool = False,
 ):
-    """
-    Wrap the given event emitter and optionally suppress specific event types.
-
-    Use-case: reuse the streaming loop for non-stream requests by swallowing
-    incremental 'chat:message' frames while allowing status/citation/usage
-    events through.
-    """
     if emitter is None:
         async def _noop(_event: dict[str, Any]) -> None:
-            """Swallow events when no emitter is provided."""
             return
 
         return _noop
 
     async def _wrapped(event: dict[str, Any]) -> None:
-        """Proxy emitter that suppresses selected event types."""
         etype = (event or {}).get("type")
         if suppress_chat_messages and etype in ("chat:message", "chat:message:delta"):
             return

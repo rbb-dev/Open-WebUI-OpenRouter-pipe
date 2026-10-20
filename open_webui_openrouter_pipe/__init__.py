@@ -1,17 +1,3 @@
-"""OpenRouter pipe for Open WebUI.
-
-This package provides the OpenRouter integration for Open WebUI, including:
-- Domain subsystems: persistence, multimodal, streaming
-- Infrastructure modules: config, registry, transforms, errors, helpers
-- Tool subsystem: tool_registry, tool_schema, tool_executor
-- Orchestrator: pipe (main Pipe class)
-
-IMPORTANT: This module uses LAZY LOADING to avoid import-time side effects.
-All imports are deferred until actually accessed via __getattr__.
-This prevents triggering Open WebUI's heavy initialization (Alembic, embeddings, etc.)
-during simple imports like `from open_webui_openrouter_pipe import Pipe`.
-"""
-
 from typing import TYPE_CHECKING, Any
 
 _FALLBACK_VERSION = "2.8.0"
@@ -21,7 +7,7 @@ try:
     from importlib.metadata import version as _get_version
 
     __version__ = _get_version("open-webui-openrouter-pipe")
-except Exception:  # noqa: BLE001, S110 - see below; no logger exists this early
+except Exception:  # noqa: BLE001, S110
     pass
 
 
@@ -133,8 +119,6 @@ if TYPE_CHECKING:
     run_in_threadpool: Any
 
 
-# Public API - All lazy loaded
-
 __all__ = [
     "DEFAULT_AUTHENTICATION_ERROR_TEMPLATE",
     "DEFAULT_INSUFFICIENT_CREDITS_TEMPLATE",
@@ -148,7 +132,6 @@ __all__ = [
     "_PAYLOAD_FLAG_LZ4",
     "_PAYLOAD_FLAG_PLAIN",
     "_PIPE_RUNTIME_ID",
-    # Domain subsystems
     "ArtifactStore",
     "CompletionsBody",
     "EncryptedStr",
@@ -156,15 +139,10 @@ __all__ = [
     "ModelFamily",
     "MultimodalHandler",
     "NonStreamingAdapter",
-    # Error handling
     "OpenRouterAPIError",
-    # Model registry
     "OpenRouterModelRegistry",
-    # Main classes
     "Pipe",
-    # Data transforms
     "ResponsesBody",
-    # Logging
     "SessionLogger",
     "StatusMessages",
     "StreamingHandler",
@@ -175,7 +153,6 @@ __all__ = [
     "_QueuedToolCall",
     "_SessionLogArchiveJob",
     "_ToolExecutionContext",
-    # Version
     "__version__",
     "_apply_disable_native_websearch_to_payload",
     "_apply_identifier_valves_to_payload",
@@ -213,15 +190,12 @@ __all__ = [
     "_sanitize_path_component",
     "_sanitize_table_fragment",
     "_select_openrouter_http_referer",
-    # Utility functions
     "_serialize_marker",
-    # Helper functions
     "_strictify_schema",
     "_strip_disable_model_settings_params",
     "_template_value_present",
     "_unwrap_config_value",
     "_wrap_event_emitter",
-    # Tool subsystem
     "contains_marker",
     "extract_internal_file_id",
     "generate_item_id",
@@ -234,20 +208,15 @@ __all__ = [
     "run_in_threadpool",
     "sanitize_model_id",
     "split_text_by_markers",
-    # Open WebUI components
     "upload_file_handler",
     "wrap_code_block",
     "write_session_log_archive",
 ]
 
 
-# Lazy Loading Implementation
-
-# Cache for loaded attributes
 _cache: dict = {}
 
 _LAZY_IMPORTS = {
-    # Core config
     "Valves": (".core.config", "Valves"),
     "UserValves": (".core.config", "UserValves"),
     "EncryptedStr": (".core.config", "EncryptedStr"),
@@ -261,7 +230,6 @@ _LAZY_IMPORTS = {
     "_detect_runtime_pipe_id": (".core.config", "_detect_runtime_pipe_id"),
     "_select_openrouter_http_referer": (".core.config", "_select_openrouter_http_referer"),
 
-    # Core errors
     "OpenRouterAPIError": (".core.errors", "OpenRouterAPIError"),
     "StatusMessages": (".core.errors", "StatusMessages"),
     "_build_error_template_values": (".core.errors", "_build_error_template_values"),
@@ -273,7 +241,6 @@ _LAZY_IMPORTS = {
     "_build_openrouter_api_error": (".core.errors", "_build_openrouter_api_error"),
     "_read_rag_file_max_size_mb": (".core.errors", "_read_rag_file_max_size_mb"),
 
-    # Core utils
     "_get_open_webui_config_module": (".core.utils", "_get_open_webui_config_module"),
     "_OPEN_WEBUI_CONFIG_MODULE": (".core.utils", "_OPEN_WEBUI_CONFIG_MODULE"),
     "_safe_json_loads": (".core.utils", "_safe_json_loads"),
@@ -294,7 +261,6 @@ _LAZY_IMPORTS = {
     "_extract_marker_ulid": (".core.utils", "_extract_marker_ulid"),
     "_iter_marker_spans": (".core.utils", "_iter_marker_spans"),
 
-    # API transforms
     "ResponsesBody": (".api.transforms", "ResponsesBody"),
     "CompletionsBody": (".api.transforms", "CompletionsBody"),
     "_apply_disable_native_websearch_to_payload": (".api.transforms", "_apply_disable_native_websearch_to_payload"),
@@ -308,18 +274,15 @@ _LAZY_IMPORTS = {
     "_get_disable_param": (".api.transforms", "_get_disable_param"),
     "_model_params_to_dict": (".api.transforms", "_model_params_to_dict"),
 
-    # Models registry
     "OpenRouterModelRegistry": (".models.registry", "OpenRouterModelRegistry"),
     "ModelFamily": (".models.registry", "ModelFamily"),
     "sanitize_model_id": (".models.registry", "sanitize_model_id"),
 
-    # Requests
     "_debug_print_request": (".requests.debug", "_debug_print_request"),
     "_debug_print_error_response": (".requests.debug", "_debug_print_error_response"),
     "NonStreamingAdapter": (".requests.nonstreaming_adapter", "NonStreamingAdapter"),
     "TaskModelAdapter": (".requests.task_model_adapter", "TaskModelAdapter"),
 
-    # Storage persistence
     "normalize_persisted_item": (".storage.persistence", "normalize_persisted_item"),
     "ArtifactStore": (".storage.persistence", "ArtifactStore"),
     "generate_item_id": (".storage.persistence", "generate_item_id"),
@@ -329,7 +292,6 @@ _LAZY_IMPORTS = {
     "ULID_LENGTH": (".storage.persistence", "ULID_LENGTH"),
     "_ENCRYPTED_PAYLOAD_VERSION": (".storage.persistence", "_ENCRYPTED_PAYLOAD_VERSION"),
 
-    # Storage multimodal
     "extract_internal_file_id": (".storage.owui_files", "extract_internal_file_id"),
     "MultimodalHandler": (".storage.multimodal", "MultimodalHandler"),
     "_guess_image_mime_type": (".storage.multimodal", "_guess_image_mime_type"),
@@ -338,19 +300,16 @@ _LAZY_IMPORTS = {
     "names_a_hostless_owui_file_path": (".storage.owui_files", "names_a_hostless_owui_file_path"),
     "names_an_owui_file_path": (".storage.owui_files", "names_an_owui_file_path"),
 
-    # Tools
     "_classify_function_call_artifacts": (".tools.tool_schema", "_classify_function_call_artifacts"),
     "_strictify_schema": (".tools.tool_schema", "_strictify_schema"),
     "_responses_spec_from_owui_tool_cfg": (".tools.tool_registry", "_responses_spec_from_owui_tool_cfg"),
     "open_webui_runs_the_calls": (".tools.tool_registry", "open_webui_runs_the_calls"),
     "_dedupe_tools": (".tools.tool_registry", "_dedupe_tools"),
 
-    # Streaming
     "_wrap_event_emitter": (".streaming.streaming_core", "_wrap_event_emitter"),
     "StreamingHandler": (".streaming.streaming_core", "StreamingHandler"),
     "EventEmitterHandler": (".streaming.event_emitter", "EventEmitterHandler"),
 
-    # Logging
     "SessionLogger": (".core.logging_system", "SessionLogger"),
     "_SessionLogArchiveJob": (".core.logging_system", "_SessionLogArchiveJob"),
     "write_session_log_archive": (".core.logging_system", "write_session_log_archive"),
@@ -358,11 +317,9 @@ _LAZY_IMPORTS = {
     "Pipe": (".pipe", "Pipe"),
     "_PipeJob": (".pipe", "_PipeJob"),
 
-    # Tool executor
     "_QueuedToolCall": (".tools.tool_executor", "_QueuedToolCall"),
     "_ToolExecutionContext": (".tools.tool_executor", "_ToolExecutionContext"),
 
-    # Plugins
     "PluginBase": (".plugins.base", "PluginBase"),
     "PluginContext": (".plugins.base", "PluginContext"),
     "PluginRegistry": (".plugins.registry", "PluginRegistry"),
@@ -370,16 +327,9 @@ _LAZY_IMPORTS = {
 
 
 def __getattr__(name: str):
-    """Lazy-load all module attributes on first access.
-
-    This prevents triggering Open WebUI's heavy initialization (Alembic,
-    sentence-transformers, langchain, etc.) during simple imports.
-    """
-    # Return cached value if available
     if name in _cache:
         return _cache[name]
 
-    # Handle lazy imports
     if name in _LAZY_IMPORTS:
         module_path, attr_name = _LAZY_IMPORTS[name]
         import importlib
@@ -415,7 +365,7 @@ def __getattr__(name: str):
             _cache[name] = _run
             globals()[name] = _run
             return _run
-        except Exception:  # noqa: BLE001 - this is the package's __getattr__, so anything
+        except Exception:  # noqa: BLE001
             _cache[name] = None
             return None
 

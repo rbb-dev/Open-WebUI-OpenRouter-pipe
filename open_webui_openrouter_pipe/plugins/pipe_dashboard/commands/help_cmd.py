@@ -1,5 +1,3 @@
-"""Help command — list all commands or show details for a specific command."""
-
 from __future__ import annotations
 
 from ..command_registry import CommandRegistry, register_command
@@ -9,9 +7,7 @@ from ..formatters import markdown_table
 
 @register_command("help", summary="List available commands and what they do", category="General", usage="help [command]")
 async def handle_help(ctx: CommandContext) -> str:
-    """Show all commands, or detailed help for a specific command."""
     if ctx.args:
-        # Specific command help
         entry, _ = CommandRegistry.resolve(ctx.args)
         if entry is None:
             safe_args = ctx.args.replace("`", "'")
@@ -27,7 +23,6 @@ async def handle_help(ctx: CommandContext) -> str:
             lines.append(f"**Aliases:** {', '.join(f'`{a}`' for a in entry.aliases)}")
         return "\n".join(lines)
 
-    # General help — single flat table, sorted by name
     commands = CommandRegistry.all_commands()
     if not commands:
         return "No commands registered."

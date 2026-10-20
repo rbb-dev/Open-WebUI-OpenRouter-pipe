@@ -1,10 +1,3 @@
-"""Import all command modules to trigger @register_command decorators.
-
-In package mode, pkgutil discovers modules automatically.  In bundled mode
-(especially compressed bundles where ``__path__`` is empty), pkgutil finds
-nothing — the explicit imports below guarantee commands are always registered.
-"""
-
 from __future__ import annotations
 
 import importlib
@@ -27,7 +20,5 @@ except (AttributeError, NameError, TypeError):
 
 del importlib, pkgutil
 
-# Explicit imports — redundant in package mode (already loaded by pkgutil above)
-# but essential in compressed-bundle mode where pkgutil returns nothing.
 from . import dashboard_cmd as _dashboard_cmd  # noqa: F401
 from . import help_cmd as _help_cmd  # noqa: F401

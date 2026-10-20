@@ -1,5 +1,3 @@
-"""Video model catalog integration."""
-
 from __future__ import annotations
 
 import asyncio
@@ -92,7 +90,6 @@ async def ensure_video_catalog_loaded(
     with_modalities: bool = True,
     wait_for_in_flight: bool = True,
 ) -> None:
-    """Fetch video models and register them into the shared model registry."""
     if getattr(valves, "ENABLE_VIDEO_GENERATION", False):
         stale_list, stale_modalities = _video_catalog_stale(
             cache_seconds, with_modalities, api_key

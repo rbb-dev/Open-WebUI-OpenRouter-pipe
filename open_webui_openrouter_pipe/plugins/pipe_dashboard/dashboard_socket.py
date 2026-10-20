@@ -1,6 +1,3 @@
-"""OWUI socket.io integration for the dashboard.
-"""
-
 from __future__ import annotations
 
 import asyncio

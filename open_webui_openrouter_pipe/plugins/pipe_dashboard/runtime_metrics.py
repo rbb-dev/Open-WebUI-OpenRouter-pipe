@@ -1,13 +1,3 @@
-"""Tiered runtime metrics collection for the SSE dashboard.
-
-Provides four collector functions at different frequencies:
-
-- **identity** (once): version, pipe_id, worker_count
-- **fast** (every 2 s): concurrency, queues, rate limits, sessions, uptime
-- **medium** (~16 s): model catalog health, system health
-- **slow** (~60 s): storage DB queries, config, plugins
-"""
-
 from __future__ import annotations
 
 import logging
@@ -46,11 +36,6 @@ _warned_system_resources: set[str] = set()
 
 
 def collect_identity(pipe: Pipe, *, worker_count: int = 1) -> dict[str, Any]:
-    """Static identity data — sent on the first SSE event only.
-
-    *worker_count* is overridden by the SSE reader when Redis
-    aggregation is active (number of live ``dashboard:worker:*`` keys).
-    """
     try:
         from open_webui_openrouter_pipe import __version__
         version = __version__
@@ -75,11 +60,6 @@ def collect_identity(pipe: Pipe, *, worker_count: int = 1) -> dict[str, Any]:
 
 
 def collect_fast_stats(pipe: Pipe) -> dict[str, Any]:
-    """Lightweight metrics collected every tick.
-
-    Delegates to shared collectors in ``_collectors`` for concurrency,
-    queues, rate limits, and sessions.
-    """
     return {
         "uptime_s": round(time.monotonic() - PROCESS_START, 1),
         "pid": os.getpid(),
@@ -97,7 +77,7 @@ def _credential_in_use(pipe: Any) -> str | None:
         from ...pipe import Pipe
 
         key, error = Pipe._resolve_openrouter_api_key(pipe.valves)
-    except Exception:  # noqa: BLE001 - any failure to resolve the key reads the same way
+    except Exception:  # noqa: BLE001
         return None
     if error or not isinstance(key, str) or not key:
         return None
@@ -167,7 +147,6 @@ def _summed_figure(values: Any) -> int:
 
 
 def collect_medium_stats(pipe: Pipe) -> dict[str, Any]:
-    """Model catalog health + system health indicators."""
     stats: dict[str, Any] = {}
 
     try:
@@ -252,7 +231,6 @@ def collect_medium_stats(pipe: Pipe) -> dict[str, Any]:
 
 
 def collect_system_resources() -> dict[str, Any]:
-    """Host CPU/memory + free space on the data-dir volume (psutil-optional)."""
     out: dict[str, Any] = {}
     try:
         import psutil
@@ -292,7 +270,6 @@ def collect_system_resources() -> dict[str, Any]:
     try:
         usage = shutil.disk_usage(data_path)
     except OSError:
-        # OSError, not Exception: the env import has its own handlers above
         logger.log(
             warn_level(_warned_system_resources, "disk_usage"),
             "pipe_dashboard: cannot read disk usage for %s; the dashboard will omit it",
@@ -306,7 +283,6 @@ def collect_system_resources() -> dict[str, Any]:
 
 
 def _collect_db_stats(pipe: Pipe) -> dict[str, Any]:
-    """Artifact-store DB circuit breaker + write-pool backlog."""
     store = getattr(pipe, "_artifact_store", None)
     breakers = tripped = pending = workers = 0
     if store is not None:
@@ -339,7 +315,6 @@ def _collect_db_stats(pipe: Pipe) -> dict[str, Any]:
 
 
 def collect_slow_stats(pipe: Pipe) -> dict[str, Any]:
-    """Heavy data: storage DB queries, config, plugins."""
     stats: dict[str, Any] = {}
 
     store = getattr(pipe, "_artifact_store", None)

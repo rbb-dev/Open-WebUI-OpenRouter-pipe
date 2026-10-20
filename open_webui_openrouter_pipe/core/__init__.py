@@ -1,14 +1,3 @@
-"""Core infrastructure module.
-
-Foundation services required by all domains:
-- Configuration schemas (Valves, EncryptedStr)
-- Error handling classes
-- Error message formatting
-- Session logging
-- Circuit breaker resilience
-- Pure utility functions
-"""
-
 from .circuit_breaker import CircuitBreaker
 from .config import EncryptedStr, UserValves, Valves
 from .error_formatter import ErrorFormatter

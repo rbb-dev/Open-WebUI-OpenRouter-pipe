@@ -1,5 +1,3 @@
-"""Introspect valves and overlay enrichment (title/group/help) for the Config tab."""
-
 from __future__ import annotations
 
 import logging
@@ -41,7 +39,6 @@ def _literal_options(annotation: Any) -> list[Any] | None:
 
 
 def _base_type(annotation: Any) -> tuple[Any, bool]:
-    """Collapse ``Optional[X]`` / ``X | None`` to ``(X, nullable)``."""
     args = typing.get_args(annotation)
     if args and type(None) in args:
         non_none = [a for a in args if a is not type(None)]
@@ -97,10 +94,6 @@ def json_safe(value: Any) -> Any:
 
 
 def describe_valves(valves_cls: type) -> list[dict[str, Any]]:
-    """Return the static per-field spec (structure + enrichment overlay).
-
-    No live values — the caller merges the current saved values in separately.
-    """
     specs = [dict(spec) for spec in _describe_structure(valves_cls)]
     for spec in specs:
         fld = valves_cls.model_fields.get(spec["name"])
@@ -146,7 +139,6 @@ def _describe_structure(valves_cls: type) -> tuple[dict[str, Any], ...]:
 
 
 def drift(valves_cls: type) -> dict[str, list[str]]:
-    """Enrichment drift: valves with no entry, and entries with no valve."""
     live = set(valves_cls.model_fields)
     mapped = set(CONFIG_META)
     return {"unenriched": sorted(live - mapped), "orphaned": sorted(mapped - live)}

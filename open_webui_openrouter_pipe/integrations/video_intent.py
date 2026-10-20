@@ -1,13 +1,3 @@
-"""Video intent classifier — orchestration, validation, history hygiene.
-
-Wraps the structured_task module to invoke a task model with JSON-schema
-strict response_format, then validates the parsed output against schema
-invariants.
-
-Degrade-open universally: any failure returns a fallback `VideoIntentResult`
-(intent=text_to_video, frame_plan=[], prompt extracted from latest user
-message). NEVER raises to the caller.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -46,10 +36,6 @@ from .video_intent_prompts import (
     INTENT_SCHEMA_NAME,
     INTENT_SYSTEM_PROMPT,
 )
-
-# -----------------------------------------------------------------------------
-# Marker tags for the hidden intent-disclosure block
-# -----------------------------------------------------------------------------
 
 logger = logging.getLogger(__name__)
 
@@ -108,21 +94,6 @@ def resolve_intent_user_setting(
     coerce: Callable[[Any], Any] | None = None,
     off_position: Any = _NO_OFF_POSITION,
 ) -> Any:
-    """Prefer the per-request user value pushed by the per-model video filter
-    inlet, fall back to the admin valve.
-
-    Args:
-        metadata: the request metadata dict (may be None/non-dict).
-        field: short key under ``video_intent`` (e.g. "enabled").
-        valves: the merged Valves instance from the pipe call.
-        admin_field: full admin valve attribute name (e.g.
-            "VIDEO_INTENT_ENABLED").
-        default: returned when both the metadata key and admin valve are
-            missing.
-        coerce: optional callable applied to the user value before return —
-            useful for normalising str → enum-like values that came from
-            JSON serialisation.
-    """
     admin_value = getattr(valves, admin_field, default)
     if off_position is not _NO_OFF_POSITION and admin_value == off_position:
         return admin_value
@@ -170,12 +141,6 @@ _ZERO_WIDTH_CHARS = ("\u200b", "\u200c", "\u200d", "\ufeff", "\u2060")
 
 
 def neutralise_control_tokens(text: str) -> str:
-    """Replace prompt-injection control tokens with spaces.
-
-    Defense-in-depth: applies NFKC normalisation to fold fullwidth lookalikes
-    (`＜｜...｜＞`) into ASCII, strips zero-width characters that could split
-    tokens, then runs the regex.
-    """
     if not text:
         return ""
     normalised = unicodedata.normalize("NFKC", text)
@@ -183,10 +148,6 @@ def neutralise_control_tokens(text: str) -> str:
         normalised = normalised.replace(zw, "")
     return _CONTROL_TOKEN_RE.sub(lambda m: " " * len(m.group(0)), normalised)
 
-
-# -----------------------------------------------------------------------------
-# Dataclasses
-# -----------------------------------------------------------------------------
 
 IntentLiteral = Literal[
     "text_to_video",
@@ -246,10 +207,6 @@ class VideoIntentResult:
     task_model_absent: bool = False
 
 
-# -----------------------------------------------------------------------------
-# History hygiene
-# -----------------------------------------------------------------------------
-
 def _intent_block_end_match(content: str, start: re.Match[str]) -> re.Match[str] | None:
     if start.start() == 0 or content[start.start() - 1] == "\n":
         return _INTENT_END_LINE_START_RE.search(content, start.end())
@@ -268,10 +225,6 @@ def first_intent_block_region(content: str) -> str:
 
 
 def strip_intent_blocks(content: str) -> str:
-    """Remove `[openrouter:v1:intent_block_start]: #` ... `[openrouter:v1:intent_block_end]: #`
-    regions from a chat-content string. Preserves videojob/videomodel/<video>
-    markers (those sit OUTSIDE the intent block).
-    """
     if not content:
         return ""
     pieces: list[str] = []
@@ -416,15 +369,6 @@ def collect_prior_videos_from_messages(
     *,
     truncated: list[bool] | None = None,
 ) -> list[dict[str, Any]]:
-    """Extract prior assistant videos from chat history.
-
-    Returns chronological list of {index, message_index, file_url, job_id,
-    model_id_if_known}. Strips intent-disclosure blocks before parsing so
-    thumbnails are NOT mistaken for prior videos. Pairs each <video> tag
-    with the nearest preceding videojob/videomodel markers via span offsets,
-    so multi-video assistant turns are correctly enumerated (F9).
-    Validates each file_url against the OWUI shape regex (S11).
-    """
     return _window_prior_videos(_scan_messages(messages)[1], truncated)
 
 
@@ -466,8 +410,6 @@ def _reference_source_keys(video_meta: dict[str, Any]) -> list[str]:
 def collect_attachments_from_video_meta(
     video_meta: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """Collect attachments from filter-injected video_meta as a flat list.
-    """
     if not isinstance(video_meta, dict):
         return []
     reference_keys = set(_reference_source_keys(video_meta))
@@ -498,10 +440,6 @@ def collect_attachments_from_video_meta(
     return flat
 
 
-# -----------------------------------------------------------------------------
-# Task payload builder
-# -----------------------------------------------------------------------------
-
 def build_task_payload(
     *,
     latest_user_text: str,
@@ -511,11 +449,6 @@ def build_task_payload(
     attachments: list[dict[str, Any]],
     selected_model: dict[str, Any],
 ) -> dict[str, Any]:
-    """Build the JSON payload sent as 'user' role content to the task model.
-
-    Conversation is ALREADY pre-processed (intent blocks stripped) by the caller.
-    Image bytes are NEVER included — markers and metadata only.
-    """
     sm = {
         "id": selected_model.get("id") if isinstance(selected_model, dict) else "",
         "supported_frame_images": (
@@ -535,10 +468,6 @@ def build_task_payload(
         "selected_model": sm,
     }
 
-
-# -----------------------------------------------------------------------------
-# Validator (schema invariants)
-# -----------------------------------------------------------------------------
 
 _VALID_INTENTS = {
     "text_to_video", "image_to_video", "modify_prior_video",
@@ -568,7 +497,6 @@ def _strip_placeholders(text: str) -> str:
 def _normalize_prior_video_index(
     raw: Any, prior_videos: list[dict[str, Any]]
 ) -> int | None:
-    """Resolve -1 to last index; bounds-check; return None if invalid."""
     if not isinstance(raw, int) or not prior_videos:
         return None
     if raw == -1:
@@ -601,11 +529,6 @@ def validate_intent_params(
     max_clarifications: int,
     fallback_prompt: str,
 ) -> VideoIntentResult:
-    """Validate raw classifier output against schema invariants.
-
-    Drop-not-raise pattern for per-entry failures. Top-level missing-required
-    fields fall back to safe defaults.
-    """
     downgrades: list[str] = []
 
     intent_raw = raw.get("intent")
@@ -614,7 +537,6 @@ def validate_intent_params(
         else "text_to_video"  # type: ignore[assignment]
     )
 
-    # Confidence
     confidence_raw = raw.get("confidence")
     confidence: ConfidenceLiteral = (
         confidence_raw if isinstance(confidence_raw, str) and confidence_raw in _VALID_CONFIDENCE
@@ -637,7 +559,6 @@ def validate_intent_params(
 
     reason = str(raw.get("reason") or "").strip()[:500]
 
-    # Clarification
     clarification: ClarificationPayload | None = None
     clar_raw = raw.get("clarification")
     if isinstance(clar_raw, dict):
@@ -757,7 +678,6 @@ def validate_intent_params(
                     downgrades.append(f"frame_plan_capped_at_{_FRAME_PLAN_MAX}")
                 break
 
-    # Cross-field invariants
     if intent == "text_to_video" and frame_plan:
         downgrades.append("forced_empty_frame_plan_for_text_to_video")
         frame_plan = []
@@ -826,7 +746,6 @@ def validate_intent_params(
 
 
 def _intent_mode_for_telemetry(result: VideoIntentResult) -> str:
-    """Compress intent + frame_plan into a single telemetry-friendly mode label."""
     if result.clarification and result.clarification.needs:
         return "clarify"
     if not result.frame_plan:
@@ -848,15 +767,6 @@ def emit_telemetry_log(
     task_model_latency_ms: int | None = None,
     task_model_fallback_triggered: bool | None = None,
 ) -> None:
-    """Emit one structured INFO log line per video intent turn.
-
-    `task_model_latency_ms` and `task_model_fallback_triggered` are optional
-    overrides; when omitted, values are read from the result (which the
-    classifier orchestrator stamps at decision time). The caller (video.py)
-    emits this AFTER the terminal path runs (materialise / block / clarify)
-    so `result.frames_extracted` reflects what actually happened — not what
-    the classifier requested.
-    """
     requested_prior = sum(
         1 for e in result.frame_plan if e.source.startswith("prior_video_")
     )
@@ -900,7 +810,6 @@ def emit_telemetry_log(
 
 
 def _hash_chat_id(chat_id: str) -> str:
-    """Hash chat_id for log-safe identification (8-char prefix)."""
     if not chat_id:
         return ""
     import hashlib
@@ -908,8 +817,6 @@ def _hash_chat_id(chat_id: str) -> str:
 
 
 def fallback_intent_result(prompt: str) -> VideoIntentResult:
-    """Produce the degrade-open VideoIntentResult: text_to_video with the
-    user's raw prompt and an empty frame plan. Used on every failure path."""
     return VideoIntentResult(
         intent="text_to_video",
         frame_plan=[],
@@ -923,10 +830,6 @@ def fallback_intent_result(prompt: str) -> VideoIntentResult:
         discarded_plan=False,
     )
 
-
-# -----------------------------------------------------------------------------
-# resolve_intent — main orchestration (degrade-open)
-# -----------------------------------------------------------------------------
 
 async def resolve_intent(
     *,
@@ -942,24 +845,6 @@ async def resolve_intent(
     fallback_prompt_text: str = "",
     metadata: dict[str, Any] | None = None,
 ) -> VideoIntentResult:
-    """Run the classifier; ALWAYS returns a VideoIntentResult — never raises.
-
-    Args:
-        body: OWUI request body (must contain 'messages').
-        video_meta: Filter-injected metadata (`frame_images`, `params`, etc.).
-        video_model: Model spec snapshot (with `supported_frame_images`).
-        valves: Pipe Valves object.
-        request: FastAPI Request.
-        user_obj: Resolved UserModel (or compatible). Required by OWUI's
-            generate_chat_completion.
-        chat_id: Chat session id (for telemetry).
-        logger: Pipe logger.
-        invoke_chat_completion: Async callable that takes form_data and returns
-            the chat-completion response. Defaults to OWUI's generate_chat_completion
-            via lazy import; can be overridden for tests.
-        fallback_prompt_text: Pre-computed fallback prompt (typically the latest
-            user message text). Used by the degrade-open path.
-    """
     fallback = fallback_intent_result(fallback_prompt_text)
     _t0: float | None = None
     conversation_window: list[bool] = []
@@ -1097,7 +982,7 @@ async def resolve_intent(
         return result
     except asyncio.CancelledError:
         raise
-    except Exception as exc:  # noqa: BLE001 - the classifier degrades open on every fault
+    except Exception as exc:  # noqa: BLE001
         logger.warning(
             "video_intent classifier failed (degrade-open): %s", _fault_code(exc)
         )
@@ -1131,21 +1016,13 @@ def _build_conversation(
     *,
     truncated: list[bool] | None = None,
 ) -> list[dict[str, Any]]:
-    """Compact conversation snapshot for the task-model payload.
-
-    Strips intent disclosure blocks. Reports per-turn:
-    {message_index, role, text, has_video_marker, attached_image_count}.
-    Does NOT include image data — markers/counts only.
-    """
     return _window_conversation(_scan_messages(messages)[0], truncated)
 
 
 def _make_default_invoke(
     request: Any, user_obj: Any
 ) -> Callable[[dict[str, Any]], Awaitable[Any]]:
-    """Build the default invoke closure that calls OWUI's generate_chat_completion."""
     async def _invoke(form_data: dict[str, Any]) -> Any:
-        # Lazy import to avoid pulling OWUI at module load
         from open_webui.utils.chat import (
             generate_chat_completion,  # type: ignore[import-not-found]
         )
@@ -1154,10 +1031,6 @@ def _make_default_invoke(
         )
     return _invoke
 
-
-# -----------------------------------------------------------------------------
-# Intent Disclosure Block rendering
-# -----------------------------------------------------------------------------
 
 _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
     "frame_extract_failed": "Could not extract frame from previous video.",
@@ -1363,19 +1236,8 @@ _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
 
 
 def _user_facing_downgrade_message(code: str) -> str:
-    """Map an internal downgrade code to a user-friendly message.
-
-    Strips every numeric `_<N>` segment (whether trailing, e.g.
-    `frame_extract_failed_idx_3`, or embedded, e.g.
-    `prior_video_index_0_unresolvable`) and looks up the base code.
-    Falls back to a generic message — never echoes raw exception text.
-    """
     if not isinstance(code, str) or not code:
         return "A non-critical step was skipped."
-    # Codes embed a numeric index either as a trailing suffix
-    # (e.g. "frame_extract_failed_idx_3") or in the MIDDLE
-    # (e.g. "prior_video_index_0_unresolvable"). A plain startswith misses the
-    # middle case, so strip the numeric segments before matching the base keys.
     normalized = re.sub(r"_\d+", "", code)
     for prefix, message in _DOWNGRADE_USER_MESSAGES.items():
         if normalized.startswith(prefix):
@@ -1406,18 +1268,6 @@ def should_emit_confirmation_footer(
     confirm_mode: str,
     person_prompt_text: str | None = None,
 ) -> bool:
-    """Decide whether to render the Intent Disclosure block based on the
-    `VIDEO_INTENT_CONFIRM_MODE` valve.
-
-    - `on_reference` (default): render when the plan reuses prior video
-      content OR there are multiple frames (i.e. anything beyond a simple
-      single-attachment image-to-video).
-    - `low_confidence`: render only when the classifier flagged its decision
-      as low-confidence — the user gets to verify the guess.
-    - `never`: never render.
-
-    Unknown mode strings fall through to `on_reference` semantics.
-    """
     if confirm_mode == "never":
         return False
     if intent.reason == "degrade_open_fallback":
@@ -1447,10 +1297,6 @@ def render_intent_disclosure_block(
     thumb_urls: list[str],
     standing_sent: bool = False,
 ) -> str:
-    """Render the markdown intent-disclosure block.
-
-    Hidden markers wrap a visible blockquote with thumbnails + cleaned prompt.
-    """
     if not (intent.frame_plan or intent.prompt or intent.downgrades):
         return ""
 
@@ -1511,7 +1357,6 @@ def render_intent_disclosure_block(
 
 
 def render_clarification_message(intent: VideoIntentResult) -> str:
-    """Render the clarification chat message."""
     if not intent.clarification or not intent.clarification.needs:
         return ""
     lines: list[str] = []

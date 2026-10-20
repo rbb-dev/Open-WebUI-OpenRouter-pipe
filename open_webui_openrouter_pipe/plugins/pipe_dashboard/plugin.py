@@ -1,5 +1,3 @@
-"""Pipe Dashboard plugin — virtual model providing a live dashboard."""
-
 from __future__ import annotations
 
 import asyncio
@@ -17,8 +15,6 @@ from .actions import _dashboard_enabled
 from .auth import ACCESS_DENIED_MD, UNDETERMINED_MD
 from .authz import UNDETERMINED, can_view_known, model_id, resolve_user
 from .command_registry import CommandRegistry
-
-# Trigger command auto-imports so @register_command decorators fire
 from .commands.help_cmd import handle_help as _pd_commands_loaded  # noqa: F401
 from .config_service import persisted_dashboard_enabled
 from .context import CommandContext
@@ -107,7 +103,6 @@ def _overlay_update_form(
 
 
 def _registry_pricing(model_id: str) -> dict[str, Any] | None:
-    """Pricing dict for a model id (accepts dotted pipe-prefixed ids)."""
     try:
         from ...models.registry import OpenRouterModelRegistry, _catalog_norm
 
@@ -160,12 +155,6 @@ _ST_LIVENESS_EVENT_TYPES = frozenset({
 
 @PluginRegistry.register
 class PipeDashboardPlugin(PluginBase):
-    """Virtual model that acts as a live dashboard.
-
-    Subscribes to ``on_models`` (to inject the virtual model) and
-    ``on_request`` (to intercept messages sent to it).
-    """
-
     plugin_id = "pipe-dashboard"
     plugin_name = "Pipe Dashboard"
     plugin_version = "1.0.0"
@@ -178,7 +167,7 @@ class PipeDashboardPlugin(PluginBase):
         "on_request_alive": 50,
         "on_generation_complete": 50,
     }
-    _master_switch_memo: dict[str, bool] = {}  # noqa: RUF012 - a seed; on_init gives every instance its own
+    _master_switch_memo: dict[str, bool] = {}  # noqa: RUF012
 
     plugin_valves: ClassVar[dict[str, tuple]] = {
         "PIPE_DASHBOARD_ENABLE": (bool, Field(
@@ -316,8 +305,6 @@ class PipeDashboardPlugin(PluginBase):
         set_snapshot_getter(pipe_id, self._live_snapshot)
         register_action_route()
 
-        # Start the per-worker stats publisher background task.
-        # The publisher is idle until a dashboard joins the viewers room.
         self._maybe_start_publisher(get_pipe)
         self._maybe_start_sweep()
         self._maybe_start_auto_update()
@@ -343,7 +330,6 @@ class PipeDashboardPlugin(PluginBase):
             logger.debug("usage purge task start failed", exc_info=True)
 
     def _maybe_start_auto_update(self) -> None:
-        """Start the auto-update loop task if an event loop is available."""
         if _retired(getattr(self, "ctx", None)):
             return
         if self.update_service is None:
@@ -395,7 +381,6 @@ class PipeDashboardPlugin(PluginBase):
                 return
 
     def _maybe_start_publisher(self, get_pipe: Any) -> None:
-        """Start the stats publisher if an event loop is available."""
         log = logging.getLogger(__name__)
 
         def _get_redis():
@@ -437,14 +422,10 @@ class PipeDashboardPlugin(PluginBase):
         self._maybe_start_sweep()
         if _update_auto_wanted(self.ctx):
             self._maybe_start_auto_update()
-        # Write a clean display name into OWUI's Models table so the UI shows
-        # "Pipe Dashboard" instead of the ugly concatenated format.
         await self._ensure_model_overlay(_display_name, _description, _dashboard_on, _gate_read_ok)
         if not _dashboard_on:
             return
         models.append({"id": _PIPE_DASHBOARD_MODEL_ID, "name": _display_name})
-        # Retry both on every model-list request — on_init may fire before
-        # OWUI's socket module or the event loop is ready on this worker.
         get_pipe = getattr(self, "_get_pipe", None)
         pipe_id = self._registration_pipe_id()
         register_socket_handler(pipe_id, get_pipe)
@@ -458,7 +439,6 @@ class PipeDashboardPlugin(PluginBase):
         enabled: bool | None = None,
         read_ok: bool = True,
     ) -> None:
-        """Create or update the OWUI Models table entry for this virtual model."""
         try:
             from open_webui.models.models import (
                 ModelForm,
@@ -560,12 +540,11 @@ class PipeDashboardPlugin(PluginBase):
                     )
                 except Exception:
                     logging.getLogger(__name__).debug("session track start failed", exc_info=True)
-            return None  # Not for us — let the request continue
+            return None
 
         if not await _plugins_enabled(self.ctx.pipe):
             return None
 
-        # Plugin disabled — don't handle requests for our model
         if not await _dashboard_enabled(self.ctx.pipe):
             return None
 
@@ -589,10 +568,8 @@ class PipeDashboardPlugin(PluginBase):
                 content=self._build_task_fallback(task_name),
             )
 
-        # Extract the user's message text
         command_text = self._extract_user_message(body) or "help"
 
-        # Resolve and dispatch command
         entry, args = CommandRegistry.resolve(command_text)
         if entry is None:
             safe_text = command_text.replace("`", "'")
@@ -615,15 +592,7 @@ class PipeDashboardPlugin(PluginBase):
             result = f"## Command Error\n\n`{entry.name}` failed: {safe_exc}"
         return self.ctx.build_response(model=_PIPE_DASHBOARD_MODEL_ID, content=result)
 
-    # ── Private helpers ──
-
     def _is_our_model(self, candidate: str) -> bool:
-        """Check if the model ID refers to this Pipe Dashboard plugin.
-
-        Open WebUI may prefix with ``<pipe-id>.`` for manifold pipes.
-        Only the known pipe ID prefix is accepted — arbitrary prefixes
-        like ``evil.pipe-dashboard`` are rejected.
-        """
         if not candidate:
             return False
         mid = candidate.lower()
@@ -637,10 +606,6 @@ class PipeDashboardPlugin(PluginBase):
 
     @staticmethod
     def _build_task_fallback(task_name: str) -> str:
-        """Build OWUI task stub content (title/tags/emoji/follow-ups).
-
-        Matching is substring-based, checked in order: follow, tag, title, emoji.
-        """
         name = (task_name or "").strip().lower()
         if not name:
             return ""

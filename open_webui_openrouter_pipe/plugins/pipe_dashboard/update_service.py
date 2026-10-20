@@ -1,12 +1,3 @@
-"""Self-update service for the pipe_dashboard Update tab.
-
-Downloads tagged release bundles from the configured GitHub repo, validates
-them (size cap, sha256 digest, frontmatter, OWUI-version gate), snapshots the
-current function row to OWUI Files, then runs OWUI's own loader sequence
-(exec-validate + hot reload) before writing the new content to the row.
-All OWUI access goes through lazy imports so tests can patch the real modules.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -1583,23 +1574,10 @@ class UpdateService:
     )
 
     async def _row_valves(self) -> dict[str, Any]:
-        """The persisted update valves, merged over the in-memory ones.
-
-        Prefer `_row_valves_checked` at any call site that must fail closed: this one
-        cannot distinguish "no stored override" from "the store could not be read", and
-        returns the in-memory copy either way.
-        """
         merged, _stored_read_ok = await self._row_valves_checked()
         return merged
 
     async def _row_valves_checked(self) -> tuple[dict[str, Any], bool]:
-        """As `_row_valves`, plus whether the persisted read actually succeeded.
-
-        Three outcomes, not two: a value, absent-so-use-the-default, and unreadable.
-        Callers that gate an action on an operator's stored setting must deny on the
-        third -- falling back to an in-memory True would let an operator's disable be
-        overridden by the very failure that hid it.
-        """
         valves = self._valves()
         fields = getattr(type(valves), "model_fields", None) or {}
         merged: dict[str, Any] = {
@@ -1611,9 +1589,6 @@ class UpdateService:
         stored: Any = None
         stored_read_ok = True
         try:
-            # `_await_if_needed`, not a bare await: this reader is sync in older Open
-            # WebUI, and a TypeError here classifies the row unreadable, which the
-            # callers below turn into a refusal rather than a fallback.
             stored = await _await_if_needed(
                 self._functions().get_function_valves_by_id(self._pipe().id)
             )
@@ -1626,14 +1601,7 @@ class UpdateService:
             stored = None
             stored_read_ok = False
         if stored == {} and stored_read_ok:
-            # Empty decoded dict: either nothing is stored, or the blob would not
-            # decrypt. Only the raw column distinguishes them.
             try:
-                # The ciphertext lives in the Function.valves ORM COLUMN. FunctionModel
-                # -- what get_function_by_id returns -- has no `valves` field at all, so
-                # reading it there was dead code that could never fire, and a test stub
-                # carrying a `valves` attribute certified it green. This is the same
-                # query Open WebUI's own get_function_valves_by_id runs.
                 from open_webui.internal.db import get_async_db_context
                 from open_webui.models.functions import Function
                 from sqlalchemy import select
@@ -1642,10 +1610,6 @@ class UpdateService:
                     _res = await _db.execute(select(Function.valves).filter_by(id=self._pipe().id))
                     raw = _res.scalar_one_or_none()
             except Exception:
-                # Only a POSITIVELY observed ciphertext downgrades the read. An Open
-                # WebUI without this reader, or a transient failure on it, is not
-                # evidence of corruption -- treating it as such would deny the update
-                # surface on every host that lacks the API.
                 logger.debug(
                     "update: raw valve column unavailable; cannot tell an unset row "
                     "from an undecodable one",

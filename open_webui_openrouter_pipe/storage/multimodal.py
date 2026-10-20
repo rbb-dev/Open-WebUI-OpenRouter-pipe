@@ -1,13 +1,3 @@
-"""Multimodal content handling (files, images, audio, video).
-
-This module provides:
-- File retrieval from Open WebUI storage
-- Remote URL downloads with SSRF protection (HTTPS-only by default; HTTP allowlist via valves)
-- File uploads to Open WebUI storage
-- Image processing and data URL handling
-- Chat file tracking
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -31,7 +21,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib.parse import quote, urljoin
 
-# External dependencies
 import aiohttp
 import httpx
 from aiohttp.abc import AbstractResolver, ResolveResult
@@ -43,7 +32,6 @@ from tenacity import (
 )
 from yarl import URL as _DialledURL
 
-# Internal imports
 from ..core.config import (
     _MAX_MODEL_PROFILE_IMAGE_BYTES,
     _MAX_MODEL_PROFILE_IMAGE_PIXELS,
@@ -74,8 +62,6 @@ from ..core.warn_latch import warn_level
 if TYPE_CHECKING:
     from .owui_files import OwuiFileGateway
 
-
-# Standalone Utility Functions
 
 ADDRESS_CHECK_SECONDS = 5.0
 
@@ -372,16 +358,6 @@ _IMAGE_EXTENSION_ALIASES = {"jpg": "jpeg", "tif": "tiff"}
 
 
 def canonical_image_mime(declared: str) -> str | None:
-    """Return the media type the pipe will store, or None when the declaration is unknown.
-
-    Takes the declaration as the reply gave it -- casing and parameters included -- because
-    media types are case-insensitive and a caller that had to normalise first would be one
-    more place for the two spellings to diverge.
-
-    The declaration comes from the upstream reply, so it reaches a stored filename and a
-    content-type header. Answering from the same closed set the extension comes from is
-    what keeps those two from drifting, and what keeps an arbitrary string out of both.
-    """
     if not isinstance(declared, str):
         return None
     normalised = declared.split(";", 1)[0].strip().lower()
@@ -394,7 +370,6 @@ def canonical_image_mime(declared: str) -> str | None:
 
 
 def image_extension_for_mime(mime_type: str | None) -> str:
-    """Return the filename extension every persistence path uses for an image mime type."""
     ext = "png"
     if isinstance(mime_type, str) and "/" in mime_type:
         ext = (mime_type.split("/")[-1] or "png").split("+")[0]
@@ -436,16 +411,6 @@ def _icon_png_bytes(data: bytes) -> bytes:
 
 
 def _guess_image_mime_type(url: str, content_type: str | None, data: bytes) -> str | None:
-    """Guess MIME type for image data by inspecting magic bytes and URL extension.
-
-    Args:
-        url: Source URL (for extension fallback)
-        content_type: HTTP Content-Type header value
-        data: Raw image bytes
-
-    Returns:
-        Detected MIME type or None if unrecognized
-    """
     content_type = (content_type or "").split(";", 1)[0].strip().lower()
     if content_type.startswith("image/"):
         return content_type
@@ -770,14 +735,6 @@ def _sniff_evidence(data: bytes) -> Evidence | None:
 
 
 def _extract_openrouter_og_image(html: str) -> str | None:
-    """Extract OpenGraph or Twitter image URL from HTML meta tags.
-
-    Args:
-        html: HTML content to parse
-
-    Returns:
-        Image URL or None if not found
-    """
     if not isinstance(html, str) or not html:
         return None
     patterns = (
@@ -792,8 +749,6 @@ def _extract_openrouter_og_image(html: str) -> str | None:
             return match.group(1)
     return None
 
-
-# MultimodalHandler Class
 
 class _VettedTransport:
     __slots__ = ("holders", "loop", "protection", "retired", "session")
@@ -815,24 +770,6 @@ class _VettedTransport:
 
 
 class MultimodalHandler:
-    """Manages multimodal content operations.
-
-    This class encapsulates all file, image, audio, and video operations including:
-    - File retrieval from Open WebUI storage
-    - Remote URL downloads with SSRF protection (HTTPS-only by default)
-    - File uploads to Open WebUI storage
-    - Image processing and data URL handling
-    - Chat file tracking
-
-    Architecture:
-    - aiohttp for HTTP downloads
-    - Open WebUI database integration for file records
-    - Base64 encoding for data URLs
-    - MIME type detection
-    - YouTube URL handling
-    - SSRF protection with IP address validation (HTTP disabled by default)
-    """
-
     _vetted_transport: _VettedTransport | None = None
     _vetted_draining: _VettedTransport | None = None
 
@@ -846,16 +783,6 @@ class MultimodalHandler:
         file_gateway: OwuiFileGateway | None = None,
         valves_owner: Any | None = None,
     ):
-        """Initialize the MultimodalHandler with dependencies from Pipe.
-
-        Args:
-            logger: Logger instance for diagnostics
-            valves: Pipe.Valves instance with configuration
-            http_session: Optional aiohttp session for remote downloads (can be set later)
-            artifact_store: Optional ArtifactStore for file persistence
-            emit_status_callback: Optional callback for status updates
-            file_gateway: Optional OwuiFileGateway for authorized OWUI file I/O
-        """
         self.logger = logger
         self._valves = valves
         self._valves_owner = valves_owner
@@ -902,11 +829,9 @@ class MultimodalHandler:
         return self._valves if live is None else live
 
     def set_http_session(self, session: aiohttp.ClientSession | None) -> None:
-        """Set or clear the HTTP session for remote downloads."""
         self._http_session = session
 
     def set_artifact_store(self, store: Any | None) -> None:
-        """Set or clear the artifact store reference."""
         self._artifact_store = store
 
 
@@ -920,66 +845,6 @@ class MultimodalHandler:
         *,
         refused: dict[str, str] | None = None
     ) -> dict[str, Any] | None:
-        """Download file or image from remote URL with exponential backoff retry logic.
-
-        This method fetches content from HTTP/HTTPS URLs with automatic retry on transient
-        failures using exponential backoff. Retry behavior is configurable via valves.
-
-        Args:
-            url: The HTTP or HTTPS URL to download
-            timeout_seconds: Optional timeout in seconds per attempt (defaults to valve setting, max 60s)
-
-        Returns:
-            Dictionary containing:
-                - 'data': Raw bytes of the downloaded content
-                - 'mime_type': Normalized MIME type from Content-Type header
-                - 'url': Original URL for reference
-            Returns None if download fails or URL is invalid
-
-        Retry Behavior (configurable via valves):
-            - REMOTE_DOWNLOAD_MAX_RETRIES: Maximum retry attempts (default: 3)
-            - REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS: Initial delay before first retry (default: 5s)
-            - REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS: Maximum total retry time (default: 45s)
-            - Uses exponential backoff: delay * 2^attempt
-
-        Retryable Errors:
-            - Network errors (connection timeout, DNS failure, etc.)
-            - HTTP 5xx server errors
-            - HTTP 429 rate limit errors
-
-        Non-Retryable Errors:
-            - HTTP 4xx client errors (except 429)
-            - Invalid URLs
-            - Files exceeding configured size limit (REMOTE_FILE_MAX_SIZE_MB)
-
-        Size Limits:
-            - Maximum size configurable via REMOTE_FILE_MAX_SIZE_MB valve (default: 50MB)
-            - When Open WebUI RAG uploads enforce FILE_MAX_SIZE, the limit auto-aligns (never exceeding 500MB)
-            - Files exceeding the effective limit are rejected with a warning
-
-        Supported Protocols:
-            - https:// only by default
-            - http:// allowed only when ALLOW_INSECURE_HTTP=True and host is allowlisted
-            - Other protocols return None
-
-        MIME Type Normalization:
-            - 'image/jpg' is normalized to 'image/jpeg'
-            - MIME type extracted from Content-Type header (charset ignored)
-
-        Note:
-            - Timeout is capped at 60 seconds per attempt to prevent hanging requests
-            - All exceptions are caught and logged, returning None
-            - Empty or non-HTTP URLs return None immediately
-            - Retry delays use exponential backoff to be respectful of remote servers
-
-        Example:
-            >>> result = await self._download_remote_url(
-            ...     "https://example.com/image.jpg"
-            ... )
-            >>> if result:
-            ...     print(f"Downloaded {len(result['data'])} bytes")
-            ...     print(f"MIME type: {result['mime_type']}")
-        """
         url = (url or "").strip()
         if not is_http_or_https_url(url):
             return None
@@ -1101,7 +966,6 @@ class MultimodalHandler:
                                 return None
                             payload.extend(chunk)
 
-                    # Success
                     if attempt > 1:
                         elapsed = time.perf_counter() - start_time
                         self.logger.info(
@@ -1352,7 +1216,6 @@ class MultimodalHandler:
         return resolved is not None
 
     def _parse_insecure_http_allowlist(self, raw: str) -> set[tuple[str, int | None]]:
-        """Parse ALLOW_INSECURE_HTTP_HOSTS into host/port pairs (case-insensitive)."""
         if not isinstance(raw, str):
             return set()
         raw = raw.strip()
@@ -1395,7 +1258,6 @@ class MultimodalHandler:
         return allowed
 
     def _is_insecure_http_allowed(self, url: str) -> bool:
-        """Return True when an http:// URL is explicitly allowed by valves."""
         try:
             parsed = _DialledURL(url)
         except ValueError:
@@ -1441,15 +1303,6 @@ class MultimodalHandler:
         return False
 
     def _request_ips_blocking(self, url: str) -> list[str] | None:
-        """Single SSRF gate (blocking): sequences the insecure-HTTP policy,
-        the ENABLE_SSRF_PROTECTION valve, and address validation in one place
-        so the pre-flight checks and the pinned download path cannot drift.
-
-        Returns:
-            None      — blocked (HTTP policy or address validation failed)
-            []        — allowed WITHOUT an IP pin (SSRF protection disabled)
-            non-empty — allowed; pin the connection to one of these IPs
-        """
         if not self._is_insecure_http_allowed(url):
             return None
         if not self.valves.ENABLE_SSRF_PROTECTION:
@@ -1477,10 +1330,6 @@ class MultimodalHandler:
         return (host, port)
 
     def _resolve_validated_ips(self, url: str) -> list[str] | None:
-        """Resolve the URL's host and return every resolved IP (as strings) iff
-        ALL of them are public addresses; return None if resolution fails or ANY
-        address targets a private/reserved range.
-        """
         target = self._parsed_target(url)
         if target is None:
             return None
@@ -1514,7 +1363,6 @@ class MultimodalHandler:
                     seen_ips.add(comp)
                     ip_objects.append(candidate)
 
-            # Fast-path literal IPv4/IPv6 hosts
             try:
                 literal_ip = ipaddress.ip_address(host)
             except ValueError:
@@ -1532,7 +1380,7 @@ class MultimodalHandler:
                         host,
                     )
                     return None
-                except (OSError, TypeError, ValueError):  # pragma: no cover - defensive guard
+                except (OSError, TypeError, ValueError):  # pragma: no cover
                     self.logger.exception("Unexpected DNS error for %s", host)
                     return None
 
@@ -1577,16 +1425,6 @@ class MultimodalHandler:
     def _build_pinned_request(
         self, url: str, ip: str
     ) -> tuple[str, dict[str, str], dict[str, Any]]:
-        """Rewrite `url` to connect to the already-validated `ip` while keeping
-        the original Host header and TLS SNI/cert verification for the hostname.
-
-        Returns (request_url, headers, extensions) for an httpx call that cannot
-        be DNS-rebound: the URL host is the IP literal (so httpx connects there
-        with no further resolution), the Host header carries the original
-        hostname (so virtual-hosted servers route correctly), and for https the
-        sni_hostname extension makes the TLS handshake present/verify the
-        original hostname (httpcore: server_hostname = sni_hostname or host).
-        """
         parsed = _DialledURL(url)
         host = parsed.raw_host or ""
         port = parsed.explicit_port
@@ -1603,14 +1441,6 @@ class MultimodalHandler:
         self, url: str, seconds: float | None = None,
         charge: Callable[[float], None] | None = None,
     ) -> tuple[str, dict[str, str], dict[str, Any]] | None:
-        """Validate `url` against the SSRF guard and return (request_url,
-        headers, extensions) for an IP-pinned httpx request, or None if blocked.
-
-        When SSRF protection is disabled, the URL is returned unchanged with no
-        pin (matching the legacy _is_safe_url fast-path). Otherwise the host is
-        resolved+validated exactly once and the connection is pinned to a
-        validated IP, so httpx cannot re-resolve to a rebound private address.
-        """
         if seconds is None:
             seconds = ADDRESS_CHECK_SECONDS
         started = time.monotonic()
@@ -1839,25 +1669,6 @@ class MultimodalHandler:
                 pool.shutdown(wait=False, cancel_futures=True)
 
     def _is_youtube_url(self, url: str | None) -> bool:
-        """Check if URL is a valid YouTube video URL.
-
-        Supports both standard and short YouTube URL formats:
-            - https://www.youtube.com/watch?v=VIDEO_ID
-            - https://youtu.be/VIDEO_ID
-            - http://youtube.com/watch?v=VIDEO_ID (http variant)
-
-        Args:
-            url: URL to validate
-
-        Returns:
-            True if URL matches YouTube video pattern, False otherwise
-
-        Note:
-            - Does not validate that the video ID exists or is accessible
-            - Only checks URL format, not video availability
-            - Query parameters (like &t=30s) are allowed
-            - HTTP is disabled by default; http:// URLs require ALLOW_INSECURE_HTTP allowlisting
-        """
         if not url:
             return False
 
@@ -1869,11 +1680,6 @@ class MultimodalHandler:
         return any(re.match(pattern, url, re.IGNORECASE) for pattern in patterns)
 
     async def _get_effective_remote_file_limit_mb(self) -> int:
-        """Return the active remote download limit, honoring RAG constraints.
-
-        Returns:
-            Effective file size limit in MB
-        """
         memo = _request_remote_limit_mb.get()
         if memo:
             return memo[0]
@@ -1900,14 +1706,6 @@ class MultimodalHandler:
 
     @timed
     async def _fetch_image_as_data_url(self, url: str) -> str | None:
-        """Fetch image from URL and convert to data URL.
-
-        Args:
-            url: Image URL (supports relative URLs)
-
-        Returns:
-            Data URL string or None if fetch/conversion fails
-        """
         url = (url or "").strip()
         if not url:
             return None
@@ -1950,7 +1748,7 @@ class MultimodalHandler:
                 exc.message,
             )
             return None
-        except Exception as exc:  # noqa: BLE001 - the last arm of a fetch, and the class is all it may say
+        except Exception as exc:  # noqa: BLE001
             self.logger.debug(
                 "Failed to download model icon (url=%s): %s",
                 icon_subject,
@@ -2030,7 +1828,7 @@ class MultimodalHandler:
                         output_height=250,
                     )
                 )
-            except Exception as exc:  # noqa: BLE001 - any imaging failure, and its text is the diagnosis
+            except Exception as exc:  # noqa: BLE001
                 self.logger.debug(
                     "Failed to rasterize SVG model icon (url=%s): %s",
                     icon_subject,
@@ -2080,7 +1878,7 @@ class MultimodalHandler:
                 icon_subject,
             )
             return None
-        except Exception as exc:  # noqa: BLE001 - any imaging failure, and its text is the diagnosis
+        except Exception as exc:  # noqa: BLE001
             self.logger.debug(
                 "Failed to convert model icon to PNG (url=%s): %s",
                 icon_subject,
@@ -2111,14 +1909,6 @@ class MultimodalHandler:
 
     @timed
     async def _fetch_maker_profile_image_url(self, maker_id: str) -> str | None:
-        """Fetch OpenRouter maker profile image URL from their page.
-
-        Args:
-            maker_id: Maker identifier
-
-        Returns:
-            Profile image URL or None if not found
-        """
         maker_id = (maker_id or "").strip()
         if not maker_id:
             return None
@@ -2149,48 +1939,6 @@ class MultimodalHandler:
 
 
     def _parse_data_url(self, data_url: str) -> dict[str, Any] | None:
-        """Extract base64 data from data URL.
-
-        Parses data URLs in the format: data:<mime_type>;base64,<base64_data>
-
-        Args:
-            data_url: Data URL string to parse
-
-        Returns:
-            Dictionary containing:
-                - 'data': Decoded bytes from base64
-                - 'mime_type': Normalized MIME type
-                - 'b64': Original base64 string (without prefix)
-            Returns None if parsing fails or format is invalid
-
-        Format Requirements:
-            - Must contain ';base64,' separator
-            - Base64 data must be valid
-            - Size must not exceed BASE64_MAX_SIZE_MB valve (default: 50MB)
-
-        MIME Type Normalization:
-            - 'image/jpg' is normalized to 'image/jpeg'
-            - MIME type extracted from prefix (e.g., 'data:image/png;base64,...')
-
-        Size Validation:
-            - Validates size before decoding to prevent memory issues
-            - Uses BASE64_MAX_SIZE_MB valve for limit
-            - Returns None if size exceeds limit
-
-        Note:
-            - Invalid base64 data results in None return
-            - Oversized data results in None return
-            - Parsing failures are caught and logged; an unconfigured file gateway raises
-            - Non-data URLs return None immediately
-
-        Example:
-            >>> result = self._parse_data_url(
-            ...     "data:image/jpeg;base64,/9j/4AAQSkZJRg..."
-            ... )
-            >>> if result:
-            ...     print(f"MIME: {result['mime_type']}")
-            ...     print(f"Size: {len(result['data'])} bytes")
-        """
         if self._file_gateway is None:
             raise RuntimeError("File gateway is not configured for data URL validation")
         try:
@@ -2201,7 +1949,6 @@ class MultimodalHandler:
             if split is None:
                 return None
 
-            # Extract and normalize MIME type
             mime_type = split[0].partition(":")[2].split(";", 1)[0].lower().strip()
             if mime_type == "image/jpg":
                 mime_type = "image/jpeg"

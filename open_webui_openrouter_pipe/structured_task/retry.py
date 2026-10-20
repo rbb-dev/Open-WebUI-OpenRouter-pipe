@@ -1,8 +1,3 @@
-"""Candidate-loop retry harness for structured-output task-model calls.
-
-Derives from `.external/seedream.py:600-635` candidate-loop body, generalized
-into a reusable helper.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -198,25 +193,6 @@ async def call_with_candidates(
     repair_messages: Callable[[str], list[dict[str, Any]]] | None = None,
     schema_keys: frozenset[str] | None = None,
 ) -> dict[str, Any]:
-    """Loop candidates calling the task model; return first success.
-
-    Args:
-        candidates: Ordered list of model IDs to try.
-        build_form_data: Per-candidate factory that returns the chat-completion
-            form_data dict (must include "model", "messages", optionally
-            "response_format", "temperature", "stream").
-        invoke: Async callable that takes form_data and returns the raw response
-            (typically a closure over OWUI's `generate_chat_completion`).
-        logger: For DEBUG payload logs and WARNING failure logs.
-        log_redact: Redaction function for DEBUG payload logging.
-
-    Returns:
-        Parsed JSON dict from the first successful candidate.
-
-    Raises:
-        RuntimeError: when no candidates configured or all fail. The last
-            exception is chained via `from`.
-    """
     if not candidates:
         raise TaskModelFault("no_task_model_candidates")
 
@@ -282,7 +258,7 @@ async def call_with_candidates(
                 return params
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:  # noqa: BLE001 - the candidate loop absorbs every fault and reports the last one
+            except Exception as exc:  # noqa: BLE001
                 attempt_error = exc
                 logger.log(
                     warn_level(

@@ -1,12 +1,3 @@
-"""Shared per-process stats collectors for pipe_dashboard.
-
-Provides a single source of truth for reading concurrency, queue,
-rate-limit, and session metrics from a Pipe instance.  Both
-``runtime_metrics.collect_fast_stats`` (single-worker SSE) and
-``dashboard_publisher._collect_worker_payload`` (multi-worker Redis)
-delegate to these functions.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -107,7 +98,6 @@ def _waiter_count(sem: Any) -> int:
 
 
 def _semaphore_active(sem: Any, limit: int) -> int:
-    """Live usage of a semaphore, or 0 when its internals cannot be read."""
     if sem is None or not limit:
         return 0
     try:
@@ -124,13 +114,11 @@ def _semaphore_active(sem: Any, limit: int) -> int:
 
 
 def collect_concurrency(pipe: Any) -> dict[str, int]:
-    """Read concurrency semaphore state from the pipe."""
     slots = _limits(pipe)
     sem = slots.request_semaphore
     sem_limit = slots.request_limit or 0
     tool_sem = slots.tool_semaphore
     tool_limit = slots.tool_limit or 0
-    # Fall back to valve config when semaphores aren't materialized yet
     if not sem_limit:
         valves = getattr(pipe, "valves", None)
         sem_limit = getattr(valves, "MAX_CONCURRENT_REQUESTS", 0) or 0
@@ -146,7 +134,6 @@ def collect_concurrency(pipe: Any) -> dict[str, int]:
 
 
 def collect_queues(pipe: Any) -> dict[str, int]:
-    """Read queue depths, bounds, and semaphore wait backlogs from the pipe."""
     rq = getattr(pipe, "_request_queue", None)
     lq = getattr(pipe, "_log_queue", None)
     slm = getattr(pipe, "_session_log_manager", None)
@@ -164,7 +151,6 @@ def collect_queues(pipe: Any) -> dict[str, int]:
 
 
 def collect_video_pool(pipe: Any) -> dict[str, int]:
-    """Read the video-generation concurrency pool (limit + live usage)."""
     slots = _limits(pipe)
     limit = _safe_int(slots.video_limit)
     sem = slots.video_semaphore
@@ -185,7 +171,6 @@ def collect_video_pool(pipe: Any) -> dict[str, int]:
 
 
 def collect_rate_limits(pipe: Any) -> dict[str, Any]:
-    """Read circuit breaker / rate limit state from the pipe."""
     cb = getattr(pipe, "_circuit_breaker", None)
     if not cb:
         return {
@@ -205,7 +190,6 @@ def collect_rate_limits(pipe: Any) -> dict[str, Any]:
     now = time.time()
     cutoff = now - window if window else 0
 
-    # Request breakers
     records = getattr(cb, "_breaker_records", {})
     tracked = 0
     with_failures = 0
@@ -237,7 +221,6 @@ def collect_rate_limits(pipe: Any) -> dict[str, Any]:
         if recent >= threshold:
             tripped += 1
 
-    # Tool breakers
     tool_breakers = getattr(cb, "_tool_breakers", {})
     tool_tracked = 0
     tool_tripped = 0
@@ -251,7 +234,6 @@ def collect_rate_limits(pipe: Any) -> dict[str, Any]:
             if tool_count >= threshold:
                 tool_tripped += 1
 
-    # Auth failures (class-level)
     auth_active = 0
     try:
         from ...core.circuit_breaker import CircuitBreaker
@@ -282,5 +264,4 @@ def collect_rate_limits(pipe: Any) -> dict[str, Any]:
 
 
 def collect_sessions(pipe: Any) -> dict[str, int]:
-    """Read the true top-level in-flight call gauge."""
     return {"in_flight": _safe_int(getattr(pipe, "_active_pipes_calls", 0))}

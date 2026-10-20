@@ -1,10 +1,3 @@
-"""Request input sanitization.
-
-This module handles cleaning and normalizing request input before sending
-to the provider API. It removes non-replayable artifacts and normalizes
-tool call items to ensure consistent format.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -59,8 +52,6 @@ def _normalise_tool_call_id(value: Any) -> str:
 
 
 def _reasoning_item_unsigned(item: dict[str, Any]) -> bool:
-    """True for a /responses reasoning item that is plaintext thinking with no
-    signature and no encrypted payload -- unreplayable to Anthropic."""
     if _clean_str(item.get("signature")) or _clean_str(item.get("encrypted_content")):
         return False
     content = item.get("content")
@@ -78,7 +69,6 @@ def _reasoning_item_unsigned(item: dict[str, Any]) -> bool:
 
 
 def _detail_unsigned_text(detail: Any) -> bool:
-    """True for a reasoning.text detail that has text but no signature."""
     if not isinstance(detail, dict) or detail.get("type") != "reasoning.text":
         return False
     if _clean_str(detail.get("signature")):
@@ -88,16 +78,6 @@ def _detail_unsigned_text(detail: Any) -> bool:
 
 
 def _strip_unreplayable_anthropic_reasoning(items: list[Any]) -> list[Any]:
-    """Drop thinking that is unreplayable to Anthropic (plaintext with no signature
-    and no encrypted payload); caller must gate on an Anthropic target. The provider
-    requires a turn's whole reasoning sequence to be replayed intact and rejects a
-    partially modified one, so removal is all-or-nothing per turn: /responses reasoning
-    items are grouped into turn spans -- delimited only by USER messages (the real turn
-    boundary, matching the reinterleave/tool-pairing logic), since within one assistant
-    turn the reasoning is split across tool items AND assistant text-chunk messages --
-    and every reasoning item in a span is dropped when ANY item in that span is
-    unreplayable. A message's reasoning_details is likewise dropped whole when ANY entry
-    is an unsigned reasoning.text."""
     drop_idx: set[int] = set()
     span: list[int] = []
     tainted = False
@@ -216,7 +196,6 @@ def _sanitize_request_input(
     verdicts: dict[str, bool | None] | None = None,
     event_emitter: Any = None,
 ) -> BudgetOutcome | None:
-    """Remove non-replayable artifacts that may have snuck into body.input."""
     picture_refusals: list[tuple[str, str, str]] = []
     items = getattr(body, "input", None)
     if not isinstance(items, list):
@@ -229,7 +208,6 @@ def _sanitize_request_input(
     removed = len(items) - len(sanitized)
 
     def _strip_tool_item_extras(item: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-        """Return a minimal, portable /responses input shape for tool items."""
         changed = False
         item_type = item.get("type")
         if item_type == "function_call":
@@ -369,17 +347,6 @@ def _validate_tool_call_pairs(
     *,
     logger: logging.Logger,
 ) -> list[Any]:
-    """Ensure function_call / function_call_output items are properly paired.
-
-    * Orphaned function_call_output (no matching function_call): dropped.
-    * Orphaned function_call (no matching function_call_output): a stub output
-      is synthesised immediately after the call -- but only for *interior*
-      orphans.  A function_call is considered "interior" (historical) when a
-      user message appears after it in the input array, meaning a new
-      conversation turn started and the call should have had an output.
-      Frontier function_call items (no user message after them) are left
-      alone because they represent pending tool executions.
-    """
     call_counts: Counter[str] = Counter()
     output_counts: Counter[str] = Counter()
     positions: dict[str, list[int]] = {}

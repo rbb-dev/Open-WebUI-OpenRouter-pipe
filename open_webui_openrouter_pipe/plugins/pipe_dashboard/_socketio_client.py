@@ -1,8 +1,3 @@
-"""Generated module — vendored socket.io client (socket.io-client v4.8.3).
-
-Regenerate with ``python scripts/build_pipe_dashboard_socketio.py``; do not edit.
-"""
-
 from __future__ import annotations
 
 SOCKETIO_UMD_SHA384 = "sha384-Yf4YAvFvKwWn8OWlmrC4uKlmukLHHhGW+vZBC+IjvU7JiJYGJI5Z7ea0xLGpQjnE"

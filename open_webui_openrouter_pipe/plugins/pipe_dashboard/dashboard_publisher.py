@@ -1,18 +1,3 @@
-"""Per-worker background stats task: Redis slice publishing + socket.io emits.
-
-Each uvicorn worker runs one async task with three modes:
-
-1. **Emitting** — this worker has local members in the ``pipe_dashboard_viewers``
-   socket.io room. It renews the ``{ns}:dashboard:active`` flag, writes its own
-   slice, reads all workers' slices from Redis, aggregates, merges the tiered
-   collectors, and emits the payload to the room (local delivery only).
-2. **Publishing** — no local viewers, but another worker set the active flag:
-3. **Idle** — no viewers anywhere: one Redis EXISTS per ``_PD_POLL_INTERVAL``,
-   woken instantly via the ``{ns}:dashboard:wake`` pub/sub channel.
-
-Without Redis a single worker emits directly from its local collectors.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -166,12 +151,6 @@ def _slice_chat_key(chat_id: str) -> str:
 
 
 def _collect_worker_payload(pipe: Any) -> dict[str, Any]:
-    """Collect compact per-worker stats for Redis publishing.
-
-    Only includes data that is *unique* to this process — shared data
-    (models, storage, config, plugins) is collected locally by the
-    emitting worker and doesn't need Redis sync.
-    """
     c = collect_concurrency(pipe)
     q = collect_queues(pipe)
     rl = collect_rate_limits(pipe)
@@ -272,7 +251,6 @@ _PD_VIDEO_MAP = {
 
 
 def expand_worker_payload(compact: dict[str, Any]) -> dict[str, Any]:
-    """Expand a compact Redis payload into the full dashboard field names."""
     health = compact.get("h")
     sessions: dict[str, Any] = {"in_flight": compact.get("s", 0)}
     if "sa" in compact:
@@ -294,13 +272,6 @@ def expand_worker_payload(compact: dict[str, Any]) -> dict[str, Any]:
 
 
 def aggregate_worker_payloads(payloads: list[dict[str, Any]]) -> dict[str, Any]:
-    """Aggregate expanded payloads from multiple workers into a single payload.
-
-    Numeric fields (active values AND per-process capacity limits) are summed
-    across workers; workers whose slice lacks a section are skipped rather
-    than counted as zero, and breaker config takes the max so a slice from an
-    older schema can't zero the cluster values.
-    """
     if not payloads:
         return {}
 
@@ -451,12 +422,6 @@ async def _scan_worker_slices(client: Any, namespace: str) -> list[dict[str, Any
 
 
 async def _read_redis_workers(client: Any, namespace: str) -> list[dict[str, Any]] | None:
-    """Read and expand all live worker slices from Redis.
-
-    Returns ``None`` on a read error (so the caller can substitute the last
-    known worker set instead of collapsing to single-worker), and ``[]`` only
-    when the scan legitimately finds no slices.
-    """
     try:
         return await _redis_op(_scan_worker_slices(client, namespace))
     except Exception:
@@ -517,7 +482,6 @@ def _is_superseded(pipe: Any) -> bool:
 
 
 async def _redis_alive(pipe: Any, client: Any = None) -> bool:
-    """Liveness probe: a bounded real ping, not client-object existence."""
     target = client if client is not None else getattr(pipe, "_redis_client", None)
     if target is None:
         return False
@@ -549,7 +513,6 @@ async def _build_emit_payload(
     slow_state: dict[str, Any],
     agg_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Assemble one dashboard emit: fast aggregate + tiered collectors."""
     pid = os.getpid()
     payload: dict[str, Any] = {"tick": tick}
     worker_count = 1
@@ -705,17 +668,6 @@ async def run_dashboard_publisher(
     get_redis: Any,
     namespace: str,
 ) -> None:
-    """Long-running background task: slice publishing + viewer emits.
-
-    Parameters
-    ----------
-    get_pipe:
-        Callable returning the current pipe instance (or None).
-    get_redis:
-        Callable returning ``(redis_client, redis_enabled)`` tuple.
-    namespace:
-        Redis key namespace prefix (e.g. ``"openrouter"``).
-    """
     pid = os.getpid()
     active_key = f"{namespace}:dashboard:active"
     worker_key = f"{namespace}:dashboard:worker:{_PD_HOST_TAG}:{pid}"

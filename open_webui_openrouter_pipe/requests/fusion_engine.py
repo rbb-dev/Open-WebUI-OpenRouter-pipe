@@ -170,9 +170,6 @@ class FusionInnerInvocation:
     features: dict = field(default_factory=dict)
     user_id: str = ""
     disable_native_websearch: Any = None
-    # Carried from the outer request so every inner call sees the SAME snapshot of the
-    # user's valves. Without them each member re-read the row, so a valve saved mid-run
-    # could leave one panel member routing with ZDR and another without it, in one turn.
     user_valves: Any = None
     rejected_user_valves: list = field(default_factory=list)
     user_zdr_decision: Any = None

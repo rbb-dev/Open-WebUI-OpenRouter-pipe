@@ -1,8 +1,3 @@
-"""Request Processing Orchestrator for OpenRouter.
-
-This module handles the main request processing logic after transformation.
-"""
-
 from __future__ import annotations
 
 import base64
@@ -918,15 +913,7 @@ def _pre_present_keys(content_blocks: list[Any]) -> set[Any]:
 
 
 class RequestOrchestrator:
-    """Orchestrates the processing of transformed OpenRouter requests."""
-
     def __init__(self, pipe: Pipe, logger: logging.Logger):
-        """Initialize RequestOrchestrator.
-
-        Args:
-            pipe: Parent Pipe instance for accessing configuration and methods
-            logger: Logger instance for debugging
-        """
         self._pipe = pipe
         self.logger = logger
 
@@ -1229,10 +1216,6 @@ class RequestOrchestrator:
                     total_bytes += declared
 
             def _decode_base64_prefix(data: str, *, byte_count: int = 96) -> bytes:
-                """Decode a small prefix of base64 to allow MIME/container sniffing.
-
-                Defensive by design: any anomaly returns empty bytes and forces conservative routing.
-                """
                 if not data:
                     return b""
                 wanted = max(1, min(byte_count, 4096))
@@ -1256,7 +1239,6 @@ class RequestOrchestrator:
                 return decoded[:wanted]
 
             def _sniff_audio_format(prefix: bytes) -> str:
-                """Best-effort audio container sniff for routing (mp3/wav vs other)."""
                 if not prefix:
                     return ""
                 if prefix.startswith(b"RIFF") and len(prefix) >= 12 and prefix[8:12] == b"WAVE":
@@ -1937,16 +1919,9 @@ class RequestOrchestrator:
         if user_zdr_decision is not None:
             user_requests_zdr, zdr_reason = user_zdr_decision
         elif allow_user_zdr and not admin_enforce_zdr:
-            # Read once per request, at the entry point, and carried here on the job.
-            # Re-reading cost a second full user-row fetch and produced a SECOND
-            # snapshot: a valve saved between the two reads left the request honouring
-            # one for every other setting and the other for the privacy routing.
             if user_valves is None:
                 user_valves, rejected_user_valves = await self._pipe._read_user_valves(__user__)
             rejected = rejected_user_valves or []
-            # A rejected field is positive evidence: the row was read, REQUEST_ZDR was
-            # in it, and it would not parse -- so the user's answer is genuinely lost
-            # and routing without ZDR could break an opt-in they made.
             if "REQUEST_ZDR" in rejected:
                 self.logger.warning(
                     "The user's Zero Data Retention preference could not be parsed; "
@@ -2346,11 +2321,6 @@ class RequestOrchestrator:
             if asks_for_help(prompt_text):
                 api_model_id = OpenRouterModelRegistry.api_model_id(normalized_model_id) or normalized_model_id
                 image_model = video_spec.get("image_model") if isinstance(video_spec, dict) else None
-                # Prefer the contract the model's filter was built from, so the controls
-                # help lists are the controls the chat UI drew. It is absent when nothing
-                # installs filters, and help still has to describe the model, so fall
-                # back to reading the contract directly -- one request, on an explicit
-                # user action, not on every message.
                 endpoint_record = OpenRouterModelRegistry.image_endpoint(
                     api_model_id, _contract_target(valves)
                 )
@@ -2615,7 +2585,7 @@ class RequestOrchestrator:
 
         _reconcile_tool_fields(responses_body)
 
-        setattr(responses_body, "api_model", OpenRouterModelRegistry.api_model_id(selected_model_id) or normalized_model_id)  # noqa: B010 - dynamic attribute not declared on ResponsesBody
+        setattr(responses_body, "api_model", OpenRouterModelRegistry.api_model_id(selected_model_id) or normalized_model_id)  # noqa: B010
 
         retry_handoff: dict[str, Any] = {}
 

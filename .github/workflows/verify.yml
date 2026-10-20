@@ -54,6 +54,11 @@ jobs:
           source .venv/bin/activate
           ruff check open_webui_openrouter_pipe/ scripts/ filters/
 
+      - name: Check production code for prose
+        run: |
+          source .venv/bin/activate
+          python scripts/strip_prose.py --check
+
       - name: Build monolith bundles
         run: |
           source .venv/bin/activate

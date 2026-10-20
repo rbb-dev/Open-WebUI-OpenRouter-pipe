@@ -1876,8 +1876,7 @@ pipes()
         The contract sweep behind it holds a second lock, and that is
         what the request path's contract opt-out actually buys: such a
         caller takes the model-list lock and never queues behind a sweep
-        it did not ask for, which is the promise the parameter's own
-        docstring makes. The two locks are adjacent, not nested, so a
+        it did not ask for. The two locks are adjacent, not nested, so a
         cancellation between them leaves the models registered and the
         model clock stamped -- strictly better than one lock held across
         both halves, where a cancellation mid-sweep lost the models and

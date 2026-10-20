@@ -1,8 +1,3 @@
-"""Thumbnail generation for the Intent Disclosure Block.
-
-256x256 JPEG with letterbox-style aspect preservation. Compose RGBA on white.
-Pure CPU-bound; caller wraps in to_thread when called from async context.
-"""
 from __future__ import annotations
 
 import io
@@ -30,11 +25,6 @@ def make_thumbnail(
     target_size: int = 256,
     quality: int = 85,
 ) -> Thumbnail:
-    """Decode arbitrary image bytes via PIL, composite RGBA on white,
-    resize to target_size x target_size with letterbox aspect preservation,
-    re-encode as JPEG at the requested quality.
-    Rejects oversized inputs (>50 MB) and decompression bombs.
-    """
     if not image_bytes:
         raise ValueError("image_bytes is empty")
     if len(image_bytes) > _MAX_INPUT_BYTES:

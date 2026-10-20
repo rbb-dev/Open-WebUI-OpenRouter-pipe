@@ -1,16 +1,3 @@
-"""Logging system with session-based log capture and archival.
-
-This module handles all logging-related functionality:
-- SessionLogger: Per-request logger with context-aware buffering
-- Log event classification and formatting
-- Async log queue processing
-- Session log archival (encrypted zip files)
-- Automatic cleanup of stale sessions
-
-The SessionLogger uses contextvars to track request_id and session_id,
-enabling per-request log isolation and structured event capture.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -68,16 +55,12 @@ def bounded_log_record_text(text: str, limit: int = _LOG_RECORD_MAX_CHARS) -> st
     return f"{text[:limit]}\n...(truncated: {omitted:,} characters omitted)..."
 
 
-# Session Log Archive Job
-
 class ArchiveWriteInterrupted(Exception):
     pass
 
 
 @dataclass(slots=True)
 class _SessionLogArchiveJob:
-    """Represents a single session log archive request destined for the writer thread."""
-
     base_dir: str
     zip_password: bytes
     zip_compression: str
@@ -101,11 +84,6 @@ class _SessionLogArchiveJob:
 
 
 def _safe_message(record: logging.LogRecord) -> str:
-    """Message text for a record whose ``getMessage()`` failed.
-
-    Never invokes user ``__str__``/``__repr__``: a hostile message object would
-    raise again out of the fallback and drop the record from the buffer entirely.
-    """
     msg = getattr(record, "msg", "")
     if isinstance(msg, str):
         return msg
@@ -145,7 +123,7 @@ class _RedactionFilter(logging.Filter):
             if rid:
                 with SessionLogger._state_lock:
                     SessionLogger._session_last_seen[rid] = time.time()
-        except Exception:  # noqa: BLE001, S110 - logging Filter: self-log re-enters Logger.handle
+        except Exception:  # noqa: BLE001, S110
             pass
         had_args = bool(getattr(record, "args", ()))
         if not hasattr(record, "raw_msg"):
@@ -153,7 +131,7 @@ class _RedactionFilter(logging.Filter):
             if isinstance(record.msg, str) and had_args:
                 try:
                     raw = record.msg % record.args
-                except Exception:  # noqa: BLE001 - logging Filter: self-log re-enters Logger.handle
+                except Exception:  # noqa: BLE001
                     raw = record.msg
             record.raw_msg = (
                 _scrub_surrogates_if_present(raw) if isinstance(raw, str) else raw
@@ -164,36 +142,36 @@ class _RedactionFilter(logging.Filter):
         if isinstance(raw_message, str):
             try:
                 redacted_msg = _data_url_log_subject(raw_message)
-            except Exception:  # noqa: BLE001 - logging Filter: self-log re-enters Logger.handle
+            except Exception:  # noqa: BLE001
                 redacted_msg = raw_message
             record.redacted_msg = redacted_msg
             try:
                 record.msg = _neutralise_log_text(redacted_msg)
-            except Exception:  # noqa: BLE001 - logging Filter: self-log re-enters Logger.handle
+            except Exception:  # noqa: BLE001
                 record.msg = redacted_msg
         else:
             try:
                 derived = _safe_message(record)
-            except Exception:  # noqa: BLE001 - logging Filter: self-log re-enters Logger.handle
+            except Exception:  # noqa: BLE001
                 derived = ""
             derived = _scrub_surrogates_if_present(derived)
             try:
                 redacted_msg = _data_url_log_subject(derived)
-            except Exception:  # noqa: BLE001 - logging Filter: self-log re-enters Logger.handle
+            except Exception:  # noqa: BLE001
                 redacted_msg = derived
             record.raw_msg = redacted_msg
             record.redacted_msg = redacted_msg
             try:
                 record.msg = _neutralise_log_text(redacted_msg)
-            except Exception:  # noqa: BLE001 - logging Filter: self-log re-enters Logger.handle
+            except Exception:  # noqa: BLE001
                 record.msg = redacted_msg
-        if record.exc_info:  # noqa: SIM102 - nested so the sentinel guards the whole block
+        if record.exc_info:  # noqa: SIM102
             if not getattr(record, "_exc_shaped", False):
                 record._exc_shaped = True  # type: ignore[attr-defined]
                 raw_exc = None
                 try:
                     raw_exc = "".join(traceback.format_exception(*record.exc_info))
-                except Exception:  # noqa: BLE001, S110 - logging Filter: self-log re-enters Logger.handle
+                except Exception:  # noqa: BLE001, S110
                     pass
                 scrub_changed = False
                 if isinstance(raw_exc, str):
@@ -206,7 +184,7 @@ class _RedactionFilter(logging.Filter):
                     changed = False
                     try:
                         deformed, changed = _deformed_exception_text(raw_exc)
-                    except Exception:  # noqa: BLE001, S110 - logging Filter: self-log re-enters Logger.handle
+                    except Exception:  # noqa: BLE001, S110
                         pass
                     if deformed is not None:
                         record.exc_text = deformed  # type: ignore[attr-defined]
@@ -214,14 +192,12 @@ class _RedactionFilter(logging.Filter):
                         shaped = None
                         try:
                             shaped = _shaped_exc_info(record.exc_info, deformed)
-                        except Exception:  # noqa: BLE001, S110 - logging Filter: self-log re-enters Logger.handle
+                        except Exception:  # noqa: BLE001, S110
                             pass
                         if shaped is not None:
                             record.exc_info = shaped
         return True
 
-
-# SessionLogger Class
 
 _RECORD_SHAPE_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}[.,]\d{3}[ \t]"
@@ -274,7 +250,7 @@ def _render_exception_suffix(event: dict[str, Any]) -> str:
         return ""
     try:
         text = str(block.get("text") or "").rstrip()
-    except Exception:  # noqa: BLE001 - render helper; a bad payload must not lose the line
+    except Exception:  # noqa: BLE001
         return "\n<<unrenderable exception>>"
     if not text:
         return ""
@@ -301,7 +277,7 @@ def _render_event_line(event: dict[str, Any], default_user_id: str = "-") -> str
     message = event.get("message")
     try:
         message_str = str(message) if message is not None else ""
-    except Exception:  # noqa: BLE001 - str-coercion guard in render helper; sentinel fallback
+    except Exception:  # noqa: BLE001
         message_str = "<<unrenderable message>>"
     return (
         f"{asctime} [{level}] [user={uid}] {_neutralise_log_text(message_str)}"
@@ -310,22 +286,6 @@ def _render_event_line(event: dict[str, Any], default_user_id: str = "-") -> str
 
 
 def resolve_level(name: str | None, fallback: int) -> int:
-    """A real logging level, or *fallback*.
-
-    `getattr(logging, name, fallback)` returns ANY attribute of the module, so a typo
-    that happens to match one -- GLOBAL_LOG_LEVEL=BASIC_FORMAT -- yields a format
-    string where an int is expected. The default only covers absent, never wrong-kind.
-    Bare `getattr(logging, name)` is worse again: it raises, and the sites that used it
-    run per request.
-
-    NOTSET is rejected rather than returned as 0. It is not a threshold -- as one it
-    admits everything -- so accepting it made GLOBAL_LOG_LEVEL=NOTSET mean "emit
-    everything" to the process floor while the valve fell back to INFO.
-
-    The single resolver for a level name in this package: `core.config` derives the
-    LOG_LEVEL valve default from this function, so the valve and the process floor
-    cannot disagree about what a given GLOBAL_LOG_LEVEL means.
-    """
     resolved = logging.getLevelName((name or "").strip().upper())
     if not isinstance(resolved, int) or resolved <= logging.NOTSET:
         return fallback
@@ -343,23 +303,6 @@ class _PipeConsoleHandler(logging.StreamHandler):
 
 
 class SessionLogger:
-    """Per-request logger that captures console output and an in-memory log buffer.
-
-    The logger tracks two identifiers via contextvars:
-    - session_id: Open WebUI session identifier (for status/errors/debug).
-    - request_id: Per-request unique id used to key the in-memory log buffer.
-
-    Cleanup is intentional and explicit: request handlers call ``cleanup`` once
-    they finish streaming so there is no background task silently pruning logs.
-
-    Attributes:
-        session_id: ContextVar storing the Open WebUI session id.
-        request_id: ContextVar storing the per-request buffer key.
-        log_level:  ContextVar holding this request's minimum level, or None when
-                    no request is in scope. Resolve it with effective_log_level().
-        logs:       Map of request_id -> fixed-size deque of structured log events (dicts).
-    """
-
     session_id: ContextVar[str | None] = ContextVar("session_id", default=None)
     request_id: ContextVar[str | None] = ContextVar("request_id", default=None)
     user_id: ContextVar[str | None] = ContextVar("user_id", default=None)
@@ -399,14 +342,13 @@ class SessionLogger:
 
     @classmethod
     def _build_event(cls, record: logging.LogRecord) -> dict[str, Any]:
-        """Return a structured session log event extracted from a LogRecord."""
         redacted = getattr(record, "redacted_msg", None)
         if isinstance(redacted, str):
             message = redacted
         else:
             try:
                 message = record.getMessage()
-            except Exception:  # noqa: BLE001 - capture path: self-log recurses; in-band fallback
+            except Exception:  # noqa: BLE001
                 message = _safe_message(record)
             raw_message = getattr(record, "raw_msg", None)
             if isinstance(raw_message, str):
@@ -437,7 +379,7 @@ class SessionLogger:
                 event["exception"] = {"text": _data_url_log_subject(str(exc_text))}
             elif exc_info:
                 event["exception"] = {"text": _data_url_log_subject("".join(traceback.format_exception(*exc_info)))}
-        except Exception:  # noqa: BLE001 - capture path: self-log recurses; in-band sentinel
+        except Exception:  # noqa: BLE001
             event["exception"] = {"text": "<<failed to format exception>>"}
 
         event["message"] = message
@@ -445,19 +387,9 @@ class SessionLogger:
 
     @classmethod
     def format_event_as_text(cls, event: dict[str, Any]) -> str:
-        """Best-effort text rendering for debug dumps and optional logs.txt archives."""
         return _render_event_line(event)
 
     class _HostForwardHandler(logging.Handler):
-        """Re-emit to the host's handlers, honouring the session log level.
-
-        Replaces propagation. ``logging.Logger.callHandlers`` walks ancestor
-        *handlers* and consults their levels, never the ancestor loggers' -- so with
-        this logger at DEBUG every record reached Open WebUI's level-less root
-        StreamHandler regardless of any level anyone configured. Same walk here, with
-        the pipe's own threshold applied first.
-        """
-
         def __init__(self, owner: logging.Logger) -> None:
             super().__init__(level=logging.DEBUG)
             self._owner = owner
@@ -471,7 +403,7 @@ class SessionLogger:
                     if record.levelno >= handler.level:
                         try:
                             handler.handle(record)
-                        except Exception:  # noqa: BLE001, S112 - one bad host handler must not stop the others
+                        except Exception:  # noqa: BLE001, S112
                             continue
                 if not node.propagate:
                     break
@@ -479,12 +411,6 @@ class SessionLogger:
 
     @classmethod
     def effective_log_level(cls) -> int:
-        """The minimum level in force: this request's, else the process-wide one.
-
-        Records emitted outside a request -- startup, `pipes()`, plugin wiring, the
-        Redis listener -- never had the ContextVar set, so reading it directly pinned
-        them to its default regardless of how the operator had configured logging.
-        """
         level = cls.log_level.get()
         return cls.process_log_level if level is None else int(level)
 
@@ -502,16 +428,6 @@ class SessionLogger:
 
     @classmethod
     def get_logger(cls, name=__name__):
-        """Create a logger wired to the current SessionLogger context.
-
-        Args:
-            name: Logger name; defaults to the current module name.
-
-        Returns:
-            logging.Logger: A configured logger that writes both to stdout and
-            the in-memory `SessionLogger.logs` buffer. The buffer is keyed by
-            the current `SessionLogger.request_id`.
-        """
         logger = logging.getLogger(name)
         if any(isinstance(handler, _SessionCaptureHandler) for handler in logger.handlers):
             logger.setLevel(logging.DEBUG)
@@ -621,41 +537,14 @@ class SessionLogger:
 
     @classmethod
     def _passes_threshold(cls, record: logging.LogRecord) -> bool:
-        """The one decision about whether a record is shown, for every console sink.
-
-        The package logger is pinned at DEBUG so the session archive captures
-        everything, which means neither sink can rely on the logger's own level -- each
-        has to ask. When only one of them did, `LOG_LEVEL` was inert on any host with no
-        root handler, and every request payload went to stdout.
-
-        Evaluated per record rather than set once as a handler level: the threshold moves
-        under us twice over. `_refresh_process_log_level` rewrites the process floor when
-        the valve changes, and each request sets its own via the `log_level` ContextVar --
-        and `get_logger` runs from `Pipe.__init__`, before either has happened, so a
-        handler level snapshotted there would freeze INFO for the worker's life.
-        """
         try:
             threshold = int(cls.effective_log_level())
-        except Exception:  # noqa: BLE001 - this runs inside Logger.handle, so anything
+        except Exception:  # noqa: BLE001
             threshold = logging.INFO
         return record.levelno >= threshold
 
     @classmethod
     def _ensure_console_owner(cls, logger: logging.Logger) -> None:
-        """Exactly one thing prints a record, and it is the host's chain where there is one.
-
-        This used to write its own formatted line to stdout AND forward the record to the
-        host's handlers, so with Open WebUI's usual wiring every pipe record appeared
-        twice, in two different formats. Worse under `LOG_FORMAT=json`: the private line
-        is not JSON, so it corrupted the operator's structured log stream.
-
-        Open WebUI installs a root handler only when `GLOBAL_LOG_LEVEL` names a real
-        level (`env.py`: `if GLOBAL_LOG_LEVEL in logging.getLevelNamesMapping()`), so a
-        host that does not set it has nowhere to print. A NullHandler is deliberately not
-        counted as somewhere: `get_logger` adds one to the root itself, to keep the
-        "no handlers could be found" warning quiet, and treating it as a sink would make
-        the pipe silent on exactly the hosts that need it to print.
-        """
         node: logging.Logger | None = logger.parent
         host_has_sink = False
         while node is not None:
@@ -687,7 +576,7 @@ class SessionLogger:
             if request_id:
                 try:
                     event = cls._build_event(record)
-                except Exception:  # noqa: BLE001 - capture path: self-log recurses; fallback event preserves record
+                except Exception:  # noqa: BLE001
                     event = {
                         "created": time.time(),
                         "level": str(getattr(record, "levelname", "INFO") or "INFO"),
@@ -729,13 +618,11 @@ class SessionLogger:
                         remaining = cls._records_in_flight.get(request_id, 0)
                         if remaining:
                             cls._records_in_flight[request_id] = remaining - 1
-        except Exception:  # noqa: BLE001 - never raise from logging hooks
-            # Never raise from logging hooks.
+        except Exception:  # noqa: BLE001
             return
 
     @classmethod
     def cleanup(cls, max_age_seconds: float = 3600) -> None:
-        """Remove stale session logs to avoid unbounded growth."""
         cutoff = time.time() - max_age_seconds
         with cls._state_lock:
             stale = [sid for sid, ts in cls._session_last_seen.items() if ts < cutoff]
@@ -757,8 +644,6 @@ class SessionLogger:
             cls.log_records_shed.pop(request_id, None)
             cls._records_in_flight.pop(request_id, None)
 
-
-# Session Log Archive Writer
 
 def _archive_temp_path(out_dir: Path, message_id: str) -> Path:
     return out_dir / f"{message_id}.{os.getpid()}.{uuid.uuid4().hex[:8]}.zip.tmp"
@@ -968,18 +853,6 @@ def _publish_archive(
 
 
 def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
-    """Write a single encrypted zip archive containing session logs + metadata.
-
-    Args:
-        job: Archive job containing all configuration and log events
-
-    The archive contains:
-    - meta.json: Metadata including timestamps, IDs, and configuration
-    - logs.txt: Text-formatted logs (if log_format is "text" or "both")
-
-    All files are encrypted using AES encryption with the provided password.
-    Atomic file replacement is used to prevent partial writes.
-    """
     root = _resolve_archive_root(job.base_dir)
     out_dir = _archive_out_dir(root, user_id=job.user_id, chat_id=job.chat_id)
     _claim_archive_dir(out_dir)
@@ -1095,7 +968,7 @@ def _write_session_log_archive_unclaimed(
             return raw
         try:
             msg = str(raw)
-        except Exception:  # noqa: BLE001 - per-event str-coercion guard; sentinel fallback
+        except Exception:  # noqa: BLE001
             msg = "<<unrenderable event>>"
         return {
             "created": time.time(),
@@ -1143,7 +1016,7 @@ def _write_session_log_archive_unclaimed(
         message = event.get("message")
         try:
             record_out["message"] = str(message) if message is not None else ""
-        except Exception:  # noqa: BLE001 - per-event str-coercion guard; sentinel fallback
+        except Exception:  # noqa: BLE001
             record_out["message"] = "<<unrenderable message>>"
         return record_out
 
@@ -1151,7 +1024,7 @@ def _write_session_log_archive_unclaimed(
         for raw_evt in (job.log_events or []):
             try:
                 line = _format_event_as_text(_coerce_event(raw_evt))
-            except Exception as exc:  # noqa: BLE001 - one unrenderable record must not cost the member; surfaced via stderr
+            except Exception as exc:  # noqa: BLE001
                 sys.stderr.write(f"session log archive: logs.txt record failed: {exc}\n")
                 line = "<<failed to render log record>>"
             yield line.rstrip("\n")
@@ -1161,7 +1034,7 @@ def _write_session_log_archive_unclaimed(
             evt = _coerce_event(raw_evt)
             try:
                 record_out = _build_jsonl_record(evt)
-            except Exception as exc:  # noqa: BLE001 - one malformed record must not cost the member; surfaced via stderr
+            except Exception as exc:  # noqa: BLE001
                 sys.stderr.write(f"session log archive: logs.jsonl record failed: {exc}\n")
                 record_out = {"ts": _format_iso_utc(time.time()), "level": "ERROR", "message": "<<failed to build log record>>"}
             try:
@@ -1206,7 +1079,7 @@ def _write_session_log_archive_unclaimed(
         with contextlib.suppress(Exception):
             tmp_path.unlink(missing_ok=True)  # type: ignore[arg-type]
         raise
-    except Exception as exc:  # noqa: BLE001 - zip write net; mixed pyzipper error types; surfaced via stderr
+    except Exception as exc:  # noqa: BLE001
         sys.stderr.write(f"session log archive: zip write {tmp_path} failed: {exc}\n")
         _report_archive_write_failed(
             f"session_log_archive_write_failed:{out_path}",

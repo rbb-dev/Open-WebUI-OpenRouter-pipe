@@ -1,5 +1,3 @@
-"""Image generation via OpenRouter's dedicated Image API."""
-
 from __future__ import annotations
 
 import asyncio
@@ -83,12 +81,6 @@ _NOTE_TEXT_LIMIT = 160
 
 
 def _clamp(text: Any, limit: int = _NOTE_NAME_LIMIT) -> str:
-    """Bound a span of request-supplied text before it reaches a log line or the browser.
-
-    ``image_config`` arrives from the client verbatim, so a key or value interpolated at
-    full length would size a WARNING record and a notification event to whatever the
-    request carried.
-    """
     return clamp_text(text, limit)
 
 
@@ -190,8 +182,6 @@ _Outcome = dict[str, Any]
 
 
 class _Note(NamedTuple):
-    """A rejected knob, split so the latch key cannot be widened by request content."""
-
     kind: str
     name: str
     text: str
@@ -256,7 +246,7 @@ class ImageGenerationAdapter:
     def _endpoint_cache_key(self, valves: Any, api_model_id: str) -> tuple[str, str]:
         try:
             api_key, _error = self._pipe._resolve_openrouter_api_key(valves)
-        except Exception:  # noqa: BLE001 - a key that cannot be resolved is an identity, not a failure
+        except Exception:  # noqa: BLE001
             api_key = None
         return (_fingerprint(api_key or ""), api_model_id)
 
@@ -324,11 +314,6 @@ class ImageGenerationAdapter:
                 return low, f"raised to {low}"
             return value, ""
         if kind == "boolean":
-            # OpenRouter uses this to say the model *supports* the parameter, not that
-            # its value is true or false -- their own model schema words it "whether the
-            # model supports deterministic generation via seed parameter", and no such
-            # descriptor ever carries a domain. The request itself takes a number, so
-            # that is what is checked here.
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 return None, "expects a number"
             if not json_encodable(value):
@@ -514,7 +499,6 @@ class ImageGenerationAdapter:
             )
 
         for key, value in raw.items():
-            # `image_config` arrives from the client, so a key need not be a string.
             if not isinstance(key, str) or value is None or value == "":
                 continue
             shown = _clamp(_labelled(key))
@@ -525,19 +509,10 @@ class ImageGenerationAdapter:
                     f"{shown} was not sent (it carries a number JSON cannot represent)",
                 )
                 continue
-            # The alias is a compatibility spelling for a retired filter. A key the
-            # model's own record claims as a provider option keeps that spelling, or the
-            # rename would route it into a different published parameter and silently
-            # overwrite whatever the user chose there.
             name = key if key in allowed_passthrough else _LEGACY_PARAM_NAMES.get(key, key)
             if name != key and (declared is None or name not in declared):
                 name = _TIER_TWIN.get(name, name)
             if name != key and raw.get(name) not in (None, ""):
-                # Both spellings of one parameter were supplied -- the compatibility one
-                # from the older filter and the published one from this model's own. They
-                # would write the same destination, and whichever came later in the dict
-                # would win silently. The spelling the model publishes is the one that
-                # means something, so it wins and the user is told the other was ignored.
                 _note(
                     "superseded",
                     name,
@@ -628,12 +603,6 @@ class ImageGenerationAdapter:
         api_model_id: str,
         **kwargs: Any,
     ) -> list[dict[str, Any]]:
-        """Every record this model publishes, not the one a request would route to.
-
-        Describing what a model offers is a different question from choosing who serves
-        one request, and answering it with a single provider's record lists controls the
-        model's filter -- built from the intersection -- does not draw.
-        """
         await self._endpoint_record(session, valves, api_model_id, **kwargs)
         cached = self._endpoint_cache.get(self._endpoint_cache_key(valves, api_model_id))
         return list(cached[1]) if cached else []
@@ -716,12 +685,6 @@ class ImageGenerationAdapter:
     def _select_endpoint(
         records: list[dict[str, Any]], requested: dict[str, Any] | None
     ) -> tuple[dict[str, Any] | None, str]:
-        """Pick the record for the provider that will serve this request.
-
-        The second element names an operator pin that no record carries. Collapsing that
-        onto a bare ``None`` would make a readable contract indistinguishable from an
-        unreadable one, and the caller would blame an outage that did not happen.
-        """
         if not records:
             return None, ""
         keyed = [
@@ -1381,12 +1344,6 @@ class ImageGenerationAdapter:
         user_obj: Any,
         api_model_id: str,
     ) -> None:
-        """Close out a failed request without losing or duplicating what it already cost.
-
-        The upstream call is billed the moment it returns 200, so a failure after that
-        point still has to be reported with the usage it incurred, and it must not raise a
-        second, contradictory completion event for a request already reported as ok.
-        """
         billed = outcome["usage"] or None
         if not outcome["reported"]:
             outcome["reported"] = True

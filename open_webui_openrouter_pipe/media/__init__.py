@@ -1,7 +1,3 @@
-"""Generic media helpers (image conversion, frame extraction, thumbnails).
-
-Feature-agnostic — designed for reuse by future image-gen task-model features.
-"""
 from __future__ import annotations
 
 from .frame_extraction import (

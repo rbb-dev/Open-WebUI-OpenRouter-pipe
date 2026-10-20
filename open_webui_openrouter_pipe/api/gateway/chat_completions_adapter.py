@@ -1,8 +1,3 @@
-"""Chat Completions API adapter for OpenRouter.
-
-This module handles Chat Completions API streaming and non-streaming requests.
-"""
-
 from __future__ import annotations
 
 import contextlib
@@ -23,8 +18,6 @@ from ...core.config import (
     _apply_owui_forward_user_headers,
     _select_openrouter_http_referer,
 )
-
-# Imports from core.errors
 from ...core.costs import chat_usage_to_responses_usage
 from ...core.errors import (
     EmptyAnswerError,
@@ -43,16 +36,12 @@ from ...requests.debug import (
     _debug_print_request,
     _debug_print_response,
 )
-
-# Imports from storage
 from ...storage.owui_files import (
     loggable_session_id,
     names_an_owui_file_path,
 )
 from ...storage.persistence import generate_item_id
 from ...streaming.nagle_coalescer import nagle_coalesce_stream
-
-# Imports from api.transforms
 from ..transforms import (
     _filter_openrouter_chat_request,
     _filter_openrouter_request,
@@ -270,16 +259,8 @@ async def chat_route_search_record(
 
 
 class ChatCompletionsAdapter:
-    """Adapter for OpenRouter /chat/completions API endpoint."""
-
     @timed
     def __init__(self, pipe: Pipe, logger: logging.Logger):
-        """Initialize ChatCompletionsAdapter.
-
-        Args:
-            pipe: Parent Pipe instance for accessing configuration and methods
-            logger: Logger instance for debugging
-        """
         self._pipe = pipe
         self.logger = logger
 
@@ -299,7 +280,6 @@ class ChatCompletionsAdapter:
 
     @timed
     async def _inline_internal_chat_files(self, chat_payload: dict, effective_valves: Any, *, user: Any = None) -> None:
-        """Inline OWUI internal file URLs in chat messages before sending to OpenRouter."""
         messages = chat_payload.get("messages")
         if not isinstance(messages, list) or not messages:
             return
@@ -390,7 +370,6 @@ class ChatCompletionsAdapter:
         files_inlined: bool = False,
         event_emitter: Any = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        """Send /chat/completions and adapt streaming output into Responses-style events."""
         effective_valves = valves or self._pipe.valves
         responses_payload = responses_request_body or {}
         chat_refused: list[tuple[str, str, str]] = []
@@ -1043,7 +1022,7 @@ class ChatCompletionsAdapter:
                             async def _chunks():
                                 async for raw in resp.content.iter_any():
                                     yield raw, False
-                                if done:  # noqa: B023 - shares the loop's state by design
+                                if done:  # noqa: B023
                                     return
                                 tail = bytes(buf)  # noqa: B023
                                 del buf[:]  # noqa: B023
@@ -1266,7 +1245,6 @@ class ChatCompletionsAdapter:
         files_inlined: bool = False,
         event_emitter: Any = None,
     ) -> dict[str, Any]:
-        """Send /chat/completions with stream=false and return the JSON payload."""
         effective_valves = valves or self._pipe.valves
         responses_payload = responses_request_body or {}
         chat_refused: list[tuple[str, str, str]] = []
@@ -1387,7 +1365,6 @@ class ChatCompletionsAdapter:
         owui_chat_id: str | None = None,
         event_emitter: Any = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        """Unified streaming request entrypoint with endpoint routing + fallback."""
         effective_valves = valves or self._pipe.valves
         idle_flush_seconds = float(idle_flush_ms) / 1000 if idle_flush_ms > 0 else None
         passthrough_deltas = delta_char_limit <= 0 and idle_flush_ms <= 0
@@ -1550,8 +1527,6 @@ class ChatCompletionsAdapter:
                 return
             raise
 
-
-    # Tool Context Shutdown
 
     @staticmethod
     def _chat_usage_to_responses_usage(raw_usage: Any) -> dict[str, Any]:

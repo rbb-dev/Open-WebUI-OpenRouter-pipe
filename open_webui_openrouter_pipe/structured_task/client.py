@@ -1,7 +1,3 @@
-"""Response normalization and JSON parsing for structured-output task-model calls.
-
-Ports patterns from `.external/seedream.py:325-399, 752-790`.
-"""
 from __future__ import annotations
 
 import json
@@ -81,10 +77,6 @@ def _schema_verdict(value: Any, schema_keys: frozenset[str] | None) -> None:
 
 
 def normalise_model_content(value: Any) -> str:
-    """Best-effort conversion of model content fragments to string.
-
-    Handles: plain strings, list-of-content-parts, dicts with text/content keys.
-    """
     if isinstance(value, str):
         return value
     if isinstance(value, list):
@@ -96,10 +88,6 @@ def normalise_model_content(value: Any) -> str:
 
 
 def consume_sse_line(raw_line: str, content_parts: list[str]) -> None:
-    """Parse a single SSE data line and append its content if valid.
-
-    Silently ignores malformed lines and the [DONE] sentinel.
-    """
     line = (raw_line or "").strip()
     if not line or line == "data: [DONE]":
         return
@@ -131,10 +119,6 @@ def consume_sse_line(raw_line: str, content_parts: list[str]) -> None:
 async def read_model_response_content(
     response: Any, max_hold_bytes: int | None = _DEFAULT_MAX_HOLD_BYTES
 ) -> str:
-    """Normalise streaming or non-streaming chat-completion responses to text.
-
-    Handles `StreamingResponse` (SSE) and dict-shaped responses uniformly.
-    """
     if hasattr(response, "body_iterator"):
         content_parts: list[str] = []
         content_bytes = 0
@@ -203,13 +187,6 @@ def _model_answer(message: dict[str, Any]) -> Any:
 async def read_task_model_response_json(
     response: Any, *, schema_keys: frozenset[str] | None = None
 ) -> dict[str, Any]:
-    """Parse OWUI generate_chat_completion result into a JSON dict.
-
-    Raises:
-        RuntimeError("task_model_empty_response") on empty/whitespace content.
-        RuntimeError("task_model_no_choices") on missing choices.
-        TypeError on unexpected response shape.
-    """
     if hasattr(response, "body_iterator"):
         content = await read_model_response_content(response)
         if not content:

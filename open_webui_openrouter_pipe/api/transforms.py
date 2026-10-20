@@ -1,16 +1,3 @@
-"""Request and response transformation layer.
-
-This module handles bidirectional conversion between API formats:
-- Responses API <-> Chat Completions API payload conversion
-- Message format transforms
-- Tool schema normalization
-- Structured output format conversion
-- Model fallback application
-- Request filtering and enrichment
-
-The transforms bridge Open WebUI's expectations with OpenRouter's API variants.
-"""
-
 from __future__ import annotations
 
 import base64
@@ -83,8 +70,6 @@ from ..models.registry import ModelFamily
 from ..storage.owui_files import is_temporary_metadata, names_an_owui_file_path
 from ..tools.tool_schema import _strictify_schema
 
-# Pydantic Body Classes
-
 logger = logging.getLogger(__name__)
 
 _warned_previous_response_id: set[str] = set()
@@ -111,9 +96,6 @@ def _coerced_logit_bias(raw: Any) -> Any:
     return converted
 
 class CompletionsBody(BaseModel):
-    """
-    Represents the body of a completions request to OpenAI completions API.
-    """
     model: str
     messages: list[dict[str, Any]]
     stream: bool = False
@@ -125,11 +107,6 @@ class CompletionsBody(BaseModel):
 
 
 class ResponsesBody(BaseModel):
-    """
-    Represents the body of a responses request to OpenAI Responses API.
-    """
-    
-    # Core parameters
     model: str
     models: list[str] | None = None
     instructions: str | None = None
@@ -225,7 +202,7 @@ class ResponsesBody(BaseModel):
         if value is None:
             return None
         if isinstance(value, bool):
-            raise ValueError("Boolean is not a valid integer value.")  # noqa: TRY004 - pydantic converts ValueError to ValidationError; TypeError would propagate raw
+            raise ValueError("Boolean is not a valid integer value.")  # noqa: TRY004
         if isinstance(value, int):
             return value
         if isinstance(value, float):
@@ -278,11 +255,6 @@ class ResponsesBody(BaseModel):
     @staticmethod
     @timed
     def transform_owui_tools(__tools__: dict[str, dict] | None, *, strict: bool = False) -> list[dict]:
-        """
-        Convert Open WebUI __tools__ registry (dict of entries with {"spec": {...}}) into
-        OpenAI Responses-API tool specs: {"type": "function", "name", ...}.
-
-        """
         if not __tools__:
             return []
 
@@ -310,11 +282,6 @@ class ResponsesBody(BaseModel):
 
     @staticmethod
     def _convert_function_call_to_tool_choice(function_call: Any) -> Any | None:
-        """
-        Translate legacy OpenAI `function_call` payloads into modern `tool_choice` values.
-
-        Returns either "auto"/"none" (strings) or {"type": "function", "name": "..."}.
-        """
         if function_call is None:
             return None
         if isinstance(function_call, str):
@@ -361,16 +328,6 @@ class ResponsesBody(BaseModel):
         tool_history_self_names: frozenset[str] = frozenset(),
         **extra_params,
     ) -> ResponsesBody:
-        """
-        Convert CompletionsBody -> ResponsesBody.
-
-        - Drops unsupported fields (clearly logged).
-        - Converts max_tokens -> max_output_tokens.
-        - Converts reasoning_effort -> reasoning.effort (without overwriting).
-        - Builds messages in Responses API format.
-        - Allows explicit overrides via kwargs.
-        - Replays persisted artifacts by awaiting `artifact_loader` when provided.
-        """
         completions_dict = completions_body.model_dump(exclude_none=True)
 
         unsupported_fields = {
@@ -378,10 +335,6 @@ class ResponsesBody(BaseModel):
             "suffix",
             "functions",
         }
-        # carried elsewhere: max_tokens -> max_output_tokens; reasoning_effort ->
-        # reasoning.effort; function_call -> tool_choice (all below); extra_tools ->
-        # read off this CompletionsBody by requests/orchestrator.py and appended to the
-        # advertised list by tools/tool_registry.py
         carried_fields = {"reasoning_effort", "max_tokens", "function_call", "extra_tools"}
         sanitized_params = {}
         for key, value in completions_dict.items():
@@ -396,10 +349,6 @@ class ResponsesBody(BaseModel):
             sanitized_params["logit_bias"] = converted_logit_bias
 
         if "max_tokens" in completions_dict:
-            # OpenRouter documents max_tokens as "integer, 1 or above". Open WebUI's
-            # slider allows values below that; forwarding one earns a 400 that reads as
-            # the pipe's fault, so anything outside the documented range is sent as no
-            # cap at all.
             cap = _coerced_token_cap(completions_dict["max_tokens"])
             if cap is not None and cap >= 1:
                 sanitized_params["max_output_tokens"] = cap
@@ -607,8 +556,6 @@ def _has_server_tool(tools: Any) -> bool:
     )
 
 
-# Request Filtering
-
 _ALLOWED_REASONING_SUBFIELDS = ("effort", "max_tokens", "exclude", "enabled", "summary", "context", "mode")
 
 
@@ -620,7 +567,6 @@ def _reduce_reasoning(value: Any) -> Any:
 
 
 def _filter_openrouter_chat_request(payload: dict[str, Any]) -> dict[str, Any]:
-    """Filter payload to fields accepted by OpenRouter's /chat/completions."""
     if not isinstance(payload, dict):
         return {}
     filtered: dict[str, Any] = {}
@@ -641,7 +587,6 @@ def _filter_openrouter_chat_request(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _strip_disable_model_settings_params(payload: dict[str, Any]) -> None:
-    """Remove OWUI-local per-model control flags from the outbound provider payload."""
     if not isinstance(payload, dict):
         return
     for key in (
@@ -660,10 +605,7 @@ def _strip_disable_model_settings_params(payload: dict[str, Any]) -> None:
     ):
         payload.pop(key, None)
 
-# Tool Schema Transforms
-
 def _responses_tools_to_chat_tools(tools: Any) -> list[dict[str, Any]]:
-    """Convert Responses API tools -> Chat Completions tools schema."""
     if not isinstance(tools, list):
         return []
     out: list[dict[str, Any]] = []
@@ -695,7 +637,6 @@ def _responses_tools_to_chat_tools(tools: Any) -> list[dict[str, Any]]:
 
 
 def _chat_tools_to_responses_tools(tools: Any) -> list[dict[str, Any]]:
-    """Convert Chat Completions `tools` schema -> Responses API tools schema."""
     if not isinstance(tools, list):
         return []
     out: list[dict[str, Any]] = []
@@ -748,7 +689,6 @@ def _chat_tools_to_responses_tools(tools: Any) -> list[dict[str, Any]]:
 
 
 def _responses_tool_choice_to_chat_tool_choice(value: Any) -> Any:
-    """Convert Responses API tool_choice -> Chat Completions tool_choice."""
     if value is None:
         return None
     if isinstance(value, str):
@@ -766,8 +706,6 @@ def _responses_tool_choice_to_chat_tool_choice(value: Any) -> Any:
     return value
 
 
-# Response Format Transforms
-
 def _coerced_sampling_float(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
@@ -783,7 +721,6 @@ def _coerced_sampling_float(value: Any) -> float | None:
 
 
 def _chat_response_format_to_responses_text_format(value: Any) -> dict[str, Any] | None:
-    """Convert Chat Completions `response_format` -> Responses `text.format`."""
     if not isinstance(value, dict):
         return None
 
@@ -814,7 +751,6 @@ def _chat_response_format_to_responses_text_format(value: Any) -> dict[str, Any]
     return None
 
 def _responses_text_format_to_chat_response_format(value: Any) -> dict[str, Any] | None:
-    """Convert Responses `text.format` -> Chat Completions `response_format`."""
     if not isinstance(value, dict):
         return None
 
@@ -841,16 +777,6 @@ def _responses_text_format_to_chat_response_format(value: Any) -> dict[str, Any]
     return None
 
 def _normalise_openrouter_responses_text_format(payload: dict[str, Any]) -> None:
-    """Normalise structured output config for OpenRouter `/responses` requests.
-
-    The OpenRouter `/responses` endpoint follows an OpenResponses-style schema:
-    structured outputs are configured via `text.format`, not `response_format`.
-
-    To keep the pipe blast-safe:
-    - Never raise for malformed input.
-    - Prefer `text.format` when both are present (endpoint-native).
-    - Otherwise, accept Chat-style `response_format` as an alias and translate it.
-    """
     if not isinstance(payload, dict):
         return
 
@@ -900,8 +826,6 @@ def _normalise_openrouter_responses_text_format(payload: dict[str, Any]) -> None
     existing_text["format"] = final_format
     payload["text"] = existing_text
 
-
-# Message and Input Transforms
 
 def _replay_payload_is_present(value: Any) -> bool:
     if isinstance(value, str):
@@ -1292,16 +1216,6 @@ async def _responses_input_to_chat_messages(
     pipe: Pipe | None = None,
     refused_out: list[tuple[str, str, str]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Convert Responses API input array -> Chat Completions messages array.
-
-    Best-effort mapping for supported multimodal blocks. Unsupported blocks are
-    degraded to text notes rather than dropped.
-
-    Args:
-        input_value: Responses API input (list of message items, string, or None)
-        allow_unknown_fields: When True, preserves unknown/custom fields from input items.
-            When False (default), only copies known/validated fields for stricter behavior.
-    """
     if input_value is None:
         return []
     if isinstance(input_value, str):
@@ -1725,7 +1639,6 @@ async def _responses_input_to_chat_messages(
                         continue
 
                     if btype == "input_audio":
-                        # Pass through with copy
                         transformed = dict(block)
                         audio = transformed.get("input_audio")
                         if isinstance(audio, dict):
@@ -1888,8 +1801,6 @@ async def _responses_input_to_chat_messages(
     return _reconcile_tool_pairs(messages)
 
 
-# Payload Transforms
-
 def _coerce_openrouter_int(value: Any) -> int | None:
     return _coerced_token_cap(value)
 
@@ -1909,12 +1820,10 @@ async def _responses_payload_to_chat_completions_payload(
     pipe: Pipe | None = None,
     refused_out: list[tuple[str, str, str]] | None = None,
 ) -> dict[str, Any]:
-    """Convert a Responses API request payload into a Chat Completions payload."""
     if not isinstance(responses_payload, dict):
         return {}
     chat_payload: dict[str, Any] = {}
 
-    # Core routing and identifiers
     for key in ("model", "models", "preset", "user", "session_id", "metadata", "plugins", "provider", "route", "debug", "image_config", "modalities", "transforms", "stop_server_tools_when", "trace"):
         if key in responses_payload:
             chat_payload[key] = responses_payload[key]
@@ -1929,7 +1838,6 @@ async def _responses_payload_to_chat_completions_payload(
         else:
             chat_payload.pop("plugins", None)
 
-    # Streaming flags
     stream = bool(responses_payload.get("stream"))
     chat_payload["stream"] = stream
     if stream:
@@ -1999,7 +1907,6 @@ async def _responses_payload_to_chat_completions_payload(
         if isinstance(verbosity, str) and verbosity.strip():
             chat_payload["verbosity"] = verbosity.strip()
 
-    # Token limit mapping
     explicit_cap = chat_payload.get("max_completion_tokens")
     if isinstance(explicit_cap, int) and explicit_cap < 1:
         chat_payload.pop("max_completion_tokens", None)
@@ -2012,7 +1919,6 @@ async def _responses_payload_to_chat_completions_payload(
     ):
         chat_payload["max_tokens"] = max_output_tokens
 
-    # Tools
     tools = responses_payload.get("tools")
     chat_tools = _responses_tools_to_chat_tools(tools)
     if chat_tools:
@@ -2076,8 +1982,6 @@ async def _responses_payload_to_chat_completions_payload(
 
     return chat_payload
 
-
-# Model Fallback
 
 def _fallback_off_carry(primary: str) -> dict[str, Any]:
     from ..core.utils import _select_best_effort_fallback
@@ -2154,21 +2058,6 @@ def _apply_openrouter_trace_to_payload(
     *,
     logger: logging.Logger = logger,
 ) -> None:
-    """Map OWUI custom ``openrouter_trace`` model param to OpenRouter ``trace``.
-
-    Admins can add an ``openrouter_trace`` key in the model's
-    *Custom Parameters* section (Advanced → Custom Parameters).  The value
-    should be a JSON object, e.g.::
-
-        {"trace_name": "My Pipeline", "generation_name": "chat"}
-
-    Open WebUI's ``apply_model_params_to_body_openai`` auto-parses JSON
-    strings in ``custom_params``, so by the time we receive the payload the
-    value is already a ``dict``.
-
-    This helper **pops** ``openrouter_trace`` and writes it as ``trace``,
-    merging with any pre-existing ``trace`` dict already in the payload.
-    """
     if not isinstance(payload, dict):
         return
 
@@ -2213,19 +2102,11 @@ def _apply_openrouter_trace_to_payload(
     )
 
 
-# Feature Application to Payloads
-
 def _apply_disable_native_websearch_to_payload(
     payload: dict[str, Any],
     *,
     logger: logging.Logger = logger,
 ) -> None:
-    """Apply OWUI per-model `disable_native_websearch` custom param.
-
-    When truthy, this disables OpenRouter's built-in web search integration by removing:
-    - `plugins` entries with `{"id": "web"}`
-    - `web_search_options` (chat/completions)
-    """
     if not isinstance(payload, dict):
         return
 
@@ -2275,10 +2156,7 @@ def _apply_disable_native_websearch_to_payload(
         )
 
 
-# -- Provider routing custom parameters --------------------------------------
-
 def _parse_provider_csv(value: Any, *, logger: logging.Logger = logger) -> list[str]:
-    """CSV string or list → validated, deduped, lowercase provider slugs."""
     if isinstance(value, list):
         parts = [str(v).strip() for v in value]
     elif isinstance(value, str):
@@ -2302,7 +2180,6 @@ def _parse_provider_csv(value: Any, *, logger: logging.Logger = logger) -> list[
 def _apply_provider_routing_params_to_payload(
     payload: dict[str, Any], *, logger: logging.Logger = logger,
 ) -> None:
-    """Pop openrouter_provider_{ignore,only,order} and merge into provider dict."""
     if not isinstance(payload, dict):
         return
     try:
@@ -2330,10 +2207,7 @@ def _apply_provider_routing_params_to_payload(
         logger.debug("Failed to apply provider routing custom params", exc_info=True)
 
 
-# Helper Functions
-
 def _model_params_to_dict(params: Any) -> dict[str, Any]:
-    """Best-effort conversion of OWUI ModelParams-like objects to a plain dict."""
     if params is None:
         return {}
     if isinstance(params, dict):
@@ -2349,7 +2223,6 @@ def _model_params_to_dict(params: Any) -> dict[str, Any]:
     return {}
 
 def _get_disable_param(params: Any, key: str) -> bool:
-    """Return True when params[key] is truthy as a bool-ish flag."""
     params_dict = _model_params_to_dict(params)
     sentinel = object()
     raw: Any = params_dict.get(key, sentinel)
@@ -2378,13 +2251,6 @@ def _get_disable_param(params: Any, key: str) -> bool:
     return bool(coerced) if coerced is not None else False
 
 def _sanitize_openrouter_metadata(raw: Any) -> dict[str, str] | None:
-    """Return a validated OpenRouter `metadata` dict or None.
-
-    OpenRouter's Responses schema documents `metadata` as a string->string map with:
-    - max 16 pairs
-    - key <= 64 chars, no brackets
-    - value <= 512 chars
-    """
     if not isinstance(raw, dict):
         return None
 
@@ -2413,15 +2279,6 @@ def _apply_identifier_valves_to_payload(
     owui_user: Any = None,
     logger: logging.Logger = logger,
 ) -> None:
-    """Mutate request payload to include valve-gated identifiers.
-
-    Rules (per operator requirements):
-    - Only emit `metadata` when at least one identifier valve contributes a value.
-    - When `SEND_END_USER_ID` is enabled, emit top-level `user` (GUID, email, or
-      display name per `END_USER_ID_SOURCE`, falling back to the GUID) and keep
-      `metadata.user_id` on the stable GUID.
-    - `SEND_SESSION_ID`, `SEND_CHAT_ID`, `SEND_MESSAGE_ID` emit `metadata.<id>` only.
-    """
     if not isinstance(payload, dict):
         return
     if not isinstance(owui_metadata, dict):
@@ -2626,7 +2483,6 @@ def _gate_responses_input_media(
 
 
 def _filter_openrouter_request(payload: dict[str, Any]) -> dict[str, Any]:
-    """Drop any keys not documented for the OpenRouter Responses API."""
     candidate = dict(payload or {})
     existing_text = candidate.get("text")
     if isinstance(existing_text, dict):
@@ -2705,7 +2561,6 @@ def _filter_replayable_input_items(
     *,
     logger: logging.Logger = logger,
 ) -> Any:
-    """Strip tool artifacts we must not replay back to the provider."""
     if not isinstance(items, list):
         return items
 
@@ -2750,13 +2605,6 @@ def apply_context_transforms(responses_body: ResponsesBody, *, auto_context_trim
 
 
 def _parse_url_citation_annotations(raw_annotations: list[Any]) -> Iterator[tuple[str, str, str]]:
-    """Parse url_citation annotations, yielding (url, title, content) triples.
-
-    Handles both nested format (``annotation.url_citation.url``) and flat
-    format (``annotation.url``).  Validates that url is a non-empty string,
-    normalises the title, and surfaces the ``content`` excerpt OpenRouter
-    supplies (empty string when absent).
-    """
     for raw_ann in raw_annotations:
         if not isinstance(raw_ann, dict):
             continue
@@ -2795,12 +2643,6 @@ def _joined_reasoning_summaries(fragments: Iterable[str]) -> str:
 
 
 def _unhandled_citation_types(raw_annotations: Any) -> set[str]:
-    """Return citation annotation types the pipe cannot render (e.g. ``file_citation``).
-
-    Any annotation whose ``type`` ends in ``_citation`` but is not ``url_citation``
-    (the only type we surface today) is reported so callers can notify the user
-    instead of silently dropping it.
-    """
     types: set[str] = set()
     if not isinstance(raw_annotations, list):
         return types

@@ -157,7 +157,7 @@ static_checks() {
   keep shebang_modes
   step "ruff (bundles)"; keep ruff check --per-file-ignores '*:E402' "${BUNDLES[@]}"
   step "pyright";        keep pyright
-  step "prose gate";     keep python scripts/check_added_prose.py HEAD --path open_webui_openrouter_pipe
+  step "prose gate";     keep python scripts/strip_prose.py --check
   step "prescription ledger"
   if [ -f .git/panel-check.py ]; then
     keep python .git/panel-check.py ${STRICT_PRESCRIPTIONS:+--strict}

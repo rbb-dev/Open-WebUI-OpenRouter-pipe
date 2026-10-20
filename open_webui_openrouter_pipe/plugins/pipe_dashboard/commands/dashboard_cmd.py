@@ -1,14 +1,3 @@
-"""Dashboard command — fully dynamic HTML dashboard over OWUI socket.io.
-
-The ``dashboard`` command emits an HTML shell with empty containers and
-JavaScript that opens an authenticated socket.io connection to OWUI,
-subscribes to the viewers room, and renders the tiered JSON
-payloads the publisher emits.
-
-The dashboard uses a tabbed layout: Live, Usage, Health, System,
-Storage, About.
-"""
-
 from __future__ import annotations
 
 import html
@@ -33,13 +22,8 @@ _PD_AUTOCONNECT_MAX_AGE_S = 300
 
 
 def _safe(val: Any) -> str:
-    """HTML-escape a value for safe embedding."""
     return html.escape(str(val))
 
-
-# ---------------------------------------------------------------------------
-# CSS
-# ---------------------------------------------------------------------------
 
 _PD_CSS = """\
 /* Light-mode defaults */
@@ -230,24 +214,7 @@ body {
 """
 
 
-# ---------------------------------------------------------------------------
-# Dashboard shell
-# ---------------------------------------------------------------------------
-
 def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
-    """Build the fully dynamic dashboard HTML shell.
-
-    All containers are empty — JavaScript populates them from socket.io
-    stats events.  Uses a tabbed layout: Live, Usage, Health, System, Storage, About.
-
-    Open WebUI persists this HTML into the chat message and re-runs it on every later
-    chat load, so the shell records when this browser first saw a given panel and stops
-    auto-connecting once that panel is stale. Scrolling back through history therefore
-    cannot silently pin the publisher's two-second emit loop for the life of the tab.
-    The baseline is written and read by the browser, never compared against a
-    server-side timestamp -- host clock skew would otherwise disconnect a fresh panel
-    or disable the bound entirely, both silently.
-    """
     sid = _safe(dash_id)
     pid = _safe(pipe_id)
 
@@ -1811,13 +1778,8 @@ def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
 </html>"""
 
 
-# ---------------------------------------------------------------------------
-# Command handler
-# ---------------------------------------------------------------------------
-
 @register_command("dashboard", summary="Open the live, multi-tab admin dashboard and config editor", category="Diagnostics", usage="dashboard")
 async def handle_dashboard(ctx: CommandContext) -> str:
-    """Display the live dashboard (OWUI socket.io transport)."""
     register_socket_handler()
     dash_id = "dash-" + secrets.token_hex(8)
     pipe_id = str(getattr(getattr(ctx, "pipe", None), "id", "") or "")

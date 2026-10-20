@@ -1,13 +1,3 @@
-"""Valve-gated usage-record persistence for the pipe_dashboard plugin.
-
-One row per completed request (chat turn or task call), written by a
-per-worker daemon thread through the artifact store's DB machinery. The
-table name derives from the store's ``table_suffix()`` so it always sits
-next to the artifact table; creation reuses the store's race-guarded DDL
-path. Retention is enforced by a jittered asyncio purge task guarded by a
-cross-worker DB-row lock in the artifact table.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -79,23 +69,10 @@ USAGE_ROW_FIELDS = (
 
 
 def usage_ts_from_epoch(epoch: float) -> datetime.datetime:
-    """An epoch second as the usage table stores it: naive, in the server's local zone.
-
-    `ts` and `started_at` are `Column(DateTime)` -- no timezone -- so whatever frame the
-    first writer picked is the frame every reader, filter and purge boundary must use.
-    The obvious thing to write, `datetime.now(UTC)`, is a different instant by the UTC
-    offset, and nothing raises: the purge deletes rows from a window shifted by that
-    offset, and the previous-period filter reports the wrong span. Both are silent.
-    """
     return datetime.datetime.fromtimestamp(epoch, tz=datetime.UTC).astimezone().replace(tzinfo=None)
 
 
 def epoch_from_usage_ts(value: datetime.datetime) -> float:
-    """The inverse of `usage_ts_from_epoch`.
-
-    A naive datetime's `.timestamp()` interprets it as local time, which is right only
-    because that is the frame the column holds. Paired here so the two move together.
-    """
     return value.timestamp()
 
 
@@ -150,8 +127,6 @@ _EMPTY_PUBLISHED = _Published()
 
 
 class UsageStore:
-    """Per-worker usage writer mirroring the session-log manager thread pattern."""
-
     def __init__(self, queue_max: int = _US_QUEUE_MAX) -> None:
         self._published = _EMPTY_PUBLISHED
         self._ensure_lock = threading.Lock()
@@ -301,14 +276,14 @@ class UsageStore:
             try:
                 with engine.begin() as conn:
                     conn.execute(text(statement))
-            except Exception as exc:  # noqa: BLE001 - any refusal leaves the width as it is
+            except Exception as exc:  # noqa: BLE001
                 logger.debug(
                     "usage table widen not accepted on this dialect: %s", type(exc).__name__
                 )
                 continue
             try:
                 check = self._reflected_widths(engine, table_name, schema_name).get(name)
-            except Exception:  # noqa: BLE001 - an uninspectable table is not a widened one
+            except Exception:  # noqa: BLE001
                 check = None
             if check is not None and actual is not None and check > actual:
                 return True
@@ -323,7 +298,6 @@ class UsageStore:
         self._reconcile_failed_at = time.monotonic()
 
     def ensure(self, store: Any) -> bool:
-        """Build the usage model and create its table; idempotent, fail-safe."""
         with self._ensure_lock:
             return self._ensure_locked(store)
 
@@ -466,7 +440,7 @@ class UsageStore:
                 try:
                     with engine.begin() as conn:
                         conn.execute(text(f"ALTER TABLE {qualified} ADD COLUMN {ddl}"))
-                except Exception as exc:  # noqa: BLE001 - any other DDL failure is a gate failure with a stated reason
+                except Exception as exc:  # noqa: BLE001
                     message = str(exc).lower()
                     if (
                         "duplicate column" in message
@@ -509,7 +483,6 @@ class UsageStore:
             return False
 
     def record(self, row: dict[str, Any]) -> None:
-        """Enqueue one usage row; non-blocking, drop-oldest under overload."""
         if self._model is None:
             return
         self._start_thread()
@@ -670,7 +643,7 @@ class UsageStore:
                     with session.begin_nested():
                         session.add(instance)
                         session.flush()
-                except Exception as exc:  # noqa: BLE001 - one row's failure costs one row
+                except Exception as exc:  # noqa: BLE001
                     rejected.append((instance, exc))
             session.commit()
         if rejected:
@@ -692,7 +665,6 @@ class UsageStore:
     def start_purge_task(
         self, retention_days_fn: Callable[[], int | Awaitable[int]]
     ) -> None:
-        """Start the jittered retention purge loop on the running loop."""
         if self._stopped:
             return
         self._retention_days_fn = retention_days_fn
@@ -969,7 +941,6 @@ class UsageStore:
             logger.debug("purge lock reap failed", exc_info=True)
 
     def _table_info_sync(self) -> dict[str, Any]:
-        """Record count + approximate on-disk size for the usage table."""
         info: dict[str, Any] = {
             "records": None,
             "approx_bytes": None,
@@ -1018,13 +989,6 @@ class UsageStore:
         return await loop.run_in_executor(executor, self._table_info_sync)
 
     def signal_stop(self) -> Any:
-        """Signal the writer to drain-and-exit and cancel the purge task.
-
-        Loop-safe and fast: sets the stop flag, wakes the writer, cancels the
-        purge task. Does NOT join the writer thread — call ``join_writer`` off
-        the event loop for that. Returns the cancelled purge task (awaitable)
-        or ``None``.
-        """
         self._stopped = True
         self._stop_event.set()
         try:
@@ -1041,7 +1005,6 @@ class UsageStore:
         return None
 
     def join_writer(self, timeout: float = _US_JOIN_TIMEOUT) -> None:
-        """Block until the writer thread drains and exits (call OFF the loop)."""
         thread = self._thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=timeout)
@@ -1054,9 +1017,6 @@ class UsageStore:
         self._thread = None
 
     def stop(self) -> Any:
-        """Synchronous stop (signal + in-line join). Prefer signal_stop +
-        an off-loop join_writer from an async caller to avoid stalling the loop.
-        """
         task = self.signal_stop()
         self.join_writer()
         return task

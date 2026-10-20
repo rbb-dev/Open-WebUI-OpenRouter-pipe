@@ -1,15 +1,3 @@
-"""Database persistence and encryption subsystem.
-
-This module provides a complete persistence layer for OpenRouter pipe artifacts:
-- SQLAlchemy-based database persistence with auto-discovery of Open WebUI engine
-- Fernet symmetric encryption for sensitive payloads (reasoning tokens)
-- LZ4 compression for large artifacts
-- Redis write-behind caching for multi-worker deployments
-- Circuit breaker protection for database operations
-- Background cleanup workers for old artifacts
-- ULID-based artifact identifiers for monotonic sorting
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -33,7 +21,6 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
-# External dependencies
 from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import (
     JSON,
@@ -71,7 +58,6 @@ from ..core.warn_latch import warn_level
 from .owui_files import is_temporary_chat, loggable_chat_id, temporary_chat_prefixes
 from .redis_client import mget_many
 
-# Optional dependencies
 try:
     import lz4.frame as lz4frame
 except ImportError:
@@ -91,18 +77,14 @@ from ..core.config import (
     ULID_TIME_LENGTH,
 )
 
-# Persistence Constants
-
 _UNCLAIMED_LATCH: ContextVar[set[str] | None] = ContextVar(
     "unclaimed_missing_message_id", default=None
 )
 
-# Payload compression flags
 _PAYLOAD_FLAG_PLAIN = 0
 _PAYLOAD_FLAG_LZ4 = 1
 _JSON_LEAD_BYTES = frozenset({0x7B, 0x5B, 0x20, 0x09, 0x0A, 0x0D})
 
-# Encryption version
 _ENCRYPTED_PAYLOAD_VERSION = 1
 _PAYLOAD_HEADER_SIZE = 1
 
@@ -235,7 +217,6 @@ class ArtifactStoreUnavailable(RuntimeError):
 class _SealedValveRow(Exception):
     pass
 
-# Type alias for Redis client
 if TYPE_CHECKING:
     from redis.asyncio import Redis as _RedisClient
 else:
@@ -260,7 +241,6 @@ def _owui_valve_column_type() -> Any:
 
 
 def _encode_crockford(value: int, length: int) -> str:
-    """Encode an integer into a fixed-width Crockford base32 string."""
     if value < 0:
         raise ValueError("value must be non-negative")
     chars = ["0"] * length
@@ -271,8 +251,6 @@ def _encode_crockford(value: int, length: int) -> str:
 
 
 def generate_item_id() -> str:
-    """Generate a 20-char ULID using a 16-char time component + 4-char random tail.
-    """
     return _item_id_at(time.time_ns())
 
 
@@ -289,7 +267,6 @@ def generate_item_ids(count: int) -> list[str]:
 
 
 def _sanitize_table_fragment(value: str) -> str:
-    """Normalize arbitrary identifiers into safe SQL table suffixes."""
     fragment = re.sub(r"[^a-z0-9_]", "_", (value or "").lower())
     fragment = fragment.strip("_") or "pipe"
     if len(fragment) > 62:
@@ -380,14 +357,6 @@ def _prefix_upper_bound(prefix: str) -> str | None:
 
 @contextlib.contextmanager
 def _db_session(factory: Callable[..., Session]):
-    """Open a SQLAlchemy session, ensuring rollback-on-error and safe close.
-
-    Usage::
-
-        with _db_session(self._session_factory) as session:
-            session.add(row)
-            session.commit()
-    """
     session: Session = factory()  # type: ignore[call-arg]
     try:
         yield session
@@ -415,11 +384,6 @@ def _rejection_reason(exc: BaseException) -> str:
 
 
 def _detect_redis_config(valves: Any, logger: logging.Logger) -> tuple[str, str, str, bool]:
-    """Detect Redis configuration from environment and valves.
-
-    Returns:
-        (redis_url, websocket_manager, websocket_redis_url, candidate)
-    """
     redis_url = (os.getenv("REDIS_URL") or "").strip()
     websocket_manager = (os.getenv("WEBSOCKET_MANAGER") or "").strip().lower()
     websocket_redis_url = (os.getenv("WEBSOCKET_REDIS_URL") or "").strip()
@@ -516,9 +480,6 @@ def _load_result(
     payloads: dict[str, dict], producers: dict[str, str], with_producers: bool
 ) -> dict[str, dict] | tuple[dict[str, dict], dict[str, str]]:
     return (payloads, producers) if with_producers else payloads
-
-
-# ArtifactStore Class
 
 
 def _current_user_id() -> str:
@@ -739,21 +700,6 @@ def _names_a_conversation(chat_id: Any) -> bool:
 
 
 class ArtifactStore:
-    """Manages artifact persistence, encryption, compression, and caching.
-
-    This class encapsulates all database operations for storing and retrieving
-    artifacts (reasoning traces, tool call results, etc.) with optional encryption,
-    compression, and Redis caching.
-
-    Architecture:
-    - SQLAlchemy for database persistence
-    - Fernet (symmetric encryption) for sensitive artifacts
-    - LZ4 compression for large payloads
-    - Redis write-behind cache for multi-worker deployments
-    - Circuit breakers for fault tolerance
-    - Background cleanup workers for old artifacts
-    """
-
     def __init__(
         self,
         pipe_id: str,
@@ -764,16 +710,6 @@ class ArtifactStore:
         user_id_context_var: ContextVar | None = None,
         valves_owner: Any | None = None,
     ):
-        """Initialize the ArtifactStore with dependencies from Pipe.
-
-        Args:
-            pipe_id: Unique identifier for this pipe instance
-            logger: Logger instance for diagnostics
-            valves: Pipe.Valves instance with configuration
-            emit_notification_callback: Optional callback for user notifications
-            tool_context_var: ContextVar for tool execution context
-            user_id_context_var: ContextVar for current user ID
-        """
         self.id = pipe_id
         self.logger = logger
         self._valves = valves
@@ -802,7 +738,6 @@ class ArtifactStore:
         return self._valves if live is None else live
 
     def _initialize_encryption_state(self):
-        """Initialize encryption and compression state."""
         from open_webui_openrouter_pipe.core.config import EncryptedStr
 
         self._artifact_key_warning_emitted = False
@@ -968,7 +903,6 @@ class ArtifactStore:
                 self.logger.exception("Failed to emit the write-loss status")
 
     def _initialize_circuit_breakers(self):
-        """Initialize circuit breaker tracking."""
         breaker_threshold = max(1, int(self.valves.BREAKER_MAX_FAILURES))
         self._breaker_threshold = breaker_threshold
         self._breaker_window_seconds = self.valves.BREAKER_WINDOW_SECONDS
@@ -993,18 +927,11 @@ class ArtifactStore:
                 self._db_breakers.pop(user_id, None)
 
     def configure_breaker(self, threshold: int, window_seconds: int) -> None:
-        """Update circuit breaker thresholds.
-
-        Args:
-            threshold: Maximum failures before breaker opens
-            window_seconds: Time window for failure counting
-        """
         self._breaker_threshold = max(1, int(threshold))
         self._breaker_window_seconds = window_seconds
         self._db_sweep_after = 0.0
 
     def _initialize_redis_state(self):
-        """Initialize Redis caching state."""
         self._redis_url, self._websocket_manager, self._websocket_redis_url, self._redis_candidate = (
             _detect_redis_config(self.valves, self.logger)
         )
@@ -1025,7 +952,6 @@ class ArtifactStore:
         self._redis_valve_loop: asyncio.AbstractEventLoop | None = None
 
     def _initialize_database_state(self):
-        """Initialize SQLAlchemy state."""
         self._engine: Engine | None = None
         self._session_factory: sessionmaker | None = None
         self._item_model: type[Any] | None = None
@@ -1039,7 +965,6 @@ class ArtifactStore:
         self._store_lock = threading.Lock()
 
     def _initialize_cleanup_state(self):
-        """Initialize cleanup worker state."""
         self._cleanup_task: asyncio.Task | None = None
         self._pipe_owned_row_reapers: list = []
         self._retired_warn: dict[str, float] = {}
@@ -1047,7 +972,6 @@ class ArtifactStore:
 
     @timed
     def _ensure_artifact_store(self, valves: Any, pipe_identifier: str | None = None) -> None:
-        """Configure encryption/compression + ensure the backing table exists."""
         from open_webui_openrouter_pipe.core.config import EncryptedStr
 
         if self._closed:
@@ -1175,7 +1099,6 @@ class ArtifactStore:
     def _discover_owui_engine_and_schema(
         owui_db: Any,
     ) -> tuple[Any | None, str | None, dict[str, str]]:
-        """Best-effort discovery of OWUI SQLAlchemy engine + schema without relying on symbol names."""
         engine: Any | None = None
         schema: str | None = None
         details: dict[str, str] = {}
@@ -1238,7 +1161,7 @@ class ArtifactStore:
             from open_webui.internal import db as owui_db  # type: ignore
         except ImportError:
             owui_db = None
-        except Exception:  # pragma: no cover - open_webui present but its import raised
+        except Exception:  # pragma: no cover
             logging.getLogger(__name__).warning(
                 "open_webui.internal failed to import for a reason other than absence; "
                 "the features that depend on it are now disabled",
@@ -1434,17 +1357,10 @@ class ArtifactStore:
 
     @staticmethod
     def _quote_identifier(identifier: str) -> str:
-        """Return a double-quoted identifier safe for direct SQL execution."""
         value = (identifier or "").replace('"', '""')
         return f'"{value}"'
 
     def table_suffix(self, pipe_identifier: str | None = None, *, table_fragment: str | None = None) -> str:
-        """Stable per-pipe+key table suffix shared by all pipe-owned tables.
-
-        The single source of the ``{fragment}_{keyhash8}`` construction; the
-        artifact table name is built from this so sibling tables (e.g. usage
-        stats) can never diverge from it.
-        """
         identifier = pipe_identifier or self.id
         if not identifier:
             raise RuntimeError("Pipe identifier is required to derive the table suffix.")
@@ -1456,15 +1372,9 @@ class ArtifactStore:
 
     @staticmethod
     def _is_table_exists_error(exc: Exception) -> bool:
-        """True when a DDL failure means another worker created the table first."""
         return "already exists" in str(exc).lower()
 
     def _create_table_with_race_guard(self, table: Any, engine: Any, table_name: str) -> bool:
-        """Create the table idempotently; concurrent creation counts as success.
-
-        checkfirst=True races between its existence probe and the CREATE, so a
-        losing worker sees "already exists" — the goal state, not a failure.
-        """
         created = False
         try:
             created = self._create_table_best_effort(table, engine, table_name)
@@ -1477,7 +1387,7 @@ class ArtifactStore:
         try:
             table.create(bind=engine, checkfirst=True)
             return True
-        except Exception as exc:  # pragma: no cover - database-specific errors
+        except Exception as exc:  # pragma: no cover
             if self._maybe_heal_index_conflict(engine, table, exc):
                 try:
                     table.create(bind=engine, checkfirst=True)
@@ -1502,7 +1412,7 @@ class ArtifactStore:
         for index in sorted(getattr(table, "indexes", None) or (), key=lambda idx: str(idx.name)):
             try:
                 index.create(bind=engine, checkfirst=True)
-            except Exception as exc:  # noqa: BLE001 - dialect errors vary; the assembler works without the index
+            except Exception as exc:  # noqa: BLE001
                 log = (
                     self.logger.warning
                     if index.name == _assembler_index_name(table_name)
@@ -1646,7 +1556,6 @@ class ArtifactStore:
         table: Any | None,
         exc: Exception,
     ) -> bool:
-        """Attempt to drop orphaned indexes when table creation hits duplicates."""
         if not engine or table is None:
             return False
 
@@ -1730,7 +1639,6 @@ class ArtifactStore:
 
 
     def _get_fernet(self) -> Fernet | None:
-        """Return (and cache) the Fernet helper derived from the encryption key."""
         if not self._encryption_key:
             return None
         key_source = self._encryption_key
@@ -1742,7 +1650,6 @@ class ArtifactStore:
         return self._fernet
 
     def _should_encrypt(self, item_type: str) -> bool:
-        """Determine whether a payload of ``item_type`` must be encrypted."""
         if not self._encryption_key:
             return False
         if self._encrypt_all:
@@ -1750,14 +1657,12 @@ class ArtifactStore:
         return (item_type or "").lower() == "reasoning"
 
     def _serialize_payload_bytes(self, payload: dict[str, Any]) -> bytes:
-        """Return compact JSON bytes for ``payload``."""
         from open_webui.utils.misc import sanitize_data_for_db  # type: ignore
 
         sanitized = sanitize_data_for_db(payload)
         return json.dumps(sanitized, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
     def _maybe_compress_payload(self, serialized: bytes) -> tuple[bytes, bool]:
-        """Compress serialized bytes when LZ4 is available and thresholds are met."""
         if not serialized:
             return serialized, False
         if not self._compression_enabled:
@@ -1778,14 +1683,12 @@ class ArtifactStore:
         return compressed, True
 
     def _encode_payload_bytes(self, payload: dict[str, Any]) -> bytes:
-        """Serialize payload bytes and prepend a compression flag header."""
         serialized = self._serialize_payload_bytes(payload)
         data, compressed = self._maybe_compress_payload(serialized)
         flag = _PAYLOAD_FLAG_LZ4 if compressed else _PAYLOAD_FLAG_PLAIN
         return bytes([flag]) + data
 
     def _decode_payload_bytes(self, payload_bytes: bytes) -> dict[str, Any]:
-        """Decode stored payload bytes into dictionaries."""
         if not payload_bytes:
             return {}
         if len(payload_bytes) <= _PAYLOAD_HEADER_SIZE:
@@ -1807,7 +1710,6 @@ class ArtifactStore:
             raise ValueError("Unable to decode persisted artifact payload.") from exc
 
     def _lz4_decompress(self, data: bytes) -> bytes:
-        """Decompress LZ4 payloads or raise descriptive errors."""
         if not data:
             return b""
         if lz4frame is None:
@@ -1816,11 +1718,10 @@ class ArtifactStore:
             )
         try:
             return lz4frame.decompress(data)
-        except Exception as exc:  # pragma: no cover - depends on native lib
+        except Exception as exc:  # pragma: no cover
             raise ValueError("Failed to decompress persisted artifact payload.") from exc
 
     def _encrypt_payload(self, payload: dict[str, Any]) -> str:
-        """Encrypt payload bytes using the configured Fernet helper."""
         fernet = self._get_fernet()
         if not fernet:
             raise RuntimeError("Encryption requested but ARTIFACT_ENCRYPTION_KEY is not configured.")
@@ -1828,7 +1729,6 @@ class ArtifactStore:
         return fernet.encrypt(encoded).decode("utf-8")
 
     def _decrypt_payload(self, ciphertext: str) -> dict[str, Any]:
-        """Decrypt ciphertext previously produced by :meth:`_encrypt_payload`."""
         fernet = self._get_fernet()
         if not fernet:
             raise RuntimeError("Decryption requested but ARTIFACT_ENCRYPTION_KEY is not configured.")
@@ -1861,7 +1761,6 @@ class ArtifactStore:
         return [self._row_readable_under_current_key(row) for row in rows]
 
     def _encrypt_if_needed(self, item_type: str, payload: dict[str, Any]) -> tuple[Any, bool]:
-        """Optionally encrypt ``payload`` depending on the item type."""
         if not self._should_encrypt(item_type):
             return payload, False
         encrypted = self._encrypt_payload(payload)
@@ -1874,7 +1773,6 @@ class ArtifactStore:
         *,
         form_settled: bool = False,
     ) -> None:
-        """Normalize row payloads so Redis/DB always receive the stored schema."""
         if not rows:
             return
         for row in rows:
@@ -1924,7 +1822,6 @@ class ArtifactStore:
         model_id: str,
         payload: dict[str, Any],
     ) -> dict[str, Any] | None:
-        """Construct a persistence-ready row dict or return ``None`` when invalid."""
         if not self._reply_memory_for(chat_id).is_open(chat_id, message_id):
             if not _names_a_conversation(chat_id):
                 return None
@@ -2003,7 +1900,6 @@ class ArtifactStore:
 
     @timed
     def _db_persist_sync(self, rows: list[dict[str, Any]]) -> list[str]:
-        """Persist prepared rows once; intentionally no automatic retry logic."""
         if not rows:
             return []
         if not self._item_model or not self._session_factory:
@@ -2162,26 +2058,11 @@ class ArtifactStore:
 
     @timed
     def _try_acquire_lock_sync(self, lock_row: dict[str, Any]) -> bool:
-        """Attempt to acquire a distributed lock by inserting a lock row.
-
-        Uses INSERT ON CONFLICT DO NOTHING to avoid exceptions when another
-        worker already holds the lock. This is the standard pattern for
-        distributed locking in multi-worker environments.
-
-        Args:
-            lock_row: Dict with lock data including 'id', 'chat_id', 'message_id',
-                     'item_type', 'payload', etc.
-
-        Returns:
-            True if lock was acquired (row inserted)
-            False if lock is held by another worker (row already exists)
-        """
         if not self._item_model or not self._session_factory or not self._engine:
             return False
 
         dialect_name = self._engine.dialect.name
 
-        # Prepare row data
         now = datetime.datetime.now(datetime.UTC)
         lock_id = lock_row.get("id")
         if not lock_id:
@@ -2223,7 +2104,6 @@ class ArtifactStore:
                     return True
                 except SQLAlchemyError as exc:
                     session.rollback()
-                    # Check if it's a duplicate key error
                     exc_str = str(exc).lower()
                     if "duplicate" in exc_str or "unique" in exc_str or "constraint" in exc_str:
                         return False
@@ -2240,7 +2120,6 @@ class ArtifactStore:
 
     @timed
     async def _db_persist(self, rows: list[dict[str, Any]]) -> list[str]:
-        """Persist artifacts, optionally via Redis write-behind."""
         if not rows:
             return []
         held_memory = self._reply_memory_for(rows[0].get("chat_id"))
@@ -2524,7 +2403,6 @@ class ArtifactStore:
         *,
         producers: dict[str, str] | None = None,
     ) -> dict[str, dict]:
-        """Synchronously fetch persisted artifacts for ``chat_id``."""
         if not item_ids or not self._item_model or not self._session_factory:
             return {}
         model = self._item_model
@@ -2632,7 +2510,6 @@ class ArtifactStore:
         reply_id: str | None = None,
         with_producers: bool = False,
     ) -> dict[str, dict] | tuple[dict[str, dict], dict[str, str]]:
-        """Fetch artifacts with Redis cache + retries."""
         if not (chat_id and item_ids):
             return _load_result({}, {}, with_producers)
         if is_temporary_chat(chat_id):
@@ -2815,7 +2692,6 @@ class ArtifactStore:
         purge_cache: bool = True,
         tombstone: bool = False,
     ) -> set[str]:
-        """Synchronously delete artifacts by ULID."""
         if not (artifact_ids and self._session_factory and self._item_model):
             return set()
         model = self._item_model
@@ -2893,7 +2769,6 @@ class ArtifactStore:
         *,
         tombstone: bool = False,
     ) -> bool:
-        """Delete persisted artifacts (and cached copies) once they have been replayed."""
         if not refs:
             return True
         ids = sorted({artifact_id for _, artifact_id in refs if artifact_id})
@@ -2978,16 +2853,6 @@ class ArtifactStore:
 
     @timed
     async def _redis_pubsub_listener(self) -> None:
-        """Listen for cross-worker flush wake-ups, surviving idle periods and
-        transient Redis failures.
-
-        redis-py 8.0 introduced a 5-second default socket timeout, which makes
-        a bare pubsub.listen() raise TimeoutError on the first idle stretch.
-        get_message(timeout=...) returns None on idle instead, and the
-        reconnect loop restores the subscription after real errors (Redis
-        restarts, network blips) rather than dying for the worker's lifetime.
-        The periodic timer flusher remains the independent fallback.
-        """
         if not self._redis_client:
             return
         backoff = 1.0
@@ -3012,7 +2877,7 @@ class ArtifactStore:
                         continue
                     try:
                         await self._flush_redis_queue()
-                    except asyncio.CancelledError:  # pragma: no cover - shutdown path
+                    except asyncio.CancelledError:  # pragma: no cover
                         raise
                     except Exception as flush_exc:
                         flush_reason = f"{type(flush_exc).__name__}: {flush_exc}"
@@ -3027,7 +2892,7 @@ class ArtifactStore:
                     else:
                         last_flush_failure = ""
                 return
-            except asyncio.CancelledError:  # pragma: no cover - shutdown path
+            except asyncio.CancelledError:  # pragma: no cover
                 raise
             except Exception as exc:
                 reason = f"{type(exc).__name__}: {exc}"
@@ -3312,7 +3177,7 @@ class ArtifactStore:
                             len(uncommitted),
                             failure or ("rejected" if rejected_ids else "uncommitted"),
                         )
-                    except Exception as requeue_exc:  # pragma: no cover - defensive
+                    except Exception as requeue_exc:  # pragma: no cover
                         self.logger.critical(
                             "ARTIFACT LOSS: %d artifact(s) left the pending queue, were not committed, "
                             "and could not be re-queued: %s",
@@ -3608,7 +3473,6 @@ class ArtifactStore:
 
     @timed
     async def _redis_enqueue_rows(self, rows: list[dict[str, Any]]) -> list[str]:
-        """Enqueue artifacts into Redis for asynchronous DB flushing."""
         if not rows:
             return []
 
@@ -3670,7 +3534,6 @@ class ArtifactStore:
 
     @timed
     async def _redis_requeue_entries(self, entries: list[str]) -> None:
-        """Push raw JSON entries back onto the pending queue after a DB failure."""
         if not (entries and self._redis_client):
             return
         pipe = self._redis_client.pipeline()
@@ -3939,7 +3802,7 @@ class ArtifactStore:
         while True:
             try:
                 await self._run_cleanup_once()
-            except asyncio.CancelledError:  # pragma: no cover - shutdown
+            except asyncio.CancelledError:  # pragma: no cover
                 break
             except Exception as exc:
                 self.logger.warning("Artifact cleanup failed: %s", exc, exc_info=True)
@@ -4272,10 +4135,7 @@ class ArtifactStore:
         if user_id:
             self._db_breakers.pop(user_id, None)
 
-    # 7. LIFECYCLE MANAGEMENT
-
     def close(self) -> None:
-        """Close background resources cleanly (formerly 'shutdown')."""
         with self._store_lock:
             self._closed = True
             executor = self._db_executor
@@ -4292,24 +4152,10 @@ class ArtifactStore:
                 )
 
 
-# Helper Functions
-
 def normalize_persisted_item(
     item: dict[str, Any] | None,
     generate_item_id: Callable[[], str] = generate_item_id,
 ) -> dict[str, Any] | None:
-    """Ensure persisted response artifacts match the schema expected by the
-    Responses API when replayed via the ``input`` array.
-
-    Args:
-        item: The item to normalize.
-        generate_item_id: Callable that produces unique item IDs.  Defaults to
-            the module-level :func:`generate_item_id`.  Callers may supply an
-            alternative for deterministic testing.
-
-    Returns:
-        Normalized item dict, or ``None`` when the item is invalid.
-    """
     if not isinstance(item, dict):
         return None
 
@@ -4320,7 +4166,6 @@ def normalize_persisted_item(
     normalized = dict(item)
 
     def _ensure_identity(status_default: str = "completed") -> None:
-        """Guarantee persisted artifacts include ``id`` and ``status`` fields."""
         normalized.setdefault("id", generate_item_id())
         status = normalized.get("status") or status_default
         normalized["status"] = status

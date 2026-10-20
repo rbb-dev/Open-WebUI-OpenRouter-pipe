@@ -9,12 +9,6 @@ required_open_webui_version: 0.11.4
 version: 2.8.0
 requirements: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/archive/refs/tags/v2.8.0.zip
 license: MIT
-
-This is a lightweight stub for Open WebUI.
-
-If you fork this repo:
-- Update the `requirements:` URL to point to *your fork*, otherwise Open WebUI will keep installing from *this* upstream repo.
-
 """
 
 from open_webui_openrouter_pipe import Pipe as BasePipe

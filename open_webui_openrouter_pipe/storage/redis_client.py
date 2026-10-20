@@ -15,7 +15,7 @@ except ImportError:
 
 try:
     from open_webui.utils import redis as _owui_redis
-except Exception:  # noqa: BLE001 - a half-initialised open_webui package raises beyond ImportError
+except Exception:  # noqa: BLE001
     _owui_redis = None
 
 _ACCEPTED_SCHEMES = frozenset({"redis", "rediss"})

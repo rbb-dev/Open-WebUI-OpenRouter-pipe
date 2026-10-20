@@ -1,10 +1,3 @@
-"""Authenticated HTTP action route for the pipe_dashboard dashboard.
-
-Auth is header-only (Authorization: Bearer) so the route is CSRF-safe
-regardless of OWUI's cookie SameSite/CORS; it reuses OWUI's own token
-validation. Registered as a FastAPI APIRoute before the SPA catch-all.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -203,7 +196,7 @@ def _action_dependencies() -> tuple[Any, Any]:
     from open_webui.utils.auth import bearer_security, get_verified_user
 
     async def _authorization_header_required(
-        _creds: Any = Depends(bearer_security),  # noqa: B008 - FastAPI solves it with the route's dependency list
+        _creds: Any = Depends(bearer_security),  # noqa: B008
     ) -> None:
         from fastapi import HTTPException
 
@@ -296,7 +289,7 @@ async def _current_dispatch(request: Any, user: Any, pipe: Any, fid: Any, action
 async def _action_route(
     request: Request,
     body: ActionBody,
-    _depth: Any = Depends(_bounded_json_body),  # noqa: B008 - the guard must be declared here to run before the dispatcher; FastAPI parses the body before it solves dependencies, so this runs after json.loads; a pre-parse bound needs ASGI middleware, which a live app cannot take
+    _depth: Any = Depends(_bounded_json_body),  # noqa: B008
 ):
     from fastapi import HTTPException
     from fastapi.responses import JSONResponse

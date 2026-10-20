@@ -1,11 +1,3 @@
-"""Image-output model catalog integration.
-
-Mirror of `video_catalog.py` — TTL-gated fetch of the image-output model list,
-registers via `OpenRouterModelRegistry.register_image_models`. Multimodal
-text+image models in the response are deduplicated by the registry (they
-already live in the chat catalog).
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -85,11 +77,6 @@ def _set_image_sweep_in_flight(running: asyncio.AbstractEventLoop, value: bool) 
 
 
 _SWEEP_BUDGET_SECONDS = 45
-"""How long the whole published-contract sweep may take.
-
-The per-read cap bounds one request; this bounds the wait a user experiences, so the
-number of image models does not appear in the time the model picker takes to appear.
-"""
 
 _CONTRACT_VALVES = (
     "AUTO_INSTALL_IMAGE_FILTERS",
@@ -141,13 +128,6 @@ async def ensure_image_catalog_loaded(
     with_contracts: bool = True,
     wait_for_in_flight: bool = True,
 ) -> list[dict[str, Any]]:
-    """Fetch image-output models and register them into the shared model registry.
-
-    ``with_contracts`` reads each model's published knob contract -- one request per
-    model. Only the filter installer consumes those, and it runs on the catalog path, so
-    the request path passes False rather than making a user's message wait on contract
-    reads for every model it will not call.
-    """
     wants_filters = with_contracts and _wants_contracts(valves)
     picker = bool(getattr(valves, "ENABLE_OPENROUTER_IMAGE_GENERATION", False))
     tool_only = wants_filters and not picker
@@ -384,17 +364,6 @@ async def _fetch_endpoint_records(
     concurrency: int = 8,
     only: frozenset[str] | None = None,
 ) -> tuple[dict[str, list[dict[str, Any]]], frozenset[str]]:
-    """Read every published knob contract for each model, keyed by model id.
-
-    A model served by more than one provider publishes one record per provider, and they
-    do not agree. All of them are kept because the request is routed to a provider chosen
-    later; keeping only the first would show knobs the serving provider may reject.
-
-    A model whose contract cannot be read is absent from the result. The registry then
-    keeps its last successful record, so only a model never read ends up with no knobs --
-    which is the honest outcome, because the alternative is offering a guessed set, and
-    that is what left a third of models advertising values they reject.
-    """
     ids = [
         str(model.get("id")).strip()
         for model in models
@@ -415,10 +384,6 @@ async def _fetch_endpoint_records(
         async with gate:
             try:
                 published = await client.endpoints(model_id)
-                # Consuming the response belongs inside the guard: a client returning
-                # something that is not a list raises here, and outside the guard that
-                # exception is swallowed by the gather below, so the model would vanish
-                # from both the records and the failures with no diagnostic at all.
                 offered = [item for item in published if isinstance(item, dict)]
                 completed.add(model_id)
             except aiohttp.ClientResponseError as exc:
@@ -432,11 +397,6 @@ async def _fetch_endpoint_records(
                 failures.append(model_id)
                 return
             except Exception as exc:
-                # Broad on purpose: a model absent from the result must always be in
-                # `failures`, so it is always named in the log. A tuple of enumerated
-                # classes let anything unlisted -- an AttributeError, a driver error --
-                # be dropped by the gather below with no diagnostic at all. The summary
-                # below names at most a few models, so the reason lands here per model.
                 logger.debug(
                     "Published contract read failed for %r: %s", model_id, exc, exc_info=True
                 )
@@ -447,9 +407,6 @@ async def _fetch_endpoint_records(
         else:
             no_contract.append(model_id)
 
-    # Bounded as a whole, not only per read. This runs inside the call that builds Open
-    # WebUI's model list, and one read per model at this concurrency would otherwise put
-    # the catalogue's size into the time a user waits for the picker.
     abandoned: frozenset[str] = frozenset()
     try:
         async with asyncio.timeout(_SWEEP_BUDGET_SECONDS):

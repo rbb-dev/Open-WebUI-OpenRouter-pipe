@@ -1,5 +1,3 @@
-"""Range analytics over the usage table for the Usage tab."""
-
 from __future__ import annotations
 
 import asyncio
@@ -372,7 +370,6 @@ def query_usage_stats(
     include_tasks: bool,
     name_fn: Callable[[str], str] | None = None,
 ) -> dict[str, Any]:
-    """Synchronous aggregation — call inside the store's DB executor."""
     span, bucket_s = USAGE_RANGES[range_key]
     start = now - span
     prev_start = start - span
@@ -488,7 +485,6 @@ def query_usage_stats(
 
 
 def _warm_usage_store(store: Any, usage_store: Any, valves: Any, pipe_id: str) -> str | None:
-    """Initialize a cold artifact store + usage model off-loop; return the failure type name or None."""
     try:
         if getattr(store, "_session_factory", None) is None:
             store._ensure_artifact_store(valves, pipe_id)
@@ -500,7 +496,6 @@ def _warm_usage_store(store: Any, usage_store: Any, valves: Any, pipe_id: str) -
 
 
 async def run_usage_query(plugin: Any, pipe: Any, args: dict[str, Any]) -> dict[str, Any]:
-    """Async front: validate, memoize (30s), ensure the table, run in executor."""
     range_key = str(args.get("range") or "24h")
     include_tasks = bool(args.get("include_tasks", True))
     tz_offset_min = int(args.get("tz_offset_min") or 0)

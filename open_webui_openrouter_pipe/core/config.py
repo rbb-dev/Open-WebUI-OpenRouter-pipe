@@ -1,13 +1,3 @@
-"""Configuration management for OpenRouter pipe.
-
-This module contains all configuration schemas, constants, and valve definitions:
-- Valves: Global configuration (API keys, timeouts, model lists, etc.)
-- UserValves: Per-user configuration overrides
-- EncryptedStr: Secret value encryption wrapper
-- Error template constants
-- Pipe configuration constants
-"""
-
 from __future__ import annotations
 
 import base64
@@ -90,8 +80,6 @@ def _warn_bzip2_level_floored() -> None:
     )
 
 
-# Constants
-
 _OPENROUTER_TITLE = "Open WebUI plugin for OpenRouter Responses API"
 _OPENROUTER_CATEGORIES = "general-chat"
 _OPENROUTER_REFERER = "https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/"
@@ -156,16 +144,13 @@ _DEFAULT_RESPONSES_AUDIO_FORMATS = frozenset({"mp3", "wav"})
 
 _UNMAPPABLE_AUDIO_FORMATS = frozenset({"webm"})
 
-# OpenRouter Web Tools filter
 _OPENROUTER_WEB_TOOLS_FILTER_MARKER = "openrouter_pipe:web_tools_filter:v1"
 _OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID = "openrouter_web_tools"
 
-# OpenRouter Image Generation filter
 _OPENROUTER_IMAGE_GEN_FILTER_MARKER = "openrouter_pipe:image_gen_filter:v1"
 _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID = "openrouter_image_gen"
 _OPENROUTER_IMAGE_GEN_FILTER_DEFAULT_MODEL = "openai/gpt-5-image-mini"
 
-# OpenRouter Video Generation filter
 _OPENROUTER_VIDEO_GEN_FILTER_MARKER = "openrouter_pipe:video_filter:v1"
 
 _OPENROUTER_IMAGE_FILTER_MARKER = "openrouter_pipe:image_filter:v1"
@@ -308,7 +293,6 @@ def entry_data_url(entry: Any) -> str:
     return ""
 
 
-# ULID generation constants
 ULID_LENGTH = 20
 ULID_TIME_LENGTH = 16
 ULID_RANDOM_LENGTH = ULID_LENGTH - ULID_TIME_LENGTH
@@ -819,8 +803,6 @@ DEFAULT_STREAM_INTERRUPTED_TEMPLATE = (
 )
 
 
-# EncryptedStr and Helper Functions
-
 _FERNET_MIN_BODY = 73
 _FERNET_VERSION_BYTE = 0x80
 _FERNET_VERSION_HEAD = base64.urlsafe_b64encode(bytes([_FERNET_VERSION_BYTE])).decode()[0]
@@ -831,17 +813,10 @@ def _application_secret() -> str:
 
 
 class EncryptedStr(str):
-    """String wrapper that automatically encrypts/decrypts valve values."""
-
     _ENCRYPTION_PREFIX = "encrypted:"
 
     @classmethod
     def _get_encryption_key(cls) -> bytes | None:
-        """Return the Fernet key derived from ``WEBUI_SECRET_KEY``.
-
-        Returns:
-            Optional[bytes]: URL-safe base64 Fernet key or ``None`` when unset.
-        """
         secret = _application_secret()
         if not secret:
             return None
@@ -865,14 +840,6 @@ class EncryptedStr(str):
 
     @classmethod
     def encrypt(cls, value: str) -> str:
-        """Encrypt ``value`` when an application secret is configured.
-
-        Args:
-            value: Plain-text string supplied by the user.
-
-        Returns:
-            str: Ciphertext prefixed with ``encrypted:`` or the original value.
-        """
         if not value or cls._is_a_stored_row(value):
             return value
         key = cls._get_encryption_key()
@@ -884,11 +851,6 @@ class EncryptedStr(str):
 
     @classmethod
     def decrypt(cls, value: str) -> str:
-        """Decrypt values produced by :meth:`encrypt`.
-
-        Args:
-            value: Ciphertext string, typically prefixed with ``encrypted:``.
-        """
         if not value or not value.startswith(cls._ENCRYPTION_PREFIX):
             return value
         key = cls._get_encryption_key()
@@ -956,7 +918,6 @@ class EncryptedStr(str):
     def __get_pydantic_core_schema__(
         cls, _source_type: Any, _handler: GetCoreSchemaHandler
     ) -> core_schema.CoreSchema:
-        """Expose a union schema so plain strings auto-wrap as EncryptedStr."""
         return core_schema.union_schema(
             [
                 core_schema.is_instance_schema(cls),
@@ -977,33 +938,14 @@ _ALLOWED_LOG_LEVELS: tuple[str, ...] = ("DEBUG", "INFO", "WARNING", "ERROR", "CR
 
 
 def _default_api_key() -> EncryptedStr:
-    """Return the API key env default as EncryptedStr."""
     return EncryptedStr((os.getenv("OPENROUTER_API_KEY") or "").strip())
 
 
 def _default_artifact_encryption_key() -> EncryptedStr:
-    """Provide an EncryptedStr placeholder for artifact encryption."""
     return EncryptedStr("")
 
 
 def _resolve_log_level_default() -> Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]:
-    """The GLOBAL_LOG_LEVEL env var as a valve value, via the one resolver.
-
-    Open WebUI gates the same variable on `logging.getLevelNamesMapping()`, which
-    contains `WARN` and `FATAL`. A membership test against the five canonical names
-    rejected both and fell back to INFO, so an operator who set `WARN` -- a spelling the
-    host accepts -- got a WARNING floor at import and an INFO floor once the pipe read
-    its own valve. Routing through `resolve_level` and naming the result maps the
-    aliases onto their canonical spelling instead of discarding them.
-
-    The membership test stays as the last step: a level registered by a third party
-    through `addLevelName` resolves to a name outside the valve's Literal, and the UI
-    dropdown only offers these five.
-
-    Imported inside the function because `logging_system` reaches `core.utils`, which
-    imports this module: at module scope the chain closes into a cycle. `default_factory`
-    runs at `Valves()` instantiation, long after imports settle.
-    """
     from .logging_system import resolve_level
 
     raw = (os.getenv("GLOBAL_LOG_LEVEL") or "INFO").strip().upper()
@@ -1025,11 +967,6 @@ def _pipe_id_from_module_name(module_name: str) -> str:
 
 
 def _detect_runtime_pipe_id(default: str = _DEFAULT_PIPE_ID) -> str:
-    """Infer the Open WebUI function id from the module name.
-
-    Some loaders (Open WebUI hot reload, runpy, unit tests) execute this module via exec/run
-    without setting a real __name__. Returning the default keeps imports working in those cases.
-    """
     module_name = globals().get("__name__", "")
     if isinstance(module_name, str) and module_name.startswith(_FUNCTION_MODULE_PREFIX):
         candidate = _pipe_id_from_module_name(module_name)
@@ -1077,8 +1014,6 @@ _ROUTING_ADMIN_RE_ENABLED_STAYS_ON = (
 
 
 class Valves(BaseModel):
-    """Global valve configuration shared across sessions."""
-
     @model_validator(mode="before")
     @classmethod
     def _restore_blanked_templates(cls, values):
@@ -1149,7 +1084,6 @@ class Valves(BaseModel):
     def _drop_unvalidatable(cls, values, handler):
         return repair_unvalidatable(cls, values, handler)
 
-    # Connection & Auth
     BASE_URL: str = Field(
         default=((os.getenv("OPENROUTER_API_BASE_URL") or "").strip() or "https://openrouter.ai/api/v1"),
         description=(
@@ -1292,7 +1226,6 @@ class Valves(BaseModel):
         description="Idle read timeout (seconds) applied to active streams when HTTP_TOTAL_TIMEOUT_SECONDS is disabled. Generous default favors smoother User Interface behavior for slow providers. A stored value this release no longer accepts is left at this valve's default and named in the log.",
     )
 
-    # Remote File/Image Download Settings
     REMOTE_DOWNLOAD_MAX_RETRIES: int = Field(
         default=3,
         ge=0,
@@ -1443,7 +1376,6 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         ),
     )
 
-    # Models
     MODEL_ID: str = Field(
         default="auto",
         title="Model allowlist",
@@ -1761,7 +1693,6 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         ),
     )
 
-    # Tool execution behavior
     TOOL_EXECUTION_MODE: Literal["Pipeline", "Open-WebUI"] = Field(
         default="Pipeline",
         title="Tool execution mode",
@@ -2014,7 +1945,6 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         )
     )
 
-    # Logging
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
         default_factory=_resolve_log_level_default,
         description="Select logging level. Recommend INFO or WARNING for production use. DEBUG is useful for development and debugging.",
@@ -2429,7 +2359,6 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         ),
     )
 
-    # Support configuration
     SUPPORT_EMAIL: str = Field(
         default="",
         description=(
@@ -2446,7 +2375,6 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         )
     )
 
-    # Additional error templates
     NETWORK_TIMEOUT_TEMPLATE: str = Field(
         default=DEFAULT_NETWORK_TIMEOUT_TEMPLATE,
         description=(
@@ -2809,7 +2737,6 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         ),
     )
 
-    # Model metadata synchronization
     UPDATE_MODEL_IMAGES: bool = Field(
         default=True,
         description="When enabled, automatically sync profile image URLs from OpenRouter's frontend catalog to Open WebUI model metadata, falling back to a model maker's logo when the catalog answered and has no icon for that model. A pass whose catalog read did not answer leaves every stored icon alone, whoever put it there, and the next pass that does answer applies the fallback. While the remembered source URL is unchanged the download is skipped, and for a model taking its maker's logo the maker's page is not re-fetched either. The two sweeps this runs -- the maker pages, and the icon downloads -- are each bounded as a whole, not only per read, so a slow icon host delays one pass by a bounded time rather than by the size of the catalogue. A model the budget abandoned keeps the icon it already has and is offered again on the next sync-key change — a new catalogue fetch, a settings change such as a valve edit, or a restart. Disable to manage images manually.",
@@ -3555,7 +3482,6 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         ),
     )
 
-    # Provider Routing Filters
     ADMIN_PROVIDER_ROUTING_MODELS: str = Field(
         default="",
         description=(
@@ -3619,16 +3545,11 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
 
 
 class UserValves(BaseModel):
-    """Per-user valve overrides."""
-
     model_config = ConfigDict(populate_by_name=True)
 
     @model_validator(mode="before")
     @classmethod
     def _normalize_inherit(cls, values):
-        """Treat the literal string 'inherit' (any case) as an unset value.
-
-        """
         if not isinstance(values, dict):
             return values
 
@@ -3761,33 +3682,9 @@ class UserValves(BaseModel):
 def parse_user_valves(
     raw: Any, *, model: type[UserValves] = UserValves
 ) -> tuple[UserValves, list[str]]:
-    """The one place `__user__["valves"]` becomes a UserValves. Never raises.
-
-    Open WebUI hands this over as a MODEL INSTANCE, not a mapping -- `functions.py`
-    assigns `params["__user__"]["valves"] = function_module.UserValves(**user_valves)`.
-    A reader that gates on `isinstance(raw, dict)` therefore reads nothing in
-    production while passing every test that hands it a dict.
-
-    `model` is a parameter because `Pipe.UserValves` may be a plugin-extended SUBCLASS
-    that `PluginRegistry` builds from `_pending_user_valve_fields`. This module sits below
-    `pipe.py` and cannot see it, so hardcoding the base class here would silently drop
-    any plugin-contributed field arriving as a mapping -- and report it as absent rather
-    than rejected, which is the one distinction this function exists to preserve.
-
-    Validation here is per-field rather than all-or-nothing. `model_validate` on the
-    whole payload discards every setting the user has when any ONE of them is stale,
-    which is how a REQUEST_ZDR=True got dropped -- and, at the pipe entry point, how a
-    single unreadable field failed the request outright with a generic message. Fields
-    that cannot be read are dropped and NAMED, so a caller that cares about a specific
-    one can tell "the user did not set it" from "we could not read it" and decide for
-    itself which way to fail.
-    """
     if isinstance(raw, model):
         return raw, []
     if isinstance(raw, BaseModel):
-        # exclude_unset: a bare model_dump() emits defaults too, and model_validate then
-        # marks every one of them explicitly set. _merge_valves reads model_fields_set,
-        # so one user-set field would override eleven admin valves.
         raw = raw.model_dump(exclude_unset=True)
     if not isinstance(raw, Mapping):
         return model(), []
@@ -3830,7 +3727,6 @@ def _referer_or_default(value: Any) -> str:
 
 
 def _select_openrouter_http_referer(valves: Any | None) -> str:
-    """Select HTTP referer for OpenRouter requests, with optional valve override."""
     override = valves.HTTP_REFERER_OVERRIDE if valves else ""
     candidate = override.strip() if isinstance(override, str) else ""
     if candidate and _is_a_legal_referer_value(candidate):
@@ -3850,7 +3746,6 @@ AUTOMATION_RUN: ContextVar[bool] = ContextVar("automation_run", default=False)
 
 
 def _apply_owui_forward_user_headers(headers: dict, user: Any, chat_id: Any = None) -> dict:
-    """Stamp Open WebUI user-identity headers (and Chat-Id) on an outbound request, matching a native OWUI connection; does nothing unless Open WebUI is present with ENABLE_FORWARD_USER_INFO_HEADERS set."""
     if _owui_env is None or _owui_include_user_info_headers is None:
         return headers
     if not getattr(_owui_env, "ENABLE_FORWARD_USER_INFO_HEADERS", False):
@@ -3874,7 +3769,6 @@ def _apply_owui_forward_user_headers(headers: dict, user: Any, chat_id: Any = No
 
 
 def _owui_forwarded_header_names() -> set[str]:
-    """Lowercased names of the headers OWUI forwarding may emit, read from OWUI's own env config (its FORWARD_*_HEADER_* constants); used to redact them from debug logs."""
     names: set[str] = set()
     env = _owui_env
     if env is None:

@@ -1,5 +1,3 @@
-"""CSS + JS assets (raw strings) for the dashboard Config tab."""
-
 CONFIG_TAB_CSS = r"""
 .cfgroot{--bg:transparent;--panel:#ffffff;--ink:var(--text);--muted:var(--text-muted);--faint:var(--text-faint);--border2:var(--border-light);--accent:var(--tab-active-text);--accent-weak:var(--tab-active-bg);--accent-ink:var(--tab-active-text);--warn:#d97706;--warn-bg:#fffbeb;--warn-bd:#fde68a;--tip:#2563eb;--tip-bg:#eff6ff;--tip-bd:#bfdbfe;--rose:#e11d48;--violet:#7c3aed;--radius:10px;--shadow:0 1px 2px rgba(15,23,42,.04),0 4px 12px rgba(15,23,42,.05);--mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif}
 .cfgroot .topbar{display:flex;align-items:center;gap:16px;padding:12px 20px;background:var(--panel);border-bottom:1px solid var(--border);flex:0 0 auto;z-index:5}

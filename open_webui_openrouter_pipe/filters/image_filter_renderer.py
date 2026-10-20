@@ -1,13 +1,3 @@
-"""Renders one Open WebUI filter per image model.
-
-Each filter offers exactly the knobs that model's endpoint record publishes -- its
-``supported_parameters`` become typed fields, its ``allowed_passthrough_parameters``
-become free-text ones. The filter writes every chosen value flat into
-``body["image_config"]``; the image adapter is what decides, from the same record,
-which of those go at the top level of the request and which belong under
-``provider.options.<slug>``.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -60,13 +50,6 @@ def normalise_image_filter_variant_ids(variant_ids: Any) -> tuple[str, ...]:
 
 
 def sanitize_image_filter_id(model_id: str) -> str:
-    """Derive one model's filter id, on the same terms as the video sibling.
-
-    The thresholds match ``sanitize_video_filter_id`` because both now take a model id:
-    the tighter 30/21 pair hashed away the readable part of most ids, and that string is
-    what an operator has to recognise in Open WebUI's function list. The empty-input
-    fallback is ``model`` rather than ``generic``, which was a retired filter's id.
-    """
     raw = (model_id or "").strip().lower()
     cleaned = _IMAGE_FILTER_ID_RE.sub("_", raw)
     if not cleaned:
@@ -77,32 +60,11 @@ def sanitize_image_filter_id(model_id: str) -> str:
     return f"openrouter_image_filter_{cleaned}"
 
 
-"""A passthrough name may become a Python identifier, so it must look like one.
-
-OpenRouter picks these names. One containing a hyphen -- ``cfg-scale`` is a real
-provider parameter -- renders ``IMAGE_CFG-SCALE:`` and the whole module stops parsing,
-which costs the model every other knob it publishes, not just the bad one.
-"""
-
 _NOT_A_KNOB = frozenset({"input_references"})
-"""Published parameters that are never a user control.
-
-``input_references`` counts the images the request carries; the adapter reads that limit
-straight off the endpoint record and fills the list from what the user attached. Excluded
-once, here, so it cannot be counted as a knob in one place and skipped in another.
-"""
 
 
 @dataclass(frozen=True, slots=True)
 class ImageModelFilterSpec:
-    """What one image model actually accepts, read from its published endpoint record.
-
-    Every knob here came from the model's own contract. A knob the model does not
-    publish has no field at all, which is the difference from the old fixed variants:
-    those offered the same ten aspect ratios to every model, and 33 of 40 rejected at
-    least one of them.
-    """
-
     model_id: str
     display_name: str
     function_id: str
@@ -120,12 +82,6 @@ class ImageModelFilterSpec:
     schema_only: tuple[str, ...] = ()
     ranges: tuple[tuple[str, int, int], ...] = ()
     supported: tuple[str, ...] = ()
-    """Parameters the model declares it supports without publishing a domain.
-
-    OpenRouter writes these as ``{"type": "boolean"}``, which their model schema words as
-    "whether the model supports ..." -- a support flag, not a value. The request takes a
-    number, so the control is a number with no published bounds.
-    """
     passthrough: tuple[str, ...] = ()
     variant_ids: tuple[str, ...] = ()
 
@@ -143,12 +99,6 @@ class ImageModelFilterSpec:
 
 
 def _descriptor_enum(descriptor: dict) -> tuple[Any, ...]:
-    """The published values, as published.
-
-    Stringifying them rendered a control whose every option the adapter then rejected,
-    because it compares the chosen value against the contract's own list -- ``"512"`` is
-    not ``512``.
-    """
     values = descriptor.get("values")
     if not isinstance(values, list):
         return ()
@@ -158,9 +108,6 @@ def _descriptor_enum(descriptor: dict) -> tuple[Any, ...]:
         if isinstance(v, (str, int, float))
         and not isinstance(v, bool)
         and v != ""
-        # `repr(nan)` is the bare name `nan`, not a literal, so it would render a field
-        # annotation referring to an undefined name. JSON admits NaN and Infinity, so a
-        # catalog response can carry them.
         and (not isinstance(v, float) or math.isfinite(v))
     )
 
@@ -169,12 +116,6 @@ _BOUND_LIMIT = 2**53
 
 
 def _descriptor_bound(descriptor: dict, key: str) -> int | None:
-    """The published bound, or None when it is not a whole number.
-
-    A bound the pipe cannot read is not a bound. Substituting a default produced a knob
-    advertising "accepts 0 to 0" whose only selectable value was the one the override
-    block refuses to send -- a control that looks live and can never do anything.
-    """
     raw = descriptor.get(key)
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
         return None
@@ -187,7 +128,6 @@ def _descriptor_bound(descriptor: dict, key: str) -> int | None:
 
 
 def _published_records(endpoint_record: Any) -> list[dict]:
-    """Every record the model published, however the caller passed them."""
     if isinstance(endpoint_record, dict):
         return [endpoint_record]
     if isinstance(endpoint_record, list):
@@ -196,13 +136,6 @@ def _published_records(endpoint_record: Any) -> list[dict]:
 
 
 def _agreed_parameters(records: list[dict]) -> dict[str, dict]:
-    """The descriptors every provider of this model accepts.
-
-    A model served by several providers publishes one record each, and they disagree.
-    The routing decision is made per request, long after the controls are rendered, so
-    the only set that is right whichever provider serves is the one they all accept:
-    enum values intersected, ranges narrowed to the tightest published bounds.
-    """
     if not records:
         return {}
     per_record = []
@@ -267,11 +200,6 @@ def _agreed_parameters(records: list[dict]) -> dict[str, dict]:
 
 
 def _agreed_passthrough(records: list[dict]) -> tuple[str, ...]:
-    """Passthrough names every provider both names and can be addressed under.
-
-    A record with no provider slug cannot carry a provider option at all -- the adapter
-    drops the whole block -- so one such record means no passthrough control is offered.
-    """
     if any(_unaddressable(record) for record in records):
         return ()
     return _shared_passthrough(records)
@@ -353,22 +281,12 @@ def build_image_model_filter_spec(
     dedicated_image_api: bool,
     variant_ids: tuple[str, ...] = (),
 ) -> ImageModelFilterSpec:
-    """Turn one model's published contract into the knobs its filter should render.
-
-    ``endpoint_record`` is the model's entry from OpenRouter's per-model endpoint
-    listing. When it is missing the spec carries no knobs rather than guessing: an
-    invented ratio list is what the fixed variants did, and it is why a third of models
-    were offered values they reject.
-    """
     model = image_model if isinstance(image_model, dict) else {}
     canonical = (str(model.get("id") or model_id or "")).strip()
     display = str(model.get("name") or canonical).strip() or canonical
 
     records = _published_records(endpoint_record)
     enums, narrowed, ranges, supported_names, schema_only, taken = _panel_knobs(records)
-    # `taken` grows as names are accepted, so two published names differing only in case
-    # cannot both render: they produce one field, and the second write would put a
-    # parameter on the wire that the user was never shown a control for.
     passthrough = _acceptable_passthrough(_agreed_passthrough(records), set(taken))
     addressable = _acceptable_passthrough(_shared_passthrough(records), set(taken))
     unaddressable = () if passthrough else addressable
@@ -605,8 +523,6 @@ def _drawn_tier_source(spec: ImageModelFilterSpec) -> str:
 
 
 def image_knob_text(name: str, spec: ImageModelFilterSpec) -> tuple[str, str]:
-    """The title and the meaning of one control, as this model's own contract makes it.
-    """
     title, description = IMAGE_KNOB_TITLES.get(name, (name, ""))
     if name != "size":
         return title, description
@@ -634,11 +550,6 @@ def image_knob_text(name: str, spec: ImageModelFilterSpec) -> tuple[str, str]:
 IMAGE_KNOB_TITLES = {
     name: _IMAGE_KNOB_TITLE_OVERRIDES.get(name, (name, "")) for name in TOP_LEVEL_PARAMS
 }
-"""A title for every parameter that can be rendered, derived from the one list.
-
-Keyed off ``TOP_LEVEL_PARAMS`` rather than written out again, so a name added there
-cannot arrive with no title and render a control labelled with its raw parameter name.
-"""
 
 assert set(_IMAGE_KNOB_TITLE_OVERRIDES) == set(TOP_LEVEL_PARAMS), (
     "every renderable parameter needs a title, or its control is labelled with its raw "
@@ -647,14 +558,6 @@ assert set(_IMAGE_KNOB_TITLE_OVERRIDES) == set(TOP_LEVEL_PARAMS), (
 
 
 def _valve_name(published: str) -> str:
-    """The field name a published parameter is rendered under.
-
-    One producer, because the name decides three things that must agree: the field the
-    chat UI draws, the attribute the override block reads back, and whether a later
-    parameter would collide with it. Two names differing only in case render one field,
-    and pydantic keeps the last -- so the comparison has to be on this value, not on the
-    published spelling.
-    """
     return f"IMAGE_{published.upper()}"
 
 
@@ -773,11 +676,6 @@ def _render_image_always_on_valves(dedicated_image_api: bool = True) -> str:
 
 
 def _render_image_model_user_valves(spec: ImageModelFilterSpec) -> str:
-    """Render only the knobs this model publishes, each with its published values.
-
-    An empty contract renders ``pass`` rather than an empty class body, which is not valid
-    Python. Callers decide separately whether a knobless filter is worth installing.
-    """
     fields: list[str] = []
     extra = dict(spec.narrowed)
     for name, values in spec.enums:
@@ -881,7 +779,6 @@ def _render_image_overrides(
     target: str = "overrides",
     wire_keys: dict[str, str] | None = None,
 ) -> str:
-    """Read each rendered valve back out into the request, under its published name."""
     renamed = wire_keys or {}
 
     def _key(name: str) -> str:
@@ -917,7 +814,6 @@ def _render_image_overrides(
 
 
 def render_image_model_filter_source(spec: ImageModelFilterSpec) -> str:
-    """Render one model's filter, offering exactly the knobs its contract publishes."""
     from open_webui_openrouter_pipe import __version__
 
     return f'''"""OpenRouter image companion filter."""

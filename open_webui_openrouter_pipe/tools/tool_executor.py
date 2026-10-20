@@ -1,11 +1,3 @@
-"""Tool execution orchestrator for the OpenRouter pipe.
-
-This module handles:
-- Tool call execution via queue/worker pipeline
-- Direct tool server registry building (Socket.IO bridge)
-- Legacy direct execution fallback
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -216,7 +208,6 @@ def _reports_a_browser_transport_failure(error: Any) -> bool:
 
 @dataclass(slots=True)
 class _QueuedToolCall:
-    """Stores a pending tool call plus execution metadata for worker pools."""
     call: dict[str, Any]
     tool_cfg: dict[str, Any]
     args: dict[str, Any]
@@ -249,7 +240,6 @@ class _QueuedToolCall:
 
 @dataclass(slots=True)
 class _ToolExecutionContext:
-    """Holds shared state for executing tool calls within breaker limits."""
     queue: asyncio.Queue[list[_QueuedToolCall] | None]
     per_request_semaphore: asyncio.Semaphore
     global_semaphore: asyncio.Semaphore | None
@@ -465,15 +455,7 @@ def _breaker_notice_bound_name(
 
 
 class ToolExecutor:
-    """Orchestrates tool execution and direct tool server integration."""
-
     def __init__(self, pipe: Pipe, logger: logging.Logger):
-        """Initialize tool executor.
-
-        Args:
-            pipe: Parent Pipe instance for accessing configuration and methods
-            logger: Logger instance for debugging and warnings
-        """
         self._pipe = pipe
         self.logger = logger
         self._owui_result_warn_ts: OrderedDict[str, float] = OrderedDict()
@@ -613,25 +595,6 @@ class ToolExecutor:
         *,
         is_direct_tool: bool = False,
     ) -> tuple[str, list[dict[str, Any]], list[str]]:
-        """Process tool result to extract text, files, and embeds safely.
-
-        This wraps OpenWebUI's process_tool_result() with proper error handling
-        to ensure no tool can crash the pipe. If OpenWebUI's function is unavailable
-        or fails, we fall back to simple str() conversion.
-
-        Args:
-            tool_name: Name of the tool that produced the result
-            tool_type: Type of tool (function, mcp, external, etc.)
-            raw_result: Raw result from tool execution (before str conversion)
-            context: Tool execution context with request/user/metadata
-
-        Returns:
-            Tuple of (output_text, files_list, embeds_list)
-
-        Note:
-            Files are typically images/audio from MCP tools or OpenAPI responses.
-            Embeds are HTML snippets from HTMLResponse with Content-Disposition: inline.
-        """
         timing_mark(f"process_result:{tool_name}")
         files: list[dict[str, Any]] = []
         embeds: list[str] = []
@@ -666,7 +629,6 @@ class ToolExecutor:
                         proc_exc,
                         exc_info=True,
                     )
-                    # Continue to fallback below
 
             output_text = _fallback_result_text(raw_result)
             timing_mark(f"process_result:{tool_name}:fallback_done")
@@ -697,8 +659,6 @@ class ToolExecutor:
         calls: list[dict],
         tools: dict[str, dict[str, Any]],
     ) -> list[dict]:
-        """Execute tool calls via the per-request queue/worker pipeline."""
-
         context = self._pipe._TOOL_CONTEXT.get()
         if context is None:
             raise ValueError(
@@ -889,7 +849,7 @@ class ToolExecutor:
                 future = queued.future
                 try:
                     result = await self._await_call_result(queued, allowance, loop)
-                except Exception as exc:  # pragma: no cover - defensive
+                except Exception as exc:  # pragma: no cover
                     if self.logger.isEnabledFor(logging.DEBUG):
                         self.logger.debug(
                             "Tool '%s' raised while awaiting result (call_id=%s).",
@@ -1049,7 +1009,6 @@ class ToolExecutor:
         tool_type: str,
         tool_name: str | None,
     ) -> None:
-        """Emit notification when tool is skipped due to circuit breaker."""
         if not context.event_emitter:
             return
         try:
@@ -1077,17 +1036,6 @@ class ToolExecutor:
         embeds: list[str] | None = None,
         pictures: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Build standardized tool output payload.
-
-        Args:
-            call: Original tool call dict
-            output_text: Tool output or error message
-            files: Optional list of extracted files (images, audio, etc.)
-            embeds: Optional list of HTML embed strings
-
-        Returns:
-            Responses API compatible tool output item with optional files/embeds
-        """
         call_id = call.get("call_id") or generate_item_id()
         normalized_status = status if status in TOOL_CALL_STATUSES else "incomplete"
         result: dict[str, Any] = {
@@ -1337,7 +1285,6 @@ class ToolExecutor:
 
     @timed
     async def _tool_worker_loop(self, context: _ToolExecutionContext) -> None:
-        """Process queued tool calls with batching/timeouts."""
         while True:
             batch = await context.queue.get()
             try:

@@ -1,13 +1,3 @@
-"""Structured-output task model invocation via OWUI's generate_chat_completion.
-
-Distinct from `requests.task_model_adapter.TaskModelAdapter` (which handles
-OpenRouter Responses housekeeping like title/tag generation). This package
-invokes OWUI's chat-completion path with JSON-schema strict response_format
-for structured-output features (video intent classifier; future image
-intent classification).
-
-Pattern reference: .external/seedream.py (read-only).
-"""
 from __future__ import annotations
 
 from .client import (

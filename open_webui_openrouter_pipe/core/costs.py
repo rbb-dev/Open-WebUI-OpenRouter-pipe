@@ -1,9 +1,3 @@
-"""Cost tracking and usage snapshot utilities.
-
-This module provides functions for dumping usage/cost snapshots to Redis
-for billing and analytics purposes.
-"""
-
 from __future__ import annotations
 
 import json
@@ -34,17 +28,6 @@ async def maybe_dump_costs_snapshot(
     message_id: str | None = None,
     kind: str | None = None,
 ) -> None:
-    """Push usage snapshots to Redis when enabled, namespaced per pipe.
-
-    Args:
-        pipe: The Pipe instance (for accessing redis_client and logger)
-        valves: Valve configuration (supports per-request overrides)
-        user_id: User GUID
-        model_id: Model identifier
-        usage: Usage dictionary with token counts etc.
-        user_obj: Optional user object with email/name fields
-        pipe_id: Optional explicit pipe ID (defaults to pipe.id)
-    """
     if not valves.COSTS_REDIS_DUMP:
         return
     store = getattr(pipe, "_artifact_store", None)
@@ -112,14 +95,13 @@ async def maybe_dump_costs_snapshot(
         await _await_if_needed(
             pipe._redis_client.set(key, json.dumps(payload, default=str), ex=ttl)
         )
-    except Exception as exc:  # pragma: no cover - Redis failures logged, not fatal
+    except Exception as exc:  # pragma: no cover
         pipe.logger.debug(
             "Cost snapshot write failed for user=%s: %s", user_id, exc, exc_info=True
         )
 
 
 def chat_usage_to_responses_usage(raw_usage: Any) -> dict[str, Any]:
-    """Normalise Chat Completions usage counters into the Responses-style keys this pipe reads."""
     if not isinstance(raw_usage, dict):
         return {}
     usage: dict[str, Any] = {}

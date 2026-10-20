@@ -1,7 +1,3 @@
-"""Video frame extraction at first / last / arbitrary timestamp.
-
-PIL+imageio first; ffmpeg subprocess as fallback for codecs imageio can't handle.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -229,9 +225,6 @@ def _without_paths(text: str, limit: int = 200) -> str:
 
 
 class FrameExtractionError(Exception):
-    """Raised when a frame cannot be extracted from a video file.
-    """
-
     def __init__(self, message: str, *, no_frame: bool = False,
                  returncode: int | None = None, pixel_cap: bool = False,
                  byte_budget: bool = False, timed_out: bool = False) -> None:
@@ -327,7 +320,6 @@ class VideoMetadata:
 @dataclass
 class ExtractedFrame:
     image_bytes: bytes
-    """PNG-encoded image bytes."""
     width: int
     height: int
     actual_timestamp_seconds: float
@@ -357,10 +349,6 @@ def _end_seek_hop_argv() -> list[list[str]]:
         for k in range(1, hops + 1)
     ]
 
-
-# -----------------------------------------------------------------------------
-# Probe
-# -----------------------------------------------------------------------------
 
 def _usable_duration(value: Any) -> float | None:
     try:
@@ -403,7 +391,7 @@ def _ffmpeg_binary(cancel: threading.Event | None = None) -> str | None:
     try:
         import imageio_ffmpeg  # type: ignore[import-untyped]
         return imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception:  # noqa: BLE001 - a missing wheel is a host with no ffmpeg
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -582,7 +570,6 @@ async def _video_track_seconds(path: Path) -> float | None:
 
 
 def _probe_video_sync(path: Path, cancel: threading.Event | None = None) -> VideoMetadata:
-    """Blocking video probe. Caller wraps in to_thread."""
     if _cancelled(cancel):
         raise FrameExtractionError(_ABANDONED)
     _refuse_unsafe_input(path)
@@ -628,10 +615,6 @@ def _probe_video_sync(path: Path, cancel: threading.Event | None = None) -> Vide
 
 
 async def probe_video(path: Path) -> VideoMetadata:
-    """Async wrapper around imageio video probe.
-
-    Raises FrameExtractionError on any failure (corrupt file, unsupported codec).
-    """
     if _admitted.get():
         return await _abandonable(
             _probe_video_sync, path, deadline=_PROBE_DEADLINE_S, label="probe_video",
@@ -657,10 +640,6 @@ async def _pictures_own_length(meta: VideoMetadata, path: Path) -> float:
         return meta.duration_seconds
     return video_s
 
-
-# -----------------------------------------------------------------------------
-# Frame extraction
-# -----------------------------------------------------------------------------
 
 def _check_frame_bytes(data: bytes, max_frame_bytes: int) -> None:
     if 0 < max_frame_bytes < len(data):
@@ -702,7 +681,7 @@ def _declared_size(path: Path) -> tuple[int, int] | None:
         size = meta.get("size")
         if isinstance(size, (list, tuple)) and len(size) >= 2:
             return _measured_size((int(size[0]), int(size[1])))
-    except Exception:  # noqa: BLE001 - a header we cannot read is a header we lack
+    except Exception:  # noqa: BLE001
         return None
     return None
 
@@ -797,9 +776,6 @@ def _extract_frame_imageio_sync(
     path: Path, *, frame_index: int, cancel: threading.Event | None = None,
     declared_size: tuple[int, int] | None = None,
 ) -> tuple[bytes, int, int]:
-    """Extract a single frame at the given index via imageio. Returns
-    (png_bytes, width, height). Raises FrameExtractionError on failure or
-    on decompression-bomb-sized output."""
     if _cancelled(cancel):
         raise FrameExtractionError(_ABANDONED)
     input_format = _refuse_unsafe_input(path)
@@ -845,13 +821,6 @@ async def _extract_frame_ffmpeg(
     from_end: bool = False, saw_damage: list[bool] | None = None,
     max_frame_bytes: int = 0, hop_index: list[int] | None = None,
 ) -> tuple[bytes, int, int]:
-    """Fallback frame extraction via ffmpeg subprocess.
-
-    Pipes a single PNG-encoded frame to stdout. Returns (png_bytes, w, h).
-    Hardened: rejects path starting with `-` (argv injection), restricts
-    ffmpeg to local file protocol, scales output to bound memory, applies
-    a 30s timeout, and kills the subprocess on cancellation.
-    """
     del logger
     path_str = str(path)
     input_format = _refuse_unsafe_input(path)
@@ -861,9 +830,6 @@ async def _extract_frame_ffmpeg(
         raise FrameExtractionError("ffmpeg unavailable")
 
     if from_end:
-        # Input-seeking with -ss past the last frame returns 0 bytes, so to grab
-        # the true last frame we seek a short window before EOF, scale, then
-        # reverse it — frame 1 of the reversed tail is the last decodable frame.
         seek_arg_sets = _end_seek_hop_argv()
         deadline = time.monotonic() + _END_SEEK_BUDGET_SECONDS
         vf = f"{_LONG_EDGE_SCALE},reverse"
@@ -1077,15 +1043,6 @@ async def _extract_frame_with_budget(
     meta: VideoMetadata | None = None,
     probe_failed: bool = False,
 ) -> ExtractedFrame:
-    """Extract a frame from a video file.
-
-    - first_frame: frame at index 0
-    - last_frame: last frame (probes duration to compute timestamp)
-
-    PIL+imageio first; ffmpeg subprocess fallback if imageio fails.
-
-    Raises FrameExtractionError on any failure that can't be downgraded.
-    """
     logger = logger or logging.getLogger(__name__)
     if not path.exists():
         raise FrameExtractionError("video file not found")
@@ -1125,9 +1082,6 @@ async def _extract_frame_with_budget(
                         "last",
                     )
                 else:
-                    # No probe -> can't compute a duration-based timestamp. Input
-                    # seeking past EOF returns 0 bytes, so seek from the end instead
-                    # (an -ss sentinel would just produce an empty frame and fail).
                     actual_ts = float("nan")
                     use_end_seek = True
                 resolved_target = "last_frame"

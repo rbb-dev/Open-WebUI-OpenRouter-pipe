@@ -1,5 +1,3 @@
-"""Command registry with decorator-based registration and longest-prefix matching."""
-
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
@@ -8,14 +6,11 @@ from typing import ClassVar
 
 from .context import CommandContext
 
-# Type alias for command handlers
 CommandHandler = Callable[[CommandContext], Awaitable[str]]
 
 
 @dataclass
 class CommandEntry:
-    """A registered command."""
-
     name: str
     handler: CommandHandler
     summary: str = ""
@@ -25,8 +20,6 @@ class CommandEntry:
 
 
 class CommandRegistry:
-    """Registry of Pipe Dashboard commands with longest-prefix matching."""
-
     _commands: ClassVar[dict[str, CommandEntry]] = {}
 
     @classmethod
@@ -39,8 +32,6 @@ class CommandRegistry:
         category: str = "General",
         aliases: list[str] | None = None,
     ) -> Callable[[CommandHandler], CommandHandler]:
-        """Decorator to register a command handler."""
-
         def decorator(handler: CommandHandler) -> CommandHandler:
             entry = CommandEntry(
                 name=name,
@@ -59,19 +50,11 @@ class CommandRegistry:
 
     @classmethod
     def resolve(cls, text: str) -> tuple[CommandEntry | None, str]:
-        """Find the best matching command using longest-prefix matching.
-
-        Command names are matched case-insensitively, but the remaining
-        arguments preserve their original casing.
-
-        Returns ``(entry, remaining_args)`` or ``(None, "")`` if no match.
-        """
         stripped = text.strip()
         normalized = stripped.lower()
         if not normalized:
             return None, ""
 
-        # Try longest prefix first
         best_entry: CommandEntry | None = None
         best_len = 0
 
@@ -85,13 +68,11 @@ class CommandRegistry:
         if best_entry is None:
             return None, ""
 
-        # Preserve original casing in remaining args
         remaining = stripped[best_len:].strip()
         return best_entry, remaining
 
     @classmethod
     def all_commands(cls) -> list[CommandEntry]:
-        """Return deduplicated list of all commands (excludes alias duplicates)."""
         seen: set[str] = set()
         result: list[CommandEntry] = []
         for entry in cls._commands.values():
@@ -102,14 +83,7 @@ class CommandRegistry:
 
     @classmethod
     def _reset(cls) -> None:
-        """Reset registry — for testing ONLY.
-
-        WARNING: This wipes ALL commands including built-ins (help, health,
-        config, storage). Only safe in test fixtures that restore the
-        original state afterward.
-        """
         cls._commands = {}
 
 
-# Convenience alias — preserves the full type signature for IDE autocomplete
 register_command = CommandRegistry.register

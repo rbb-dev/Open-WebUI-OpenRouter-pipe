@@ -1,14 +1,3 @@
-"""Tool schema strictification for OpenAI Structured Outputs.
-
-This module enforces strict schema rules:
-- additionalProperties: false on all objects
-- required: all property keys
-- Optional fields become nullable (add "null" to type)
-- Traverse properties, items, anyOf/oneOf branches
-
-Implements aggressive schema transformation for compatibility with strict mode.
-"""
-
 from __future__ import annotations
 
 import copy
@@ -417,26 +406,12 @@ def _resolve_root_refs(
 
 @lru_cache(maxsize=_STRICT_SCHEMA_CACHE_SIZE)
 def _strictify_schema_cached(serialized_schema: str) -> str:
-    """Cached worker that enforces strict schema rules on serialized JSON."""
     schema_dict = json.loads(serialized_schema)
     strict_schema = _strictify_schema_impl(schema_dict)
     return json.dumps(strict_schema, ensure_ascii=False)
 
 
 def _strictify_schema(schema):
-    """
-    Minimal, predictable transformer to make a JSON schema strict-compatible.
-
-    Rules for every object node (root + nested):
-      - additionalProperties := false
-      - required := all property keys
-      - fields that were optional become nullable (add "null" to their type)
-
-    We traverse properties, items (dict or list), and anyOf/oneOf branches.
-    We do NOT rewrite anyOf/oneOf; we only enforce object rules inside them.
-
-    Returns a new dict. Non-dict inputs return {}.
-    """
     if not isinstance(schema, dict):
         return {}
 
@@ -457,20 +432,6 @@ def _is_free_form_items_node(items: dict[str, Any]) -> bool:
 
 
 def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
-    """
-    Internal implementation for `_strictify_schema` that assumes input is a fresh dict.
-
-    Applies strict-mode transformations to JSON schemas:
-    - Ensures all object nodes have `additionalProperties: false`
-    - Makes all properties required
-    - Makes optional properties nullable by adding "null" to their type
-    - **Auto-infers missing types**: Adds default types to properties without one:
-      * Empty schemas `{}` -> `{"type": "object"}`
-      * Schemas with `properties` but no type -> `{"type": "object"}`
-      * Schemas with `items` but no type -> `{"type": "array"}`
-
-    This defensive type inference ensures schemas are valid for OpenAI strict mode.
-    """
     _hoist_nested_definitions(schema)
     defs_lookup: dict[str, Any] = {}
     for defs_key in _DEFS_CONTAINER_KEYS:
@@ -561,7 +522,6 @@ def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
                         _make_optional_nullable(p)
                     continue
 
-                # Ensure every property schema has a type key (strict mode requirement)
                 if "type" not in p and not _declares_composition(p):
                     pinned_kinds = _pinned_json_kinds(p)
                     if pinned_kinds is not None:
@@ -586,11 +546,7 @@ def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
                                     "Consider fixing the schema definition at the source.",
                                     name
                                 )
-                            # For anyOf/oneOf/allOf without type, don't add a default
-                            # Let OpenAI validation handle these complex cases
                         else:
-                            # Empty or minimal schema (e.g., {"description": "..."} or just {})
-                            # Default to object as the safest, most flexible type
                             p["type"] = "object"
                             logger.debug(
                                 "Added default type 'object' to property '%s' with no type or schema structure. "
@@ -598,14 +554,12 @@ def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
                                 name
                             )
 
-                # Handle optional fields by adding null to type
                 if name in optional_candidates and not had_default:
                     _make_optional_nullable(p)
                 stack.append(p)
 
         items = node.get("items")
         if isinstance(items, dict):
-            # Ensure items schema has a type key
             if (
                 "type" not in items
                 and "properties" not in items
@@ -635,7 +589,6 @@ def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
             if isinstance(branches, list):
                 for br in branches:
                     if isinstance(br, dict):
-                        # Ensure branch schema has a type key
                         if (
                             "type" not in br
                             and "properties" not in br
@@ -661,13 +614,6 @@ def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
 def _classify_function_call_artifacts(
     artifacts: dict[str, dict[str, Any]]
 ) -> tuple[set[str], set[str], set[str]]:
-    """
-    Inspect persisted artifacts and return three identifier sets:
-
-    - valid_ids: call_ids that have both a function_call and function_call_output
-    - orphaned_calls: call_ids that only have a function_call entry
-    - orphaned_outputs: call_ids that only have a function_call_output entry
-    """
     call_ids: set[str] = set()
     output_ids: set[str] = set()
 

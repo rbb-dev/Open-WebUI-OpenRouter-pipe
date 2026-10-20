@@ -1,9 +1,3 @@
-"""Anthropic vendor integration module.
-
-This module contains Anthropic-specific integration logic for prompt caching
-and other Anthropic-specific features when routing through OpenRouter.
-"""
-
 from __future__ import annotations
 
 import re
@@ -16,7 +10,6 @@ _ANTHROPIC_ID_RE = re.compile(r"~?anthropic[./]")
 
 
 def _is_anthropic_model_id(model_id: Any) -> bool:
-    """Check if a model ID belongs to Anthropic (including ~ router aliases)."""
     if not isinstance(model_id, str):
         return False
     return bool(_ANTHROPIC_ID_RE.match(model_id.strip()))
@@ -29,24 +22,6 @@ def _maybe_apply_anthropic_prompt_caching(
     valves: Pipe.Valves,
     tools: list[dict[str, Any]] | None = None,
 ) -> None:
-    """Apply Anthropic prompt caching to input items and optionally tools.
-
-    When enabled via valves, this function adds cache_control markers to:
-    - The last tool definition (when tools are present)
-    - The last system/developer message
-    - The last 2-3 user messages (3 without tools, 2 with tools)
-
-    Anthropic allows a maximum of 4 cache_control breakpoints per request.
-    The budget is allocated adaptively:
-    - With tools:    1 tool + 1 system + 2 user = 4
-    - Without tools: 1 system + 3 user = 4
-
-    Args:
-        input_items: List of input items to potentially modify in-place
-        model_id: The model identifier to check if it's an Anthropic model
-        valves: Valve configuration containing caching settings
-        tools: Optional list of tool definitions to potentially modify in-place
-    """
     if not valves.ENABLE_ANTHROPIC_PROMPT_CACHING:
         return
     if not _is_anthropic_model_id(model_id):
@@ -78,11 +53,9 @@ def _maybe_apply_anthropic_prompt_caching(
             ):
                 del tool["cache_control"]
 
-    # Mark the last tool definition with cache_control (tools are earliest
-    # in Anthropic's cache prefix order: tools → system → messages).
     has_tools = isinstance(tools, list) and len(tools) > 0
     if has_tools:
-        assert tools is not None  # help type narrowing
+        assert tools is not None
         for tool in reversed(tools):
             if not isinstance(tool, dict):
                 continue
@@ -109,7 +82,6 @@ def _maybe_apply_anthropic_prompt_caching(
         elif role == "user":
             user_message_indices.append(idx)
 
-    # Adaptive user message breakpoint budget: 3 without tools, 2 with tools.
     max_user_breakpoints = 2 if has_tools else 3
 
     target_indices: list[int] = []
@@ -151,12 +123,6 @@ def _maybe_apply_responses_toplevel_cache_control(
     *,
     valves: Pipe.Valves,
 ) -> None:
-    """Enable Claude prompt caching on /responses via a single top-level cache_control.
-
-    The Responses API ignores per-block cache_control breakpoints; only this top-level
-    field is honored. Applied for Anthropic models (`anthropic/...` slugs and
-    `~anthropic/...` router aliases) when caching is enabled.
-    """
     if not valves.ENABLE_ANTHROPIC_PROMPT_CACHING:
         return
     if not _is_anthropic_model_id(request_body.get("model")):

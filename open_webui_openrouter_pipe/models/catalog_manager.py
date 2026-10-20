@@ -1,17 +1,3 @@
-"""Model catalog management subsystem.
-
-This module handles synchronization of model metadata (capabilities, icons, descriptions)
-from OpenRouter's frontend catalog to Open WebUI's model database.
-
-Key responsibilities:
-- Schedule metadata sync tasks on pipe invocation
-- Fetch frontend catalog and extract icon/web-search mappings
-- Download and convert profile images to data URLs
-- Update or insert model records with metadata in OWUI database
-- Auto-attach companion filters (Web Tools, Image Gen, Direct Uploads)
-- Respect per-model advanced params (disable_model_metadata_sync, etc.)
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -620,11 +606,6 @@ def _apply_single_id_filter_ids(
 def _detached_by_this_pass(
     meta_dict: dict, *, prune_key: str, filter_function_ids: list[str] | None
 ) -> set[str]:
-    """Ids this family attached last time and is not attaching now.
-
-    Read before the attach pass, which rewrites the ownership record with the current
-    ids -- so afterwards there is nothing left to compare against.
-    """
     return set(_recorded_ids(meta_dict, record_key=prune_key)) - set(
         filter_function_ids or []
     )
@@ -693,12 +674,6 @@ def _apply_list_default_filter_ids(
     default_ids = _normalize_id_list(meta_dict, "defaultFilterIds")
     changed = False
 
-    # A filter this routine detached must not stay on by default, or a superseded one
-    # goes on applying itself to every request. `detached` is computed by the caller
-    # before the attach pass runs, because that pass rewrites the ownership record with
-    # the current ids -- reading it here would find nothing to prune. Scoped rather than
-    # blanket, because Open WebUI lets a *global* filter be default-on for a model
-    # without ever appearing in filterIds, and those belong to other owners.
     kept = [fid for fid in default_ids if fid not in (detached or set())]
     if len(kept) != len(default_ids):
         default_ids = kept
@@ -725,10 +700,6 @@ def _apply_video_gen_filter_ids(
     hands_off: bool = False,
     family_off: bool = False,
 ) -> bool:
-    """Apply video-gen filter auto-attach to `meta_dict["filterIds"]`.
-
-    Single-id form, the same shape image now uses: one filter per model.
-    """
     return _apply_single_id_filter_ids(
         meta_dict,
         filter_function_id=video_gen_filter_function_id,
@@ -750,7 +721,6 @@ def _apply_video_default_filter_ids(
     detached: set[str] | None = None,
     hands_off: bool = False,
 ) -> bool:
-    """Apply video-gen filter default-on flag to `meta_dict["defaultFilterIds"]`."""
     if hands_off:
         return False
     default_ids = _normalize_id_list(meta_dict, "defaultFilterIds")
@@ -782,7 +752,6 @@ def _apply_provider_routing_default_filter_ids(
     detached: set[str] | None = None,
     hands_off: bool = False,
 ) -> bool:
-    """Apply provider routing filter default-on flag to `meta_dict["defaultFilterIds"]`."""
     if hands_off:
         return False
     filter_ids = _normalize_id_list(meta_dict, "filterIds")
@@ -825,12 +794,6 @@ def media_capability_defaults(
     answers_in_text: bool = False,
     rules_out_tool_use: bool = False,
 ) -> dict[str, Any]:
-    """Capability defaults for a model, applied only where the model has no setting yet.
-
-    A model that answers with an image or a clip cannot use a tool call, so Open WebUI's
-    built-in tools are unticked rather than withheld at request time: the operator can see
-    the box, and a box they tick themselves is left alone from then on.
-    """
     if not getattr(valves, "UPDATE_MODEL_CAPABILITIES", False):
         return {}
     if not (
@@ -918,12 +881,6 @@ def _merged_capabilities(
 
 
 def needs_frontend_catalog(valves: Any, provider_routing_enabled: bool) -> bool:
-    """Whether any enabled feature reads something only the frontend catalog carries.
-
-    Two gates decide whether the fetch happens -- an early return in the sync routine and
-    the fetch itself -- and a term added to one and not the other leaves the feature
-    silently unserved. One predicate so they cannot drift.
-    """
     return bool(
         provider_routing_enabled
         or valves.UPDATE_MODEL_IMAGES
@@ -1010,8 +967,6 @@ def every_web_tool_is_off(valves: Any) -> bool:
 
 
 class ModelCatalogManager:
-    """Manages model metadata synchronization from OpenRouter to Open WebUI."""
-
     def __init__(
         self,
         *,
@@ -1025,7 +980,6 @@ class ModelCatalogManager:
         self.logger = logger
         self._task_done_callback = task_done_callback
 
-        # State for sync scheduling
         self._model_metadata_sync_task: asyncio.Task | None = None
         self._model_metadata_sync_key: tuple[Any, ...] | None = None
         self._model_metadata_sync_retry_after: float = 0.0
@@ -1045,33 +999,15 @@ class ModelCatalogManager:
         return self._provider_overlay_skipped_slugs | self._provider_overlay_unreadable_slugs
 
     def get_cached_provider_map(self) -> dict[str, dict[str, Any]]:
-        """Return the cached provider map from the last frontend catalog fetch.
-
-        Returns a dict with structure:
-        {
-            "openai/gpt-4o": {
-                "providers": ["openai", "azure", "together"],
-                "quantizations": ["fp16", "bf16"],
-                "short_name": "GPT-4o",
-                "provider_names": {"openai": "OpenAI", "azure": "Azure", ...}
-            },
-            ...
-        }
-
-        This allows immediate access to provider data in pipes() without waiting
-        for the background sync task. The map is populated by _sync_model_metadata_to_owui().
-        """
         return self._cached_provider_map
 
     @staticmethod
     def _model_form_supports_access_control(model_form_cls: Any) -> bool:
-        """Return True when ModelForm uses ``access_control`` rather than legacy grants."""
         fields = getattr(model_form_cls, "model_fields", None)
         return isinstance(fields, dict) and "access_control" in fields
 
     @staticmethod
     def _normalize_access_grants(value: Any) -> list[dict[str, Any]]:
-        """Normalize legacy grant objects/dicts into plain dictionaries."""
         if not isinstance(value, list):
             return []
         normalized: list[dict[str, Any]] = []
@@ -1089,7 +1025,6 @@ class ModelCatalogManager:
 
     @staticmethod
     def _legacy_grants_imply_public(grants: list[dict[str, Any]]) -> bool:
-        """Detect wildcard read grants used by legacy public model overlays."""
         for grant in grants:
             principal_id = grant.get("principal_id")
             principal_type = grant.get("principal_type")
@@ -1109,7 +1044,6 @@ class ModelCatalogManager:
     def _legacy_grants_to_access_control(
         cls, grants_value: Any
     ) -> dict[str, Any] | None | _AccessUnrepresentable:
-        """Convert legacy grants into OWUI ``access_control`` shape."""
         grants = cls._normalize_access_grants(grants_value)
 
         access_control: dict[str, dict[str, list[str]]] = {}
@@ -1151,7 +1085,6 @@ class ModelCatalogManager:
         model_obj: Any,
         supports_access_control: bool,
     ) -> dict[str, Any] | list[dict[str, Any]] | None:
-        """Return access payload preserving existing model visibility semantics."""
         if supports_access_control:
             access_control = getattr(model_obj, "access_control", None)
             if isinstance(access_control, dict):
@@ -1183,7 +1116,6 @@ class ModelCatalogManager:
         access_mode: str,
         supports_access_control: bool,
     ) -> dict[str, Any] | list[dict[str, str]] | None:
-        """Build default access payload for newly inserted overlays."""
         if supports_access_control:
             return None if access_mode == "public" else {}
 
@@ -1210,7 +1142,6 @@ class ModelCatalogManager:
         access_payload: dict[str, Any] | list[dict[str, Any]] | None,
         is_active: bool,
     ) -> Any:
-        """Instantiate ModelForm with whichever access schema the runtime supports."""
         payload: dict[str, Any] = {
             "id": id,
             "base_model_id": base_model_id,
@@ -1242,18 +1173,6 @@ class ModelCatalogManager:
         pipe_identifier: str,
         image_gen_filter_model: str = "",
     ) -> None:
-        """Schedule a background task to sync model metadata to OWUI if needed.
-
-        Only schedules if:
-        - At least one UPDATE_MODEL_* or AUTO_*_FILTER valve is enabled
-        - selected_models is non-empty
-        - Sync key has changed (valves, models, or registry state changed)
-        - No sync task is already running
-
-        Args:
-            selected_models: List of model dicts from the pipe's model list
-            pipe_identifier: The pipe's identifier (e.g., "openrouter")
-        """
         valves = self._pipe.valves
 
         admin_routing_models = valves.ADMIN_PROVIDER_ROUTING_MODELS
@@ -1389,7 +1308,6 @@ class ModelCatalogManager:
 
     @timed
     def _build_icon_mapping(self, frontend_data: dict[str, Any] | None) -> dict[str, str]:
-        """Build a slug -> icon URL mapping from the frontend catalog."""
         if not _frontend_catalog_answered(frontend_data):
             return {}
         raw_items = frontend_data["data"]
@@ -1480,28 +1398,6 @@ class ModelCatalogManager:
         self,
         frontend_data: dict[str, Any] | None,
     ) -> dict[str, dict[str, Any]]:
-        """Build a model slug -> provider info mapping from frontend catalog.
-
-        Returns a dict with structure:
-        {
-            "openai/gpt-4o": {
-                "providers": ["openai", "azure", "together"],
-                "quantizations": ["fp16", "bf16"],
-                "short_name": "GPT-4o",
-                "provider_names": {"openai": "OpenAI", "azure": "Azure", ...}
-            },
-            ...
-        }
-
-        The frontend catalog returns one row per model with a single featured
-        endpoint, so this map carries at most ONE provider per model. It is only
-        the degraded fallback; the full provider list for routed models comes
-        from the per-model endpoints API via _build_routed_provider_overlay.
-
-        Note: Filters out variant-only endpoints (where model_variant_slug is set) to avoid
-        advertising providers that only serve :free/:thinking variants. This prevents users
-        from selecting providers that aren't available for the base model.
-        """
         if not isinstance(frontend_data, dict):
             return {}
         raw_items = frontend_data.get("data")
@@ -1552,7 +1448,6 @@ class ModelCatalogManager:
                         if isinstance(display_name, str) and display_name:
                             model_provider_names[model_slug][provider_slug] = display_name
 
-            # Extract quantization
             quantization = endpoint.get("quantization")
             if isinstance(quantization, str) and quantization:
                 if model_slug not in model_quantizations:
@@ -1577,7 +1472,6 @@ class ModelCatalogManager:
         self,
         session: aiohttp.ClientSession,
     ) -> dict[str, Any] | None:
-        """Fetch OpenRouter's public frontend model catalog (no auth)."""
         try:
             async with session.get(
                 _OPENROUTER_FRONTEND_MODELS_URL,
@@ -1604,7 +1498,6 @@ class ModelCatalogManager:
         session: aiohttp.ClientSession,
         model_slug: str,
     ) -> dict[str, Any] | None:
-        """Fetch OpenRouter's public per-model endpoint list (no auth)."""
         url = _OPENROUTER_MODEL_ENDPOINTS_URL_TEMPLATE.format(slug=model_slug)
         try:
             async with session.get(
@@ -1633,12 +1526,6 @@ class ModelCatalogManager:
         session: aiohttp.ClientSession,
         model_slugs: Iterable[str],
     ) -> dict[str, dict[str, Any]]:
-        """Build full provider info for routed models from the per-model endpoints API.
-
-        The frontend catalog only carries one featured endpoint per model, so the
-        provider-routing dropdowns would collapse to a single provider without this
-        overlay. Only the models named in the routing valves are fetched.
-        """
         unique = sorted({(s or "").strip() for s in model_slugs if (s or "").strip()})
         skipped: frozenset[str] = frozenset()
         unreadable: set[str] = set()
@@ -1748,13 +1635,6 @@ class ModelCatalogManager:
         overlay: dict[str, dict[str, Any]],
         routed_slugs: Iterable[str],
     ) -> dict[str, dict[str, Any]]:
-        """Merge endpoint-API provider data over the frontend-derived fallback map.
-
-        Overlay data replaces providers/quantizations for routed models; display
-        names keep the frontend spelling when available so previously saved
-        dropdown selections stay valid. On fetch failure the previous cycle's
-        cached entry is retained when it is richer than the degraded frontend row.
-        """
         merged = {slug: dict(entry) for slug, entry in frontend_map.items()}
         failed: list[str] = []
         for slug in sorted({(s or "").strip() for s in routed_slugs if (s or "").strip()}):
@@ -1810,7 +1690,6 @@ class ModelCatalogManager:
         admin_models_csv: str,
         user_models_csv: str,
     ) -> dict[str, dict[str, Any]]:
-        """Build the provider map: frontend fallback plus endpoints-API overlay."""
         frontend_map = self._build_model_provider_map(frontend_data)
         routed = [
             entry.strip()
@@ -1868,7 +1747,6 @@ class ModelCatalogManager:
         *,
         pipe_identifier: str,
     ) -> list[str] | None:
-        """Sync model metadata (capabilities, profile images, descriptions) into OWUI's Models table."""
         valves = self._pipe.valves
 
         admin_routing_models = valves.ADMIN_PROVIDER_ROUTING_MODELS
@@ -2184,11 +2062,6 @@ class ModelCatalogManager:
                     )
                     image_filter_ids_known = False
             else:
-                # Retirement is not installation: it deactivates rows a previous design
-                # left behind. It has to run with the valves off too, because that is
-                # exactly the upgrade where nothing supersedes them -- the old ungated
-                # filter would otherwise stay attached and keep writing its invented
-                # values into every request.
                 try:
                     retired_image_filter_ids = frozenset(
                         await self._pipe._ensure_filter_manager()._retire_variant_image_filters(rows=install_rows, refused_out=refused_this_build)
@@ -2343,7 +2216,6 @@ class ModelCatalogManager:
                         len(models),
                     )
 
-            # Provider routing filter generation
             provider_routing_filter_map: dict[str, str] = {}
             pr_ids_known = True
             if provider_routing_enabled:
@@ -2584,8 +2456,6 @@ class ModelCatalogManager:
                         or image_filter_function_ids.get(str(original_id or ""))
                         or []
                     )
-                # Not gated on there being ids: a model that loses its filter still has
-                # to have the old one detached, and that is this pass's job.
                 auto_attach_image_filter = bool(
                     valves.AUTO_ATTACH_IMAGE_FILTERS
                     and valves.ENABLE_OPENROUTER_IMAGE_GENERATION
@@ -2755,14 +2625,6 @@ class ModelCatalogManager:
         return removed
 
     async def prune_stale_openrouter_filter_ids(self) -> int:
-        """Remove stale ``openrouter_*`` filter IDs from all model metadata.
-
-        Queries the ``function`` table for existing ``openrouter_*`` filters,
-        then sweeps the ``model`` table and removes any ``filterIds`` entries
-        that match the ``openrouter_`` prefix but are not in the valid set.
-
-        Returns the number of models that were updated.
-        """
         from open_webui.models.functions import Functions as _FunctionsTable
         from open_webui.models.models import ModelForm, ModelMeta, ModelParams, Models
 
@@ -2912,7 +2774,6 @@ class ModelCatalogManager:
         existing: Any = _ROW_NOT_FETCHED,
         param_digest: set[tuple[str, str]] | None = None,
     ):
-        """Safely update existing model or insert new overlay with metadata, never touching owner."""
         from open_webui.models.models import ModelForm, ModelMeta, ModelParams, Models
         supports_access_control = self._model_form_supports_access_control(ModelForm)
 
@@ -3032,13 +2893,6 @@ class ModelCatalogManager:
         def _prune_stale_openrouter_filter_ids(
             meta_dict: dict, keep_ids: frozenset[str] = frozenset()
         ) -> bool:
-            """Remove openrouter_* filter IDs that no longer exist in the function table.
-
-            Only prunes IDs with the ``openrouter_`` prefix — filter IDs belonging
-            to other plugins are left untouched.  If *valid_openrouter_filter_ids*
-            is empty (e.g. the batch query failed), pruning is skipped to avoid
-            accidentally removing valid references.
-            """
             if not valid_openrouter_filter_ids:
                 return False
             normalized = _normalize_id_list(meta_dict, "filterIds")
@@ -3269,7 +3123,6 @@ class ModelCatalogManager:
             return True
 
         def _apply_provider_routing_filter_ids(meta_dict: dict) -> bool:
-            """Attach provider routing filter to model if configured."""
             if not provider_routing_ids_known:
                 return False
             pr_debug = SessionLogger.debug_enabled(self.logger)

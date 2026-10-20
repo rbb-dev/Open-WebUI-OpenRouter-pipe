@@ -1,5 +1,3 @@
-"""HTTP client for OpenRouter image generation and image model catalogs."""
-
 from __future__ import annotations
 
 import base64
@@ -39,12 +37,6 @@ from ..storage.multimodal import (
 )
 
 _CATALOG_TIMEOUT_SECONDS = 15
-"""Cap on one catalog or published-contract read.
-
-The shared session leaves its total timeout unset so a long streaming reply is never cut
-off. These are small GETs on the path that builds Open WebUI's model list, and the
-contract read now runs once per model, so an unbounded wait here stalls the dropdown.
-"""
 from .image_types import (
     GeneratedImage,
     ImageGenerationError,

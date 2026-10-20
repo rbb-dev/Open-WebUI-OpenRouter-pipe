@@ -595,12 +595,6 @@ _SEED_UNDECLARED = (
 
 
 def _seed_meaning(declared: bool) -> str:
-    """What the Seed control promises, hedged the way OpenRouter's own schema hedges it.
-
-    Their video schema says repeated requests *should* return the same result and that
-    "Determinism is not guaranteed for all providers", so no model here can be told it
-    will. Three of the sixteen go further and publish nothing at all about the flag.
-    """
     tail = "" if declared else f" {_SEED_UNDECLARED}"
     return f"{_SEED_MEANING}{tail} 0 leaves it random."
 
@@ -614,12 +608,6 @@ _FRAME_MODE_MEANINGS: dict[str, str] = {
     "first_only": "first_only opens the shot with one",
     "first_last": "first_last pins the opening and the closing still, and sends the rest as references",
 }
-"""What each choice means, keyed by the choice itself.
-
-One list builds the choices and the sentence describing them, so a model that is not
-offered `first_last` is not told about it either. Seven of the sixteen take a first
-frame and no last one.
-"""
 
 
 _REFERENCE_PARAMS_BY_KIND: dict[str, tuple[str, ...]] = {
@@ -769,9 +757,6 @@ def render_video_filter_source(
         spec = build_video_filter_spec(
             model_id, video_model, admin_valves=admin_valves, variant_ids=variant_ids
         )
-    # Only the names that genuinely cannot be offered: one that is not a legal Python
-    # identifier has no field to carry it. Everything else the model publishes is
-    # rendered, typed where a purpose-built control exists and free text otherwise.
     unreachable = sorted(
         set(spec.allowed_params)
         - _HANDLED_PASSTHROUGH_PARAMS
@@ -1076,18 +1061,6 @@ class Filter:
 
 
 def _unhandled_params(spec: VideoFilterSpec) -> tuple[str, ...]:
-    """Published parameters with no purpose-built control.
-
-    OpenRouter names these and publishes nothing about their values -- no choices, no
-    bounds -- so there is nothing to type them from. They are rendered as free text
-    rather than dropped, because a parameter the model accepts and the filter refuses to
-    offer is a capability the user simply cannot reach.
-
-    The exclusion is on the rendered field name, not the published spelling. A published
-    ``duration`` and the purpose-built duration control both want ``VIDEO_DURATION``, and
-    the later definition wins -- so a free-text box would silently replace the dropdown
-    built from the model's own published values.
-    """
     taken = set(_purpose_built_field_names(spec))
     accepted: list[str] = []
     for name in spec.allowed_params:
@@ -1400,11 +1373,6 @@ _VIDEO_FIELD_DEF_RE = re.compile(r"^\s*(VIDEO_[A-Z0-9_]+)\s*:", re.MULTILINE)
 
 
 def _purpose_built_published_names(spec: VideoFilterSpec) -> frozenset[str]:
-    """Published names a purpose-built control already carries.
-
-    Derived from the rendered field names, so a name is never reported as unreachable
-    while a typed control for it is on screen.
-    """
     emitted = _purpose_built_field_names(spec)
     return frozenset(
         name for name in spec.allowed_params if f"VIDEO_{name.upper()}" in emitted
@@ -1419,12 +1387,6 @@ def _purpose_built_field_names_cached(spec: VideoFilterSpec) -> frozenset[str]:
 
 
 def _purpose_built_field_names(spec: VideoFilterSpec) -> frozenset[str]:
-    """The field names the purpose-built controls actually emit for this model.
-
-    Read back out of the rendered text rather than listed by hand, so a control added
-    later cannot be shadowed by a free-text field of the same name without anyone
-    noticing.
-    """
     return _purpose_built_field_names_cached(spec)
 
 
@@ -1461,8 +1423,6 @@ def _panel_field_descriptions(spec: VideoFilterSpec) -> tuple[tuple[str, str], .
 
 
 def _render_intent_inlet_block() -> str:
-    """Inlet code that pushes user-set intent valves into request metadata.
-    """
     return (
         "            intent_settings: dict[str, Any] = {}\n"
         '            _enabled = getattr(user_valves, "VIDEO_INTENT_ENABLED", None)\n'

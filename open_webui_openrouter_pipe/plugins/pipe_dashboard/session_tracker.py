@@ -1,15 +1,3 @@
-"""In-memory live-session tracking for the pipe_dashboard plugin.
-
-Sessions are keyed by the pipe's per-request id and observed entirely via
-plugin hooks: created at ``on_request``, updated by the wrapped emitter's
-``chat:completion`` usage snapshots and the ``on_tool_result`` /
-``on_request_retry`` events, and finalized exactly once by
-``on_generation_complete``. Completed entries stay in a bounded recent ring
-for the dashboard's retention window; task entries fold their cost into the
-parent chat session (matched by chat id). DB persistence is delegated to a
-finalize callback so this module stays storage-free.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -86,8 +74,6 @@ def _usage_numbers(usage: Any) -> dict[str, float]:
 
 
 class SessionTracker:
-    """Thread-safe registry of active + recently-completed sessions."""
-
     def __init__(
         self,
         pricing_fn: Callable[[str], dict[str, Any] | None] | None = None,
@@ -458,7 +444,6 @@ class SessionTracker:
         return out
 
     def db_row(self, entry: dict[str, Any]) -> dict[str, Any]:
-        """Map a finalized entry to the UsageStore row schema."""
         counts = _tool_counts(entry)
         done = float(entry.get("done") or time.time())
         started = float(entry.get("started") or done)

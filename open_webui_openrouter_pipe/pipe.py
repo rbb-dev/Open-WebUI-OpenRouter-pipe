@@ -1,17 +1,3 @@
-"""Main Pipe orchestrator for OpenRouter integration.
-
-This module defines the Pipe class and coordinates:
-- persistence, multimodal, streaming, and event subsystems
-- request processing, tool execution, and model management
-- lifecycle, background workers, and concurrency controls
-
-Architecture:
-- Pipe class manages initialization, lifecycle, and high-level orchestration
-- Subsystems handle specific concerns (persistence, streaming, files, events)
-- Subsystems are first-class modules with direct method calls (no shims)
-- Orchestration remains in Pipe (workers, queues, HTTP, tools)
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -37,7 +23,6 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, cast, no_type_check
 
-# Third-party imports
 import aiohttp
 from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -101,13 +86,11 @@ _TERMINAL_SITE_DEFAULT_MEMO: dict[str, tuple[float, str | None]] = {}
 _TERMINAL_SITE_DEFAULT_TTL = 30.0
 _TERMINAL_SITE_DEFAULT_MAX = 256
 
-# Optional Redis support
 try:
     import redis.asyncio as aioredis
 except ImportError:
     aioredis = None  # type: ignore
 
-# Timing instrumentation
 from .core.timing_logger import (
     clear_timing_context,
     timed,
@@ -125,7 +108,6 @@ try:
 except ImportError:
     pyzipper = None  # type: ignore
 
-# Import subsystems
 from .api.gateway.responses_adapter import _drop_backlog_latch, _FailureCharge
 from .core.circuit_breaker import CircuitBreaker
 from .core.config import (
@@ -153,7 +135,6 @@ _VALVE_FIELD_ADAPTERS = {
     name: TypeAdapter(field.annotation) for name, field in Valves.model_fields.items()
 }
 
-# Import error handling
 from .core.error_formatter import ErrorFormatter, _admission_error_response
 from .core.errors import (
     OpenRouterAPIError,
@@ -177,18 +158,12 @@ from .core.utils import (
     join_answer_and_card,
 )
 from .core.warn_latch import warn_level
-
-# Import vendor integrations
 from .integrations.anthropic import _is_anthropic_model_id
-
-# Import logging
 from .logging.session_log_manager import (
     SESSION_LOG_OWNERSHIP_MEMO,
     SessionLogManager,
     resolve_message_id,
 )
-
-# Import model management
 from .models.catalog_manager import ModelCatalogManager, every_web_tool_is_off
 from .models.reasoning_config import ReasoningConfigManager
 from .models.registry import (
@@ -202,8 +177,6 @@ from .models.registry import (
     sanitize_model_id,
     supports_tool_calling,
 )
-
-# Import request handling
 from .requests import NonStreamingAdapter, TaskModelAdapter
 from .requests.orchestrator import _is_api_caller
 from .storage.multimodal import REQUEST_VALIDATED_IPS, MultimodalHandler
@@ -247,7 +220,6 @@ ToolCallable = Callable[..., Awaitable[Any]] | Callable[..., Any]
 
 
 def _consume_background_task_exception(task: asyncio.Task) -> None:
-    """Silently consume exceptions from background tasks to avoid 'Task exception was never retrieved' warnings."""
     with contextlib.suppress(asyncio.CancelledError, Exception):
         task.exception()
 
@@ -1091,12 +1063,8 @@ def _collect_variant_specs(raw_csv: str) -> list[tuple[str, str, bool]]:
     return specs
 
 
-# Data Classes
-
 @dataclass(slots=True)
 class _PipeJob:
-    """Encapsulate a single OpenRouter request scheduled through the queue."""
-
     pipe: Pipe
     body: dict[str, Any]
     user: dict[str, Any]
@@ -1111,8 +1079,6 @@ class _PipeJob:
     future: asyncio.Future
     stream_queue: asyncio.Queue[dict[str, Any] | str | None] | None = None
     request_id: str = field(default_factory=lambda: secrets.token_hex(8))
-    # Parsed once at the entry point and carried, so the orchestrator does not repeat a
-    # full user-row read -- and so one request sees ONE snapshot of the user's valves.
     user_valves: Pipe.UserValves | None = None
     rejected_user_valves: list[str] = field(default_factory=list)
     continued_reply: str | None = None
@@ -1123,45 +1089,15 @@ class _PipeJob:
     @property
     @timed
     def session_id(self) -> str:
-        """Convenience accessor for the metadata session identifier."""
         return str(self.metadata.get("session_id") or "")
 
     @property
     @timed
     def user_id(self) -> str:
-        """Return the Open WebUI user id associated with the job."""
         return str(self.user.get("id") or self.metadata.get("user_id") or "")
 
 
-# Main Pipe Class
-
 class Pipe:
-    """Main orchestration class for OpenRouter pipe with subsystem delegation.
-
-    This class:
-    1. Manages lifecycle (init, startup checks, shutdown)
-    2. Handles high-level request flow (pipes, pipe methods)
-    3. Delegates specific functionality to subsystems
-    4. Maintains shared state (HTTP sessions, concurrency controls)
-    5. Orchestrates workers, queues, and background tasks
-
-    Subsystem Delegation:
-    - ArtifactStore: All persistence (DB, Redis, encryption, cleanup)
-    - MultimodalHandler: All file/image operations (upload, download, inline)
-    - StreamingHandler: All streaming loops (SSE parsing, delta handling)
-    - EventEmitterHandler: All UI events (status, errors, citations, completion)
-
-    Orchestration Kept in Pipe:
-    - __init__, pipes(), pipe(), shutdown() - lifecycle
-    - _handle_pipe_call(), _process_transformed_request() - request routing
-    - transform_messages_to_input() - message transformation
-    - send_openrouter_*_request() - HTTP request execution
-    - _execute_function_calls() - tool execution
-    - _request_worker_loop(), _enqueue_job() - worker management
-    - _ensure_concurrency_controls() - semaphore/breaker setup
-    - _refresh_model_catalog() - model catalog management
-    """
-
     id: str = _PIPE_RUNTIME_ID or "open_webui_openrouter_pipe"
 
     Valves = Valves
@@ -1185,16 +1121,6 @@ class Pipe:
 
     @timed
     def __init__(self):
-        """Initialize Pipe with subsystem delegation architecture.
-
-        Initialization Order:
-        1. Core pipe state (logger, valves, type)
-        2. Instance variables for persistence, multimodal, streaming, events
-        3. Circuit breaker state
-        4. Redis/cache configuration
-        5. Startup check coordination
-        6. Session logging setup
-        """
         self._draining: bool = False
         self._closing: bool = False
         self._close_lock: threading.Lock = threading.Lock()
@@ -1316,7 +1242,6 @@ class Pipe:
         self._provider_routing_rows_probed = False
         self._provider_routing_rows_may_exist_flag = False
 
-        # Startup check coordination
         self._startup_task: asyncio.Task | None = None
         self._startup_checks_started = False
         self._startup_checks_pending = False
@@ -1344,7 +1269,6 @@ class Pipe:
         self._redis_cache_prefix = f"{self._redis_namespace}:artifact"
         self._redis_flush_lock_key = f"{self._redis_namespace}:flush_lock"
 
-        # Cleanup tasks
         self._cleanup_task: asyncio.Task | None = None
 
         self._session_log_manager = SessionLogManager(
@@ -1360,7 +1284,6 @@ class Pipe:
         )
         self._maybe_start_log_worker()
 
-        # Configure timing file if enabled
         if self._maybe_configure_timing_file(reopen=True):
             self.logger.info("Timing log enabled: %s", self.valves.TIMING_LOG_FILE)
 
@@ -1411,11 +1334,8 @@ class Pipe:
         self._initialized = True
         self.logger.debug("Async subsystems initialized")
 
-    # LIFECYCLE & STARTUP HELPERS
-
     @timed
     def _maybe_start_startup_checks(self) -> None:
-        """Schedule background warmup checks once an event loop is available."""
         if getattr(self, "_closed", False):
             return
         if self._startup_checks_complete:
@@ -1423,7 +1343,7 @@ class Pipe:
         if self._startup_task and not self._startup_task.done():
             try:
                 task_loop = self._startup_task.get_loop()
-            except AttributeError:  # pragma: no cover - defensive for older asyncio implementations
+            except AttributeError:  # pragma: no cover
                 task_loop = None
             try:
                 current_loop = asyncio.get_running_loop()
@@ -1465,7 +1385,6 @@ class Pipe:
 
     @timed
     def _maybe_start_log_worker(self) -> None:
-        """Ensure the async logging queue + worker are started."""
         if getattr(self, "_closed", False) or getattr(self, "_draining", False):
             return
         try:
@@ -1500,7 +1419,7 @@ class Pipe:
         if worker is not None and not worker.done():
             try:
                 worker_loop: Any = worker.get_loop()
-            except AttributeError:  # pragma: no cover - defensive for older asyncio implementations
+            except AttributeError:  # pragma: no cover
                 worker_loop = None
             if worker_loop is loop:
                 return
@@ -1541,20 +1460,6 @@ class Pipe:
         self._log_worker_start_task.add_done_callback(_consume_background_task_exception)
 
     async def _stored_user_valves(self, __user__: dict[str, Any]) -> Any:
-        """The user's valves as STORED, because Open WebUI destroys them on the way in.
-
-        `functions.py` builds `UserValves(**stored)` inside a try/except and substitutes a
-        default-constructed instance when pydantic refuses -- so a single stale value for
-        one Literal field, left behind by any past option rename, silently collapses EVERY
-        setting the user has, including REQUEST_ZDR. By the time the pipe is called, which
-        field failed and what the others held is already gone: `parse_user_valves` gets an
-        instance whose fields all equal their defaults and cannot tell that from a user
-        who set nothing.
-
-        Reading the row ourselves is the only place the per-field information still
-        exists. The instance Open WebUI supplied is the fallback for when that read is
-        unavailable or fails.
-        """
         supplied = __user__.get("valves")
         user_id = str(__user__.get("id") or "")
         if not user_id:
@@ -1574,16 +1479,6 @@ class Pipe:
         return stored if isinstance(stored, Mapping) else supplied
 
     def _user_valve_blob_is_rejected(self, __user__: dict[str, Any], stored: Any) -> bool:
-        """True when this user HAS a saved valve blob for this pipe that did not decode.
-
-        `decrypt_valves` returns `{}` on InvalidToken exactly as it does for a row with
-        nothing stored, so the decoded value cannot tell a user who never opened the
-        valve panel from one whose settings a WEBUI_SECRET_KEY rotation made unreadable.
-        The still-encrypted blob can: Open WebUI builds `__user__` as
-        `UserModel.model_dump()` and `UserSettings` allows extra keys, so the ciphertext
-        travels on `settings.functions.valves.<pipe id>` and no second user-row fetch is
-        needed to tell the two apart.
-        """
         if stored != {}:
             return False
         blob = self._stored_valve_blob(__user__)
@@ -1647,21 +1542,6 @@ class Pipe:
         return dict(stored), True
 
     async def _read_user_valves(self, __user__: dict[str, Any]) -> tuple[Any, list[str]]:
-        """The one place a request turns `__user__` into (UserValves, rejected).
-
-        One return statement, on purpose. An earlier version of this pair returned a
-        2-tuple from one of four paths inside `_stored_user_valves` and a scalar from
-        the other three; `parse_user_valves` recognised the tuple as neither a model nor
-        a Mapping and every user valve silently reverted to its default.
-        `_stored_user_valves` keeps its single-value contract and the classification
-        happens here.
-
-        A blob that will not decode is reported as EVERY field rejected, because that is
-        what happened: the row was read and nothing in it could be recovered. Callers
-        that fail closed on a specific field -- the orchestrator's
-        `"REQUEST_ZDR" in rejected` -- then do so with no new signal to thread through
-        the job.
-        """
         user_id = str(__user__.get("id") or "")
         fingerprint = self._stored_valve_fingerprint(self._stored_valve_blob(__user__))
         cached = self._user_valve_cache.get(user_id) if user_id else None
@@ -1695,15 +1575,6 @@ class Pipe:
         return user_valves, rejected
 
     def _maybe_configure_timing_file(self, *, reopen: bool = False) -> bool:
-        """Open the timing log file when ENABLE_TIMING_LOG is on, warning once per bad path.
-
-        ``reopen`` forces a close and re-open, which is what a fresh pipe load needs so an
-        externally rotated or deleted log file is not written to through a stale handle.
-
-        The latch is keyed on the path and cleared on success, so a corrected path warns
-        again if it breaks again, and a still-broken path repeats at DEBUG rather than
-        going silent at every level.
-        """
         if not self.valves.ENABLE_TIMING_LOG:
             _warned_timing_file.clear()
             return False
@@ -1749,7 +1620,6 @@ class Pipe:
 
     @timed
     def _maybe_start_redis(self) -> None:
-        """Initialize Redis cache if enabled."""
         if getattr(self, "_closed", False):
             return
         self._refresh_redis_candidate()
@@ -1766,7 +1636,7 @@ class Pipe:
         if self._redis_ready_task and not self._redis_ready_task.done():
             try:
                 task_loop = self._redis_ready_task.get_loop()
-            except AttributeError:  # pragma: no cover - defensive for older asyncio implementations
+            except AttributeError:  # pragma: no cover
                 task_loop = None
             if task_loop is not None and task_loop is loop:
                 return
@@ -1799,7 +1669,7 @@ class Pipe:
         if self._cleanup_task and not self._cleanup_task.done():
             try:
                 task_loop = self._cleanup_task.get_loop()
-            except AttributeError:  # pragma: no cover - defensive for older asyncio implementations
+            except AttributeError:  # pragma: no cover
                 task_loop = None
             if task_loop is not None and task_loop is loop:
                 return
@@ -1814,11 +1684,6 @@ class Pipe:
     @classmethod
     @timed
     def _auth_failure_scope_key(cls) -> str:
-        """Return an identifier used to suppress repeated auth failures.
-
-        Prefer stable user ids, otherwise fall back to session id. When both are
-        absent, return an empty string (no suppression).
-        """
         user_id = (SessionLogger.user_id.get() or "").strip()
         if user_id:
             return f"user:{user_id}"
@@ -1884,7 +1749,6 @@ class Pipe:
     @staticmethod
     @timed
     async def _log_worker_loop(queue: asyncio.Queue) -> None:
-        """Drain log records asynchronously to keep handlers non-blocking."""
         if queue is None:
             return
         try:
@@ -1894,7 +1758,7 @@ class Pipe:
                     SessionLogger.process_record(record)
                 finally:
                     queue.task_done()
-        except asyncio.CancelledError:  # pragma: no cover - shutdown path
+        except asyncio.CancelledError:  # pragma: no cover
             pass
         finally:
             if queue is not None:
@@ -2226,11 +2090,6 @@ class Pipe:
         return self._image_generation_adapter
 
     async def _dispatch_plugin_event(self, method: str, *args: Any, **kwargs: Any) -> None:
-        """Guarded plugin-event dispatch; never raises into the request path.
-
-        No-op when the plugin system is disabled or the registry was never
-        created — deliberately does NOT force lazy registry creation.
-        """
         try:
             if not getattr(self.valves, "ENABLE_PLUGIN_SYSTEM", False):
                 return
@@ -2263,7 +2122,7 @@ class Pipe:
 
         try:
             models = OpenRouterModelRegistry.list_models()
-        except Exception:  # noqa: BLE001 - a catalogue read must never delete a live row
+        except Exception:  # noqa: BLE001
             return True
         if not models:
             return True
@@ -2442,8 +2301,6 @@ class Pipe:
             self.logger.debug("Legacy video filter cleanup failed: %s", exc, exc_info=True)
         return switch_rows
 
-    # ENTRY POINTS
-
     def _schedule_web_tools_filter_repair(self) -> None:
         running = self._web_tools_repair_task
         if running is not None and not running.done():
@@ -2462,7 +2319,7 @@ class Pipe:
     async def _guarded_web_tools_repair(self) -> bool:
         try:
             ok = await self._keep_web_tools_filters_in_step()
-        except Exception:  # noqa: BLE001 - an unfinished pass must not arm the cooldown
+        except Exception:  # noqa: BLE001
             self._web_tools_repair_abandoned += 1
             if self._web_tools_repair_abandoned >= _WEB_TOOLS_REPAIR_ABANDONED_LIMIT:
                 self._web_tools_repair_retry_after = (
@@ -2535,13 +2392,12 @@ class Pipe:
 
     @timed
     async def pipes(self):
-        """Return the list of models exposed to Open WebUI."""
         self._active_pipes_calls += 1
         try:
             _pipe_id_token = ModelFamily._PIPE_ID.set(self.id)
             try:
                 _api_key, _api_key_error = self._resolve_openrouter_api_key(self.valves)
-            except Exception:  # noqa: BLE001 - the fault is the body's to degrade open
+            except Exception:  # noqa: BLE001
                 _api_key, _api_key_error = None, None
             _zdr_key_token = OpenRouterModelRegistry.arm_zdr_key(_api_key if not _api_key_error else None)
             try:
@@ -2866,7 +2722,6 @@ class Pipe:
         counter_state: dict[str, bool] | None = None,
         timing_holder: list[tuple[ContextVar[Any], Token[Any]]] | None = None,
     ) -> AsyncGenerator[dict[str, Any] | str, None] | dict[str, Any] | str | StreamingResponse | None | JSONResponse:
-        """Entry point that enqueues work and awaits the isolated job result."""
         safe_event_emitter = None
         wants_stream = bool(body.get("stream")) if isinstance(body, dict) else False
         owui_chat_id_token = OWUI_CHAT_ID.set(str((__metadata__ or {}).get("chat_id") or ""))
@@ -3230,11 +3085,6 @@ class Pipe:
             store._redis_valve_off = False
 
     async def _stop_redis(self) -> None:
-        """Stop Redis client and cancel related tasks.
-
-        Cancels all Redis background tasks and closes the Redis client connection.
-        Any errors during client close are logged but not propagated.
-        """
         await self._stop_redis_tasks()
 
         if self._redis_client:
@@ -3432,14 +3282,13 @@ class Pipe:
 
     @timed
     async def _stop_request_worker(self) -> None:
-        """Stop this instance's queue worker and drain pending items."""
         worker = self._queue_worker_task
         if worker:
             with contextlib.suppress(RuntimeError):
                 worker.cancel()
             try:
                 worker_loop = worker.get_loop()
-            except AttributeError:  # pragma: no cover - defensive for older asyncio implementations
+            except AttributeError:  # pragma: no cover
                 worker_loop = None
             if worker_loop is not None and worker_loop is asyncio.get_running_loop():
                 with contextlib.suppress(asyncio.CancelledError):
@@ -3577,7 +3426,6 @@ class Pipe:
 
     @timed
     async def _stop_log_worker(self) -> None:
-        """Stop this instance's log worker and clear the queue."""
         owned_queue = self._log_queue
         owned_loop = self._log_queue_loop
         worker = self._log_worker_task
@@ -3586,7 +3434,7 @@ class Pipe:
                 worker.cancel()
             try:
                 worker_loop = worker.get_loop()
-            except AttributeError:  # pragma: no cover - defensive for older asyncio implementations
+            except AttributeError:  # pragma: no cover
                 worker_loop = None
             if worker_loop is None or worker_loop is asyncio.get_running_loop():
                 try:
@@ -3626,7 +3474,6 @@ class Pipe:
 
     @timed
     async def close(self):
-        """Shutdown background resources (DB executor, queue worker, log worker, Redis)."""
         lock = getattr(self, "_close_lock", None)
         if lock is None:
             lock = threading.Lock()
@@ -3772,7 +3619,6 @@ class Pipe:
                 slm._pipe = None  # type: ignore[assignment]
 
     def __del__(self) -> None:
-        """Best-effort cleanup hook for garbage collection."""
         if getattr(self, "_closed", False):
             return
         with contextlib.suppress(Exception):
@@ -3785,26 +3631,13 @@ class Pipe:
                         _drop_task(pending)
         self._schedule_close()
 
-    # UTILITY METHODS
-
     @staticmethod
     def _should_warn_event_queue_backlog(qsize: int, warn_size: int) -> bool:
-        """Whether the backlog has reached the threshold worth reporting.
-
-        Threshold only. The "have I said this recently" half used to live here as a
-        hand-rolled timestamp cooldown, which meant an operator inside the 30 s window
-        saw nothing at any level -- and no census could find it, because the condition
-        was spelled as a plain call rather than as a latch lookup. That half now goes
-        through `warn_level`, which demotes the repeat to DEBUG instead of dropping it.
-        """
         return qsize >= warn_size
-
-    # ORCHESTRATION METHODS
 
 
     @timed
     async def _run_startup_checks(self) -> None:
-        """Warm OpenRouter connections and log readiness without blocking startup."""
         session: aiohttp.ClientSession | None = None
         api_key: str | None = None
         try:
@@ -3823,7 +3656,7 @@ class Pipe:
             self._startup_checks_complete = True
             self._startup_checks_pending = False
             self._warmup_failed_key = None
-        except Exception as exc:  # pragma: no cover - depends on IO
+        except Exception as exc:  # pragma: no cover
             self.logger.warning("OpenRouter warmup failed: %s", exc, exc_info=True)
             self._warmup_failed = True
             self._warmup_failed_key = _warmup_identity(api_key, self.valves.BASE_URL)
@@ -3840,7 +3673,6 @@ class Pipe:
 
     @timed
     async def _ensure_concurrency_controls(self, valves: Pipe.Valves) -> None:
-        """Lazy-initialize queue worker and semaphore with the latest valves."""
         slots = _get_process_limits().for_id(self.id)
         current_loop = asyncio.get_running_loop()
 
@@ -3859,7 +3691,7 @@ class Pipe:
             if self._queue_worker_task is not None and not self._queue_worker_task.done():
                 try:
                     worker_loop = self._queue_worker_task.get_loop()
-                except AttributeError:  # pragma: no cover - defensive for older asyncio implementations
+                except AttributeError:  # pragma: no cover
                     worker_loop = None
                 if worker_loop is not None and worker_loop is not current_loop:
                     self.logger.debug(
@@ -3986,7 +3818,6 @@ class Pipe:
 
     @timed
     def _enqueue_job(self, job: _PipeJob) -> bool:
-        """Attempt to enqueue a request, returning False when the queue is full."""
         queue = self._request_queue
         if queue is None:
             self.logger.error("Request queue not initialized in _enqueue_job")
@@ -4078,7 +3909,6 @@ class Pipe:
     @staticmethod
     @timed
     async def _request_worker_loop(queue: asyncio.Queue) -> None:
-        """Background worker that dequeues jobs and spawns per-request tasks."""
         if queue is None:
             return
         try:
@@ -4136,7 +3966,7 @@ class Pipe:
                         _task.cancel()
 
                 job.future.add_done_callback(_propagate_cancel)
-        except asyncio.CancelledError:  # pragma: no cover - shutdown path
+        except asyncio.CancelledError:  # pragma: no cover
             return
 
 
@@ -4149,7 +3979,6 @@ class Pipe:
         *,
         permit_handoff: _PermitHandoff | None = None,
     ) -> None:
-        """Isolate per-request context, HTTP session, and semaphore slot."""
         if job.counter_state is not None:
             job.counter_state["tail"] = True
         if semaphore is _SEMAPHORE_NOT_GIVEN:
@@ -4219,7 +4048,7 @@ class Pipe:
                 )
                 try:
                     _job_key, _job_key_error = self._resolve_openrouter_api_key(job.valves)
-                except Exception:  # noqa: BLE001 - the request path degrades open the same way
+                except Exception:  # noqa: BLE001
                     _job_key, _job_key_error = None, None
                 tokens.append(
                     (
@@ -4442,7 +4271,6 @@ class Pipe:
         *,
         held: bool = False,
     ):
-        """Async context manager that logs semaphore acquisition/release."""
         self.logger.debug("Waiting for semaphore (request=%s)", request_id)
         if not held:
             await semaphore.acquire()
@@ -4454,28 +4282,15 @@ class Pipe:
             self.logger.debug("Semaphore released (request=%s)", request_id)
 
     def _refresh_process_log_level(self) -> None:
-        """Point SessionLogger's out-of-request floor at the operator's LOG_LEVEL.
-
-        Everything `pipes()` logs -- filter auto-install failures, plugin dispatch
-        failures, startup pruning -- runs with no request in scope, so without this
-        it is judged against the process default rather than the configured valve.
-
-        The only writer of `process_log_level`. A request must not redefine it: the
-        attribute is process-wide with no token to restore it, so one request would set
-        the floor for every out-of-request logger in the worker from then on. The
-        per-request level rides the `log_level` ContextVar instead, which
-        `effective_log_level` prefers and `_apply_logging_context` resets.
-        """
         try:
             SessionLogger.process_log_level = resolve_level(
                 str(self.valves.LOG_LEVEL), SessionLogger.process_log_level
             )
-        except Exception:  # noqa: BLE001, S110 - a valve read must not break startup
+        except Exception:  # noqa: BLE001, S110
             pass
 
     @timed
     def _apply_logging_context(self, job: _PipeJob) -> list[tuple[ContextVar[Any], contextvars.Token[Any]]]:
-        """Set SessionLogger contextvars based on the incoming request."""
         session_id = job.session_id or None
         request_id = job.request_id or None
         user_id = job.user_id or None
@@ -4538,8 +4353,6 @@ class Pipe:
         session: aiohttp.ClientSession | None = None,
         outcome_sink: dict[str, Any] | None = None,
     ) -> dict[str, Any] | str | StreamingResponse | None:
-        """Process a user request and return either a stream or final text.
-        """
         if not isinstance(body, dict):
             body = {}
         if not isinstance(__user__, dict):
@@ -4871,7 +4684,6 @@ class Pipe:
             )
             self.logger.warning("Required internal file unavailable: %s", e.user_message)
 
-        # Generic catch-all
         except Exception as e:
             self.logger.exception("Unexpected error in _handle_pipe_call request processing")
             self._mark_failed_outcome(outcome_sink, str(e) or type(e).__name__)
@@ -4928,23 +4740,12 @@ class Pipe:
             outcome_sink=outcome_sink,
         )
 
-    # Model Management
-
     @timed
     def _qualify_model_for_pipe(
         self,
         pipe_identifier: str | None,
         model_id: str | None,
     ) -> str | None:
-        """Return a dot-prefixed Open WebUI model id for this pipe.
-
-        Args:
-            pipe_identifier: The pipe identifier prefix (e.g., "openrouter")
-            model_id: The model ID to qualify
-
-        Returns:
-            Qualified model ID with pipe prefix, or None if invalid
-        """
         if not isinstance(model_id, str):
             return None
         trimmed = model_id.strip()
@@ -4957,8 +4758,6 @@ class Pipe:
             return trimmed
         normalized = ModelFamily.base_model(trimmed) or trimmed
         return f"{pipe_identifier}.{normalized}"
-
-    # OpenRouter API Adapters
 
     async def send_openai_responses_streaming_request(
         self,
@@ -5118,7 +4917,6 @@ class Pipe:
         return choice == "inline"
 
     async def _shutdown_tool_context(self, context: _ToolExecutionContext) -> None:
-        """Stop per-request tool workers (bounded wait, then cancel)."""
         self._ensure_tool_executor()._withdraw_unstarted_calls(context)
 
         async def _graceful() -> None:
@@ -5157,8 +4955,6 @@ class Pipe:
             else:
                 await asyncio.sleep(0)
 
-    # Tool Execution Methods
-
     async def _settle_cancelled_tool_tasks(self, tasks: list[asyncio.Task[Any]]) -> None:
         for task in tasks:
             task.cancel()
@@ -5179,7 +4975,6 @@ class Pipe:
         batch: list[_QueuedToolCall],
         context: _ToolExecutionContext,
     ) -> None:
-        """Execute a batch of tool calls in parallel."""
         if not batch:
             return
         self.logger.debug("Batched %s tool(s) for %s", len(batch), batch[0].call.get("name"))
@@ -5345,7 +5140,6 @@ class Pipe:
         item: _QueuedToolCall,
         context: _ToolExecutionContext,
     ) -> tuple[str, str, list[dict[str, Any]], list[str], list[str]]:
-        """Invoke a single tool call with circuit breaker protection."""
         tool_type = (item.tool_cfg.get("type") or "function").lower()
         gate_name = resolved_tool_name(item.call)
         if self._ensure_tool_executor()._ask_user_window(item.tool_cfg, item.args) is not None:
@@ -5440,13 +5234,6 @@ class Pipe:
         tool_type: str,
         breaker_name: str | None = None,
     ) -> tuple[str, str, list[dict[str, Any]], list[str], list[str]]:
-        """Run a tool with retry logic.
-
-        This method executes the tool callable with timeout and optional retries,
-        then processes the result to extract text, files, and embeds.
-        Files and embeds are emitted to UI via event_emitter AND returned for
-        inclusion in tool card HTML attributes.
-        """
         tool_name = item.call.get("name", "unknown")
         breaker_key = (
             breaker_name
@@ -5507,7 +5294,6 @@ class Pipe:
                 )
                 a_card_holds_them = carded and not item.future.done()
 
-                # Emit files if any were extracted
                 if files and context.event_emitter and not a_card_holds_them:
                     try:
                         await self._event_emitter_handler._emit_files(context.event_emitter, files)
@@ -5515,7 +5301,6 @@ class Pipe:
                     except Exception as emit_exc:
                         self.logger.debug("Failed to emit files for '%s': %s", tool_name, emit_exc, exc_info=True)
 
-                # Emit embeds if any were extracted
                 if embeds and context.event_emitter and not a_card_holds_them:
                     try:
                         await self._event_emitter_handler._emit_embeds(context.event_emitter, embeds)
@@ -5635,7 +5420,6 @@ class Pipe:
         tool_name: str = "",
         limit_ended: Callable[[], bool] | None = None,
     ) -> Any:
-        """Call a tool callable (sync or async)."""
         inner = getattr(fn, "__function__", None)
         if on_threads and callable(inner) and not inspect.iscoroutinefunction(inner):
             return await self._run_sync_tool(
@@ -5655,15 +5439,12 @@ class Pipe:
     @contextlib.asynccontextmanager
     @timed
     async def _acquire_tool_global(self, semaphore: asyncio.Semaphore, tool_name: str | None):
-        """Acquire global tool semaphore slot."""
         self.logger.debug("Waiting for global tool slot (%s)", tool_name)
         await semaphore.acquire()
         try:
             yield
         finally:
             semaphore.release()
-
-    # 4.8 Internal Static Helpers
 
     @timed
     async def send_openai_responses_nonstreaming_request(
@@ -5698,7 +5479,6 @@ class Pipe:
         base_url: str,
         api_key: str,
     ) -> None:
-        """Issue a lightweight GET to prime DNS/TLS caches."""
         url = base_url.rstrip("/") + "/models?limit=1"
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -5799,7 +5579,6 @@ class Pipe:
 
     @timed
     def _select_models(self, filter_value: str, available_models: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Filter OpenRouter catalog entries based on the valve string."""
         if not available_models:
             return []
 
@@ -5906,7 +5685,6 @@ class Pipe:
 
     @timed
     def _apply_model_filters(self, models: list[dict[str, Any]], valves: Pipe.Valves) -> list[dict[str, Any]]:
-        """Apply model capability filters (free pricing/tool calling) to a model list."""
         free_mode = valves.FREE_MODEL_FILTER
         tool_mode = valves.TOOL_CALLING_FILTER
         zdr_only = valves.ZDR_MODELS_ONLY
@@ -5956,19 +5734,6 @@ class Pipe:
         models: list[dict[str, Any]],
         valves: Pipe.Valves
     ) -> list[dict[str, Any]]:
-        """Expand model list by adding virtual variant and preset model entries.
-
-        Supports two syntaxes:
-        - Variants: "openai/gpt-4o:nitro" (uses : separator)
-        - Presets: "openai/gpt-4o@preset/email-copywriter" (uses @ separator)
-
-        Args:
-            models: List of base models from catalog
-            valves: Pipe configuration valves
-
-        Returns:
-            Extended list with both base models and variant/preset models
-        """
         variant_specs: list[tuple[str, str, bool]] = []
         seen_variant_specs: set[tuple[str, str, bool]] = set()
         for raw_csv in (valves.VARIANT_MODELS, getattr(valves, "MODEL_ID", "") or ""):
@@ -5990,7 +5755,6 @@ class Pipe:
             if norm_id:
                 model_map.setdefault(norm_id, model)
 
-        # Expand variants and presets
         expanded: list[dict[str, Any]] = list(models)
         _seen_published_ids = {m.get("id") for m in expanded}
         model_id_exclusions = _model_id_exclusions(valves.MODEL_ID, self.id)
@@ -5999,7 +5763,6 @@ class Pipe:
         for base_id, variant_tag, is_preset in variant_specs:
             if f"{sanitize_model_id(base_id)}:{variant_tag}" in _seen_published_ids:
                 continue
-            # Find base model
             base_model = self._resolve_variant_base(model_map, base_id)
             if not base_model:
                 separator = "@" if is_preset else ":"
@@ -6029,7 +5792,6 @@ class Pipe:
                     )
                     continue
 
-            # Update display name with tag
             base_name = variant_model.get("name", base_id)
             if is_preset:
                 preset_slug = variant_tag.replace("preset/", "")
@@ -6039,7 +5801,6 @@ class Pipe:
             variant_model["name"] = f"{base_name} {tag_display}"
 
 
-            # Add to expanded list
             if published_id not in _seen_published_ids:
                 _seen_published_ids.add(published_id)
                 expanded.append(variant_model)
@@ -6069,17 +5830,6 @@ class Pipe:
         valves: Pipe.Valves,
         available_models: list[dict[str, Any]],
     ) -> tuple[list[dict[str, Any]], dict[str, str]]:
-        """Expand MODEL_ID + VARIANT_MODELS into the allowlist for enforcement.
-
-        Unlike :meth:`_expand_variant_models` (used in ``pipes()`` for UI display),
-        this helper sets ``norm_id`` to the **full suffixed ID** so that strict
-        enforcement in ``pipe()`` sees the exact variant.
-
-        Returns:
-            A tuple of (expanded_models, virtual_variant_bases) where
-            ``virtual_variant_bases`` maps full variant norm_id to base norm_id
-            for admin-configured routing-only variants.
-        """
         virtual_variant_bases: dict[str, str] = {}
 
         variant_specs: list[tuple[str, str, bool]] = []
@@ -6288,7 +6038,6 @@ class Pipe:
             return f"{title} ({qualifier})" if qualifier else title
         return _valve_label(type(valves), named) or _RESTRICTION_REASON_FALLBACK
 
-    # 4.3 Core Multi-Turn Handlers
     @no_type_check
     @timed
     def _maybe_apply_anthropic_beta_headers(
@@ -6298,10 +6047,6 @@ class Pipe:
         *,
         valves: Pipe.Valves,
     ) -> None:
-        """Apply provider-specific beta headers when needed.
-
-        Currently used to opt into Claude's interleaved thinking mode when requested.
-        """
         if not isinstance(headers, dict):
             return
         if not valves.ENABLE_ANTHROPIC_INTERLEAVED_THINKING:
@@ -6341,12 +6086,6 @@ class Pipe:
     @staticmethod
     @timed
     def _resolve_openrouter_api_key(valves: Pipe.Valves) -> tuple[str | None, str | None]:
-        """Return (api_key, error_message) where api_key is a usable bearer token.
-
-        This guards against cases where `API_KEY` is stored encrypted but cannot
-        be decrypted (WEBUI_SECRET_KEY mismatch / missing), which would
-        otherwise be sent upstream as `Bearer encrypted:...` and cause noisy 401s.
-        """
         raw_value = valves.API_KEY
         decrypted = EncryptedStr.decrypt(raw_value)
         decrypted = decrypted.strip() if isinstance(decrypted, str) else ""
@@ -6375,7 +6114,6 @@ class Pipe:
 
     @timed
     def _build_chat_completion_payload(self, *, model: str, content: str) -> dict[str, Any]:
-        """Return a minimal OpenAI chat.completions-style payload."""
         model_id = (model or "pipe").strip() if isinstance(model, str) else "pipe"
         return {
             "id": f"{model_id}-{uuid.uuid4()}",
@@ -6395,7 +6133,6 @@ class Pipe:
 
     @timed
     def _build_task_fallback_content(self, task_name: str) -> str:
-        """Return OWUI-parseable JSON content for known task types."""
         name = (task_name or "").strip().lower()
         if not name:
             return ""
@@ -6450,11 +6187,6 @@ class Pipe:
         user_valves,
         rejected: list[str] | tuple[str, ...] | set[str] | None = None,
     ) -> Pipe.Valves:
-        """Merge user-level valves into the global defaults.
-
-        Any field set to ``"INHERIT"`` (case-insensitive) is ignored so the
-        corresponding global value is preserved.
-        """
         if not user_valves and not rejected:
             return global_valves
 

@@ -1,9 +1,3 @@
-"""Non-streaming request adapter for OpenRouter API.
-
-This module handles non-streaming requests to OpenRouter and converts them to
-events compatible with the Responses API format.
-"""
-
 from __future__ import annotations
 
 import json
@@ -38,11 +32,6 @@ class TaskProviderRefusal(RuntimeError):
 
 
 def _chat_completions_adapter() -> type[ChatCompletionsAdapter]:
-    """Imported lazily: a module-level edge here closes an import cycle.
-
-    Returning the concrete type rather than Any keeps the call site statically
-    checked; `-> Any` silently accepts a rename of the method it calls.
-    """
     from ..api.gateway.chat_completions_adapter import ChatCompletionsAdapter
 
     return ChatCompletionsAdapter
@@ -70,20 +59,8 @@ def _chat_route_search_record(
 
 
 class NonStreamingAdapter:
-    """Adapter for non-streaming OpenRouter requests.
-
-    Handles non-streaming requests and converts responses to event streams
-    compatible with the Responses API format.
-    """
-
     @timed
     def __init__(self, pipe: Pipe, logger: logging.Logger):
-        """Initialize NonStreamingAdapter.
-
-        Args:
-            pipe: Reference to Pipe instance for accessing helper methods
-            logger: Logger instance
-        """
         self._pipe = pipe
         self.logger = logger
 
@@ -104,7 +81,6 @@ class NonStreamingAdapter:
         task_request: bool = False,
         event_emitter: Any = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        """Send a non-streaming request and yield Responses-style events."""
         effective_valves = valves or self._pipe.valves
         model_id = (responses_request_body or {}).get("model") or ""
         forced_selected_endpoint, endpoint_forced = self._pipe._streaming_handler._select_llm_endpoint_with_forced(

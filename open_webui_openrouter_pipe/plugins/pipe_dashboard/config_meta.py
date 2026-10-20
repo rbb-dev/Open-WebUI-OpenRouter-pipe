@@ -1,14 +1,3 @@
-"""Curated display metadata for the OpenRouter pipe's config valves.
-
-Overlay ONLY. The Config tab reads live valve structure (type, default, bounds,
-enum, secret-ness) from ``Valves.model_fields``; this module supplies just the
-human title, the tree group, and the rich help text. A valve absent from this
-map still renders and edits normally (humanised name, "Uncategorized" group, its
-own ``Field(description=...)`` as help) with a "not documented yet" notice.
-
-Structural facts are NEVER duplicated here (they can drift); only title/group/help.
-"""
-
 from __future__ import annotations
 
 from ...core.config import _ADMIN_OFF_STAYS_OFF, _PIPE_OFF_COMES_BACK

@@ -1,5 +1,3 @@
-"""Plugin registry with self-registration, priority dispatch, and error isolation."""
-
 from __future__ import annotations
 
 import asyncio
@@ -16,11 +14,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Per-plugin timeout for async dispatch calls (seconds).
-# A hung plugin will be cancelled after this duration instead of blocking the request.
 _PR_DISPATCH_TIMEOUT = 30.0
 
-# Hook names that are subscription-based (controlled by plugin.hooks dict).
 _PR_SUBSCRIBABLE_HOOKS = frozenset({
     "on_models",
     "on_request",
@@ -34,28 +29,15 @@ _PR_SUBSCRIBABLE_HOOKS = frozenset({
 
 
 class PluginRegistry:
-    """Manages plugin registration, instantiation, and hook dispatch.
-
-    Plugins register via ``@PluginRegistry.register`` class decorator.
-    ``init_plugins()`` instantiates registered classes and builds per-hook
-    subscriber lists sorted by priority (descending).
-    """
-
-    # Class-level registry — populated at import time by @register decorator.
-    # Safe across uvicorn workers (each worker is a separate process).
     _plugin_classes: ClassVar[list[type[PluginBase]]] = []
 
-    # Accumulated valve field specs from all registered plugins.
-    # Populated at import time by @register. Used by build_extended_valves().
     _pending_valve_fields: ClassVar[dict[str, tuple]] = {}
     _pending_user_valve_fields: ClassVar[dict[str, tuple]] = {}
 
     @classmethod
     def register(cls, plugin_class: type[_PluginT]) -> type[_PluginT]:
-        """Register a plugin class. Works as a decorator or direct call."""
         if plugin_class not in cls._plugin_classes:
             cls._plugin_classes.append(plugin_class)
-            # Collect plugin-contributed valve fields (system + user)
             cls._collect_valve_fields(
                 plugin_class, "plugin_valves", cls._pending_valve_fields,
             )
@@ -71,7 +53,6 @@ class PluginRegistry:
         attr_name: str,
         target: dict[str, tuple],
     ) -> None:
-        """Collect valve field specs from a plugin, auto-renaming on collision."""
         for field_name, field_spec in getattr(plugin_class, attr_name, {}).items():
             if field_name in target:
                 original = field_name
@@ -87,11 +68,6 @@ class PluginRegistry:
 
     @classmethod
     def build_extended_valves(cls, base_valves_class: type) -> type:
-        """Build a Valves subclass that includes plugin-contributed fields.
-
-        Returns ``base_valves_class`` unchanged if no plugins declared fields.
-        Uses ``pydantic.create_model()`` to dynamically extend the base class.
-        """
         if not cls._pending_valve_fields:
             return base_valves_class
         from pydantic import create_model
@@ -103,10 +79,6 @@ class PluginRegistry:
 
     @classmethod
     def build_extended_user_valves(cls, base_user_valves_class: type) -> type:
-        """Build a UserValves subclass that includes plugin-contributed fields.
-
-        Same pattern as ``build_extended_valves()`` but for per-user settings.
-        """
         if not cls._pending_user_valve_fields:
             return base_user_valves_class
         from pydantic import create_model
@@ -117,19 +89,13 @@ class PluginRegistry:
         )
 
     def __init__(self) -> None:
-        # Per-instance state (per Pipe instance)
         self._plugins: list[PluginBase] = []
         self._hook_subscribers: dict[str, list[tuple[PluginBase, int]]] = {}
         self._pipe: Pipe | None = None
 
     def init_plugins(self, pipe: Pipe) -> None:
-        """Instantiate all registered plugin classes and call on_init().
-
-        Builds per-hook subscriber lists sorted by priority (descending).
-        Idempotent — calling twice is a no-op.
-        """
         if self._plugins:
-            return  # Already initialized
+            return
         self._pipe = pipe
         for cls in self._plugin_classes:
             try:
@@ -138,7 +104,6 @@ class PluginRegistry:
                 ctx = PluginContext(pipe=pipe, logger=plugin_logger)
                 instance = cls()
                 instance.on_init(ctx)
-                # Warn on duplicate plugin_id (copy-paste error detection)
                 existing_ids = {p.plugin_id for p in self._plugins}
                 if instance.plugin_id and instance.plugin_id in existing_ids:
                     logger.warning(
@@ -158,24 +123,15 @@ class PluginRegistry:
                     exc_info=True,
                 )
 
-        # Build per-hook subscriber lists
         for hook_name in _PR_SUBSCRIBABLE_HOOKS:
             subscribers: list[tuple[PluginBase, int]] = []
             for plugin in self._plugins:
                 if hook_name in plugin.hooks:
                     subscribers.append((plugin, plugin.hooks[hook_name]))
-            # Sort by priority descending (higher number = runs first)
             subscribers.sort(key=lambda x: x[1], reverse=True)
             self._hook_subscribers[hook_name] = subscribers
 
-    # ── Dispatch methods ──
-
     async def dispatch_on_models(self, models: list[dict[str, Any]]) -> None:
-        """Void dispatch: plugins mutate the models list in place.
-
-        Accepts sync (``def``) or async (``async def``) on_models; an awaitable
-        result is awaited so plugins can do async work (e.g. OWUI DB writes).
-        """
         if getattr(self._pipe, "_closed", False) is True:
             return
         for plugin, _priority in self._hook_subscribers.get("on_models", ()):
@@ -199,12 +155,6 @@ class PluginRegistry:
         valves: Any = None,
         request_id: str = "",
     ) -> dict[str, Any] | str | None:
-        """Chain dispatch: all subscribers run in priority order.
-
-        Each plugin receives the current accumulated result via the
-        ``current_result`` kwarg. Return non-None to set or replace the
-        result. Return None to leave the current result unchanged.
-        """
         result: dict[str, Any] | str | None = None
 
         for plugin, _priority in self._hook_subscribers.get("on_request", ()):
@@ -240,11 +190,6 @@ class PluginRegistry:
         user: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        """Void dispatch: plugins mutate body dict in place.
-
-        The ``model`` parameter is re-read from ``body["model"]`` after each
-        plugin, so plugins that remap models see the updated value.
-        """
         for plugin, _priority in self._hook_subscribers.get("on_request_transform", ()):
             try:
                 await asyncio.wait_for(
@@ -254,7 +199,6 @@ class PluginRegistry:
                     ),
                     timeout=_PR_DISPATCH_TIMEOUT,
                 )
-                # Re-read model from body after each plugin (plugins may remap)
                 model = str(body.get("model", model))
             except TimeoutError:
                 logger.warning(
@@ -276,14 +220,6 @@ class PluginRegistry:
         job_metadata: dict[str, Any] | None = None,
         valves: Any = None,
     ) -> Any | None:
-        """Chain dispatch: each subscriber may wrap the stream emitter.
-
-        Plugins run in priority order (highest first).  Each receives the
-        current emitter (which may already be wrapped by a prior plugin).
-        Return non-None to replace the emitter.  Return ``None`` to leave it
-        unchanged.  Returns the final emitter, or ``None`` if no plugin
-        wrapped it.
-        """
         current = stream_emitter
         changed = False
         for plugin, _priority in self._hook_subscribers.get("on_emitter_wrap", ()):
@@ -315,7 +251,6 @@ class PluginRegistry:
 
 
     async def dispatch_on_tool_result(self, tool_name: str, status: str, **kwargs: Any) -> None:
-        """Void broadcast: observe one resolved tool call (hot path, no timers)."""
         for plugin, _priority in self._hook_subscribers.get("on_tool_result", ()):
             try:
                 result = plugin.on_tool_result(tool_name, status, **kwargs)
@@ -327,7 +262,6 @@ class PluginRegistry:
                 )
 
     async def dispatch_on_request_retry(self, kind: str, **kwargs: Any) -> None:
-        """Void broadcast: observe one retry decision (hot path, no timers)."""
         for plugin, _priority in self._hook_subscribers.get("on_request_retry", ()):
             try:
                 result = plugin.on_request_retry(kind, **kwargs)
@@ -355,7 +289,6 @@ class PluginRegistry:
         status: str,
         **kwargs: Any,
     ) -> None:
-        """Void broadcast: observe a request's terminal state (no timers)."""
         for plugin, _priority in self._hook_subscribers.get("on_generation_complete", ()):
             try:
                 result = plugin.on_generation_complete(usage, status, **kwargs)
@@ -369,12 +302,6 @@ class PluginRegistry:
                 )
 
     def dispatch_on_shutdown(self) -> list[Any]:
-        """Broadcast: all plugins notified on shutdown.
-
-        Returns any awaitables plugins hand back (e.g. their cancelled
-        background tasks) so an async caller can await the cleanup; sync
-        callers may ignore the return value.
-        """
         pending: list[Any] = []
         for plugin in self._plugins:
             try:

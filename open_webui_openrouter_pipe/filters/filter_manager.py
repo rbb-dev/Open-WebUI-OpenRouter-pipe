@@ -1,17 +1,3 @@
-"""Filter management for OWUI filter functions.
-
-This module manages filter functions:
-1. OpenRouter Web Tools - Web Search, Web Fetch, and Datetime server tools
-2. OpenRouter Image Generation - Image generation server tool
-3. Direct Uploads - Bypasses OWUI RAG for file uploads
-4. Provider Routing - Per-model provider/quantization preferences
-
-FilterManager handles:
-- Generating filter source code (static methods)
-- Installing/updating filters in OWUI Functions table (instance methods)
-- Security sanitization for code generation (static methods)
-"""
-
 from __future__ import annotations
 
 import ast
@@ -256,7 +242,7 @@ async def _write_function(Functions, function_id, updates, what, logger, raised=
         landed = await Functions.update_function_by_id(function_id, updates)
         if landed_out is not None:
             landed_out.append(landed)
-    except Exception as exc:  # noqa: BLE001 - a database driver's own error type is not enumerable here
+    except Exception as exc:  # noqa: BLE001
         if raised is not None:
             raised.append(exc)
         landed = None
@@ -358,7 +344,7 @@ def _meta_dict(row: Any) -> dict[str, Any]:
     if callable(dump):
         try:
             stored = dump()
-        except Exception:  # noqa: BLE001 - any pydantic/meta failure means "not a dict"
+        except Exception:  # noqa: BLE001
             stored = None
     return stored if isinstance(stored, dict) else {}
 
@@ -464,7 +450,6 @@ def _routing_source_memo(
     only_ignore_options = [no_pref] + provider_display_options
     only_ignore_literal = ", ".join(FilterManager.safe_literal_string(opt) for opt in only_ignore_options)
 
-    # Build provider map code block
     provider_map_code = "{\n" + ",\n".join(provider_slug_map_entries) + "\n}" if provider_slug_map_entries else "{}"
 
     order_display_options: list[str] = []
@@ -487,7 +472,6 @@ def _routing_source_memo(
     order_options = [no_pref] + order_display_options
     order_literal = ", ".join(FilterManager.safe_literal_string(opt) for opt in order_options)
 
-    # Build order map code block
     order_map_code = "{\n" + ",\n".join(order_map_entries) + "\n}" if order_map_entries else "{}"
 
     safe_quantizations = [
@@ -607,7 +591,6 @@ def _routing_source_memo(
 {rendered_controls}
 {stale_choice_guard}{stale_value_guard}{null_choice_guard}'''
 
-    # Generate init based on visibility
     init_body = "        self.log = logging.getLogger(f\"openrouter.provider.{MODEL_SLUG}\")\n        self.log.setLevel(SRC_LOG_LEVELS.get(\"OPENAI\", logging.INFO))"
     init_body += "\n        self.valves = self.Valves()"
     if visibility in ("user", "both"):
@@ -995,12 +978,6 @@ def _kept_candidates(candidates: list[Any], matches_candidate: Callable[[str], b
 
 
 class FilterManager:
-    """Manages OWUI filter functions for the OpenRouter pipe.
-
-    Static methods handle code generation and security sanitization.
-    Instance methods handle filter installation/updates in OWUI.
-    """
-
     def _install_owner(self) -> str:
         return str(getattr(self._pipe, "id", "") or "")
 
@@ -1026,13 +1003,6 @@ class FilterManager:
         valves: Any,
         logger: logging.Logger,
     ) -> None:
-        """Initialize FilterManager.
-
-        Args:
-            pipe: Reference to parent Pipe instance
-            valves: Pipe valves configuration
-            logger: Logger instance for this manager
-        """
         self._pipe = pipe
         self._valves = valves
         self._provider_routing_state_hash = ""
@@ -1067,79 +1037,15 @@ class FilterManager:
 
     @staticmethod
     def safe_literal_string(s: str) -> str:
-        """Safely escape a string for use in Python Literal type annotations.
-
-        Uses Python's built-in repr() to produce a safely escaped string
-        representation that can be interpolated into generated Python source
-        code without risk of code injection.
-
-        Security Purpose:
-            Provider names from the OpenRouter API are untrusted external input.
-            When interpolating these into generated filter source code (particularly
-            in Literal['...'] type annotations), malicious input like:
-                "foo', None); import os; os.system('rm -rf /'); x = ('"
-            could escape the string context and execute arbitrary code.
-
-            Using repr() produces properly escaped output that remains a safe,
-            quoted string literal.
-
-        Args:
-            s: The raw string to escape (e.g., provider name, model slug).
-
-        Returns:
-            A repr()-escaped string safe for interpolation into Python source.
-            The returned string includes surrounding quotes.
-
-        Example:
-            >>> FilterManager.safe_literal_string("Amazon Bedrock")
-            "'Amazon Bedrock'"
-            >>> FilterManager.safe_literal_string("evil'; import os; #")
-            "\"evil'; import os; #\""
-        """
         if not isinstance(s, str):
             s = str(s) if s is not None else ""
         return repr(s)
 
     @staticmethod
     def validate_provider_name(name: str, slug: str = "") -> str:
-        """Validate and sanitize a provider name for safe use in generated code.
-
-        Enforces strict character allowlists and length limits on provider names
-        to prevent injection attacks and ensure predictable behavior in generated
-        filter source code.
-
-        Security Purpose:
-            Provider names from external APIs may contain unexpected characters
-            that could:
-            1. Break Python syntax when interpolated into source code
-            2. Exploit edge cases in string parsing
-            3. Cause display issues in the UI
-            4. Enable homograph attacks with Unicode lookalikes
-
-            This function sanitizes to ASCII alphanumeric + limited punctuation,
-            and truncates long names with a hash suffix to maintain uniqueness.
-
-        Args:
-            name: The raw provider name from the API.
-            slug: Optional provider slug for hash uniqueness when truncating.
-
-        Returns:
-            A sanitized provider name safe for use in generated code.
-            - Only ASCII letters, digits, spaces, hyphens, underscores, periods
-            - Maximum 64 characters (truncated with hash suffix if longer)
-            - Empty/whitespace-only input returns "Unknown"
-
-        Example:
-            >>> FilterManager.validate_provider_name("Amazon Bedrock")
-            'Amazon Bedrock'
-            >>> FilterManager.validate_provider_name("Evil<script>Provider")
-            'EvilscriptProvider'
-        """
-        # Handle empty/None input
         if not name or not isinstance(name, str):
             return "Unknown"
 
-        # Strip leading/trailing whitespace
         cleaned = name.strip()
         if not cleaned:
             return "Unknown"
@@ -1166,58 +1072,10 @@ class FilterManager:
 
     @staticmethod
     def sanitize_model_for_filter_id(model_slug: str) -> str:
-        """Convert model slug to safe filter ID component.
-
-        Example: 'openai/gpt-4o' -> 'openai_gpt_4o'
-
-        Every character outside ``[A-Za-z0-9_]`` is replaced, not an enumerated few:
-        a chain of ``.replace()`` calls only covers the separators someone thought of,
-        and the catalog contains ids they did not -- the tilde aliases
-        (``~anthropic/claude-sonnet-latest``) are real, supported ids that a
-        colon-only fix leaves broken. The sibling renderers use the same character
-        class and are injective for the same reason; they additionally lower-case and
-        prepend their own prefix, which this one must not, because the id it produces
-        is matched against already-installed filters.
-        """
         return _MODEL_FILTER_ID_RE.sub("_", model_slug)
 
     @staticmethod
     def validate_filter_source(source: str) -> tuple[bool, str | None]:
-        """Validate generated Python source code for syntactic correctness.
-
-        Compiles the source the way Open WebUI will, before it is stored and executed.
-        ``ast.parse`` is a weaker check than it looks: it accepts a file whose
-        ``from __future__`` import is no longer first, which ``compile`` rejects, so a
-        broken filter could pass validation and then fail to load forever.
-
-        Security Purpose:
-            This serves as a defense-in-depth measure. Even if string escaping
-            and validation functions work correctly, this provides a final
-            safety check that:
-            1. The generated code is valid Python syntax
-            2. No injection attacks have produced malformed code
-            3. Template rendering hasn't introduced syntax errors
-
-        Note:
-            This validates SYNTAX only, not semantic safety. It cannot detect
-            syntactically valid but malicious code. The earlier sanitization
-            functions (safe_literal_string, validate_provider_name) are the
-            primary defense against injection.
-
-        Args:
-            source: The complete generated Python source code to validate.
-
-        Returns:
-            A tuple of (is_valid, error_message):
-            - (True, None) if the source is syntactically valid
-            - (False, error_description) if parsing fails
-
-        Example:
-            >>> FilterManager.validate_filter_source("x = 1")
-            (True, None)
-            >>> FilterManager.validate_filter_source("x = ")
-            (False, "Line 1: unexpected EOF while parsing")
-        """
         if not source or not isinstance(source, str):
             return False, "Empty or invalid source"
 
@@ -1252,12 +1110,10 @@ class FilterManager:
             module = types.ModuleType(f"function_{os.urandom(8).hex()}")
             module.__dict__["__file__"] = "<generated-filter>"
             module.__dict__["__name__"] = _GENERATED_FILTER_PROBE_NAME
-            exec(code, module.__dict__)  # noqa: S102 - proving the generated filter loads is this check's purpose
-        except Exception as exc:  # noqa: BLE001 - what a generated source raises is this check's answer, and Open WebUI's loader catches the same set
+            exec(code, module.__dict__)  # noqa: S102
+        except Exception as exc:  # noqa: BLE001
             return False, f"The source raised when Open WebUI loaded it: {type(exc).__name__}: {exc}"
         return True, None
-
-    # GENERIC FILTER INSTALL / UPDATE
 
     @timed
     async def _ensure_filter_installed(
@@ -1277,18 +1133,6 @@ class FilterManager:
         candidates: list[Any] | None = None,
         refused_out: set[str] | None = None,
     ) -> tuple[str | None, _WriteOutcome]:
-        """Generic filter install/update lifecycle shared by all filter types.
-
-        Args:
-            desired_source: The canonical filter source (already stripped + newline-terminated).
-            desired_name: Display name for the filter function.
-            desired_meta: Metadata dict for the filter function.
-            preferred_id: Preferred OWUI function ID when auto-installing.
-            auto_install_valve: Valve attribute name controlling auto-install/update.
-            log_label: Human-readable label for log messages.
-            matches_candidate: Predicate that returns True if a filter's content matches this filter type.
-            primary_marker: If set, narrow candidates to those containing this marker (back-compat support).
-        """
         try:
             from open_webui.models.functions import Functions  # type: ignore
         except ImportError:
@@ -1612,12 +1456,6 @@ class FilterManager:
         enable_subagent: bool = True,
         enable_search_models: bool = True,
     ) -> str:
-        """Return the canonical OWUI filter source for the OpenRouter Web Tools filter.
-
-        The generated filter exposes admin Valves (engine selection, limits) and
-        UserValves (per-tool toggles, preferences) for whichever tools are enabled.
-        Tools disabled via the gate parameters are excluded from the template entirely.
-        """
         valves_fields = [
             _PRIORITY_FIELD,
         ]
@@ -1700,7 +1538,6 @@ class FilterManager:
             '        )'
         )
 
-        # -- UserValves fields ------------------------------------------------
         user_valves_fields: list[str] = []
         if enable_web_search:
             user_valves_fields.extend([
@@ -1850,7 +1687,6 @@ class FilterManager:
 
         inlet_tools_code = "\n\n".join(inlet_tool_blocks)
 
-        # -- Suppress OWUI web search block -----------------------------------
         suppress_block = ""
         if enable_web_search:
             suppress_block = (
@@ -1863,7 +1699,6 @@ class FilterManager:
                 '            features["web_search"] = False\n'
             )
 
-        # -- Build the template -----------------------------------------------
         template = '"""\n'
         template += 'title: OR Web Tools\n'
         template += 'author: Open-WebUI-OpenRouter-pipe\n'
@@ -1896,7 +1731,6 @@ class FilterManager:
         template += '    toggle = True\n'
         template += '\n'
 
-        # Valves class
         template += '    class Valves(BaseModel):\n'
         template += _KEEP_WHAT_STILL_FITS + '\n'
         template += '\n'
@@ -1910,7 +1744,6 @@ class FilterManager:
             template += '\n'.join(user_valves_fields) + '\n'
         template += '\n'
 
-        # __init__
         template += '    def __init__(self) -> None:\n'
         template += '        self.log = logging.getLogger("openrouter.web.tools")\n'
         template += '        self.log.setLevel(SRC_LOG_LEVELS.get("OPENAI", logging.INFO))\n'
@@ -1918,7 +1751,6 @@ class FilterManager:
         template += '        self.valves = self.Valves()\n'
         template += '\n'
 
-        # _csv_list helper
         template += '    @staticmethod\n'
         template += '    def _csv_list(value: str) -> list[str]:\n'
         template += '        if not isinstance(value, str):\n'
@@ -1958,7 +1790,6 @@ class FilterManager:
         template += inlet_tools_code + '\n'
         template += '\n'
 
-        # Write to metadata
         template += '        if server_tools and isinstance(__metadata__, dict):\n'
         template += '            prev_pipe_meta = __metadata__.get("__PIPE_META_KEY__")\n'
         template += '            pipe_meta = dict(prev_pipe_meta) if isinstance(prev_pipe_meta, dict) else {}\n'
@@ -1969,7 +1800,6 @@ class FilterManager:
         template += '                    {"type": "max_cost", "max_cost_in_dollars": self.valves.SERVER_TOOLS_MAX_COST_USD}\n'
         template += '                ]\n'
 
-        # OWUI web search suppression
         template += suppress_block
         template += '\n'
         template += '        return body\n'
@@ -2053,7 +1883,7 @@ class FilterManager:
             module.__file__ = "<installed-web-tools-filter>"
             try:
                 sys.modules[module_name] = module
-                exec(compile(content, "<installed-web-tools-filter>", "exec"), module.__dict__)  # noqa: S102 - loading the installed filter module is this function's purpose
+                exec(compile(content, "<installed-web-tools-filter>", "exec"), module.__dict__)  # noqa: S102
             except Exception as exc:
                 self.logger.warning(
                     "Installed web tools filter failed to load for fusion inner calls: %s",
@@ -2106,8 +1936,6 @@ class FilterManager:
         rows: _FilterRows | None = None,
         refused_out: set[str] | None = None,
     ) -> str | None:
-        """Ensure the OpenRouter Web Tools filter exists (and is up to date), returning its OWUI function id."""
-
         function_id, _outcome = await self._ensure_filter_installed(
             desired_source=self.render_openrouter_web_tools_filter_source(
                 enable_web_search=enable_web_search,
@@ -2402,14 +2230,11 @@ class FilterManager:
             ):
                 self.logger.info("Re-enabled OpenRouter %s filter %r", log_label, row.id)
 
-    # OPENROUTER FUSION FILTER
-
     async def ensure_openrouter_fusion_filter_function_id(
         self,
         rows: _FilterRows | None = None,
         refused_out: set[str] | None = None,
     ) -> tuple[str | None, bool]:
-        """Ensure the OpenRouter Fusion filter exists (and is up to date), returning its OWUI function id."""
         from .fusion_filter_renderer import (
             FUSION_FILTER_DISPLAY_NAME,
             render_openrouter_fusion_filter_source,
@@ -2454,8 +2279,6 @@ class FilterManager:
         self._unresolved_fusion_filter_id = unresolved
         return function_id, unresolved
 
-    # OPENROUTER IMAGE GENERATION FILTER
-
     @staticmethod
     def render_openrouter_image_gen_filter_source(
         *,
@@ -2464,7 +2287,6 @@ class FilterManager:
         endpoint_record: list[dict[str, Any]] | dict[str, Any] | None = None,
         dedicated_image_api: bool,
     ) -> str:
-        """Return the canonical OWUI filter source for the OpenRouter Image Generation filter."""
         from .image_filter_renderer import (
             build_image_model_filter_spec,
             render_image_gen_filter_source,
@@ -2520,8 +2342,6 @@ class FilterManager:
         rows: _FilterRows | None = None,
         refused_out: set[str] | None = None,
     ) -> tuple[str | None, str | None]:
-        """Ensure the OpenRouter Image Generation filter exists (and is up to date), returning its OWUI function id."""
-
         def _matches(content: str) -> bool:
             if not isinstance(content, str) or not content:
                 return False
@@ -3043,12 +2863,6 @@ class FilterManager:
         rows: _FilterRows | None = None,
         refused_out: set[str] | None = None,
     ) -> tuple[dict[str, list[str]], frozenset[str]]:
-        """Install one filter per image model and return its attachment list.
-
-        Each filter offers exactly the knobs that model's published contract names. The
-        seven fixed variants this replaces assigned knobs by a regex on the model id, so a
-        model was handed the same ten aspect ratios whatever it actually accepted.
-        """
         from ..models.registry import (
             ModelFamily,
             OpenRouterModelRegistry,
@@ -3125,10 +2939,6 @@ class FilterManager:
                     refused_out=refused_out,
                 )
             except Exception as exc:
-                # One model's install failure costs that model its filter and nothing
-                # else. The catch is deliberately broad: the install path reaches Open
-                # WebUI's database, whose driver errors are not in any tuple this module
-                # could enumerate, and one of them must not skip every remaining model.
                 if _is_install_enumeration_failure(exc):
                     raise
                 self.logger.log(
@@ -3162,14 +2972,6 @@ class FilterManager:
         rows: _FilterRows | None = None,
         refused_out: set[str] | None = None,
     ) -> set[str]:
-        """Deactivate image filters left over from the fixed-variant design.
-
-        Those rows carry the image marker but no ``IMAGE_FILTER_MODEL_ID``, so nothing
-        re-selects or overwrites them. The generic one has no model gate at all, so left
-        active and attached it keeps writing its invented ratio list into every request
-        for the model -- and it stays attached precisely to the models that now get no
-        filter of their own.
-        """
         retired: set[str] = set()
         self._retired_image_filter_ids = frozenset()
         try:
@@ -3300,10 +3102,6 @@ class FilterManager:
             outcome.refused = True
             return None, outcome
 
-        # Built with the same expression the renderer emits, not a reconstruction of it.
-        # Rebuilding the literal by hand missed any id whose repr needs an escape -- an
-        # invisible soft hyphen was enough -- and a filter that cannot be re-identified is
-        # installed again under a new suffix on every catalog refresh.
         model_id_token = f"IMAGE_FILTER_MODEL_ID = {spec.model_id!r}"
         legacy_id_token = f"IMAGE_FILTER_MODEL_ID = {model_id!r}"
 
@@ -3353,11 +3151,8 @@ class FilterManager:
         )
         return function_id, _outcome
 
-    # DIRECT UPLOADS FILTER
-
     @staticmethod
     def render_direct_uploads_filter_source() -> str:
-        """Return the canonical OWUI filter source for the OpenRouter Direct Uploads toggle."""
         template = '''"""
 title: OR Direct Uploads
 author: Open-WebUI-OpenRouter-pipe
@@ -3838,8 +3633,6 @@ __KEEP_WHAT_STILL_FITS__
         rows: _FilterRows | None = None,
         refused_out: set[str] | None = None,
     ) -> str | None:
-        """Ensure the OpenRouter Direct Uploads companion filter exists (and is up to date), returning its OWUI function id."""
-
         def _matches(content: str) -> bool:
             if not isinstance(content, str) or not content:
                 return False
@@ -3870,15 +3663,12 @@ __KEEP_WHAT_STILL_FITS__
         )
         return function_id
 
-    # PROVIDER ROUTING FILTER
-
     @staticmethod
     def compute_provider_routing_hash(
         admin_models: str,
         user_models: str,
         provider_map: dict[str, dict[str, list[str]]],
     ) -> str:
-        """Compute hash of provider routing state to detect changes."""
         admin_sorted = sorted([m.strip() for m in admin_models.split(",") if m.strip()])
         user_sorted = sorted([m.strip() for m in user_models.split(",") if m.strip()])
 
@@ -3961,13 +3751,6 @@ __KEEP_WHAT_STILL_FITS__
 
     @staticmethod
     def _generate_inlet_logic(visibility: str, transport: str = "chat") -> str:
-        """Generate the inlet method logic based on visibility.
-
-        IMPORTANT: User valves are injected by OWUI into __user__["valves"], NOT into
-        self.user_valves. The self.user_valves from __init__ only contains defaults.
-        We must extract the injected valves from __user__ to get actual user settings.
-        """
-        # Common provider dict building logic
         logic = '''        provider: dict[str, Any] = {}
 
         # Determine which valve source to use
@@ -4194,16 +3977,6 @@ __KEEP_WHAT_STILL_FITS__
         transport: str = "chat",
         owner: str = "",
     ) -> str:
-        """Generate filter source code for a specific model's provider routing.
-
-        Args:
-            model_slug: The OpenRouter model slug (e.g., 'openai/gpt-4o')
-            providers: List of available provider slugs
-            quantizations: List of available quantization levels
-            visibility: Who can configure - 'admin' (enforced), 'user' (optional), or 'both'
-            short_name: Human-readable model name for filter title (e.g., 'GPT-4o')
-            provider_names: Mapping of provider slug to display name (e.g., {'openai': 'OpenAI'})
-        """
         from open_webui_openrouter_pipe import __version__
 
         return _routing_source_memo(
@@ -4230,13 +4003,6 @@ __KEEP_WHAT_STILL_FITS__
         *,
         not_fetched_slugs: Iterable[str] = (),
     ) -> tuple[dict[str, str], bool]:
-        """Ensure provider routing filters exist for specified models.
-
-        Creates, updates, or disables filters based on current valve configuration.
-
-        Returns:
-            Mapping of model slug -> filter function ID for filters that should be attached.
-        """
         try:
             from open_webui.models.functions import (
                 FunctionForm,
@@ -4253,7 +4019,6 @@ __KEEP_WHAT_STILL_FITS__
             )
             return {}, False
 
-        # Parse model lists
         admin_models = {m.strip() for m in admin_models_csv.split(",") if m.strip()}
         user_models = {m.strip() for m in user_models_csv.split(",") if m.strip()}
         not_fetched = {s.strip() for s in not_fetched_slugs if s and s.strip()}
@@ -4270,7 +4035,6 @@ __KEEP_WHAT_STILL_FITS__
                 len(user_models),
             )
 
-        # Determine visibility for each model
         all_models = admin_models | user_models
         model_visibility: dict[str, str] = {}
         for slug in all_models:
@@ -4476,7 +4240,6 @@ __KEEP_WHAT_STILL_FITS__
                 return False
 
             display_name = short_name if short_name else slug.split("/")[-1]
-            # Sanitize for safety
             safe_display = self.validate_provider_name(display_name, slug=slug)
             desired_name = f"Provider: {safe_display}"
             desired_meta = {
@@ -4492,7 +4255,6 @@ __KEEP_WHAT_STILL_FITS__
 
             existing = existing_filters.get(slug)
             if existing:
-                # Update existing filter
                 existing_id = getattr(existing, "id", "")
                 existing_content = (getattr(existing, "content", "") or "").strip() + "\n"
                 if _row_owner(existing) not in ("", pipe_identifier):
@@ -4551,11 +4313,9 @@ __KEEP_WHAT_STILL_FITS__
                         self.logger,
                     ):
                         writes_ok = False
-                # Track for attachment
                 if existing_id:
                     slug_to_filter_id[slug] = existing_id
             else:
-                # Create new filter
                 candidate_id = filter_id
                 suffix = 0
                 while True:
@@ -4602,7 +4362,6 @@ __KEEP_WHAT_STILL_FITS__
                         ):
                             created += 1
                             self.logger.info("Created provider routing filter: %s", candidate_id)
-                            # Track for attachment
                             slug_to_filter_id[slug] = candidate_id
                         else:
                             writes_ok = False

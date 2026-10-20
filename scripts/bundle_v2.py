@@ -1048,21 +1048,6 @@ def _render_package_alias_shim(all_submodules: list[str]) -> str:
     )
 
     return f'''
-# =============================================================================
-# PACKAGE ALIAS SHIM
-# =============================================================================
-# Makes `from open_webui_openrouter_pipe import X` and
-# `from open_webui_openrouter_pipe.core.config import Y` work when running
-# as a flat monolith file (not a real package).
-# Also supports `import open_webui_openrouter_pipe.pipe as pipe_module`
-# and `from open_webui_openrouter_pipe.core import config as cfg` via
-# module-level __getattr__ (PEP 562).
-#
-# When a subpackage name shadows a global import (e.g., our "logging"
-# subpackage vs stdlib "logging"), a lightweight proxy module is created
-# that delegates attribute access to both the flat module (for submodule
-# names) and the shadowed module (for its original API).
-
 _SUBMODULE_ATTRS: frozenset[str] = frozenset({{{attr_set}}})
 _INTERMEDIATE_PACKAGES: frozenset[str] = frozenset({{{intermediate_set}}})
 _PACKAGE_CHILDREN: dict = {{{children_map}}}
@@ -1070,27 +1055,12 @@ _PACKAGE_CHILDREN: dict = {{{children_map}}}
 _SELF_MODULE = sys.modules[__name__]
 
 def __getattr__(name: str):
-    """Allow attribute access for submodule names (PEP 562).
-
-    When Python executes ``import X.Y as alias``, the bytecode does
-    ``getattr(sys.modules["X"], "Y")``.  Since every submodule maps to
-    this same flat module, we return ourselves for any known submodule
-    component name.
-    """
     if name in _SUBMODULE_ATTRS:
         return _SELF_MODULE
     raise AttributeError(f"module {{__name__!r}} has no attribute {{name!r}}")
 
 
 class _PackageProxy(types.ModuleType):
-    """Proxy module for subpackage names that shadow global imports.
-
-    Delegates attribute access to the flat monolith module for submodule
-    names, and to the shadowed module (e.g., stdlib ``logging``) for
-    everything else.  This allows both ``logging.getLogger(...)`` and
-    ``import open_webui_openrouter_pipe.logging.session_log_manager``
-    to work correctly.
-    """
     def __init__(self, fullname: str, flat_mod: types.ModuleType, shadowed: types.ModuleType, children=frozenset()):
         super().__init__(fullname)
         self._children = children
@@ -1101,9 +1071,6 @@ class _PackageProxy(types.ModuleType):
         self._shadowed = shadowed
 
     def __getattr__(self, name: str):
-        # Only this package's OWN children resolve to the monolith. Consulting the
-        # package-wide component set instead shadowed every stdlib attribute that
-        # happened to share a name with any module anywhere in the tree.
         if name in self._children:
             return self._flat
         return getattr(self._shadowed, name)
@@ -1114,14 +1081,10 @@ def _install_package_alias() -> None:
     _pkg = "{PACKAGE_NAME}"
     sys.modules[_pkg] = _this
 
-    # Register submodule entries in sys.modules
     for _sub in [{sub_list}]:
         _full = f"{{_pkg}}.{{_sub}}"
         sys.modules[_full] = _this
 
-    # For intermediate package names that shadow existing globals (e.g., our
-    # "logging" subpackage vs stdlib "logging"), create proxy modules so that
-    # both the original API and submodule imports work.
     for _name in _INTERMEDIATE_PACKAGES:
         _existing = _this.__dict__.get(_name)
         if _existing is not None and isinstance(_existing, types.ModuleType) and _existing is not _this:
@@ -1138,11 +1101,6 @@ del _install_package_alias
 
 def _render_entry_point() -> str:
     return '''
-# =============================================================================
-# ENTRY POINT
-# =============================================================================
-# Import and export the Pipe class for Open WebUI
-
 _MODULE_PREFIX = "function_"
 _runtime_id = _pipe_id_from_module_name(__name__) if __name__.startswith(_MODULE_PREFIX) else Pipe.id
 
@@ -1186,37 +1144,21 @@ def assemble(
 
     # 3. Stdlib imports
     if stdlib_imports:
-        parts.append("# =============================================================================")
-        parts.append("# STDLIB IMPORTS")
-        parts.append("# =============================================================================")
-        parts.append("")
         for _i, line in enumerate(stdlib_imports):
             parts.append(line + ("  # noqa: I001" if _i == 0 else ""))
         parts.append("")
 
     # 4. Third-party imports
     if third_party_imports:
-        parts.append("# =============================================================================")
-        parts.append("# THIRD-PARTY IMPORTS")
-        parts.append("# =============================================================================")
-        parts.append("")
         parts.extend(third_party_imports)
         parts.append("")
 
     # 5. Optional dependencies
     if optional_imports:
-        parts.append("# =============================================================================")
-        parts.append("# OPTIONAL DEPENDENCIES")
-        parts.append("# =============================================================================")
-        parts.append("")
         parts.extend(optional_imports)
         parts.append("")
 
     if tc_import_lines:
-        parts.append("# =============================================================================")
-        parts.append("# TYPE_CHECKING (external types only)")
-        parts.append("# =============================================================================")
-        parts.append("")
         parts.append("if TYPE_CHECKING:")
         parts.extend(tc_import_lines)
         if tc_else_lines:
@@ -1224,14 +1166,7 @@ def assemble(
         parts.append("")
 
     # 7. Module bodies
-    parts.append("# =============================================================================")
-    parts.append("# MODULE BODIES")
-    parts.append("# =============================================================================")
-    parts.append("")
-
-    for short_name, body in module_blocks:
-        parts.append(f"# -- {short_name} " + "-" * max(1, 77 - len(short_name) - 4))
-        parts.append("")
+    for _short_name, body in module_blocks:
         parts.append(body)
         parts.append("")
         parts.append("")
@@ -1329,12 +1264,6 @@ license: MIT
 
 def _generate_compressed_runtime() -> str:
     lines: list[str] = []
-    lines.append("# =============================================================================")
-    lines.append("# BUNDLED IMPORT HOOK")
-    lines.append("# =============================================================================")
-    lines.append("# - Loads open_webui_openrouter_pipe.* from embedded sources")
-    lines.append("# - Populates linecache so inspect.getsource() works")
-    lines.append("")
     lines.append("from __future__ import annotations")
     lines.append("")
     lines.append("import base64")
@@ -1346,7 +1275,7 @@ def _generate_compressed_runtime() -> str:
     lines.append("from importlib.machinery import ModuleSpec")
     lines.append("")
     lines.append("_BUNDLED_SOURCES_Z: dict[str, str] = {}")
-    lines.append("_BUNDLED_SOURCES: dict[str, str] = {}  # decompressed cache")
+    lines.append("_BUNDLED_SOURCES: dict[str, str] = {}")
     lines.append("")
     lines.append("def _bundled_source(fullname: str) -> str:")
     lines.append("    cached = _BUNDLED_SOURCES.get(fullname)")
@@ -1378,8 +1307,6 @@ def _generate_compressed_runtime() -> str:
     lines.append("        )")
     lines.append("")
     lines.append("    def bundled_module_names(self):")
-    lines.append("        # Generic manifest accessor: lets the plugin system discover")
-    lines.append("        # plugin packages in a compressed bundle with no hard-coded names.")
     lines.append("        return list(_BUNDLED_SOURCES_Z)")
     lines.append("")
     lines.append("class _BundledModuleLoader(Loader):")
@@ -1387,7 +1314,7 @@ def _generate_compressed_runtime() -> str:
     lines.append("        self.fullname = fullname")
     lines.append("")
     lines.append("    def create_module(self, spec):")
-    lines.append("        return None  # default module creation")
+    lines.append("        return None")
     lines.append("")
     lines.append("    def exec_module(self, module):")
     lines.append("        if _bundled_is_package(self.fullname):")
@@ -1402,7 +1329,6 @@ def _generate_compressed_runtime() -> str:
     lines.append("        if not source.strip():")
     lines.append("            return")
     lines.append("")
-    lines.append("        # Make inspect.getsource() work for bundled modules")
     lines.append("        linecache.cache[module.__file__] = (")
     lines.append("            len(source),")
     lines.append("            None,")
@@ -1412,8 +1338,7 @@ def _generate_compressed_runtime() -> str:
     lines.append("")
     lines.append('        code = compile(source, module.__file__, \"exec\")')
     lines.append(
-        "        exec(code, module.__dict__)  # noqa: S102 - executing the embedded "
-        "modules is the whole mechanism of the compressed bundle"
+        "        exec(code, module.__dict__)  # noqa: S102"
     )
     lines.append("")
     lines.append("def _install_bundled_finder() -> None:")
@@ -1433,11 +1358,6 @@ def _generate_compressed_runtime() -> str:
 
 def _generate_compressed_entry_point() -> str:
     return """\
-# =============================================================================
-# ENTRY POINT
-# =============================================================================
-# Import and export the Pipe class for Open WebUI
-
 from open_webui_openrouter_pipe import Pipe as BasePipe
 from open_webui_openrouter_pipe.core.config import _pipe_id_from_module_name
 
@@ -1465,16 +1385,9 @@ def _bundle_compressed(*, output_path: Path, version: str, no_plugins: bool = Fa
         parts.append(workaround)
         parts.append("")
 
-    parts.append("# =============================================================================")
-    parts.append("# BUNDLED MODULE SOURCES")
-    parts.append("# =============================================================================")
-    parts.append(f"# Total modules: {len(modules)}")
-    parts.append("")
-
     for module_name in sorted(modules):
         b64 = _compress_source_zlib_base64(modules[module_name])
         expr = _b64_chunks_expr(b64)
-        parts.append(f"# --- {module_name} ---")
         parts.append(f"_BUNDLED_SOURCES_Z[{module_name!r}] = {expr}")
         parts.append("")
 

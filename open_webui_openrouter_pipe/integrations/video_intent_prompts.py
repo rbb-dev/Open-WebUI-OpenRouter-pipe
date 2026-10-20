@@ -1,7 +1,3 @@
-"""System prompt + JSON Schema for the video intent classifier task model.
-
-Do not modify these constants without re-running the validator example tests.
-"""
 from __future__ import annotations
 
 from typing import Any

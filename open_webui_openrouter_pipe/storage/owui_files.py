@@ -1,14 +1,3 @@
-"""Authorized, backend-agnostic Open WebUI file storage access.
-
-Single chokepoint for reading Open WebUI files. Every read is routed through
-OWUI's ``Storage`` provider so it works on any backend (local/s3/gcs/azure),
-authorized against the requester (owner / admin / ``has_access_to_file``),
-size-bounded, and copied to a request-owned temp before the caller touches
-bytes. ``FileModel.path`` is treated as an opaque storage key; the local
-provider's ``get_file`` is a no-op (no remote download), while cloud
-providers download into ``UPLOAD_DIR`` first.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -99,8 +88,6 @@ except Exception:
 
 
 class InlinedFile(NamedTuple):
-    """Result of inlining an OWUI file: data URL + original filename."""
-
     data_url: str
     filename: str
 
@@ -115,7 +102,6 @@ def _estimate_base64_bytes(b64_data: str) -> float:
 
 @timed
 async def get_file_by_id(file_id: str, logger: logging.Logger) -> Any | None:
-    """Fetch an OWUI file record by id; log and return None on failure."""
     if Files is None:
         logger.debug("Cannot load file %s: Open WebUI integration not available", file_id)
         return None
@@ -130,7 +116,6 @@ _warned_storage_provider: set[str] = set()
 
 
 def get_owui_storage() -> Any | None:
-    """Return OWUI's Storage provider singleton, or None outside OWUI / on init failure."""
     try:
         from open_webui.storage.provider import (
             Storage,  # type: ignore[import-not-found]
@@ -147,7 +132,6 @@ def get_owui_storage() -> Any | None:
 
 
 def owui_storage_provider_kind() -> str:
-    """Normalise STORAGE_PROVIDER to local/s3/gcs/azure/unknown (anything non-local is cloud-risk)."""
     raw = _OWUI_STORAGE_PROVIDER
     value = str(raw).strip().lower() if raw is not None else "local"
     if value in ("", "local"):
@@ -162,7 +146,6 @@ def owui_storage_provider_kind() -> str:
 
 
 def declared_file_size(file_obj: Any) -> int | None:
-    """Return a positive integer declared size from file.meta, else None."""
     meta = getattr(file_obj, "meta", None)
     if not isinstance(meta, dict):
         return None
@@ -179,7 +162,6 @@ def declared_file_size(file_obj: Any) -> int | None:
 
 
 def contained_under_upload_dir(local_path: Any) -> Path | None:
-    """Resolve a path and return it only if it lies under OWUI UPLOAD_DIR, else None (fail-closed)."""
     if _OWUI_UPLOAD_DIR is None:
         return None
     try:
@@ -193,7 +175,6 @@ def contained_under_upload_dir(local_path: Any) -> Path | None:
 
 
 def copy_to_private_temp(contained_path: Path, *, suffix: str = "") -> Path:
-    """Copy a contained provider-cache file to a request-unique temp path the pipe owns."""
     with tempfile.NamedTemporaryFile(prefix="orpipe-read-", suffix=suffix, delete=False) as tmp:
         temp_path = Path(tmp.name)
     try:
@@ -212,30 +193,13 @@ async def _reclaim_copied_temp(copy_task: asyncio.Future[Any]) -> None:
             await asyncio.shield(copy_task)
         except asyncio.CancelledError:
             continue
-        except Exception:  # noqa: BLE001 - any copy failure ends the wait; the caller's is re-raised
+        except Exception:  # noqa: BLE001
             break
     if copy_task.done() and not copy_task.cancelled() and copy_task.exception() is None:
         copy_task.result().unlink(missing_ok=True)
 
 
 async def _linked_ok(result: Any, chat_id: str, message_id: str, file_id: str) -> bool:
-    """Decide whether a file is linked, given insert_chat_files' ambiguous return.
-
-    Open WebUI returns None from four places -- empty input, every requested file
-    already linked, no read access, and a caught exception around the DB write -- and
-    its success path returns a list built from a non-empty id list, so it never returns
-    an empty one. The return value therefore separates nothing: reading None as failure
-    warns on every benign re-link, and reading it as success discards every real failure.
-
-    Asking whether the link now exists distinguishes them. Note the already-linked
-    branch is unreachable in practice -- Open WebUI compares the requested file ids
-    against chat_file *row* ids, which never match -- so a re-link reaches the INSERT
-    and returns None from the unique-constraint failure instead. Both land here.
-
-    The lookup is scoped to one message, matching where the caller wants the file to
-    appear; the same file linked under a different message in the chat is reported as
-    not linked here, which is correct for that caller.
-    """
     if result:
         return True
     try:
@@ -287,23 +251,6 @@ def _published_chat_id_values() -> tuple[tuple[str, ...], tuple[str, ...], str] 
 
 @lru_cache(maxsize=1)
 def _resolved_unlinkable_chat_prefixes() -> tuple[str, ...]:
-    """Open WebUI's own list where it publishes one, the literal above otherwise.
-
-    Upstream owns this set (`utils.chat_id.NON_SAVED_CHAT_ID_PREFIXES`), and the copy
-    here has already drifted from it twice -- `local:` -> `temporary:`, and the separate
-    addition of `channel:`, which reached exactly one of the gates that needed it. The
-    next prefix Open WebUI adds would be silently uncovered.
-
-    Cached because the answer cannot change inside a process and the miss is the
-    expensive case -- a failed import re-walks sys.path, and this runs on every upload.
-    `cache_clear()` is the reset seam.
-
-    A published value is only adopted once it survives being useless. Taking one at face
-    value fails open in two ways that both silently delete the gate: a bare string is
-    iterable, so `"temporary:"` becomes the characters `t`, `e`, `m` ... and any chat id
-    starting with `t` reads as unlinkable; and `""` makes `startswith` true for
-    everything, so nothing is linkable at all.
-    """
     published = _published_chat_id_values()
     if published is None:
         raise _PublishedChatIdsUnavailable
@@ -311,11 +258,6 @@ def _resolved_unlinkable_chat_prefixes() -> tuple[str, ...]:
     if isinstance(non_saved, str) or not isinstance(non_saved, Iterable):
         return _UNLINKABLE_CHAT_PREFIXES
     upstream = tuple(p for p in non_saved if isinstance(p, str) and p.strip())
-    # UNION, not replace. The local tuple is this pipe's own record of which chat ids
-    # have no `chat` row -- not an approximation of upstream's list. Upstream maintains
-    # theirs for their own reasons, and `local:` is named LEGACY_TEMPORARY_CHAT_ID_PREFIX
-    # there, so the day they retire it a replace would silently retire it here too and
-    # every upload in a temporary chat would start reaching the chat_files INSERT.
     return _UNLINKABLE_CHAT_PREFIXES + tuple(
         p for p in upstream if p not in _UNLINKABLE_CHAT_PREFIXES
     )
@@ -329,15 +271,6 @@ def _unlinkable_chat_prefixes() -> tuple[str, ...]:
 
 
 def is_linkable_chat(chat_id: Any) -> bool:
-    """True when a chat id can actually carry a chat_files link.
-
-    Every prefix above names a conversation with no ``chat`` row. Temporary Chats exist
-    only in the browser; a channel invocation runs the whole chat pipeline with
-    ``chat_id = f"channel:{channel.id}"``. Anything that treats one of them as linkable
-    reaches an INSERT whose foreign key cannot resolve -- logging a spurious "was not
-    linked" on every upload where the FK is enforced, and accruing an orphan
-    ``chat_file`` row per upload where it is not.
-    """
     if not isinstance(chat_id, str):
         return False
     normalized = chat_id.strip()
@@ -525,7 +458,6 @@ def _upload_identity(user: Any, owui_user_id: str | None) -> str | None:
 
 
 def is_real_owui_file_record(file_obj: Any) -> bool:
-    """True when the record carries a real OWUI file id (so it requires authorisation)."""
     return bool(getattr(file_obj, "id", None))
 
 
@@ -540,7 +472,6 @@ FILE_READ_AUTH_MEMO: ContextVar[dict[tuple[str, Any], bool] | None] = ContextVar
 
 @timed
 async def authorize_file_read(file_obj: Any, user: Any, logger: logging.Logger) -> bool:
-    """Authorise reading a real OWUI file: owner, admin, or has_access_to_file. Fail closed."""
     if user is None:
         return False
     owner_id = getattr(file_obj, "user_id", None)
@@ -607,13 +538,6 @@ async def materialize_owui_file_to_temp(
     allowed_suffixes: set[str] | None = None,
     suffix: str = "",
 ) -> Path:
-    """Authorise, size-gate, and copy an OWUI file to a private temp the caller owns.
-
-    Routes the read through OWUI's Storage provider (any backend). Raises
-    RequiredInternalFileError on auth denial, missing path, declared/actual size
-    overrun, unknown-size cloud reads (unless allowed), unsupported extension, or
-    a path that escapes UPLOAD_DIR. The caller must unlink the returned path.
-    """
     if (
         require_auth
         and is_real_owui_file_record(file_obj)
@@ -685,14 +609,6 @@ async def materialize_owui_file_to_temp(
 
 
 def infer_file_mime_type(file_obj: Any) -> str:
-    """Return the best-known MIME type for a stored Open WebUI file.
-
-    Args:
-        file_obj: File object from Open WebUI storage
-
-    Returns:
-        MIME type string (defaults to application/octet-stream)
-    """
     candidates = [
         getattr(file_obj, "mime_type", None),
         getattr(file_obj, "content_type", None),
@@ -725,19 +641,6 @@ def infer_file_mime_type(file_obj: Any) -> str:
 
 @timed
 async def encode_file_path_base64(path: Path, chunk_size: int, max_bytes: int) -> str:
-    """Read ``path`` in chunks and return a base64 string.
-
-    Args:
-        path: Path to file
-        chunk_size: Chunk size for reading
-        max_bytes: Maximum file size in bytes
-
-    Returns:
-        Base64-encoded file content
-
-    Raises:
-        ValueError: If file exceeds size limit
-    """
     chunk_size = max(64 * 1024, min(chunk_size, max_bytes))
 
     def _encode_stream() -> str:
@@ -766,14 +669,6 @@ async def encode_file_path_base64(path: Path, chunk_size: int, max_bytes: int) -
 
 
 def extract_internal_file_id(url: str) -> str | None:
-    """Return the Open WebUI file identifier embedded in a storage URL.
-
-    Args:
-        url: URL to extract file ID from
-
-    Returns:
-        File ID or None if not found
-    """
     if not isinstance(url, str):
         return None
     match = _INTERNAL_FILE_ID_PATTERN.search(url)
@@ -783,7 +678,6 @@ def extract_internal_file_id(url: str) -> str | None:
 
 
 def is_internal_file_url(url: str) -> bool:
-    """True only for relative Open WebUI file paths (/api/v1/files/...); absolute URLs are external."""
     if not isinstance(url, str):
         return False
     if is_absolute_url(url):
@@ -1008,8 +902,6 @@ async def index_referenced_file_payloads(
 
 
 class OwuiFileGateway:
-    """Stateful gateway for authorized, backend-agnostic OWUI file storage I/O."""
-
     def __init__(self, logger, valves, valves_owner=None):
         self.logger = logger
         self._valves = valves
@@ -1026,17 +918,6 @@ class OwuiFileGateway:
         return self._valves if live is None else live
 
     def validate_base64_size(self, b64_data: str) -> bool:
-        """Validate base64 data size is within configured limits.
-
-        Estimates the decoded size of base64 data and compares it against the
-        configured BASE64_MAX_SIZE_MB valve to prevent memory issues from huge payloads.
-
-        Args:
-            b64_data: Base64-encoded string to validate
-
-        Returns:
-            True if within limits, False if too large
-        """
         if not b64_data:
             return True
 
@@ -1069,17 +950,6 @@ class OwuiFileGateway:
         user: Any = None,
         require_auth: bool = True,
     ) -> str | None:
-        """Return base64 for an OWUI file: authorize, then read inline data or via Storage.
-
-        Real OWUI records are authorized before any byte source is touched, and their
-        path read is routed through OWUI Storage (works on any backend) into a private
-        temp. Synthetic no-id records keep the legacy local-path/inline behavior.
-
-        Raises:
-            ValueError: stored/encoded content exceeds the configured size limit.
-            RequiredInternalFileError: requester is unauthorized, or a real record
-                cannot be safely materialized (size/containment/storage failure).
-        """
         if max_bytes <= 0:
             raise ValueError("BASE64_MAX_SIZE_MB must be greater than zero")
 
@@ -1163,20 +1033,6 @@ class OwuiFileGateway:
         max_bytes: int,
         user: Any = None,
     ) -> InlinedFile | None:
-        """Convert an Open WebUI file id into a data URL with metadata.
-
-        Args:
-            file_id: Open WebUI file identifier
-            chunk_size: Chunk size for reading file
-            max_bytes: Maximum file size in bytes
-            user: Requester for authorization; None denies real OWUI records.
-
-        Returns:
-            InlinedFile(data_url, filename) or None if conversion fails
-
-        Raises:
-            RequiredInternalFileError: requester is not authorized for the file.
-        """
         normalized = (file_id or "").strip()
         if not normalized:
             return None
@@ -1219,17 +1075,6 @@ class OwuiFileGateway:
         max_bytes: int,
         user: Any = None,
     ) -> InlinedFile | None:
-        """Convert an Open WebUI file URL into a data URL with metadata.
-
-        Args:
-            url: Open WebUI file URL
-            chunk_size: Chunk size for reading file
-            max_bytes: Maximum file size in bytes
-            user: Requester for authorization; None denies real OWUI records.
-
-        Returns:
-            InlinedFile(data_url, filename) or None if conversion fails
-        """
         file_id = extract_internal_file_id(url)
         if not file_id:
             return None
@@ -1247,21 +1092,6 @@ class OwuiFileGateway:
         user: Any = None,
         refusals: list[tuple[str, str, str]] | None = None,
     ) -> dict[str, Any]:
-        """Inline any Open WebUI internal file URLs referenced by /responses input_file blocks.
-
-        OpenRouter providers cannot fetch Open WebUI internal URLs. This converts internal
-        `file_url` (or internal `file_data` URL) values into `file_data` data URLs.
-
-        Args:
-            request_body: Request body dict containing input items
-            chunk_size: Chunk size for reading files
-            max_bytes: Maximum file size in bytes
-            user: Requester for authorization; None denies real OWUI records.
-
-        Raises:
-            ValueError: If inlining fails for a required file.
-            RequiredInternalFileError: requester is not authorized for a referenced file.
-        """
         input_items = request_body.get("input")
         if not isinstance(input_items, list) or not input_items:
             return request_body
@@ -1391,21 +1221,6 @@ class OwuiFileGateway:
         message_id: str | None = None,
         owui_user_id: str | None = None,
     ) -> str | None:
-        """Upload file or image to Open WebUI storage and return the OWUI file id.
-
-        Args:
-            request: FastAPI Request object for URL generation
-            user: UserModel object representing the file owner
-            file_data: Raw bytes of the file content
-            filename: Desired filename (will be prefixed with UUID)
-            mime_type: MIME type of the file (e.g., 'image/jpeg', 'application/pdf')
-            chat_id: Optional chat ID to associate file with
-            message_id: Optional message ID to associate file with
-            owui_user_id: Optional user ID override
-
-        Returns:
-            Open WebUI file id (UUID string), or None if upload fails.
-        """
         if upload_file_handler is None:
             self.logger.error("Open WebUI file upload helpers are unavailable; skipping OWUI storage upload.")
             return None
@@ -1479,7 +1294,6 @@ class OwuiFileGateway:
         message_id: str | None = None,
         owui_user_id: str | None = None,
     ) -> str | None:
-        """Stream a file from a local path into Open WebUI storage and return the file id."""
         if upload_file_handler is None:
             self.logger.error("Open WebUI file upload helpers are unavailable; skipping OWUI storage upload.")
             return None
@@ -1558,17 +1372,6 @@ class OwuiFileGateway:
         file_id: str,
         user_id: str | None,
     ) -> bool:
-        """Link uploaded file to chat and message in Open WebUI database.
-
-        Args:
-            chat_id: Chat identifier
-            message_id: Message identifier
-            file_id: File identifier
-            user_id: User identifier
-
-        Returns:
-            True if linking succeeded, False otherwise
-        """
         if not isinstance(chat_id, str) or not is_linkable_chat(chat_id):
             return False
         normalized_chat_id = chat_id.strip()
@@ -1633,15 +1436,6 @@ class OwuiFileGateway:
         request: Request | None,
         user_obj: Any | None,
     ) -> tuple[Request | None, Any | None]:
-        """Return a `(request, user)` tuple suitable for OWUI uploads.
-
-        Args:
-            request: FastAPI Request object
-            user_obj: User object
-
-        Returns:
-            Tuple of (request, user) or (None, None) if context unavailable
-        """
         if request is None:
             if user_obj:
                 self.logger.debug("Storage upload skipped: request context missing.")
@@ -1665,11 +1459,6 @@ class OwuiFileGateway:
 
     @timed
     async def ensure_storage_user(self) -> Any | None:
-        """Ensure the fallback storage user exists (lazy creation).
-
-        Returns:
-            User object or None if creation fails
-        """
         if Users is None:
             self.logger.debug("Cannot create storage user: Open WebUI integration not available")
             return None
@@ -1705,7 +1494,7 @@ class OwuiFileGateway:
                 fallback_user = await Users.get_user_by_email(
                     fallback_email,
                 )
-            except Exception:  # pragma: no cover - defensive guard
+            except Exception:  # pragma: no cover
                 self.logger.exception("Failed to load fallback storage user")
                 return None
 
@@ -1724,7 +1513,7 @@ class OwuiFileGateway:
                         fallback_name,
                         fallback_email,
                     )
-                except Exception:  # pragma: no cover - defensive guard
+                except Exception:  # pragma: no cover
                     self.logger.exception("Failed to create fallback storage user")
                     return None
 

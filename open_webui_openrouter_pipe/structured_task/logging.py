@@ -1,7 +1,3 @@
-"""Redacted logging payload for structured-output task-model calls.
-
-Ports the pattern from `.external/seedream.py:137-162`.
-"""
 from __future__ import annotations
 
 from typing import Any
@@ -37,12 +33,6 @@ def _fault_code(exc: BaseException | None) -> str:
 
 
 def safe_log_payload(form_data: dict[str, Any]) -> dict[str, Any]:
-    """Redact form_data for debug logs.
-
-    Keeps: model, temperature, stream, response_format envelope (type/name/strict),
-    message count + role list, metadata. Drops all message content (prompts, user
-    text, etc.) and any auth headers.
-    """
     response_format = form_data.get("response_format") or {}
     json_schema = response_format.get("json_schema") or {}
     messages = form_data.get("messages") or []

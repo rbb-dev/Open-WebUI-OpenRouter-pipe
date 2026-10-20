@@ -1,12 +1,3 @@
-"""Storage subsystem.
-
-This module provides persistence and file handling functionality:
-- persistence: Database/Redis storage with encryption
-- multimodal: File and image handling for multimodal requests
-- video_persistence: Generated video storage and chat linking
-- users: User database operations
-"""
-
 from __future__ import annotations
 
 from .multimodal import MultimodalHandler

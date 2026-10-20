@@ -1,5 +1,3 @@
-"""Context budget estimation and dynamic tool output omission helpers."""
-
 from __future__ import annotations
 
 import base64
@@ -283,9 +281,6 @@ def default_output_reservation(model_id: str) -> int | None:
 def compute_prompt_limit_tokens(
     model_id: str, *, reserved_output_tokens: int | None = None
 ) -> int:
-    """Estimate max prompt tokens using model metadata with safe fallbacks.
-
-    """
     spec = ModelFamily._lookup_spec(model_id)
     if not isinstance(spec, dict):
         return _FALLBACK_PROMPT_LIMIT_TOKENS
@@ -517,7 +512,6 @@ def estimate_serialized_chars(
     *,
     referenced_sizes: Mapping[str, tuple[int, str, str]] | None = None,
 ) -> int:
-    """Estimate payload size by serialized character count."""
     charges: list[int] = []
     try:
         shaped = _budget_shape(value, referenced_sizes, charges)
@@ -542,14 +536,12 @@ _OMISSION_STUB_RE = re.compile(
 
 
 def is_tool_omission_stub(text: str) -> bool:
-    """Return True when text is already a tool omission stub."""
     if not isinstance(text, str):
         return False
     return _OMISSION_STUB_RE.fullmatch(text.strip()) is not None
 
 
 def build_live_tool_omission_stub(result_chars: int, remaining_tokens: int) -> str:
-    """Build a model-facing omission stub for live tool execution."""
     estimated_tokens = result_chars // _CHARS_PER_TOKEN_HEURISTIC
     return (
         "[Tool result omitted due to context budget. "
@@ -560,7 +552,6 @@ def build_live_tool_omission_stub(result_chars: int, remaining_tokens: int) -> s
 
 
 def build_replayed_tool_omission_stub(result_chars: int, remaining_tokens: int) -> str:
-    """Build a model-facing omission stub for replayed tool artifacts."""
     estimated_tokens = result_chars // _CHARS_PER_TOKEN_HEURISTIC
     return (
         "[Replayed tool result omitted due to context budget. "

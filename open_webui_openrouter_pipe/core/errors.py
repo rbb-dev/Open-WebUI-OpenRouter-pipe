@@ -1,15 +1,3 @@
-"""Error handling and user-facing error formatting.
-
-This module handles all error-related functionality:
-- OpenRouterAPIError: Rich error class with markdown formatting
-- Error template rendering
-- Error classification (retryable, rate limit, etc.)
-- Error context building for user display
-- HTTP error handling
-
-Responsible for translating technical errors into user-friendly markdown messages.
-"""
-
 from __future__ import annotations
 
 import concurrent.futures
@@ -40,13 +28,9 @@ from .utils import (
     wrap_code_block,
 )
 
-# Supporting Classes
 
 class _RetryableHTTPStatusError(Exception):
-    """Wrapper that marks an HTTPStatusError as retryable."""
-
     def __init__(self, original: httpx.HTTPStatusError, retry_after: float | None = None):
-        """Capture the original HTTP error plus optional Retry-After hint."""
         self.original = original
         self.retry_after = retry_after
         status_code = getattr(original.response, "status_code", "unknown")
@@ -54,15 +38,11 @@ class _RetryableHTTPStatusError(Exception):
 
 
 class _RetryWait:
-    """Custom Tenacity wait strategy honoring Retry-After headers."""
-
     def __init__(self, base_wait, *, max_delay: float | None = None):
-        """Store the wrapped Tenacity wait callable used as a baseline."""
         self._base_wait = base_wait
         self._max_delay = max_delay
 
     def __call__(self, retry_state):
-        """Return the greater of base delay or Retry-After header guidance."""
         base_delay = self._base_wait(retry_state) if self._base_wait else 0
         exc = None
         if retry_state.outcome is not None:
@@ -104,9 +84,6 @@ class _ChatRetryWait(_RetryWait):
 
 
 class StatusMessages:
-    """Centralized status messages for multimodal processing."""
-
-    # Image processing
     IMAGE_BASE64_SAVED = "📥 Saved base64 image to storage"
     IMAGE_REMOTE_SAVED = "📥 Downloaded and saved image from remote URL"
     IMAGES_SKIPPED_UNFETCHABLE = (
@@ -116,15 +93,12 @@ class StatusMessages:
         "Images: skipped {count} (could not be checked in time, so it was not sent)."
     )
 
-    # Video processing
     VIDEO_BASE64 = "🎥 Processing base64 video input"
     VIDEO_YOUTUBE = "🎥 Processing YouTube video input"
     VIDEO_REMOTE = "🎥 Processing video input"
 
 
 class RequiredInternalFileError(Exception):
-    """Raised when a required current-user internal OWUI file cannot be authorised or materialised."""
-
     def __init__(self, user_message: str, *, kind: str = "file", denied: bool = False) -> None:
         super().__init__(user_message)
         self.user_message = user_message
@@ -165,8 +139,6 @@ class FileUnavailableError(RequiredInternalFileError, ValueError):
     pass
 
 
-# OpenRouterAPIError Class
-
 def _scrub_optional(value: Any) -> Any:
     return scrub_surrogates(value) if isinstance(value, str) else value
 
@@ -197,8 +169,6 @@ def _scrub_sequence(value: Any) -> Any:
 
 
 class OpenRouterAPIError(RuntimeError):
-    """User-facing error raised when OpenRouter rejects a request with status 400."""
-
     def __init__(
         self,
         *,
@@ -227,7 +197,6 @@ class OpenRouterAPIError(RuntimeError):
         chunk_model: str | None = None,
         is_streaming_error: bool = False,
     ) -> None:
-        """Normalize raw OpenRouter metadata into convenient attributes."""
         self.status = status
         self.reason = _scrub_optional(reason)
         self.provider = _normalize_optional_str(_scrub_optional(provider))
@@ -278,7 +247,6 @@ class OpenRouterAPIError(RuntimeError):
         context: dict[str, Any] | None = None,
         shared: bool = False,
     ) -> str:
-        """Return a user-friendly markdown block describing the failure."""
         provider_label = (self.provider or "").strip()
         effective_model = model_label or fallback_model or self.model_slug or self.requested_model
         if provider_label and effective_model:
@@ -312,12 +280,9 @@ class EmptyAnswerError(OpenRouterAPIError, aiohttp.ClientError):
         Exception.__init__(self, message)
 
 
-# Error Helper Functions
-
 def _classify_retryable_http_error(
     exc: httpx.HTTPStatusError,
 ) -> tuple[bool, float | None]:
-    """Return (is_retryable, retry_after_seconds) for an HTTPStatusError."""
     response = exc.response
     if response is None:
         return False, None
@@ -367,7 +332,6 @@ def _unnest_provider_error(message: Any) -> dict[str, str] | None:
 
 
 def _extract_openrouter_error_details(body_text: str | None) -> dict[str, Any]:
-    """Normalize OpenRouter error payloads into structured metadata."""
     parsed = _safe_json_loads(body_text) if body_text else None
     raw_error_section = parsed.get("error", {}) if isinstance(parsed, dict) else {}
     error_section = raw_error_section if isinstance(raw_error_section, dict) else {}
@@ -441,7 +405,6 @@ def _build_openrouter_api_error(
     requested_model: str | None = None,
     extra_metadata: dict[str, Any] | None = None,
 ) -> OpenRouterAPIError:
-    """Create a structured error wrapper for OpenRouter 4xx responses."""
     details = _extract_openrouter_error_details(body_text)
     metadata_block = details.get("metadata") or {}
     if extra_metadata:
@@ -474,7 +437,6 @@ def _build_openrouter_api_error(
 
 
 def _is_reasoning_effort_error(error_details: dict[str, Any]) -> bool:
-    """Return True when the provider rejected reasoning.effort as unsupported."""
     provider_raw = error_details.get("provider_raw")
     if not isinstance(provider_raw, dict):
         return False
@@ -489,7 +451,6 @@ def _is_reasoning_effort_error(error_details: dict[str, Any]) -> bool:
 
 
 def _parse_supported_effort_values(error_message: str) -> list[str]:
-    """Extract the list of supported reasoning efforts from an OpenRouter error."""
     import re
 
     match = re.search(r"Supported values are:\s*(.+?)\.", error_message, re.IGNORECASE)
@@ -686,7 +647,6 @@ def _build_error_template_values(
     api_model_id: str | None,
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Prepare placeholder values for the customizable error template."""
     detail = (error.upstream_message or error.openrouter_message or str(error)).strip()
 
     moderation_lines = [reason for reason in (error.moderation_reasons or []) if reason]
@@ -817,7 +777,6 @@ def _resolve_error_model_context(
     normalized_model_id: str | None = None,
     api_model_id: str | None = None,
 ) -> tuple[str | None, list[str], dict[str, Any]]:
-    """Return (display_label, diagnostics_lines, metrics) for the affected model."""
     from ..models.registry import ModelFamily
 
     diagnostics: list[str] = []

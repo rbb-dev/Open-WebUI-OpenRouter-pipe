@@ -1,11 +1,3 @@
-"""CSS/JS assets for the pipe_dashboard Update tab.
-
-Both constants are spliced verbatim into the dashboard shell: the CSS into the
-single <style> block, the JS inside the main app IIFE (so it shares esc(),
-callAction() and reportHeight() with the rest of the dashboard, exactly like
-the config tab). Plain string constants — no f-string placeholders here.
-"""
-
 from __future__ import annotations
 
 UPDATE_TAB_CSS = """

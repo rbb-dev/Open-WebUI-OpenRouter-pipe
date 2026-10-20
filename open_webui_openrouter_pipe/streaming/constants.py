@@ -1,10 +1,7 @@
-"""Shared streaming constants and helpers to avoid duplication across modules."""
-
 from __future__ import annotations
 
 from time import perf_counter
 
-# Default reasoning status emission thresholds.
 REASONING_STATUS_PUNCTUATION = (".", "!", "?", ":", "\n")
 REASONING_STATUS_MAX_CHARS = 160
 REASONING_STATUS_MIN_CHARS = 12
@@ -20,13 +17,6 @@ _REPLAY_DROPPED_OPENING = (
 
 
 class ReasoningStatusThrottle:
-    """Buffers reasoning text deltas and decides when a status update should fire.
-
-    Callers feed deltas via :meth:`feed` and receive back the text to emit
-    (or ``None`` when the update should be throttled).  The actual emit
-    mechanism is left to the caller — this class is pure decision logic.
-    """
-
     __slots__ = ("_buffer", "_last_emit")
 
     def __init__(self) -> None:
@@ -34,7 +24,6 @@ class ReasoningStatusThrottle:
         self._last_emit: float | None = None
 
     def feed(self, delta: str, *, force: bool = False) -> str | None:
-        """Append *delta* to the buffer and return text to emit, or ``None``."""
         if not isinstance(delta, str):
             return None
         self._buffer += delta
@@ -60,5 +49,4 @@ class ReasoningStatusThrottle:
 
     @property
     def pending(self) -> str:
-        """Return buffered text that hasn't been emitted yet."""
         return self._buffer

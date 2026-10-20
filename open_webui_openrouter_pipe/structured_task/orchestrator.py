@@ -1,14 +1,3 @@
-"""Task-model selection: resolves candidate model IDs from OWUI config.
-
-Ports the pattern from `.external/seedream.py:670-693`.
-
-The `chat_model` fallback was removed in v2.6.x: media-generation flows route
-through video/image models that cannot process structured-output classification
-prompts, so falling back to the user's selected chat model produced
-classifier-failure-then-degrade-open instead of useful results. The two
-remaining strategies (`none`, `other_task_model`) cover the realistic
-deployment shapes.
-"""
 from __future__ import annotations
 
 import json
@@ -137,7 +126,7 @@ def task_model_owned_by(request: Any, model_id: str) -> str:
         return ""
     try:
         row = getter(model_id)
-    except Exception:  # noqa: BLE001 - RedisDict.get catches only KeyError, so an outage raises through
+    except Exception:  # noqa: BLE001
         return ""
     if not isinstance(row, dict):
         return ""
@@ -163,15 +152,6 @@ def select_task_model_candidates(
     mode: TaskModelMode,
     fallback: TaskModelFallback,
 ) -> list[str]:
-    """Return ordered list of task-model IDs per OWUI config.
-
-    Empty strings are filtered. Duplicates are deduped while preserving order.
-
-    Args:
-        mode: "internal" picks TASK_MODEL primary, "external" picks TASK_MODEL_EXTERNAL.
-        fallback: "none" returns only primary; "other_task_model" appends the
-            other OWUI task model.
-    """
     if rows is None:
         config = getattr(getattr(request, "app", None), "state", None)
         config = getattr(config, "config", None) if config is not None else None

@@ -1,8 +1,3 @@
-"""Event emission and middleware stream handling.
-
-Handles event emission to Open WebUI and middleware stream queue management.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -53,7 +48,6 @@ def _stub_chat_chunk_template(
     tool_calls: list[dict[str, Any]] | None = None,
     usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Stub implementation mimicking OpenAI chat completion chunk format."""
     chunk: dict[str, Any] = {
         "id": f"chatcmpl-{secrets.token_hex(12)}",
         "object": "chat.completion.chunk",
@@ -83,7 +77,6 @@ def openai_chat_chunk_message_template(
     tool_calls: list[dict[str, Any]] | None = None,
     usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Wrapper that lazily loads the Open WebUI template or uses stub."""
     global _owui_template_cached
     if _owui_template_cached is None:
         try:
@@ -121,33 +114,10 @@ def middleware_message_delta(
 
 
 def unguarded_emitter(emitter: EventEmitter) -> EventEmitter:
-    """The emitter as handed to the pipe, before the wrapper that swallows its errors.
-
-    ``_wrap_safe_event_emitter`` exists so an incidental status update cannot fail a
-    request. A caller that must know whether the user was actually told needs the
-    original, and gets it here; anything that was never wrapped is already original.
-    """
     return getattr(emitter, _UNGUARDED_ATTR, emitter)
 
 
 class EventEmitterHandler:
-    """Manages event emission and stream queues.
-
-    This class encapsulates:
-    - Status/error/citation/completion event emission
-    - Safe event emitter wrapping
-    - Middleware stream queue management
-    - Event formatting and validation
-
-    All event emission to Open WebUI is handled through this class, providing
-    a consistent interface for UI updates, error reporting, and streaming output.
-
-    Dependencies:
-        - logger: Logger instance for diagnostic output
-        - valves: Configuration valves for support contact info, etc.
-        - pipe_instance: Reference to Pipe instance for SessionLogger access
-    """
-
     def __init__(
         self,
         logger: logging.Logger,
@@ -156,14 +126,6 @@ class EventEmitterHandler:
         event_emitter: EventEmitter | None = None,
         valves_owner: Any | None = None,
     ):
-        """Initialize EventEmitterHandler.
-        
-        Args:
-            logger: Logger instance for diagnostic output
-            valves: Configuration valves (Pipe.Valves instance)
-            pipe_instance: Reference to parent Pipe instance for helper methods
-            event_emitter: Optional event emitter from Open WebUI
-        """
         self.logger = logger
         self._valves = valves
         self._valves_owner = valves_owner
@@ -181,34 +143,6 @@ class EventEmitterHandler:
         message: str,
         done: bool = False
     ):
-        """Emit status updates to the Open WebUI client.
-
-        Sends progress indicators to the UI during file/image processing operations.
-
-        Args:
-            event_emitter: Async callable for sending events to the client,
-                          or None if no emitter available
-            message: Status message to display (supports emoji for visual indicators)
-            done: Whether this status represents completion (default: False)
-
-        Status Message Conventions:
-            - 📥 Download/upload in progress
-            - ✅ Successful completion
-            - ⚠️ Warning or non-critical error
-            - 🔴 Critical error
-
-        Note:
-            - If event_emitter is None, this method is a no-op
-            - Errors during emission are caught and logged
-            - Does not interrupt processing flow
-
-        Example:
-            >>> await self._emit_status(
-            ...     emitter,
-            ...     "📥 Downloading remote image...",
-            ...     done=False
-            ... )
-        """
         if event_emitter:
             try:
                 await event_emitter({
@@ -233,12 +167,6 @@ class EventEmitterHandler:
         terminal: bool = True,
         partial_answer: str = "",
     ) -> str:
-        """Log an error and optionally surface it to the UI.
-
-        When ``show_error_log_citation`` is true the collected debug logs are
-        dumped to the server log (instead of the UI) so developers can inspect
-        what went wrong.
-        """
         error_message = str(error_obj)
         self.logger.error("Error: %s", error_message)
         on_channel = is_channel_chat(OWUI_CHAT_ID.get())
@@ -310,23 +238,6 @@ class EventEmitterHandler:
         partial_answer: str = "",
         fallback_template: str | None = None,
     ) -> str:
-        """Render and emit an error using the template system.
-
-        Automatically enriches variables with:
-        - error_id: Unique identifier for support correlation
-        - timestamp: ISO 8601 timestamp (UTC)
-        - session_id: Current session identifier
-        - user_id: Current user identifier
-        - support_email: From valves
-        - support_url: From valves
-
-        Args:
-            event_emitter: Event emitter for UI messages
-            template: Markdown template with {{#if}} conditionals
-            variables: Dictionary of template variables
-            log_message: Technical message for operator logs
-            log_level: Logging level (default: ERROR)
-        """
         error_id, context_defaults = self._create_error_context()
         enriched_variables = {
             key: (
@@ -337,7 +248,6 @@ class EventEmitterHandler:
             for key, value in {**context_defaults, **variables}.items()
         }
 
-        # Log with error ID for correlation
         self.logger.log(
             log_level,
             f"[{error_id}] {log_message} (session={enriched_variables['session_id']}, user={enriched_variables['user_id']})"
@@ -410,7 +320,6 @@ class EventEmitterHandler:
 
 
     def _create_error_context(self) -> tuple[str, dict[str, Any]]:
-        """Return a unique error id plus contextual metadata for templates."""
         error_id = secrets.token_hex(8)
         context = {
             "error_id": error_id,
@@ -428,7 +337,6 @@ class EventEmitterHandler:
         event_emitter: EventEmitter | None,
         citation: dict[str, Any],
     ) -> None:
-        """Send a normalized source block to the UI if an emitter is available."""
         if event_emitter is None or not isinstance(citation, dict):
             return
 
@@ -494,20 +402,6 @@ class EventEmitterHandler:
         event_emitter: EventEmitter | None,
         files: list[dict[str, Any]],
     ) -> None:
-        """Emit extracted files from tool results to the UI.
-
-        Files typically contain images, audio, or other media extracted from
-        tool execution results (e.g., image generation tools, MCP multipart results).
-
-        Args:
-            event_emitter: Event emitter for UI communication
-            files: List of file dicts with 'type' and 'url' or 'content' keys
-                   Example: [{"type": "image", "url": "/api/v1/files/..."}]
-
-        Note:
-            This method is called after tool execution when files are extracted
-            from tool results via OpenWebUI's process_tool_result() function.
-        """
         if event_emitter is None or not files:
             return
 
@@ -527,24 +421,6 @@ class EventEmitterHandler:
         *,
         replace: bool = False,
     ) -> None:
-        """Emit embedded HTML content from tool results to the UI.
-
-        Embeds are HTML snippets (typically iframes or interactive components)
-        that should be displayed inline in the chat. They come from tools that
-        return HTMLResponse with Content-Disposition: inline.
-
-        Args:
-            event_emitter: Event emitter for UI communication
-            embeds: List of HTML strings to embed in the response
-            replace: When True, OpenWebUI swaps the message's existing embeds for
-                this set instead of appending. Omitted from the payload when False
-                so existing callers stay byte-identical on the wire. No production
-                caller currently sets this.
-
-        Note:
-            This method is called after tool execution when HTML embeds are
-            extracted from tool results via OpenWebUI's process_tool_result() function.
-        """
         if event_emitter is None or not embeds:
             return
 
@@ -571,13 +447,6 @@ class EventEmitterHandler:
         error:   dict[str, Any] | None = None,
         done:    bool = True,
     ) -> None:
-        """Emit a ``chat:completion`` event if an emitter is present.
-
-        The ``done`` flag indicates whether this is the final frame for the
-        request.  When ``usage`` information is provided it is forwarded as part
-        of the event data. Callers should pass the latest assistant snapshot so
-        downstream emitters cannot overwrite the UI with an empty string.
-        """
         if event_emitter is None:
             return
 
@@ -638,14 +507,6 @@ class EventEmitterHandler:
         *,
         level: Literal["info", "success", "warning", "error"] = "info",
     ) -> bool:
-        """Emit a toast-style notification to the UI, reporting whether it went out.
-
-        The ``level`` argument controls the styling of the notification banner. The
-        return value lets a caller that must not act unheard fail closed; callers that
-        only inform ignore it. Emitted through :func:`unguarded_emitter` so a transport
-        failure is observable here rather than swallowed one layer down, which would
-        make every answer "delivered".
-        """
         if event_emitter is None:
             return False
 
@@ -665,15 +526,13 @@ class EventEmitterHandler:
         self,
         emitter: EventEmitter | None,
     ) -> EventEmitter | None:
-        """Return an emitter wrapper that swallows downstream transport errors."""
-
         if emitter is None:
             return None
 
         async def _guarded(event: dict[str, Any]) -> None:
             try:
                 await emitter(event)
-            except Exception as exc:  # pragma: no cover - emitter transport errors
+            except Exception as exc:  # pragma: no cover
                 evt_type = event.get("type") if isinstance(event, dict) else None
                 suffix = f" ({evt_type})" if evt_type else ""
                 self.logger.warning("Event emitter failure%s: %s", suffix, exc, exc_info=True)
@@ -766,18 +625,6 @@ class EventEmitterHandler:
         job: _PipeJob,
         stream_queue: asyncio.Queue[dict[str, Any] | str | None],
     ) -> EventEmitter:
-        """Translate internal events into middleware-supported streaming output.
-
-        Open WebUI's `process_chat_response` middleware consumes OpenAI-style
-        streaming chunks (``choices[].delta``) and supports out-of-band events
-        via a top-level ``event`` key. This adapter ensures:
-
-        - assistant deltas become ``delta.content`` chunks
-        - ``response.*`` events (native output items, incl. reasoning) pass
-          through as raw SSE payloads for OWUI's serialize_output
-        - status/citation/notification/etc are forwarded via ``{"event": ...}``
-        """
-
         model_id = ""
         metadata_model = job.metadata.get("model") if isinstance(job.metadata, dict) else None
         if isinstance(metadata_model, dict):

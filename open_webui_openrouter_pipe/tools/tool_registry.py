@@ -1,12 +1,3 @@
-"""Tool registry building and collision resolution.
-
-This module handles tool spec management:
-- _dedupe_tools: Remove duplicate tool definitions
-- _build_collision_safe_tool_specs_and_registry: Handle name collisions
-
-Ensures collision-safe tool names and builds execution registry for dispatcher.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -18,20 +9,16 @@ from typing import TYPE_CHECKING, Any
 from ..core.config import _EMPTY_TOOL_SCHEMA, _PIPE_METADATA_KEY
 from ..core.timing_logger import timed
 from ..storage.owui_files import is_linkable_chat, is_temporary_chat
-
-# Import tool schema functions
 from .tool_schema import (
     _declared_parameter_names,
     _strictify_schema,
 )
 
-# Import runtime dependencies
 if TYPE_CHECKING:
     from ..api.transforms import ResponsesBody
     from ..core.config import Valves
     from ..pipe import Pipe
 else:
-    # At runtime, import these to avoid circular import issues
     try:
         from ..api.transforms import ResponsesBody
     except ImportError:
@@ -71,20 +58,6 @@ def open_webui_runs_the_calls(valves: Pipe.Valves, metadata: Any, *, stream: boo
 
 
 def _dedupe_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    """(Internal) Deduplicate a tool list with simple, stable identity keys.
-
-    Identity:
-      - Function tools -> key = ("function", <name>)
-      - Non-function tools -> key = (<type>, None)
-
-    Later entries win (last write wins).
-
-    Args:
-        tools: List of tool dicts (OpenAI Responses schema).
-
-    Returns:
-        list: Deduplicated list, preserving only the last occurrence per identity.
-    """
     if not tools:
         return []
     canonical: dict[tuple, dict[str, Any]] = {}
@@ -108,7 +81,6 @@ def _advertise_strict(spec: dict[str, Any], source: dict[str, Any], *, strictify
 
 
 def _normalize_responses_function_tool_spec(tool: Any, *, strictify: bool) -> dict[str, Any] | None:
-    """Return a normalized Responses-style function tool spec, or None when invalid."""
     if not isinstance(tool, dict):
         return None
     if tool.get("type") != "function":
@@ -132,7 +104,6 @@ def _normalize_responses_function_tool_spec(tool: Any, *, strictify: bool) -> di
 
 
 def _responses_spec_from_owui_tool_cfg(tool_cfg: dict[str, Any], *, strictify: bool) -> dict[str, Any] | None:
-    """Return a Responses-style function tool spec from an OWUI tool registry entry."""
     if not isinstance(tool_cfg, dict):
         return None
     spec = tool_cfg.get("spec")
@@ -161,14 +132,12 @@ def _bound_description_and_parameters(bound: dict[str, Any] | None) -> dict[str,
 
 
 def _tool_prefix_for_collision(source: str, tool_cfg: dict[str, Any] | None) -> str:
-    """Return the prefix to apply when collision renaming is required."""
     if source == "owui_request_tools":
         return "owui__"
     if source == "direct_tool_server":
         return "direct__"
     if source == "extra_tools":
         return "extra__"
-    # Registry tools (tool_ids / extensions).
     if tool_cfg and bool(tool_cfg.get("direct")):
         return "direct__"
     return "tool__"
@@ -260,13 +229,6 @@ def _build_collision_safe_tool_specs_and_registry(
     deferred_tool_names: frozenset[str] | None = None,
     register_call_tool_runner: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], dict[str, str]]:
-    """Build collision-safe tool specs and an execution registry.
-
-    Returns:
-      - tools: Responses-style tool specs with collision-safe names.
-      - exec_registry: mapping exposed_name -> OWUI tool cfg dict (callable/spec/etc).
-      - exposed_to_origin: mapping exposed_name -> origin tool name (for passthrough execution).
-    """
     from .tool_executor import is_builtin_ask_user, is_owui_builtin
 
     log = logger or _module_logger
@@ -277,7 +239,6 @@ def _build_collision_safe_tool_specs_and_registry(
     builtin_registry = builtin_registry or {}
     deferred_tool_names = deferred_tool_names or frozenset()
 
-    # Normalize all registries into lists so we can preserve collisions.
     owui_entries: list[tuple[str, dict[str, Any]]] = [
         (key, entry) for key, entry in owui_registry.items() if isinstance(entry, dict)
     ]
@@ -343,7 +304,6 @@ def _build_collision_safe_tool_specs_and_registry(
     candidates: list[dict[str, Any]] = []
     resolved_request_names: set[str] = set()
 
-    # 1) Request-provided tool specs (OWUI-native `tools`).
     for raw_tool in request_tool_specs:
         raw_name = raw_tool.get("name") if isinstance(raw_tool, dict) else None
         lookup_name = raw_name.strip() if isinstance(raw_name, str) else ""
@@ -376,7 +336,6 @@ def _build_collision_safe_tool_specs_and_registry(
             }
         )
 
-    # 2) Direct tool servers (always include; collisions handled later).
     carried_by_request = {id(c["tool_cfg"]) for c in candidates if c.get("tool_cfg") is not None}
     carried_by_registry = {
         str(entry.get("origin_name") or (entry.get("spec") or {}).get("name") or "")
@@ -430,7 +389,6 @@ def _build_collision_safe_tool_specs_and_registry(
             }
         )
 
-    # 4) Extra tools (schema-only). Include only when executable (pipeline) or passthrough is enabled.
     for raw_tool in extra_tools:
         spec = _normalize_responses_function_tool_spec(raw_tool, strictify=False)
         if not spec:
@@ -473,7 +431,6 @@ def _build_collision_safe_tool_specs_and_registry(
         survivors.append(c)
     candidates = survivors
 
-    # Collision-safe rename: only rename when multiple origins share the same name.
     by_name: dict[str, list[dict[str, Any]]] = {}
     for c in candidates:
         by_name.setdefault(c["origin_name"], []).append(c)

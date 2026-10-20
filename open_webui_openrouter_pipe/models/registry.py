@@ -1,16 +1,3 @@
-"""Model registry and catalog management.
-
-This module handles all model-related functionality:
-- ModelFamily: Base capabilities and alias mapping with effort defaults
-- OpenRouterModelRegistry: Fetches and caches OpenRouter model catalog
-- Model ID helpers: Sanitization, normalization, pattern matching
-- Gemini reasoning helpers: Effort mapping, family classification
-- Web search and icon metadata management
-
-The registry is the authoritative source for model metadata used throughout
-the pipe for model selection, fallback, and feature detection.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -37,10 +24,8 @@ from ..core.config import (
 from ..core.timing_logger import timed
 from .blocklists import _DATE_SUFFIX, is_direct_upload_blocklisted_for
 
-# Model Helper Functions
 
 def sanitize_model_id(model_id: str) -> str:
-    """Convert `author/model` ids into dot-friendly ids for Open WebUI."""
     if not model_id:
         return model_id
     if "/" not in model_id:
@@ -67,16 +52,10 @@ PHASE_SUPPORTED_MODELS: tuple[str, ...] = (
 )
 
 
-# ModelFamily Class
-
 _NO_PIPE_ID = object()
 
 
 class ModelFamily:
-    """
-    One place for base capabilities + alias mapping (with effort defaults).
-    """
-
     _DATE_RE = _DATE_SUFFIX
     _PIPE_ID: ContextVar[str | None] = ContextVar(
         "owui_pipe_id_ctx",
@@ -139,24 +118,20 @@ class ModelFamily:
 
     @classmethod
     def features(cls, model_id: str) -> frozenset[str]:
-        """Capabilities for the base model behind this id."""
         spec = cls._lookup_spec(model_id)
         return frozenset(spec.get("features", set()))
 
     @classmethod
     def max_completion_tokens(cls, model_id: str) -> int | None:
-        """Return max completion tokens reported by the provider, if any."""
         spec = cls._lookup_spec(model_id)
         return spec.get("max_completion_tokens")
 
     @classmethod
     def supports(cls, feature: str, model_id: str) -> bool:
-        """Check if a model supports a given feature."""
         return feature in cls.features(model_id)
 
     @classmethod
     def supported_parameters(cls, model_id: str) -> frozenset[str]:
-        """Return the raw `supported_parameters` set from the OpenRouter catalog."""
         spec = cls._lookup_spec(model_id)
         params = spec.get("supported_parameters")
         if isinstance(params, frozenset):
@@ -174,7 +149,6 @@ class ModelFamily:
 
     @classmethod
     def set_dynamic_specs(cls, specs: dict[str, dict[str, Any]] | None) -> None:
-        """Update cached OpenRouter specs shared with :class:`ModelFamily`."""
         cls._DYNAMIC_SPECS = specs or {}
 
     @classmethod
@@ -202,7 +176,6 @@ class ModelFamily:
 
     @classmethod
     def _lookup_spec(cls, model_id: str) -> dict[str, Any]:
-        """Return the stored spec for ``model_id`` or an empty dict."""
         specs = cls._DYNAMIC_SPECS
         pipe_id = cls._PIPE_ID.get()
         key = _NO_PIPE_ID if pipe_id is None else pipe_id
@@ -252,7 +225,6 @@ class ModelFamily:
 
     @classmethod
     def display_name(cls, model_id: str) -> str | None:
-        """Return the OpenRouter catalog display name for ``model_id`` if cached."""
         norm = cls.base_model(model_id)
         spec = cls._DYNAMIC_SPECS.get(norm) or {}
         full = spec.get("full_model") if isinstance(spec, dict) else None
@@ -317,7 +289,6 @@ _PHASE_SUPPORTED_MODELS_BASE = frozenset(
 
 
 def supports_phase_model(model_id: str) -> bool:
-    """Return True when the model is one of the documented phase-capable ids."""
     candidate = (model_id or "").strip()
     if "@" in candidate:
         candidate, _ = candidate.split("@", 1)
@@ -327,11 +298,7 @@ def supports_phase_model(model_id: str) -> bool:
     key = normalized.removeprefix("~")
     return bool(key) and key in _PHASE_SUPPORTED_MODELS_BASE
 
-# OpenRouterModelRegistry Class
-
 def uses_dedicated_image_api(spec: Any) -> bool:
-    """True when a model emits images and no text, so it answers only on the image API.
-    """
     if not isinstance(spec, dict):
         return False
     modalities = (spec.get("architecture") or {}).get("output_modalities") or []
@@ -473,8 +440,6 @@ def _chat_features_for_video(prior_features: set[str]) -> set[str]:
 
 
 class OpenRouterModelRegistry:
-    """Fetches and caches the OpenRouter model catalog."""
-
     _models: ClassVar[list[dict[str, Any]]] = []
     _specs: ClassVar[dict[str, dict[str, Any]]] = {}
     _id_map: ClassVar[dict[str, str]] = {}
@@ -674,7 +639,6 @@ class OpenRouterModelRegistry:
         http_referer: str | None = None,
         valves: Any = None,
     ) -> None:
-        """Refresh the model catalog if the cache is empty or stale."""
         if not api_key:
             raise ValueError("OpenRouter API key is required.")
 
@@ -746,7 +710,6 @@ class OpenRouterModelRegistry:
         http_referer: str | None = None,
         valves: Any = None,
     ) -> None:
-        """Fetch and cache the OpenRouter catalog."""
         from ..requests.debug import _debug_print_error_response, _debug_print_request
 
         url = base_url.rstrip("/") + "/models"
@@ -954,7 +917,6 @@ class OpenRouterModelRegistry:
 
     @classmethod
     def _record_refresh_success(cls, cache_seconds: int, api_key: str) -> None:
-        """Reset refresh backoff bookkeeping after a successful catalog fetch."""
         now = time.time()
         cls._last_fetch = now
         cls._next_refresh_after = now + max(5, cache_seconds)
@@ -967,7 +929,6 @@ class OpenRouterModelRegistry:
     def _record_refresh_failure(
         cls, exc: Exception, cache_seconds: int, api_key: str
     ) -> float:
-        """Increase backoff delay and track the most recent catalog error."""
         key = _fingerprint(api_key)
         cls._failure_counts[key] = cls._failure_counts.get(key, 0) + 1
         failures = cls._failure_counts[key]
@@ -1011,18 +972,6 @@ class OpenRouterModelRegistry:
         architecture: dict[str, Any],
         pricing: dict[str, Any],
     ) -> set[str]:
-        """Translate OpenRouter metadata into capability flags.
-
-        Features include:
-        - function_calling: Model supports tools/function calling
-        - reasoning: Model supports extended reasoning
-        - reasoning_summary: Model supports reasoning summaries
-        - image_gen_tool: Model can generate images (output)
-        - vision: Model accepts image inputs
-        - audio_input: Model accepts audio inputs
-        - video_input: Model accepts video inputs
-        - file_input: Model accepts file/document inputs
-        """
         features: set[str] = set()
 
         if {"tools", "tool_choice"} & supported_parameters:
@@ -1050,7 +999,6 @@ class OpenRouterModelRegistry:
 
     @staticmethod
     def _coerce_pricing_number(value: Any) -> Decimal | None:
-        """Return a numeric pricing value when possible."""
         if value is None:
             return None
         if isinstance(value, (int, float, Decimal)):
@@ -1082,7 +1030,6 @@ class OpenRouterModelRegistry:
 
     @staticmethod
     def _supports_web_search(pricing: dict[str, Any]) -> bool:
-        """Return True when the provider exposes paid web-search support."""
         value = pricing.get("web_search")
         amount = OpenRouterModelRegistry._coerce_pricing_number(value)
         if amount is None:
@@ -1094,10 +1041,7 @@ class OpenRouterModelRegistry:
         architecture: dict[str, Any],
         pricing: dict[str, Any],
     ) -> dict[str, bool]:
-        """Translate metadata into Open WebUI capability checkboxes."""
-
         def _normalize(values: Any) -> set[str]:
-            """Return a normalized lowercase set from the provider metadata."""
             if isinstance(values, str):
                 values = values.split(",")
             if not isinstance(values, list):
@@ -1171,29 +1115,14 @@ class OpenRouterModelRegistry:
 
     @classmethod
     def last_video_fetch(cls) -> float:
-        """Return the timestamp of the last successful video catalog registration.
-
-        Used by `maybe_schedule_model_metadata_sync` to detect when video models
-        appeared in `cls._models` so the metadata sync re-runs and writes per-model
-        rows + auto-attaches the per-model video filters.
-        """
         return cls._last_video_fetch
 
     @classmethod
     def last_video_attempt(cls) -> float:
-        """Return the timestamp of the most recent video catalog fetch attempt.
-
-        Bumped on EVERY fetch outcome (success-non-empty, success-empty, error)
-        so the loader's TTL gate engages even when the endpoint is down or
-        reports zero models. `_last_video_fetch` (data-change) and this
-        attempt clock are separate so `catalog_manager.sync_key` doesn't
-        invalidate on empty/error fetches.
-        """
         return cls._last_video_attempt
 
     @classmethod
     def record_video_attempt(cls, api_key: str) -> None:
-        """Stamp `_last_video_attempt` with the current time."""
         cls._last_video_attempt = time.time()
         cls._last_video_account = _fingerprint(api_key)
 
@@ -1299,7 +1228,6 @@ class OpenRouterModelRegistry:
 
     @classmethod
     def register_video_models(cls, video_models: list[dict[str, Any]]) -> None:
-        """Register OpenRouter async video-generation models as selectable models."""
         if not isinstance(video_models, list):
             return
 
@@ -1476,13 +1404,6 @@ class OpenRouterModelRegistry:
 
     @classmethod
     def last_image_contract_attempt(cls, target: tuple[str, str] | None = None) -> float:
-        """When the contract sweep last ran, separately from the model-list fetch.
-
-        A caller that skipped the sweep must not satisfy the freshness check that guards
-        it: a chat request refreshes the model list without reading contracts, and would
-        otherwise suppress the next catalog refresh's sweep for a whole TTL window --
-        leaving every model with no controls.
-        """
         if target is None:
             target = cls._image_contract_target
         return cls._last_image_contract_attempt.get(target, 0.0)
@@ -1555,13 +1476,6 @@ class OpenRouterModelRegistry:
         known_ids: set[str] | None = None,
         target: tuple[str, str] | None = None,
     ) -> None:
-        """Hold every published image contract, keyed by the model's OpenRouter id.
-
-        Kept here rather than on the model spec because ``register_image_models`` only
-        registers pure-image models -- a text+image model such as Gemini Flash Image
-        lives in the chat catalog, so a contract stored on its spec would have nowhere
-        to be written and its filter would silently offer nothing.
-        """
         if target is None:
             target = cls._image_contract_target
         published: dict[str, list[dict[str, Any]]] = {}
@@ -1573,11 +1487,6 @@ class OpenRouterModelRegistry:
             if kept:
                 published[key.strip()] = kept
 
-        # A read that timed out is not a contract that changed. Keeping the previous
-        # record means one slow response does not strip a model of its controls for a
-        # whole refresh cycle -- which is what the adapter already does with its own
-        # cache, so the two now agree. ``known_ids`` bounds the carry-over to models the
-        # catalog still lists, so a retired model's contract does not live forever.
         for key, previous in cls._image_bucket(target).items():
             if key in published:
                 continue
@@ -1601,7 +1510,6 @@ class OpenRouterModelRegistry:
     def image_endpoint(
         cls, model_id: str, target: tuple[str, str] | None = None
     ) -> list[dict[str, Any]] | None:
-        """Return every published contract for a model, by original or sanitized id."""
         if not isinstance(model_id, str) or not model_id.strip():
             return None
         wanted = model_id.strip()
@@ -1618,22 +1526,14 @@ class OpenRouterModelRegistry:
 
     @classmethod
     def last_image_fetch(cls) -> float:
-        """Return the timestamp of the last successful image catalog registration.
-
-        Used by `maybe_schedule_model_metadata_sync` to detect when image-only
-        models appeared in `cls._models` so the metadata sync re-runs and
-        auto-attaches the per-model image filters.
-        """
         return cls._last_image_fetch
 
     @classmethod
     def last_image_attempt(cls) -> float:
-        """Return the timestamp of the most recent image catalog fetch attempt."""
         return cls._last_image_attempt
 
     @classmethod
     def record_image_attempt(cls, api_key: str, target: tuple[str, str] | None = None) -> None:
-        """Stamp `_last_image_attempt` with the current time."""
         if target is None:
             target = cls._image_contract_target
         cls._last_image_attempt = time.time()
@@ -1651,13 +1551,6 @@ class OpenRouterModelRegistry:
 
     @classmethod
     def reset_image_fetch_timestamp(cls) -> None:
-        """Reset `_last_image_fetch` to 0.
-
-        Called by `image_catalog.ensure_image_catalog_loaded` after a master-disable
-        cleanup so subsequent disabled-state calls short-circuit (the cleanup is
-        idempotent but the redundant call would still log "cleared" each pass).
-        Mirror of how the chat catalog and video catalog avoid repeated cleanups.
-        """
         cls._last_image_fetch = 0.0
 
     @classmethod
@@ -1665,19 +1558,6 @@ class OpenRouterModelRegistry:
         cls,
         image_models: list[dict[str, Any]],
     ) -> None:
-        """Register OpenRouter pure-image-only models as selectable models.
-
-        Multimodal text+image models (output_modalities ⊇ {"text"}) already live
-        in the chat catalog with `image_gen_tool` set by `_derive_features`;
-        they are NOT touched here. Pure-image-only models (output_modalities
-        without "text") are absent from `/api/v1/models` and registered here
-        with `image_output` + `image_gen_tool` features.
-
-        Stale-norm cleanup mirrors `register_video_models`: any previously-
-        registered image-only norm that's no longer in the input list is
-        dropped from `_specs`/`_id_map`/`_models`. Chat models and video
-        models are preserved.
-        """
         if not isinstance(image_models, list):
             return
 
@@ -1820,14 +1700,6 @@ class OpenRouterModelRegistry:
 
     @classmethod
     def api_model_id(cls, model_id: str) -> str | None:
-        """Map sanitized Open WebUI ids back to provider ids, preserving variant/preset suffix.
-
-        Examples:
-            - "openai.gpt-4o" -> "openai/gpt-4o"
-            - "openai.gpt-4o:exacto" -> "openai/gpt-4o:exacto"
-            - "anthropic.claude-opus:extended" -> "anthropic/claude-opus:extended"
-            - "openai.gpt-4o:preset/email-copywriter" -> "openai/gpt-4o@preset/email-copywriter"
-        """
         suffix_tag = ""
         if ":" in model_id:
             parts = model_id.rsplit(":", 1)
@@ -1836,7 +1708,6 @@ class OpenRouterModelRegistry:
         else:
             model_id_base = model_id
 
-        # Normalize base and lookup
         norm = ModelFamily.base_model(model_id_base)
         provider_id = cls._id_map.get(cls._exact_norm(model_id_base))
         if provider_id is None:
@@ -1876,13 +1747,11 @@ class OpenRouterModelRegistry:
 
     @classmethod
     def spec(cls, model_id: str) -> dict[str, Any]:
-        """Return the cached spec for ``model_id`` (or an empty dict)."""
         norm = ModelFamily.base_model(model_id)
         return cls._specs.get(ModelFamily._resolve_spec_key(norm, cls._specs)) or {}
 
     @classmethod
     def zdr_model_ids(cls) -> set[str] | None:
-        """Return cached ZDR-capable model ids (or None if unavailable)."""
         in_force = cls._roster_in_force()
         if in_force is None:
             return None
@@ -1890,12 +1759,6 @@ class OpenRouterModelRegistry:
 
     @classmethod
     def zdr_list_available(cls) -> bool:
-        """Whether the ZDR endpoint list has been loaded at all.
-
-        Separate from `is_zdr_capable`, which answers about one model and returns None
-        for the same condition. Callers that only need to know whether filtering can run
-        used to build a full `set()` copy of the list and test it for None.
-        """
         return cls._roster_in_force() is not None
 
     @classmethod
@@ -1919,27 +1782,7 @@ class OpenRouterModelRegistry:
 
     @classmethod
     def is_zdr_capable(cls, model_id: str) -> bool | None:
-        """Return True/False if ZDR list is available, otherwise None.
-
-        Matched against the suffix-stripped BASE id, because OpenRouter's ZDR endpoint
-        list only ever contains base ids: a routing variant such as `:nitro`, `:floor`
-        or `:online` selects how the same base model is routed, not a different model,
-        and its endpoints are the base model's endpoints.
-
-        The strip lives here rather than at the call sites. It used to be done by the
-        ZDR_ENFORCE gate alone -- issue #56 -- so a ZDR-capable model was accepted for
-        enforcement and simultaneously rejected by ZDR_MODELS_ONLY, which passed the
-        full variant id and got False. One rule in one place is the only arrangement in
-        which the three gates cannot disagree.
-        """
         norm = ModelFamily.base_model(model_id)
-        # The catalog decides, not the string. `:free` and `:thinking` are real,
-        # separately-listed models -- 24 of 372 ids in the last dump -- served by
-        # different providers under their own retention policies, so answering for them
-        # from the paid base would show non-ZDR models under a ZDR-only filter. The base
-        # fallback is for the ids the catalog does NOT know: the routing variants the
-        # pipe itself synthesises (`:nitro`, `:floor`, `:online`), whose endpoints ARE
-        # the base model's.
         in_force = cls._roster_in_force()
         if in_force is None:
             return None
@@ -1957,7 +1800,6 @@ class OpenRouterModelRegistry:
         http_referer: str | None = None,
         timeout: aiohttp.ClientTimeout | None = None,
     ) -> set[str]:
-        """Fetch OpenRouter ZDR endpoints and return normalized model ids."""
         from ..requests.debug import _debug_print_error_response, _debug_print_request
 
         url = base_url.rstrip("/") + "/endpoints/zdr"
@@ -1989,17 +1831,13 @@ class OpenRouterModelRegistry:
                 model_ids.add(norm)
         return model_ids
 
-# Additional Model Helper Functions
-
 def normalize_model_id_dotted(model_id: str) -> str:
-    """Return a dotted variant of a model id (e.g. 'anthropic/claude' -> 'anthropic.claude')."""
     if not isinstance(model_id, str):
         return ""
     return model_id.strip().replace("/", ".")
 
 
 def _matches_any_model_pattern(model_id: str, patterns: list[str]) -> bool:
-    """Return True when model_id matches any glob-style pattern."""
     if not isinstance(model_id, str):
         return False
     candidate = model_id.strip()
@@ -2027,8 +1865,6 @@ def _is_model_glob(value: str) -> bool:
     return any(ch in value for ch in "*?[")
 
 
-# Anthropic Reasoning Helpers
-
 _CLAUDE_REASONING_RE = re.compile(r"~?anthropic[./]claude-(opus|sonnet)-")
 
 
@@ -2046,14 +1882,11 @@ def _supports_verbosity(normalized_model_id: str) -> bool:
     return _is_claude_reasoning_model(normalized)
 
 
-# Gemini Reasoning Helpers
-
 _GEMINI_25_RE = re.compile(r"~?google[./]gemini-2\.5(-|\Z)")
 _GEMINI_FAMILY_RE = re.compile(r"~?google[./]gemini-[\d.]")
 
 
 def _classify_gemini_thinking_family(normalized_model_id: str) -> str | None:
-    """Return the Gemini thinking family for the provided normalized model id."""
     if _GEMINI_25_RE.match((normalized_model_id or "").lower()):
         return "gemini-2.5"
     return None
@@ -2064,7 +1897,6 @@ def _is_gemini_thinking_model(normalized_model_id: str) -> bool:
 
 
 def _map_effort_to_gemini_budget(effort: str, base_budget: int) -> int | None:
-    """Scale the configured Gemini 2.5 thinking budget from the requested effort."""
     if base_budget <= 0:
         return 0 if base_budget == 0 else None
     normalized = (effort or "").strip().lower()
@@ -2082,7 +1914,6 @@ def _map_effort_to_gemini_budget(effort: str, base_budget: int) -> int | None:
 
 
 def _parse_model_patterns(value: Any) -> list[str]:
-    """Parse comma-separated fnmatch patterns (order preserved, empty removed)."""
     if not isinstance(value, str):
         return []
     raw = value.strip()
@@ -2096,8 +1927,6 @@ def _parse_model_patterns(value: Any) -> list[str]:
         patterns.append(candidate)
     return patterns
 
-
-# Pricing Helpers
 
 _PRICING_CATEGORY_KEYS = {
     "prompt",
@@ -2119,14 +1948,6 @@ _PRICING_SKIPPED_KEYS = frozenset({"discount", "overrides"})
 
 
 def sum_pricing_values(node: Any) -> tuple[Decimal, int]:
-    """Return (sum, count) of numeric values found in a pricing node.
-
-    Args:
-        node: Pricing data structure (dict, list, or scalar)
-
-    Returns:
-        Tuple of (total sum as Decimal, count of numeric values found)
-    """
     total = Decimal(0)
     count = 0
 
@@ -2204,14 +2025,6 @@ def _is_free_spec(spec: Any) -> bool:
 
 
 def is_free_model(model_norm_id: str) -> bool:
-    """Check if a model has free pricing (all pricing values sum to 0).
-
-    Args:
-        model_norm_id: Normalized model ID (e.g., "openai/gpt-4o")
-
-    Returns:
-        True if model exists and all pricing values sum to zero
-    """
     spec = OpenRouterModelRegistry.spec(model_norm_id)
     derived = spec.get("free")
     if isinstance(derived, bool):
@@ -2220,12 +2033,4 @@ def is_free_model(model_norm_id: str) -> bool:
 
 
 def supports_tool_calling(model_norm_id: str) -> bool:
-    """Check if model supports tool calling by checking supported parameters.
-
-    Args:
-        model_norm_id: Normalized model ID (e.g., "openai/gpt-4o")
-
-    Returns:
-        True if model supports 'tools' or 'tool_choice' parameters
-    """
     return bool({"tools", "tool_choice"} & set(ModelFamily.supported_parameters(model_norm_id)))

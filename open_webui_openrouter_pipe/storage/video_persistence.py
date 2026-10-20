@@ -7,12 +7,6 @@ from .owui_files import channel_id_for_chat, is_channel_chat, is_temporary_chat
 
 
 def is_local_chat_id(chat_id: str | None) -> bool:
-    """Kept as a name; the decision belongs to owui_files.is_linkable_chat.
-
-    This tested `local:` alone, so it missed both `channel:` and the `temporary:`
-    prefix that replaced `local:` upstream -- a third parallel spelling of a rule that
-    now has one owner.
-    """
     from .owui_files import is_linkable_chat
 
     return isinstance(chat_id, str) and bool(chat_id.strip()) and not is_linkable_chat(chat_id)

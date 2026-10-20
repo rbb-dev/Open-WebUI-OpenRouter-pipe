@@ -157,6 +157,18 @@ Tests (`tests/`) are **not** linted — patterns like mid-file imports, fixture 
 
 > **Warning:** Do not use `ruff --fix`. It cannot detect re-exports and will silently remove imports that other modules depend on. Fix issues manually.
 
+## Prose in production code
+
+The package, `scripts/anyio_1111_workaround.py` and the root manifest carry no comments and no docstrings. The comments that remain are tool directives (`# noqa`, `# type: ignore`, `# pyright: ignore`, `# pragma: no cover`, `# fmt:`) with nothing after them, and the manifest keeps the `key: value` frontmatter lines that Open WebUI and the bundler read. Apart from the frontmatter header and the same tool directives, the bundler emits no comments or docstrings into the bundles.
+
+CI and `scripts/gate.sh` run the check:
+
+```bash
+source .venv/bin/activate && python scripts/strip_prose.py --check
+```
+
+It prints each file and line that carries prose and exits 1. Without `--check` the script removes the prose, confirms that the code is unchanged, and writes nothing unless every file passes that confirmation. The list of what it keeps is at the top of `scripts/strip_prose.py`.
+
 ## Regenerating
 
 The reference filters under `filters/` are generated from the `FilterManager` renderers, so a renderer edit has to reach both copies:

@@ -1,6 +1,3 @@
-"""Authorization chokepoint for the pipe_dashboard dashboard and actions.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -70,15 +67,6 @@ VIEWER_ID_KEY = "openrouter_pipe_dashboard_user_id"
 
 
 async def remember_socket_user_id(sid: str, user_id: str) -> bool:
-    """Pin an authorized viewer's id to the socket.io session for the socket's lifetime.
-
-    Open WebUI identifies a socket through ``SESSION_POOL``, which its reaper deletes
-    after ``SESSION_POOL_TIMEOUT`` seconds without a heartbeat while the socket is still
-    connected and still in the viewers room. Reading only that store makes a live admin
-    indistinguishable from an anonymous socket, and the reauthorization sweep evicts them
-    for it. The socket.io session is owned by python-socketio, not by Open WebUI, so it
-    exists on every Open WebUI version and dies only with the connection.
-    """
     try:
         from open_webui.socket.main import sio
 

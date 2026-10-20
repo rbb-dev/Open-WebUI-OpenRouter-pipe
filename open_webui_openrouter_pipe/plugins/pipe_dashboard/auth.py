@@ -1,5 +1,3 @@
-"""Authorization helpers for Pipe Dashboard commands."""
-
 from __future__ import annotations
 
 ACCESS_DENIED_MD = (

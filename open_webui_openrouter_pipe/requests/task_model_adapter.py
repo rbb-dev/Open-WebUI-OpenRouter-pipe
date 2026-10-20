@@ -1,9 +1,3 @@
-"""Task model request adapter for OpenRouter API.
-
-This module handles housekeeping task requests (e.g., generating chat titles,
-tags) via the Responses API and extracts plain text from responses.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -105,25 +99,12 @@ def _task_failure_release(key: str) -> None:
 
 
 class TaskModelAdapter:
-    """Adapter for housekeeping task model requests.
-
-    Handles task model requests (e.g., chat titles, tags) via the Responses API
-    and extracts plain text output from the response.
-    """
-
     def __init__(self, pipe: Pipe, logger: logging.Logger):
-        """Initialize TaskModelAdapter.
-
-        Args:
-            pipe: Reference to Pipe instance for accessing helper methods
-            logger: Logger instance
-        """
         self._pipe = pipe
         self.logger = logger
 
     @staticmethod
     def _extract_task_output_text(response: dict[str, Any]) -> str:
-        """Normalize Responses API payloads into plain text string for task models."""
         if not isinstance(response, dict):
             return ""
 
@@ -139,11 +120,6 @@ class TaskModelAdapter:
 
     @staticmethod
     def _task_name(task: Any) -> str:
-        """Return a stable string task name from OWUI task metadata.
-
-        Open WebUI passes `metadata.task` as a string (e.g. "tags_generation").
-        Some callers may pass a dict-like task payload; handle both.
-        """
         if isinstance(task, str):
             return task.strip()
         if isinstance(task, dict):
@@ -153,7 +129,6 @@ class TaskModelAdapter:
 
     @staticmethod
     def _uses_task_model_adapter(task: Any) -> bool:
-        """Return whether the task should use the housekeeping task adapter path."""
         name = TaskModelAdapter._task_name(task)
         return bool(name) and name != "moa_response_generation"
 
@@ -275,7 +250,7 @@ class TaskModelAdapter:
                                 message_id=str((owui_metadata or {}).get("message_id") or "") or None,
                                 kind="task",
                             )
-                        except Exception as exc:  # pragma: no cover - guard against Redis-side issues
+                        except Exception as exc:  # pragma: no cover
                             self.logger.debug(
                                 "Task cost snapshot failed: %s", exc, exc_info=True
                             )
@@ -303,7 +278,7 @@ class TaskModelAdapter:
                     "Task model returned no output_text content."
                 )
 
-            except Exception as exc:  # noqa: BLE001 - the provider raised; the retry loop decides
+            except Exception as exc:  # noqa: BLE001
                 last_error = exc
                 is_auth_failure = isinstance(exc, OpenRouterAPIError) and is_sign_in_failure(exc)
                 if is_auth_failure:

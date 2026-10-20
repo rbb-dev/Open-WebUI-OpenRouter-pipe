@@ -765,7 +765,6 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
     },
 }
 
-# Public re-export name (mirror of VIDEO_HELP_BY_MODEL convention).
 IMAGE_HELP_BY_MODEL = _IMAGE_PER_MODEL_HELP_DATA
 
 
@@ -849,13 +848,6 @@ def render_image_help(
     dedicated_image_api: bool,
     panel_installed: bool = True,
 ) -> str:
-    """Describe a model, and list the controls its own contract publishes.
-
-    The prose is hand-written per model -- what it is good at, how to prompt it. The
-    control list is not: it is built from the same spec the model's filter is built from,
-    so help cannot name a control the chat UI does not draw, which is what a second
-    hand-maintained table did until it described seven filters that no longer exist.
-    """
     from ..filters.image_filter_renderer import (
         _SCHEMA_ONLY_CAVEAT,
         DISAGREED_SETTINGS,

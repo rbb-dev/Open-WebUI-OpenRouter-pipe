@@ -1,5 +1,3 @@
-"""Markdown, Mermaid, and display formatting utilities for Pipe Dashboard output."""
-
 from __future__ import annotations
 
 import html as _html
@@ -12,18 +10,10 @@ logger = logging.getLogger(__name__)
 
 
 def _escape_pipe(text: str) -> str:
-    """Escape pipe characters so they don't break markdown table cells."""
     return text.replace("|", "\\|")
 
 
 def markdown_table(headers: Sequence[str], rows: Sequence[Sequence[Any]]) -> str:
-    """Build a markdown table string.
-
-    Pipe characters in cell values are escaped to prevent breaking table structure.
-
-    >>> markdown_table(["A", "B"], [["1", "2"]])
-    '| A | B |\\n| --- | --- |\\n| 1 | 2 |'
-    """
     if not headers:
         return ""
     header_line = "| " + " | ".join(_escape_pipe(str(h)) for h in headers) + " |"
@@ -31,7 +21,6 @@ def markdown_table(headers: Sequence[str], rows: Sequence[Sequence[Any]]) -> str
     body_lines = []
     for row in rows:
         cells = [_escape_pipe(str(c)) for c in row]
-        # Pad if row is shorter than headers
         while len(cells) < len(headers):
             cells.append("")
         body_lines.append("| " + " | ".join(cells) + " |")
@@ -39,7 +28,6 @@ def markdown_table(headers: Sequence[str], rows: Sequence[Sequence[Any]]) -> str
 
 
 def mermaid_pie(title: str, data: dict[str, int | float]) -> str:
-    """Build a Mermaid pie chart fenced code block."""
     if not data:
         return ""
     lines = [f'```mermaid\npie title {title}']
@@ -56,7 +44,6 @@ def mermaid_bar(
     categories: Sequence[str],
     values: Sequence[int | float],
 ) -> str:
-    """Build a Mermaid xychart-beta bar chart fenced code block."""
     if not categories or not values:
         return ""
     cats = "[" + ", ".join(f'"{c}"' for c in categories) + "]"
@@ -72,19 +59,10 @@ def mermaid_bar(
 
 
 def collapsible(summary: str, content: str) -> str:
-    """Wrap content in an HTML ``<details>`` collapsible block.
-
-    The summary is HTML-escaped to prevent injection.
-    """
     return f"<details>\n<summary>{_html.escape(summary)}</summary>\n\n{content}\n\n</details>"
 
 
 def mask_sensitive(value: str, visible_chars: int = 4) -> str:
-    """Mask a sensitive value, showing only the last N characters.
-
-    >>> mask_sensitive("sk-or-v1-abc123xyz")
-    '***3xyz'
-    """
     if not value or not isinstance(value, str):
         return ""
     value = str(value).strip()
@@ -94,15 +72,6 @@ def mask_sensitive(value: str, visible_chars: int = 4) -> str:
 
 
 def format_duration(seconds: float) -> str:
-    """Format seconds into a human-readable duration.
-
-    >>> format_duration(5.2)
-    '5.2s'
-    >>> format_duration(125)
-    '2.1m'
-    >>> format_duration(7200)
-    '2.0h'
-    """
     if seconds < 60:
         return f"{seconds:.1f}s"
     if seconds < 3600:
@@ -111,19 +80,6 @@ def format_duration(seconds: float) -> str:
 
 
 def format_bytes(n: int) -> str:
-    """Format a byte count into a human-readable string.
-
-    >>> format_bytes(0)
-    '0 B'
-    >>> format_bytes(1023)
-    '1023 B'
-    >>> format_bytes(1536)
-    '1.5 KB'
-    >>> format_bytes(2_621_440)
-    '2.5 MB'
-    >>> format_bytes(5_368_709_120)
-    '5.0 GB'
-    """
     if n < 1024:
         return f"{n} B"
     if n < 1024 * 1024:
@@ -145,7 +101,6 @@ _HUMANIZE_LABELS: dict[str, str] = {
 
 
 def build_model_name_map(refresh: bool = False) -> dict[str, str]:
-    """Build a mapping from any model ID form to its display name."""
     try:
         from ...models.registry import OpenRouterModelRegistry
         cached = OpenRouterModelRegistry._name_map
@@ -171,16 +126,8 @@ def build_model_name_map(refresh: bool = False) -> dict[str, str]:
 
 
 def resolve_model_name(model_id: str, name_map: dict[str, str]) -> str:
-    """Resolve a model ID to its display name, falling back to the raw ID.
-
-    DB stores model IDs in OWUI's prefixed format: ``{pipe_id}.{author}.{model}``.
-    The name map contains keys like ``author.model`` (norm_id) and
-    ``author/model`` (original_id). We try progressively stripping prefixes
-    until we find a match.
-    """
     if not model_id or model_id == "unknown":
         return "Unknown"
-    # Direct match
     name = name_map.get(model_id)
     if name:
         return name
@@ -198,11 +145,6 @@ def resolve_model_name(model_id: str, name_map: dict[str, str]) -> str:
 
 
 def format_ago(ts: float) -> str:
-    """Human-readable 'time ago' from a Unix timestamp.
-
-    >>> format_ago(0)
-    'never'
-    """
     if ts <= 0:
         return "never"
     delta = time.time() - ts
@@ -218,11 +160,6 @@ def format_ago(ts: float) -> str:
 
 
 def format_datetime(dt: Any) -> str:
-    """Format a datetime to a short display string.
-
-    >>> format_datetime(None)
-    '-'
-    """
     if dt is None:
         return "-"
     if hasattr(dt, "strftime"):
@@ -231,24 +168,10 @@ def format_datetime(dt: Any) -> str:
 
 
 def format_number(n: float) -> str:
-    """Format a number with comma separators.
-
-    >>> format_number(1234567)
-    '1,234,567'
-    """
     if isinstance(n, float):
         return f"{n:,.1f}"
     return f"{n:,}"
 
 
 def humanize_type(raw_type: str) -> str:
-    """Convert a snake_case artifact type to a human-readable label.
-
-    >>> humanize_type("function_call_output")
-    'Function Call Output'
-    >>> humanize_type("reasoning")
-    'Reasoning'
-    >>> humanize_type("image_generation_call")
-    'Image Generation'
-    """
     return _HUMANIZE_LABELS.get(raw_type, raw_type.replace("_", " ").title())

@@ -1,9 +1,3 @@
-"""User database operations.
-
-This module provides user-related database operations for the pipe,
-wrapping Open WebUI's Users model with async database operations.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -11,7 +5,6 @@ from typing import Any
 
 from ..core.timing_logger import timed
 
-# Optional Open WebUI Users model
 try:
     from open_webui.models.users import Users
 except ImportError:
@@ -27,18 +20,6 @@ except Exception:
 
 @timed
 async def get_user_by_id(user_id: str, logger: logging.Logger) -> Any | None:
-    """Fetch user record from database for file upload operations.
-
-    Args:
-        user_id: The unique identifier for the user
-        logger: Logger instance for error reporting
-
-    Returns:
-        UserModel object if found, None otherwise
-
-    Note:
-        Failures are logged but do not raise exceptions.
-    """
     if Users is None:
         return None
     try:

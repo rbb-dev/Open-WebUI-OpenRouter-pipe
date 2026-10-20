@@ -1,11 +1,3 @@
-"""Reasoning model configuration and retry logic.
-
-This module handles:
-- Automatic reasoning trace enablement for supported models
-- Task-specific reasoning effort overrides
-- Reasoning-related error detection and retry logic
-"""
-
 from __future__ import annotations
 
 import logging
@@ -20,7 +12,6 @@ from ..core.utils import _coerced_token_cap, _select_best_effort_fallback
 from ..integrations.anthropic import _is_anthropic_model_id
 from .registry import ModelFamily
 
-# Valve effort value that triggers verbosity: "max" for Claude models.
 _XHIGH_EFFORT = "xhigh"
 _MAX_VERBOSITY = "max"
 _EFFORT_REASONING_OFF = frozenset({"none", ""})
@@ -43,20 +34,7 @@ def _listed_efforts(row: dict[str, Any]) -> list[str] | None:
 
 
 class ReasoningConfigManager:
-    """Manages reasoning model configuration and retry logic.
-
-    This class encapsulates all reasoning-related configuration logic:
-    - Applies reasoning preferences based on valve settings
-    - Handles task-specific reasoning effort overrides
-    - Detects reasoning errors and determines if retry is appropriate
-    """
-
     def __init__(self, pipe: Pipe, logger: logging.Logger):
-        """Initialize the ReasoningConfigManager.
-
-        Args:
-            logger: Logger instance for diagnostic output
-        """
         self._pipe = pipe
         self.logger = logger
         self._refusal_left_no_level = False
@@ -191,7 +169,6 @@ class ReasoningConfigManager:
         )
 
     def _apply_task_reasoning_preferences(self, responses_body: ResponsesBody, effort: str) -> str | None:
-        """Override reasoning effort for task models."""
         if not effort:
             return None
         supported = ModelFamily.catalog_supported_parameters(responses_body.model)
@@ -235,7 +212,6 @@ class ReasoningConfigManager:
         *,
         honour_existing_budget: bool = True,
     ) -> str | None:
-        # Lazy import to avoid circular dependency
         from .registry import (
             _classify_gemini_thinking_family,
             _is_gemini_thinking_model,
@@ -327,7 +303,6 @@ class ReasoningConfigManager:
             self._set_include_reasoning(responses_body, None)
 
     def _apply_anthropic_verbosity(self, responses_body: ResponsesBody, valves: Pipe.Valves) -> None:
-        # Don't override if the user already set verbosity explicitly.
         if responses_body.verbosity is not None:
             return
         text = responses_body.text
@@ -340,8 +315,6 @@ class ReasoningConfigManager:
         if not ModelFamily.supports_verbosity(normalized):
             return
 
-        # Determine effective effort: request-level reasoning.effort takes
-        # priority, then fall back to the valve default.
         effort = ""
         if isinstance(responses_body.reasoning, dict):
             effort = _normalised_effort(responses_body.reasoning)
@@ -356,8 +329,6 @@ class ReasoningConfigManager:
         error: OpenRouterAPIError,
         responses_body: ResponsesBody,
     ) -> bool:
-        """Return True when we can retry the request after disabling reasoning."""
-
         include_flag = getattr(responses_body, "include_reasoning", None)
         has_reasoning_dict = bool(getattr(responses_body, "reasoning", None))
         has_thinking_config = bool(getattr(responses_body, "thinking_config", None))
@@ -398,7 +369,6 @@ class ReasoningConfigManager:
         error: OpenRouterAPIError,
         responses_body: ResponsesBody,
     ) -> bool:
-        """Strip replayed thinking blocks and retry when an Anthropic provider rejects a stale thinking-block signature on a 400."""
         from ..requests.sanitizer import budget_model_id
 
         if getattr(error, "status", None) != 400:
@@ -433,7 +403,6 @@ class ReasoningConfigManager:
 
     @staticmethod
     def _strip_replayed_reasoning(responses_body: ResponsesBody) -> bool:
-        """Remove replayed reasoning items and message-level reasoning_details from the request input; return True if anything changed."""
         input_items = getattr(responses_body, "input", None)
         if not isinstance(input_items, list):
             return False

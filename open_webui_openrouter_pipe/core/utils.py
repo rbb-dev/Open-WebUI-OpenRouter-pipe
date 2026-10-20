@@ -1,16 +1,3 @@
-"""Shared utility functions for the OpenRouter pipe.
-
-This module contains reusable helper functions used across the codebase:
-- Template rendering (_render_error_template, etc.)
-- JSON helpers (_safe_json_loads, _pretty_json)
-- Type coercion (_coerce_positive_int, _coerce_bool)
-- String normalization
-- ULID generation and marker system
-- Path and identifier sanitization
-
-These utilities have minimal dependencies and can be used by any module.
-"""
-
 from __future__ import annotations
 
 import ast
@@ -73,8 +60,6 @@ if _owui_is_tool_result_error is None:
     )
 
 _T = TypeVar("_T")
-
-# Constants
 
 TOOL_CALL_STATUSES = frozenset({"in_progress", "completed", "incomplete"})
 
@@ -600,14 +585,6 @@ def brings_tool_results(body: dict[str, Any]) -> bool:
 
 
 def _stable_crockford_id(seed: str, *, length: int = ULID_LENGTH) -> str:
-    """Return a deterministic Crockford-base32 id of `length` characters.
-
-    This is used for cross-process coordination (e.g. DB lock rows) where we
-    need a repeatable identifier derived from stable keys like (chat_id, message_id).
-
-    The output is NOT a ULID (it does not encode time); it merely matches the
-    same alphabet and length constraints as stored artifact ids.
-    """
     length_int = int(length)
     if length_int <= 0:
         raise ValueError("length must be positive")
@@ -630,16 +607,12 @@ def _stable_crockford_id(seed: str, *, length: int = ULID_LENGTH) -> str:
 
 
 def _sticky_session_key(chat_id: str) -> str | None:
-    """Opaque keyed-HMAC routing key for sticky provider routing; None if WEBUI_SECRET_KEY is unset."""
     secret = _application_secret()
     if not secret:
         return None
     return hmac.new(secret.encode("utf-8"), chat_id.encode("utf-8"), hashlib.sha256).hexdigest()
 
-# Template Rendering
-
 def _render_error_template(template: str, values: dict[str, Any]) -> str:
-    """Render a user-supplied template, honoring {{#if}} conditionals."""
     if not template:
         template = DEFAULT_OPENROUTER_ERROR_TEMPLATE
 
@@ -652,7 +625,6 @@ def _render_error_template(template: str, values: dict[str, Any]) -> str:
     pending_opener = -1
 
     def _conditions_active() -> bool:
-        """Return True when the current {{#if}} stack has no falsy guards."""
         return all(condition_stack) if condition_stack else True
 
     def _strip_fence(value: str) -> str:
@@ -816,7 +788,6 @@ def _render_error_template(template: str, values: dict[str, Any]) -> str:
 
 
 def _pretty_json(value: Any) -> str:
-    """Return a human-readable JSON string or an empty string when not applicable."""
     if value is None:
         return ""
     if isinstance(value, (str, bytes)):
@@ -830,10 +801,7 @@ def _pretty_json(value: Any) -> str:
         return str(value)
 
 
-# JSON Helpers
-
 def _safe_json_loads(payload: str | None) -> Any:
-    """Return parsed JSON or None without raising."""
     if not payload:
         return None
     try:
@@ -843,7 +811,6 @@ def _safe_json_loads(payload: str | None) -> Any:
 
 
 def _coerce_positive_int(value: Any) -> int | None:
-    """Convert strings/bools into positive integers (MB)."""
     if value is None:
         return None
     if isinstance(value, bool):
@@ -869,7 +836,6 @@ def _coerced_token_cap(value: Any) -> int | None:
 
 
 def _coerce_bool(value: Any) -> bool | None:
-    """Best-effort coercion of truthy string/int flags into booleans."""
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
@@ -884,7 +850,6 @@ def _coerce_bool(value: Any) -> bool | None:
 
 
 def _normalize_string_list(value: Any) -> list[str]:
-    """Return a list of trimmed strings."""
     if not isinstance(value, list):
         return []
     items: list[str] = []
@@ -893,9 +858,6 @@ def _normalize_string_list(value: Any) -> list[str]:
         if text:
             items.append(text)
     return items
-
-
-# Model Fallback Helpers
 
 
 def _parse_model_fallback_csv(value: Any) -> list[str]:
@@ -922,7 +884,6 @@ def _parse_model_fallback_csv(value: Any) -> list[str]:
 
 
 def _select_best_effort_fallback(requested: str, supported: list[str]) -> str | None:
-    """Choose the closest supported effort to retry with."""
     ordering = ["none", "minimal", "low", "medium", "high", "xhigh"]
     if not supported:
         return None
@@ -959,11 +920,7 @@ def _select_best_effort_fallback(requested: str, supported: list[str]) -> str | 
     return closest
 
 
-# ULID Generation and Marker System
-
-
 def _extract_marker_ulid(line: str) -> str | None:
-    """Return the ULID embedded in a hidden marker line, if present."""
     if not line:
         return None
     stripped = line.strip()
@@ -979,14 +936,6 @@ def _extract_marker_ulid(line: str) -> str | None:
 
 
 def contains_marker(text: str) -> bool:
-    """Fast check: does the text contain any embedded ULID markers?
-
-    Args:
-        text: Text to scan.
-
-    Returns:
-        bool: True if the sentinel substring is present; otherwise False.
-    """
     return _MARKER_SUFFIX in text and bool(_iter_marker_spans(text))
 
 
@@ -1009,19 +958,6 @@ def ends_on_hidden_marker_line(text: Any) -> bool:
 
 
 def split_text_by_markers(text: str, spans: list[dict[str, Any]] | None = None) -> list[dict]:
-    """Split text into a sequence of literal segments and marker segments.
-
-    Args:
-        text: Source text possibly containing embedded markers.
-
-    Returns:
-        list[dict]: A list like:
-            [
-              {"type": "text",   "text": "..."},
-              {"type": "marker", "marker": "01H...Q4"},
-              ...
-            ]
-    """
     segments: list[dict[str, Any]] = []
     last = 0
     for span in _iter_marker_spans(text) if spans is None else spans:
@@ -1041,7 +977,6 @@ def split_text_by_markers(text: str, spans: list[dict[str, Any]] | None = None) 
 
 
 def _extract_phase_marker_value(line: str) -> str | None:
-    """Return the encoded phase token embedded in a hidden phase marker line."""
     if not line:
         return None
     match = _PHASE_MARKER_RE.match(line.strip())
@@ -1054,7 +989,6 @@ def _extract_phase_marker_value(line: str) -> str | None:
 
 
 def split_text_by_phase_markers(text: str) -> list[dict[str, Any]]:
-    """Split text into chunks labelled by trailing hidden phase markers."""
     if not text:
         return []
 
@@ -1078,7 +1012,6 @@ def split_text_by_phase_markers(text: str) -> list[dict[str, Any]]:
 
 
 def strip_hidden_marker_lines(text: str) -> str:
-    """Remove hidden phase and ULID marker lines from free-form text."""
     if not text:
         return ""
 
@@ -1103,7 +1036,6 @@ _OPEN_WEBUI_CONFIG_MODULE: Any | None = None
 
 
 def _get_open_webui_config_module() -> Any | None:
-    """Return the cached open_webui.config module if available."""
     global _OPEN_WEBUI_CONFIG_MODULE
     if _OPEN_WEBUI_CONFIG_MODULE is not None:
         return _OPEN_WEBUI_CONFIG_MODULE
@@ -1199,15 +1131,11 @@ _PRIORITY_FIELD = (
 
 
 def _unwrap_config_value(value: Any) -> Any:
-    """Return the raw value from a PersistentConfig-like object."""
     if value is None:
         return None
     return getattr(value, "value", value)
 
 
-# Payload and Content Utilities
-
-# Marker for redacted data URLs
 _REDACTED_DATA_URL_MARKER = "[REDACTED]"
 
 _BARE_BASE64_KEYS = frozenset({
@@ -1327,13 +1255,6 @@ def _stripped_len(text: str) -> int:
 
 
 def _redact_payload_blobs(value: Any, *, max_chars: int = 256) -> Any:
-    """Return a copy of ``value`` with large base64 blobs truncated.
-
-    Blobs arrive either as a ``data:...;base64,...`` URL or bare under a key such as
-    ``b64_json``; both are truncated. This keeps DEBUG logs readable and prevents
-    multi-megabyte payloads from being emitted when images/files cross the wire.
-    """
-
     def _redact_data_url(text: str) -> str:
         payload_len = base64_data_url_payload_len(text)
         if payload_len is None:
@@ -1389,7 +1310,6 @@ def _redact_payload_blobs(value: Any, *, max_chars: int = 256) -> Any:
 
 
 def _extract_plain_text_content(content: Any) -> str:
-    """Collapse Open WebUI-style content blocks into a single string."""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -1410,14 +1330,7 @@ def _extract_plain_text_content(content: Any) -> str:
     return str(content or "")
 
 
-# Feature Flags and Metadata
-
 def _extract_feature_flags(__metadata__: dict[str, Any]) -> dict[str, Any]:
-    """Return flat feature flags from Open WebUI metadata.
-
-    Open WebUI sends feature flags as a flat dict under ``metadata["features"]``
-    (e.g. ``{"web_search": True, "code_interpreter": False}``).
-    """
     raw_features = __metadata__.get("features") if isinstance(__metadata__, dict) else None
     return dict(raw_features) if isinstance(raw_features, dict) else {}
 
@@ -1493,46 +1406,17 @@ def _merge_usage_into(total, new) -> None:
 
 
 def merge_usage_stats(total, new):
-    """Recursively merge nested usage statistics.
-
-    For numeric values, sums are accumulated; for dicts, the function recurses;
-    other values overwrite the prior value when non-None.
-
-    Args:
-        total: Accumulator dictionary to update.
-        new:   Newly reported usage block to merge into `total`.
-
-    Returns:
-        dict: The updated accumulator dictionary (`total`).
-    """
     _merge_usage_into(total, new)
     return total
 
 
-# Formatting Utilities
-
 def wrap_code_block(text: str, language: str = "python") -> str:
-    """Wrap text in a fenced Markdown code block.
-
-    The fence length adapts to the longest backtick run within the text to avoid
-    prematurely closing the block.
-
-    Args:
-        text:     The code or content to wrap.
-        language: Markdown fence language tag.
-
-    Returns:
-        str: Markdown code block.
-    """
     longest = max((len(m.group(0)) for m in re.finditer(r"`+", text)), default=0)
     fence = "`" * max(3, longest + 1)
     return f"{fence}{language}\n{text}\n{fence}"
 
 
-# Template and String Utilities
-
 def _template_value_present(value: Any) -> bool:
-    """Return True when a placeholder value should be rendered."""
     if value is None:
         return False
     if isinstance(value, str):
@@ -1547,7 +1431,6 @@ def _template_value_present(value: Any) -> bool:
 
 
 def _normalize_optional_str(value: Any) -> str | None:
-    """Convert arbitrary input into a trimmed string or None."""
     if value is None:
         return None
     if not isinstance(value, str):
@@ -1567,7 +1450,6 @@ def _csv_set(value: Any) -> set[str]:
 
 
 def _sanitize_path_component(value: str, *, fallback: str = "unknown", max_length: int = 128) -> str:
-    """Return a filesystem-safe path component to prevent traversal/odd characters."""
     text = str(value or "").strip()
     if not text:
         return fallback
@@ -1578,10 +1460,7 @@ def _sanitize_path_component(value: str, *, fallback: str = "unknown", max_lengt
     return cleaned
 
 
-# HTTP and Timing Utilities
-
 def _retry_after_seconds(value: str | None) -> float | None:
-    """Convert Retry-After header value into seconds."""
     import datetime
     import email.utils
 
@@ -1610,13 +1489,6 @@ def _retry_after_seconds(value: str | None) -> float | None:
 
 
 def _apply_retry_after_metadata(meta: dict[str, Any], headers: Any) -> None:
-    """Record a response's Retry-After header in error metadata.
-
-    Stores the raw header under ``retry_after`` and, when parseable
-    (delta-seconds or HTTP-date per RFC 7231), the rounded integer seconds
-    under ``retry_after_seconds`` so error templates can render "...s".
-    Single shared implementation for every gateway/pipe 4xx error site.
-    """
     retry_after = headers.get("Retry-After") or headers.get("retry-after")
     if not retry_after:
         return
@@ -1643,15 +1515,11 @@ def _resolve_retry_after_seconds(meta: Any) -> int | None:
     return None
 
 
-# ULID Marker System
-
 def _serialize_marker(ulid: str) -> str:
-    """Return the hidden marker representation for ``ulid``."""
     return f"[{ulid}{_MARKER_SUFFIX}"
 
 
 def _serialize_phase_marker(phase: str | None) -> str:
-    """Return the hidden marker representation for ``phase``."""
     marker_value = "null" if phase is None else phase.strip()
     if marker_value not in _PHASE_MARKER_VALUES:
         raise ValueError(f"Unsupported phase marker value: {marker_value!r}")
@@ -1659,7 +1527,6 @@ def _serialize_phase_marker(phase: str | None) -> str:
 
 
 def _iter_marker_spans(text: str) -> list[dict[str, Any]]:
-    """Return ordered ULID marker spans."""
     if not text:
         return []
 
@@ -1698,7 +1565,6 @@ def _iter_marker_spans(text: str) -> list[dict[str, Any]]:
 
 
 def _iter_phase_marker_spans(text: str) -> list[dict[str, Any]]:
-    """Return ordered hidden phase marker spans."""
     if not text:
         return []
 
@@ -1747,7 +1613,6 @@ def _serialize_kind_marker(kind: str, body: str) -> str:
 
 
 def _safe_marker_body(body: str) -> str:
-    """Sanitize a string for use as a marker body — strip forbidden chars."""
     if not isinstance(body, str):
         body = str(body or "")
     for ch in _KIND_FORBIDDEN_BODY_CHARS:
@@ -1797,13 +1662,6 @@ def _find_first_kind_marker_body(text: str, kind: str) -> str:
     return ""
 
 
-# Async Helper
-
-# Open WebUI stores a function under an id it requires to be a Python identifier
-# (`routers/functions.py`: `if not form_data.id.isidentifier()` rejects the row), so an
-# id carrying anything else means the per-model filter is silently never installed.
-# One object, shared by every sanitizer: three equal-but-separate copies meant widening
-# one of them changed nothing that any test could see.
 OWUI_FUNCTION_ID_ILLEGAL_RE = re.compile(r"[^a-zA-Z0-9_]")
 
 
@@ -1812,20 +1670,6 @@ async def _await_if_needed(
     *,
     timeout: float | None = None,
 ) -> _T:
-    """Return ``value`` immediately when it's synchronous, otherwise await it.
-
-    Redis' asyncio client returns synchronous fallbacks (bool/str/list) when a
-    pipeline is configured for immediate execution, which caused ``await`` to be
-    applied to non-awaitables. This helper centralizes the guard so call sites
-    stay tidy and Pyright no longer reports "X is not awaitable" diagnostics.
-
-    Args:
-        value: Either an awaitable coroutine or a synchronous value.
-        timeout: Optional timeout in seconds for awaiting the coroutine.
-
-    Returns:
-        The resolved value (awaited if necessary).
-    """
     if inspect.isawaitable(value):
         coroutine = cast(Awaitable[_T], value)
         if timeout is None:
@@ -1835,21 +1679,6 @@ async def _await_if_needed(
 
 
 def citation_access_stamp() -> str:
-    """The access instant in the server's own timezone, as Open WebUI renders it.
-
-    Five call sites built this inline. `datetime.now(UTC)` alone stamps the UTC calendar
-    day, which is the wrong day for part of every day east of UTC and is persisted
-    verbatim into chat exports -- so the localisation is load-bearing, not cosmetic. One
-    function because the guard on five copies could only check that the text
-    `.astimezone()` appeared, and appending a second `.astimezone(UTC)` kept the text
-    while undoing the effect.
-
-    A full timestamp, not a bare date. Four of the five sites were date-only and the
-    fifth -- `_emit_citation` -- was not, so unifying on `.date()` silently downgraded
-    the one that carried a time, in a value that ends up in the user's chat export. A
-    timestamp truncates to the correct local calendar day, so it is strictly the more
-    informative of the two.
-    """
     return datetime.datetime.now(datetime.UTC).astimezone().isoformat()
 
 
@@ -1857,37 +1686,15 @@ _TEXT_LIMIT = 120
 
 
 def scrub_surrogates(text: str) -> str:
-    """A string as it can be encoded, for any string ``json.loads`` can produce.
-
-    A JSON body may carry an unpaired surrogate escape in a key or a value, and
-    `str.encode` refuses it. Reached from a hash of published names and from a filter id,
-    both built out of catalog data, and a raise in either costs the model its whole filter
-    and answers a help request with an error.
-    """
     return text.encode("utf-8", "surrogatepass").decode("utf-8", "replace")
 
 
 def clamp_text(text: Any, limit: int = _TEXT_LIMIT) -> str:
-    """Bound a span of text the pipe did not author before it reaches a log or the browser.
-
-    Applies to both sides of the wire: a request key the client chose and a rejection
-    reason built from an upstream reply are equally able to size a log record, and either
-    can carry an unpaired surrogate the stream encoder refuses -- which `logging` swallows,
-    losing the record while the latch that guards it still arms. Scrubbed before the
-    length check, so one surrogate becoming three characters cannot cross the bound.
-    """
     rendered = scrub_surrogates(text if isinstance(text, str) else str(text))
     return rendered if len(rendered) <= limit else f"{rendered[:limit]}…"
 
 
 def summarise_names(names: list[str], limit: int = 4, width: int = _TEXT_LIMIT) -> str:
-    """Render a list the pipe did not author, bounded in both element size and count.
-
-    Clamping each element still lets the count carry the payload, and capping the count
-    still lets one element carry it. Both bounds have to hold at the point of rendering.
-    ``width`` exists for callers whose elements were already clamped at construction: a
-    second, tighter clamp there would truncate a legitimate message rather than bound it.
-    """
     shown = [clamp_text(name, width) for name in names[:limit]]
     tail = f" and {len(names) - len(shown)} more" if len(names) > len(shown) else ""
     return f"{'; '.join(shown)}{tail}"

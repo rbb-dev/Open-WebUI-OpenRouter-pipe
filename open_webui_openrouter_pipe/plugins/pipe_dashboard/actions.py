@@ -1,10 +1,3 @@
-"""Action registry + dispatcher for the pipe_dashboard HTTP action route.
-
-Transport-agnostic: no FastAPI/OWUI imports. Authorization is delegated to
-authz.can_view/can_act (read vs write per action). Every terminal outcome is
-audited; write outcomes include args + client_ip.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -378,7 +371,6 @@ async def _usage_stats(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
 
 
 async def _current_config_rev(pipe: Any) -> Any:
-    """Return the function's stored ``updated_at``, or None."""
     rev, _state = await read_config_rev(getattr(pipe, "id", ""))
     if rev is None:
         logger.warning(
@@ -453,7 +445,6 @@ async def _effective_valves(pipe: Any) -> Any:
 def _config_snapshot(
     valves: Any, stored: dict[str, Any] | None = None
 ) -> dict[str, Any]:
-    """Valve specs with current values; secret values masked to None."""
     valves_cls = type(valves)
     specs = describe_valves(valves_cls)
     for spec in specs:
@@ -538,7 +529,6 @@ def _save_refusal_message(exc: ValidationError) -> str:
 async def _config_set(
     pipe: Any, user: Any, args: Any, request: Any = None
 ) -> dict[str, Any]:
-    """Merge edits into the stored custom subset (not the live model) and persist; rev-guarded."""
     lease = await _acquire_config_lease()
     try:
         async with _config_write_lock(getattr(pipe, "id", "")):
@@ -743,7 +733,6 @@ def _update_service_of(pipe: Any) -> Any:
 
 
 async def _update_enabled(pipe: Any) -> tuple[bool, str]:
-    """Gate on the PERSISTED valve, not the in-memory copy (which lags on idle workers)."""
     svc = _update_service_of(pipe)
     if svc is None:
         return False, "service_unavailable"

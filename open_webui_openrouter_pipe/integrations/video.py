@@ -727,12 +727,6 @@ _SIZE_CONTRADICTS_THE_RATIO = (
 )
 
 _ASPECT_RATIO_TOLERANCE = 0.025
-"""How far a chosen ratio may sit from the pixels before this pipe stops sending it.
-
-This pipe's number, not OpenRouter's: their video schema says only that ``size`` is
-interchangeable with ``resolution`` + ``aspect_ratio``, and publishes no rule for the
-two disagreeing. The rejection language belongs to the image API.
-"""
 
 _warned_dropped_video_param: set[str] = set()
 
@@ -1528,17 +1522,9 @@ class VideoGenerationAdapter:
     async def _cleanup_step(
         self, phase: str, key: tuple[str, str], what: str, coro: Awaitable[None]
     ) -> None:
-        """Run one release and swallow its failure so the next release still runs.
-
-        Cancellation propagates; anything else is logged. Two byte-near-identical
-        copies of this lived 250 lines apart, differing only in the word "pre-submit",
-        so changing which exceptions propagate in one left the other on the old
-        contract -- and the symptom is a stranded semaphore that surfaces hours later
-        as a generation that never starts.
-        """
         try:
             await coro
-        except asyncio.CancelledError:  # pragma: no cover - shutdown path
+        except asyncio.CancelledError:  # pragma: no cover
             raise
         except Exception:
             self.logger.warning(
@@ -1558,14 +1544,6 @@ class VideoGenerationAdapter:
         *,
         release_user_slot: bool,
     ) -> None:
-        """Release what generate() acquired before handing off to the lifecycle task.
-
-        Each step is independent: a failure in one must not skip the others. Without
-        the isolation the first failure propagates out of the shielded coroutine and
-        every release below it is skipped, stranding those resources for the lifetime
-        of the process.
-        """
-
         _step = functools.partial(self._cleanup_step, "pre-submit", key)
 
         if release_user_slot:
@@ -1632,12 +1610,6 @@ class VideoGenerationAdapter:
         chat_id: str | None = None,
         message_id: str | None = None,
     ) -> None:
-        """Record what a terminal poll says the job cost, once, whatever happens next.
-
-        The latch is raised BEFORE the write, not after: a cancel delivered inside the
-        write leaves the job recorded and unwinds through the caller's cancel handler,
-        which would otherwise see an unraised latch and record it a second time.
-        """
         if not usage or billing["costed"]:
             return
         billing["costed"] = True
@@ -1772,8 +1744,6 @@ class VideoGenerationAdapter:
                     )
                 output_mime = downloads[0].mime_type if downloads else ""
             finally:
-                # Shielded: `suppress(Exception)` does not catch CancelledError, so a
-                # cancel delivered here abandons the close and strands the connector.
                 with contextlib.suppress(Exception):
                     await asyncio.shield(session.close())
 
@@ -2504,12 +2474,6 @@ class VideoGenerationAdapter:
 
     @staticmethod
     def _withheld_notice(withheld: list[tuple[str, str]]) -> str:
-        """Group withheld items by cause, so one sentence never speaks for three of them.
-
-        A key the schema does not define, a parameter with no slug to key it under, and a
-        URL list past the request ceiling are three different problems with three different
-        remedies; rendering them under one clause makes two of the three untrue.
-        """
         grouped: dict[str, list[str]] = {}
         for item, reason in withheld:
             grouped.setdefault(reason, []).append(label_segment(item))
@@ -2579,7 +2543,6 @@ class VideoGenerationAdapter:
         handler = self._pipe._multimodal_handler
 
         def _spend(url: str) -> bool:
-            """One pool for the whole request: breadth, depth and array length draw on it."""
             if url in seen:
                 return True
             if budget[0] <= 0:
@@ -3512,9 +3475,6 @@ class VideoGenerationAdapter:
         chat_id: str = "",
         user_id: str = "",
     ) -> bool:
-        """Apply short-circuit conditions for the intent classifier.
-
-        """
         self._prune_intent_day_tally()
         if not bool(_admin_intent_floor(valves, "VIDEO_INTENT_ENABLED", True)):
             return False
@@ -3619,7 +3579,6 @@ class VideoGenerationAdapter:
         return False
 
     def _intent_record_failure(self, user_id: str = "") -> None:
-        """Open the in-process circuit breaker for 60 seconds after auth/quota errors."""
         if not user_id or user_id == "anonymous":
             return
         now = time.time()
@@ -3654,13 +3613,6 @@ class VideoGenerationAdapter:
         valves: Any,
         chat_id: Any,
     ) -> None:
-        """Emit the structured video_intent telemetry line. Called once per
-        terminal path (clarify / modify-fallback / classifier_failed-or-success)
-        AFTER materialise has run, so `frames_extracted` reads accurate.
-
-        Wrapped in suppress so a telemetry hiccup never breaks the user's video
-        request.
-        """
         try:
             emit_telemetry_log(
                 intent,
@@ -3799,16 +3751,6 @@ class VideoGenerationAdapter:
         valves: Any = None,
         want_thumbnails: bool = True,
     ) -> list[str]:
-        """For each prior_video_* entry in frame_plan, extract the frame from
-        the prior video file, upload it as a new OWUI image, and inject into
-        video_meta["frame_images"] so the existing _encode_frame_images path
-        wires it into the /videos call.
-
-        Any per-entry failure is logged and the entry is dropped (downgrade
-        noted in intent.downgrades). Returns a list of thumbnail URLs (one
-        per resolved frame) for the disclosure block — empty strings for
-        entries that failed.
-        """
         thumb_urls: list[str] = []
         if not intent.frame_plan:
             return thumb_urls
@@ -4093,7 +4035,7 @@ class VideoGenerationAdapter:
                         thumb_urls.append("")
                 except asyncio.CancelledError:
                     raise
-                except Exception as exc:  # noqa: BLE001 - the entry's own arm re-raises
+                except Exception as exc:  # noqa: BLE001
                     self.logger.warning(
                         "_materialise_frame_plan entry failed (degrade-open): %s", exc
                     )
@@ -4154,13 +4096,6 @@ class VideoGenerationAdapter:
         request: Any,
         user_obj: Any,
     ) -> Path | None:
-        """Materialise a prior-video file to a private temp for best-effort frame extraction.
-
-        Authorises and routes the read through the OWUI Storage gateway (any
-        backend). Returns a caller-owned temp Path on success; returns None on
-        auth denial, size, containment, or any other failure so the caller can
-        degrade with a downgrade note. The caller must unlink the returned temp.
-        """
         del request
         try:
             file_obj = await get_file_by_id(file_id, self._pipe.logger)

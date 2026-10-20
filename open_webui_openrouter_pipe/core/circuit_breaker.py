@@ -1,14 +1,3 @@
-"""Circuit breaker system for request and tool failure tracking.
-
-This module provides circuit breaker functionality to protect against:
-- Excessive request failures per user
-- Excessive tool execution failures per user/tool-type
-- Authentication failures across all pipe instances
-
-The circuit breaker automatically blocks requests when failure thresholds are exceeded,
-preventing cascading failures and providing graceful degradation.
-"""
-
 from __future__ import annotations
 
 import contextlib
@@ -25,18 +14,6 @@ def counted_tool_failures(failures: deque[float], now: float, window_seconds: fl
 
 
 class CircuitBreaker:
-    """Circuit breaker for request and tool failure tracking.
-
-    This class manages two types of circuit breakers:
-    1. Instance-level: Per-user request and tool failures
-    2. Class-level: Authentication failures shared across all instances
-
-    Instance-level breakers track failures per user to prevent individual users
-    from overwhelming the system. Class-level auth breakers prevent repeated
-    auth failures across all pipe instances.
-    """
-
-    # Class-level auth failure tracking (shared across all instances)
     _AUTH_FAILURE_TTL_SECONDS = 60
     _AUTH_FAILURE_UNTIL: ClassVar[dict[str, float]] = {}
     _AUTH_FAILURE_SWEPT_AT: ClassVar[float] = 0.0
@@ -46,10 +23,8 @@ class CircuitBreaker:
         self._threshold = max(1, int(threshold))
         self._window_seconds = window_seconds
 
-        # Per-user request failure tracking
         self._breaker_records: dict[str, deque[float]] = defaultdict(deque)
 
-        # Per-user per-tool-type failure tracking
         self._tool_breakers: dict[str, dict[tuple[str, str], deque[float]]] = defaultdict(
             lambda: defaultdict(deque)
         )
@@ -92,7 +67,6 @@ class CircuitBreaker:
 
     @property
     def threshold(self) -> int:
-        """Get the failure threshold."""
         return self._threshold
 
     @threshold.setter
@@ -101,7 +75,6 @@ class CircuitBreaker:
 
     @property
     def window_seconds(self) -> float:
-        """Get the time window in seconds."""
         return self._window_seconds
 
     @window_seconds.setter
@@ -109,21 +82,7 @@ class CircuitBreaker:
         self._window_seconds = max(0.1, float(value))
         self._sweep_after = min(self._sweep_after, time.time() + self._window_seconds)
 
-    # --------------------------------------------------------------------------
-    # Request Circuit Breaker (per-user)
-    # --------------------------------------------------------------------------
-
     def allows(self, user_id: str) -> bool:
-        """Check if requests are allowed for a user.
-
-        Per-user breaker governed by threshold and window_seconds.
-
-        Args:
-            user_id: User identifier
-
-        Returns:
-            True if requests are allowed, False if breaker is open
-        """
         if not user_id:
             return True
 
@@ -136,7 +95,6 @@ class CircuitBreaker:
         if window is None:
             return True
 
-        # Evict old failures outside the time window
         while window and now - window[0] > self._window_seconds:
             window.popleft()
 
@@ -146,11 +104,6 @@ class CircuitBreaker:
         return len(window) < self._threshold
 
     def record_failure(self, user_id: str) -> float | None:
-        """Record a request failure for a user.
-
-        Args:
-            user_id: User identifier
-        """
         if not user_id:
             return None
         now = time.time()
@@ -173,29 +126,11 @@ class CircuitBreaker:
             self._breaker_records.pop(user_id, None)
 
     def reset(self, user_id: str) -> None:
-        """Clear all failure records for a user, allowing requests again.
-
-        Args:
-            user_id: User identifier
-        """
         if not user_id:
             return
         self._breaker_records.pop(user_id, None)
 
-    # --------------------------------------------------------------------------
-    # Tool Circuit Breaker (per-user per-tool-type)
-    # --------------------------------------------------------------------------
-
     def tool_allows(self, user_id: str, tool_type: str, tool_name: str = "") -> bool:
-        """Check if a specific tool type is allowed for a user.
-
-        Args:
-            user_id: User identifier
-            tool_type: Tool type identifier
-
-        Returns:
-            True if tool execution is allowed, False if breaker is open
-        """
         if not user_id or not tool_type:
             return True
 
@@ -216,12 +151,6 @@ class CircuitBreaker:
         return live < self._threshold
 
     def record_tool_failure(self, user_id: str, tool_type: str, tool_name: str = "") -> None:
-        """Record a tool execution failure for a specific tool type.
-
-        Args:
-            user_id: User identifier
-            tool_type: Tool type identifier
-        """
         if not user_id or not tool_type:
             return
         now = time.time()
@@ -236,12 +165,6 @@ class CircuitBreaker:
         self._sweep_expired(now, force=True, which="tools")
 
     def reset_tool(self, user_id: str, tool_type: str, tool_name: str = "") -> None:
-        """Clear failure records for a specific tool type.
-
-        Args:
-            user_id: User identifier
-            tool_type: Tool type identifier
-        """
         if not user_id or not tool_type:
             return
         tool_key = (tool_type, tool_name)
@@ -252,21 +175,8 @@ class CircuitBreaker:
         if not tools:
             self._tool_breakers.pop(user_id, None)
 
-    # --------------------------------------------------------------------------
-    # Auth Failure Tracking (class-level, shared across all instances)
-    # --------------------------------------------------------------------------
-
     @classmethod
     def note_auth_failure(cls, scope_key: str, *, ttl_seconds: int | None = None) -> None:
-        """Record an authentication failure.
-
-        This is a class-level method that tracks auth failures across all
-        pipe instances to prevent repeated auth attempts.
-
-        Args:
-            scope_key: Scope identifier (e.g., pipe identifier or global scope)
-            ttl_seconds: Time to live in seconds (default: 60)
-        """
         if not scope_key:
             return
 
@@ -286,14 +196,6 @@ class CircuitBreaker:
 
     @classmethod
     def auth_failure_active(cls, scope_key: str) -> bool:
-        """Check if an authentication failure is currently active.
-
-        Args:
-            scope_key: Scope identifier
-
-        Returns:
-            True if auth failure is active, False otherwise
-        """
         if not scope_key:
             return False
 

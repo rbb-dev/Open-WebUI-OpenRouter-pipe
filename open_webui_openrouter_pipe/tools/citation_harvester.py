@@ -1,12 +1,3 @@
-"""Generic URL-citation harvesting from tool result strings.
-
-Extracts (url, title, snippet) candidates from two strict shapes only:
-whole-string JSON with exact ``url``/``link``/``href`` keys, and labeled-line
-text as emitted by web tools ("Title:"/"URL:" blocks or a "# heading" + "URL:"
-head). Anything else yields no candidates. All lookups are bounded and the
-public function never raises.
-"""
-
 from __future__ import annotations
 
 import json

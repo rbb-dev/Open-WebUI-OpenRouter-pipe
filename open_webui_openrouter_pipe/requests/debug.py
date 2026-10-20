@@ -1,12 +1,3 @@
-"""Debug utilities for request/response logging.
-
-These helpers are used for logging sanitized OpenRouter request/response data.
-
-Important: callers must pass the per-request pipe logger (SessionLogger-backed)
-so records are captured into per-message session archives. These helpers do not
-fall back to any global logger.
-"""
-
 from __future__ import annotations
 
 import json
@@ -22,8 +13,6 @@ def _debug_print_request(
     *,
     logger: logging.Logger,
 ) -> None:
-    """Log sanitized request metadata when DEBUG logging is enabled."""
-    # Late import for test compatibility (allows monkeypatching)
     from ..core.config import _owui_forwarded_header_names
     from ..core.utils import _redact_payload_blobs
 
@@ -51,12 +40,10 @@ def _debug_print_request(
                 bounded_log_record_text(json.dumps(redacted_payload, indent=2)),
             )
     except Exception:
-        # Never allow debug logging helpers to break request handling.
         logger.debug("OpenRouter request debug logging failed", exc_info=True)
 
 
 def _debug_print_response(payload: Any, *, logger: logging.Logger) -> None:
-    """Log sanitized success response payload when DEBUG logging is enabled."""
     from ..core.utils import _redact_payload_blobs
 
     if not SessionLogger.debug_enabled(logger):
@@ -91,14 +78,6 @@ def _scrubbed_error_body(text: str) -> Any:
 
 
 async def _debug_print_error_response(resp: Any, *, logger: logging.Logger) -> str:
-    """Log the response payload and return the response body for debugging.
-
-    Args:
-        resp: aiohttp.ClientResponse object
-
-    Returns:
-        str: Response body text or error message
-    """
     if not SessionLogger.debug_enabled(logger):
         try:
             return await resp.text()

@@ -1,5 +1,3 @@
-"""Image format / mode helpers shared across video + image features.
-"""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
@@ -11,7 +9,6 @@ if TYPE_CHECKING:
 
 
 def normalise_mime(value: Any) -> str:
-    """Lowercase, strip parameters: 'IMAGE/JPEG; charset=utf-8' -> 'image/jpeg'."""
     return media_type_or_empty(value)
 
 

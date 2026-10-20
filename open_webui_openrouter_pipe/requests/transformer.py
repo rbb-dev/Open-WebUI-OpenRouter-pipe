@@ -1,13 +1,3 @@
-"""Message transformation to provider input format.
-
-This module handles the transformation of Open WebUI message format
-to OpenRouter/OpenAI Responses API input format, including:
-- Multimodal content handling (images, files, audio)
-- Tool call artifact management
-- Persistence layer integration
-- Content pruning and filtering
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -30,8 +20,6 @@ from ..core.config import (
     OPENAI_EMPTY_USER_TURN_FALLBACK,
     markdown_image_spans,
 )
-
-# Import status messages
 from ..core.context_budget import inline_payload_bytes
 from ..core.errors import RequiredInternalFileError, StatusMessages
 from ..core.image_detail import image_detail_or_auto
@@ -48,8 +36,6 @@ from ..core.url_scheme import (
     split_base64_data_url,
     url_scheme,
 )
-
-# Import utility functions
 from ..core.utils import (
     _MARKER_SUFFIX,
     BUILTIN_ASK_USER_ROUND_KEY,
@@ -87,14 +73,8 @@ from ..core.utils import (
 )
 from ..core.warn_latch import warn_level
 from ..core.web_search_record import unretained_result_text
-
-# Import Anthropic integration
 from ..integrations.anthropic import _maybe_apply_anthropic_prompt_caching
-
-# Import from registry
 from ..models.registry import ModelFamily, supports_phase_model
-
-# Import from storage
 from ..storage.multimodal import (
     _NO_VERDICT,
     _SNIFF_PREFIX_BYTES,
@@ -112,8 +92,6 @@ from ..storage.owui_files import (
     names_a_hostless_owui_file_path,
     names_an_owui_file_path,
 )
-
-# Import from persistence
 from ..storage.persistence import generate_item_id, normalize_persisted_item
 from ..tools.tool_schema import (
     _classify_function_call_artifacts,
@@ -123,7 +101,6 @@ from .tool_names import _tool_names_by_position
 if TYPE_CHECKING:
     from ..pipe import Pipe
 
-# Tool output pruning constants
 _REPLAYABLE_TOOL_ARTIFACTS = frozenset({"function_call", "function_call_output"})
 _TOOL_OUTPUT_PRUNE_MIN_LENGTH = 800
 _TOOL_OUTPUT_PRUNE_HEAD_CHARS = 256
@@ -137,8 +114,6 @@ _AUDIO_URL_REFUSAL = "an audio clip must be base64-encoded; URLs are not support
 
 
 def _strip_reasoning_anchor_keys(item: dict[str, Any]) -> dict[str, Any]:
-    """Return *item* without the internal anchor keys used only for replay
-    ordering; they must never reach the provider on the reasoning block."""
     if not any(k in item for k in REASONING_ANCHOR_KEYS):
         return item
     return {k: v for k, v in item.items() if k not in REASONING_ANCHOR_KEYS}
@@ -724,20 +699,6 @@ def _text_ordinal_anchor(
 
 
 def _reinterleave_region(region: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Re-interleave reasoning within one assistant turn using call ORDINALS.
-
-    Each reasoning carries the ordinal (0,1,2...) of the call it sits next to:
-    a following-ordinal block goes immediately before the Nth ``function_call``;
-    a preceding-ordinal block goes immediately after that call's OWN
-    ``function_call_output`` (matched by ``call_id`` so a missing/error output for
-    one call cannot shift another call's reasoning between a tool_use and its
-    tool_result). A call with no output (a failed/orphaned tool) places the block
-    immediately after the bare call, where the sanitizer's stub output then lands
-    between them -- keeping the reasoning after the result.
-    Ordinals are unique within the turn even when call_ids repeat across rounds.
-    Reasoning whose ordinal is out of range, or which has no anchor, is left in
-    place; nothing is dropped. Anchor keys are stripped from every item.
-    """
     movable: list[tuple[int, dict[str, Any], str, int, str | None]] = []
     skeleton: list[dict[str, Any]] = []
     region_messages = [
@@ -849,11 +810,6 @@ def _reinterleave_region(region: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _reinterleave_reasoning_by_anchor(
     items: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Re-interleave reasoning to its true generated position, scoped per assistant
-    turn. Turns are delimited by user messages so a reasoning anchor only binds to
-    a tool call within its own turn -- tool ``call_id`` values are not unique across
-    turns (the chat-completions adapter assigns index-based ids that repeat).
-    """
     out: list[dict[str, Any]] = []
     region: list[dict[str, Any]] = []
     for index, it in enumerate(items):
@@ -1103,7 +1059,6 @@ def _handoff_back_answers(messages: list[dict[str, Any]]) -> dict[int, bool]:
 
 
 def message_identifier(entry: dict[str, Any]) -> str | None:
-    """Return the most specific identifier available on ``entry``."""
     for key in ("id", "_id", "message_id"):
         value = entry.get(key)
         if isinstance(value, str) and value.strip():
@@ -1114,7 +1069,6 @@ def message_identifier(entry: dict[str, Any]) -> str | None:
 def compute_turn_indices(
     messages: list[dict[str, Any]], handoff_back_at: dict[int, bool]
 ) -> tuple[list[int | None], int]:
-    """Label each message with a turn index and return the total count."""
     indices: list[int | None] = []
     current_turn = -1
     max_turn = -1
@@ -1494,27 +1448,6 @@ async def transform_messages_to_input(
     history_left_out_rounds: list[int] | None = None,
     tool_history_self_names: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
-    """
-    Build an OpenAI Responses-API `input` array from Open WebUI-style messages.
-
-    Parameters `chat_id` and `openwebui_model_id` are optional. When both are
-    supplied and the messages contain empty-link encoded item references, the
-    function fetches persisted items from the database and injects them in the
-    correct order. When either parameter is missing, the messages are simply
-    converted without attempting to fetch persisted items.
-
-    When provided, `artifact_loader` is awaited with `(chat_id, message_id, ulids)`
-    for each assistant message so database-backed artifacts can be replayed.
-    When `replayed_reasoning_refs` is supplied, the function appends each
-    `(chat_id, artifact_id)` pair for reasoning items so the caller can clean
-    them up after they have been replayed once.
-
-    Returns
-    -------
-    List[dict] : The fully-formed `input` list for the OpenAI Responses API.
-    """
-
-
     async with remote_file_limit_scope():
 
         active_valves = valves or pipe.valves
@@ -1575,7 +1508,6 @@ async def transform_messages_to_input(
             return compute_turn_indices(messages, handoff_back_at)
 
         def _is_old_turn(turn_index: int | None, *, threshold: int | None) -> bool:
-            """Return True when a message turn falls outside the retention window."""
             return (
                 threshold is not None
                 and turn_index is not None
@@ -1589,7 +1521,6 @@ async def transform_messages_to_input(
             turn_index: int | None,
             retention_turns: int,
         ) -> bool:
-            """Shorten oversized tool output strings while leaving markers intact."""
             if item.get("type") != "function_call_output":
                 return False
 
@@ -1781,7 +1712,6 @@ async def transform_messages_to_input(
             )
 
         def _sanitize_free_text(text: str) -> str:
-            """Strip hidden transport markers from non-assistant free text."""
             return strip_hidden_marker_lines(text)
 
         message_texts: dict[int, str] = {}
@@ -2172,18 +2102,6 @@ async def transform_messages_to_input(
                     *,
                     mode: Literal["reuse", "inline"] = "reuse" if tool_images else "inline",
                 ) -> dict[str, Any] | ImageRefusal | None:
-                    """Convert Open WebUI image block into Responses format.
-
-                    Supported Image Formats (per OpenRouter docs):
-                        - image/png
-                        - image/jpeg
-                        - image/webp
-                        - image/gif
-
-                    Args:
-                        block: Content block from Open WebUI message
-
-                    """
                     try:
                         image_payload = block.get("image_url")
                         detail: str | None = None
@@ -2489,24 +2407,6 @@ async def transform_messages_to_input(
                     return ImageRefusal("has no readable source", "no_source")
 
                 async def _to_input_file(block: dict) -> dict | ImageRefusal | None:
-                    """Convert Open WebUI file blocks into Responses API format.
-
-                    Responses API File Input Fields (per OpenAPI spec):
-                        - type: "input_file" (required)
-                        - file_id: string | null (optional)
-                        - file_data: string (optional) - base64 or data URL
-                        - filename: string (optional) - for model context
-                        - file_url: string (optional) - URL to file
-
-                    Args:
-                        block: Content block from Open WebUI message
-
-                    Returns:
-                        Responses API input_file block with all available fields
-
-                    Note:
-                        All errors are caught and logged with status emissions.
-                    """
                     try:
                         result = {"type": "input_file"}
 
@@ -2755,44 +2655,6 @@ async def transform_messages_to_input(
                         return _no_source_refusal()
 
                 async def _to_input_audio(block: dict) -> dict | ImageRefusal | None:
-                    """Convert Open WebUI audio blocks into Responses API format.
-
-                    Handles audio content blocks, transforming various input formats into
-                    the Responses API audio input format.
-
-                    Responses API Audio Input Format (per OpenAPI spec):
-                        {
-                            "type": "input_audio",
-                            "input_audio": {
-                                "data": "<base64_audio_data>",
-                            }
-                        }
-
-                    OpenRouter Audio Requirements (per documentation):
-                        - Audio must be base64-encoded (URLs NOT supported)
-                        - See: https://openrouter.ai/docs/guides/overview/multimodal/audio
-
-                    Input Formats Handled:
-                        1. Chat Completions: {"type": "input_audio", "input_audio": "<base64>"}
-                        2. Tool output: {"type": "audio", "mimeType": "audio/mp3", "data": "<base64>"}
-                        3. Already correct: {"type": "input_audio", "input_audio": {"data": "...", "format": "..."}}
-
-                    Args:
-                        block: Content block from Open WebUI message
-
-                    MIME Type to Format Mapping:
-                        - audio/mpeg, audio/mp3 -> "mp3"
-                        - audio/wav, audio/wave, audio/x-wav -> "wav"
-                        - audio/flac, audio/x-flac -> "flac"
-                        - audio/mp4, audio/m4a, audio/x-m4a -> "m4a"
-                        - audio/ogg -> "ogg"; audio/aiff, audio/x-aiff -> "aiff"; audio/aac -> "aac"
-                        - An explicit format already in the supported set (mp3, wav,
-                          flac, m4a, ogg, aiff, aac, pcm16, pcm24) is preserved as-is.
-
-                    Note:
-                        All errors are caught and logged with status emissions.
-                        Failed processing returns minimal valid block rather than crashing.
-                    """
                     def _refuse_audio(why: str, cause: str) -> ImageRefusal:
                         return ImageRefusal(why, cause, subject="audio")
 
@@ -2997,7 +2859,6 @@ async def transform_messages_to_input(
                                 )
                             return _build_audio_block(cleaned, audio_format)
 
-                        # Invalid/empty
                         pipe.logger.warning("Invalid audio payload format, refusing the audio block")
                         return _refuse_audio(
                             "an audio block carried no audio data",
@@ -3016,40 +2877,6 @@ async def transform_messages_to_input(
                         )
 
                 async def _to_input_video(block: dict) -> dict | ImageRefusal | None:
-                    """Convert Open WebUI video blocks into Chat Completions video format.
-
-                    Video Support by Provider (per OpenRouter docs):
-                        - Gemini AI Studio: YouTube links only
-                        - Most providers: Limited or no video support
-                        - Check model's input_modalities for "video" capability
-
-                    Supported Video Formats:
-                        - Remote URLs: YouTube links, direct video URLs
-                        - Data URLs: data:video/mp4;base64,... (rarely used due to size)
-
-                    Chat Completions Video Format:
-                        {
-                            "type": "video_url",
-                            "video_url": {
-                                "url": "https://youtube.com/..." or "data:video/mp4;base64,..."
-                            }
-                        }
-
-                    Input Formats Handled:
-                        1. {"type": "video_url", "video_url": {"url": "..."}}
-                        2. {"type": "video_url", "video_url": "..."}
-                        3. {"type": "video", "url": "...", "mimeType": "video/mp4"}
-
-                    Args:
-                        block: Content block from Open WebUI message
-
-                    Returns:
-                        Chat Completions video_url block
-
-                    Note:
-                        Videos are NOT downloaded/stored due to large size.
-                        URL validation is minimal - OpenRouter will validate provider support.
-                    """
                     try:
                         video_payload = block.get("video_url")
                         url: str = ""

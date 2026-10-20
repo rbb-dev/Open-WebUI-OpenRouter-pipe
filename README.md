@@ -206,7 +206,9 @@ Plus [`CHANGELOG.md`](CHANGELOG.md) — audit trail of changes.
 
 ## Contributing & forking
 
-If you fork this, run the same checks CI does before pushing: `ruff check`, `pyright`, and `pytest`. CI validates the source plus all four generated bundles (readable and compressed, each with and without plugins) across five test modes on every push.
+If you fork this, run the same checks CI does before pushing: `ruff check`, `pyright`, `pytest`, and `python scripts/strip_prose.py --check`. CI validates the source plus all four generated bundles (readable and compressed, each with and without plugins) across five test modes on every push.
+
+A fork also points the `requirements:` line in `open_webui_openrouter_pipe.py` at its own release archive. Otherwise Open WebUI keeps installing the package from this repository.
 
 For code review, start with the pytest suite in `tests/` — broad coverage across chat, image, video, tools, filters, persistence, and the streaming pipeline.
 
