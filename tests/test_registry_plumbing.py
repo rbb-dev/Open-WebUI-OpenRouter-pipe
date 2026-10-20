@@ -352,3 +352,100 @@ def test_classify_gemini_thinking_family_accepts_tilde_aliases():
 
 
 _DOCS = Path(__file__).resolve().parents[1] / "docs"
+
+
+@pytest.mark.asyncio
+async def test_a_presetless_catalog_answer_is_refetched_before_presets_drop(caplog):
+    full = {
+        "data": [
+            {"id": "example/one", "name": "One"},
+            {"id": "example/two", "name": "Two"},
+            {"id": "@preset/alpha", "name": "Alpha"},
+            {"id": "@preset/beta", "name": "Beta"},
+        ]
+    }
+    anonymous = {
+        "data": [
+            {"id": "example/one", "name": "One"},
+            {"id": "example/two", "name": "Two"},
+        ]
+    }
+    reg = ow.OpenRouterModelRegistry
+    reg._models = []
+    reg._specs = {}
+    reg._id_map = {}
+    reg._last_fetch = 0
+    reg._next_refresh_after = 0
+    import aiohttp
+    from aioresponses import aioresponses
+
+    with aioresponses() as http:
+        http.get("https://api/models", payload=full)
+        http.get("https://api/endpoints/zdr", payload={"data": []}, repeat=True)
+        async with aiohttp.ClientSession() as session:
+            await reg.ensure_loaded(
+                session,
+                base_url="https://api",
+                api_key="k",
+                cache_seconds=3600,
+                logger=logging.getLogger("test"),
+            )
+        served = {m["id"] for m in reg.list_models()}
+        assert {"@preset.alpha", "@preset.beta"} <= served
+
+        reg._last_fetch = 0
+        reg._next_refresh_after = 0
+        http.get("https://api/models", payload=anonymous)
+        http.get("https://api/models", payload=full)
+        async with aiohttp.ClientSession() as session:
+            await reg.ensure_loaded(
+                session,
+                base_url="https://api",
+                api_key="k",
+                cache_seconds=3600,
+                logger=logging.getLogger("test"),
+            )
+        served = {m["id"] for m in reg.list_models()}
+        assert {"@preset.alpha", "@preset.beta"} <= served, (
+            "an anonymous catalog answer dropped the presets the previous answer served"
+        )
+        from open_webui_openrouter_pipe import Pipe
+
+        pipe = Pipe()
+        catalog_norm_ids = {
+            m["norm_id"]
+            for m in reg.list_models()
+            if isinstance(m, dict) and m.get("norm_id")
+        }
+        reasons = pipe._model_restriction_reasons(
+            "@preset.alpha",
+            valves=pipe.valves,
+            allowlist_norm_ids=set(),
+            catalog_norm_ids=catalog_norm_ids,
+        )
+        assert "not_in_catalog" not in reasons, reasons
+
+        reg._last_fetch = 0
+        reg._next_refresh_after = 0
+        for _ in range(3):
+            http.get("https://api/models", payload=anonymous)
+        caplog.set_level(logging.WARNING, logger="test")
+        async with aiohttp.ClientSession() as session:
+            await reg.ensure_loaded(
+                session,
+                base_url="https://api",
+                api_key="k",
+                cache_seconds=3600,
+                logger=logging.getLogger("test"),
+            )
+        served = {m["id"] for m in reg.list_models()}
+        assert "example.one" in served, "the third answer was not accepted"
+        assert not {"@preset.alpha", "@preset.beta"} & served
+        drop_warnings = [
+            record.getMessage()
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+            and "@preset/alpha" in record.getMessage()
+            and "@preset/beta" in record.getMessage()
+        ]
+        assert len(drop_warnings) == 1, drop_warnings

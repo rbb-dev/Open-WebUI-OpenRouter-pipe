@@ -439,6 +439,14 @@ def _catalog_timeout() -> aiohttp.ClientTimeout:
     return aiohttp.ClientTimeout(total=_REGISTRY_CATALOG_TIMEOUT_SECONDS)
 
 
+def _catalog_preset_ids(ids: Any) -> set[str]:
+    return {
+        value
+        for value in ids
+        if isinstance(value, str) and value.startswith("@preset/")
+    }
+
+
 def _chat_merge_base(specs: dict[str, Any]) -> dict[str, Any]:
     return {
         norm: spec
@@ -750,17 +758,32 @@ class OpenRouterModelRegistry:
         }
         _catalog_read_timeout = _catalog_timeout()
         _debug_print_request(headers, {"method": "GET", "url": url}, logger=logger)
-        try:
-            async with session.get(url, headers=headers, timeout=_catalog_read_timeout) as resp:
-                if resp.status >= 400:
-                    await _debug_print_error_response(resp, logger=logger)
-                resp.raise_for_status()
-                payload = await resp.json()
-        except Exception:
-            logger.debug("Failed to load OpenRouter model catalog", exc_info=True)
-            raise
 
-        data = payload.get("data") or []
+        async def _fetch_models() -> list[dict[str, Any]]:
+            try:
+                async with session.get(
+                    url, headers=headers, timeout=_catalog_read_timeout
+                ) as resp:
+                    if resp.status >= 400:
+                        await _debug_print_error_response(resp, logger=logger)
+                    resp.raise_for_status()
+                    payload = await resp.json()
+            except Exception:
+                logger.debug("Failed to load OpenRouter model catalog", exc_info=True)
+                raise
+            return payload.get("data") or []
+
+        data = await _fetch_models()
+        served_presets = _catalog_preset_ids(
+            row.get("original_id") for row in cls._models
+        )
+        preset_ids = _catalog_preset_ids(item.get("id") for item in data)
+        if served_presets and not preset_ids:
+            attempts = 1
+            while not preset_ids and attempts < 3:
+                data = await _fetch_models()
+                attempts += 1
+                preset_ids = _catalog_preset_ids(item.get("id") for item in data)
         zdr_model_ids: set[str] | None = cls._zdr_roster_for(api_key)
         zdr_read_ok = False
         try:
@@ -852,6 +875,13 @@ class OpenRouterModelRegistry:
         models.sort(key=lambda m: str(m.get("name") or "").lower())
         if not models:
             raise RuntimeError("OpenRouter returned an empty model catalog.")
+
+        if served_presets and not preset_ids:
+            logger.warning(
+                "OpenRouter catalog refresh answered with no preset models on all"
+                " 3 attempts; dropping: %s",
+                ", ".join(sorted(served_presets)),
+            )
 
         chat_catalog_norms = frozenset(specs)
         existing_video_norms = {
