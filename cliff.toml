@@ -37,7 +37,7 @@ postprocessors = [
 
 [git]
 # Only version tags mark releases (excludes backup/* snapshots and the rolling `dev` tag).
-tag_pattern = "v[0-9]*"
+tag_pattern = '^v[0-9]+\.[0-9]+\.[0-9]+$'
 conventional_commits = true
 filter_unconventional = false
 require_conventional = false
