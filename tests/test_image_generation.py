@@ -248,6 +248,7 @@ async def test_chat_refresh_preserves_image_only_models():
                 session,
                 base_url="https://openrouter.ai/api/v1",
                 api_key="test",
+                cache_seconds=3600,
                 logger=MagicMock(),
             )
 

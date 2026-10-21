@@ -500,13 +500,13 @@ Each preset can manage:
 
 ### Supported Preset Methods
 
-OpenRouter provides three ways to use presets. **This pipe supports two of them:**
+OpenRouter provides three ways to use presets. **This pipe supports all three:**
 
 | Method | Syntax | Supported | Recommended | Notes |
 |--------|--------|-----------|-------------|-------|
 | **Combined Model and Preset** | `model@preset/slug` | ✅ Yes | ⭐ **Yes** | Use in `VARIANT_MODELS` valve |
 | **Preset Field** | `"preset": "slug"` | ⚠️ Partial | No | OpenRouter may not honor; see below |
-| **Direct Model Reference** | `@preset/slug` | ❌ No | — | Requires major architectural changes |
+| **Direct Model Reference** | `@preset/slug` | ✅ Yes | — | The pipe lists the account's presets itself and serves `@preset/slug` rows in the picker, rebuilt from OpenRouter's presets endpoints when the model list omits them, so the entry survives an answer that carries no presets; a chat on one follows the pipe's normal endpoint rules |
 
 #### Method 1: Combined Model and Preset (VARIANT_MODELS) — Recommended
 

@@ -13,6 +13,7 @@ from contextvars import ContextVar
 from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 from typing import Any, ClassVar
+from urllib.parse import quote
 
 import aiohttp
 
@@ -362,6 +363,8 @@ _ZDR_CREDENTIAL_RETENTION_SECONDS = 4 * 60 * 60
 _ZDR_LIVE_CREDENTIAL_CEILING = 64
 _BUILD_YIELD_EVERY = 64
 _REGISTRY_CATALOG_TIMEOUT_SECONDS = 15
+_PRESET_DETAIL_CONSUMERS = 4
+_PRESET_PAGE_LIMIT = 100
 
 
 def _trim_credential_history(
@@ -404,14 +407,6 @@ def _content_digest(
 
 def _catalog_timeout() -> aiohttp.ClientTimeout:
     return aiohttp.ClientTimeout(total=_REGISTRY_CATALOG_TIMEOUT_SECONDS)
-
-
-def _catalog_preset_ids(ids: Any) -> set[str]:
-    return {
-        value
-        for value in ids
-        if isinstance(value, str) and value.startswith("@preset/")
-    }
 
 
 def _chat_merge_base(specs: dict[str, Any]) -> dict[str, Any]:
@@ -471,6 +466,17 @@ class OpenRouterModelRegistry:
     _chat_content_digest: str = ""
     _video_content_digest: str = ""
     _image_content_digest: str = ""
+    _preset_rows: ClassVar[
+        dict[str, dict[str, tuple[str, dict[str, Any], dict[str, Any]]]]
+    ] = {}
+    _preset_details: ClassVar[
+        dict[str, dict[str, tuple[str, dict[str, Any] | None]]]
+    ] = {}
+    _preset_states: ClassVar[dict[str, dict[str, str]]] = {}
+    _preset_retry_after: ClassVar[dict[str, float]] = {}
+    _preset_read_failing: ClassVar[dict[str, bool]] = {}
+    _preset_retry_not_before: ClassVar[dict[str, float]] = {}
+    _preset_retry_failures: ClassVar[dict[str, int]] = {}
 
     @classmethod
     def content_stamp(cls) -> str:
@@ -644,7 +650,9 @@ class OpenRouterModelRegistry:
 
         cls._ZDR_KEY.set(_fingerprint(api_key))
         now = time.time()
-        if cls._throttled(api_key, cache_seconds, now):
+        if cls._throttled(api_key, cache_seconds, now) and not cls._preset_retry_pending(
+            api_key
+        ):
             if cls._specs:
                 cls._adopt_roster_for(api_key)
                 return
@@ -658,6 +666,16 @@ class OpenRouterModelRegistry:
             if cls._throttled(api_key, cache_seconds, now):
                 if cls._specs:
                     cls._adopt_roster_for(api_key)
+                    if cls._preset_retry_pending(api_key):
+                        cls._preset_retry_after.pop(_fingerprint(api_key), None)
+                        await cls._refresh_presets_only(
+                            session,
+                            base_url=base_url,
+                            api_key=api_key,
+                            cache_seconds=cache_seconds,
+                            logger=logger,
+                            http_referer=http_referer,
+                        )
                     return
                 raise RuntimeError(
                     cls._last_errors.get(_fingerprint(api_key))
@@ -671,6 +689,7 @@ class OpenRouterModelRegistry:
                     session,
                     base_url=base_url,
                     api_key=api_key,
+                    cache_seconds=cache_seconds,
                     logger=logger,
                     http_referer=http_referer,
                     valves=valves,
@@ -706,6 +725,7 @@ class OpenRouterModelRegistry:
         *,
         base_url: str,
         api_key: str,
+        cache_seconds: int,
         logger: logging.Logger,
         http_referer: str | None = None,
         valves: Any = None,
@@ -737,16 +757,6 @@ class OpenRouterModelRegistry:
             return payload.get("data") or []
 
         data = await _fetch_models()
-        served_presets = _catalog_preset_ids(
-            row.get("original_id") for row in cls._models
-        )
-        preset_ids = _catalog_preset_ids(item.get("id") for item in data)
-        if served_presets and not preset_ids:
-            attempts = 1
-            while not preset_ids and attempts < 3:
-                data = await _fetch_models()
-                attempts += 1
-                preset_ids = _catalog_preset_ids(item.get("id") for item in data)
         zdr_model_ids: set[str] | None = cls._zdr_roster_for(api_key)
         zdr_read_ok = False
         try:
@@ -793,58 +803,55 @@ class OpenRouterModelRegistry:
         for index, (norm_id, full_model) in enumerate(raw_specs.items()):
             if index % _BUILD_YIELD_EVERY == 0:
                 await asyncio.sleep(0)
-            supported_parameters = set(full_model.get("supported_parameters") or [])
-            architecture = full_model.get("architecture") or {}
-            pricing = full_model.get("pricing") or {}
+            specs[norm_id] = cls._derive_chat_spec(full_model, norm_id)
 
-            features = cls._derive_features(
-                supported_parameters,
-                architecture,
-                pricing,
+        fingerprint = _fingerprint(api_key)
+        try:
+            wanted, unread = await cls._load_presets(
+                session,
+                base_url=base_url,
+                api_key=api_key,
+                logger=logger,
+                http_referer=http_referer,
+                base_full={norm: spec["full_model"] for norm, spec in specs.items()},
+                served_norms=frozenset(specs),
             )
-
-            original_id = full_model.get("id") or norm_id
-            blocklisted = is_direct_upload_blocklisted_for(original_id, full_model)
-            if blocklisted:
-                features.discard("file_input")
-            else:
-                features.add("file_input")
-
-            capabilities = cls._derive_capabilities(
-                architecture,
-                pricing,
-            )
-            capabilities["file_upload"] = not blocklisted
-
-            max_completion_tokens: int | None = None
-            top_provider = full_model.get("top_provider")
-            if isinstance(top_provider, dict):
-                max_completion_tokens = top_provider.get("max_completion_tokens")
-
-            specs[norm_id] = {
-                "features": features,
-                "capabilities": capabilities,
-                "max_completion_tokens": max_completion_tokens,
-                "supported_parameters": frozenset(supported_parameters),
-
-                "full_model": full_model,
-
-                "context_length": full_model.get("context_length"),
-                "description": full_model.get("description"),
-                "architecture": architecture,
-                **_base_spec_fields(pricing),
+        except Exception as exc:
+            wanted = {
+                entry[0]: (entry[1], entry[2])
+                for entry in cls._preset_rows.get(fingerprint, {}).values()
             }
+            if cls._first_preset_read_failure(fingerprint):
+                logger.warning(
+                    "Failed to load OpenRouter presets; the presets served last refresh,"
+                    " if any, stay served until a presets read succeeds: %s",
+                    exc,
+                    exc_info=True,
+                )
+            cls._owe_preset_retry(fingerprint, cache_seconds, paced=False)
+        else:
+            if unread:
+                if cls._first_preset_read_failure(fingerprint):
+                    logger.warning(
+                        "Failed to load the record of OpenRouter preset(s) %s; those served"
+                        " last refresh, if any, stay served until their record is read",
+                        ", ".join(unread),
+                    )
+                cls._owe_preset_retry(fingerprint, cache_seconds, paced=False)
+            else:
+                cls._settle_preset_retry(fingerprint)
+        for preset_norm, preset_entry in wanted.items():
+            if preset_norm in specs:
+                continue
+            specs[preset_norm] = preset_entry[0]
+            models.append(preset_entry[1])
+            id_map[cls._exact_norm(str(preset_entry[1]["id"]))] = str(
+                preset_entry[1]["original_id"]
+            )
 
         models.sort(key=lambda m: str(m.get("name") or "").lower())
         if not models:
             raise RuntimeError("OpenRouter returned an empty model catalog.")
-
-        if served_presets and not preset_ids:
-            logger.warning(
-                "OpenRouter catalog refresh answered with no preset models on all"
-                " 3 attempts; dropping: %s",
-                ", ".join(sorted(served_presets)),
-            )
 
         chat_catalog_norms = frozenset(specs)
         existing_video_norms = {
@@ -1552,6 +1559,439 @@ class OpenRouterModelRegistry:
     @classmethod
     def reset_image_fetch_timestamp(cls) -> None:
         cls._last_image_fetch = 0.0
+
+    @classmethod
+    def _preset_retry_pending(cls, api_key: str) -> bool:
+        fingerprint = _fingerprint(api_key)
+        now = time.time()
+        return (
+            now < cls._preset_retry_after.get(fingerprint, 0.0)
+            and now >= cls._preset_retry_not_before.get(fingerprint, 0.0)
+        )
+
+    @classmethod
+    def _derive_chat_spec(cls, full_model: dict[str, Any], norm_id: str) -> dict[str, Any]:
+        supported_parameters = set(full_model.get("supported_parameters") or [])
+        architecture = full_model.get("architecture") or {}
+        pricing = full_model.get("pricing") or {}
+
+        features = cls._derive_features(
+            supported_parameters,
+            architecture,
+            pricing,
+        )
+
+        original_id = full_model.get("id") or norm_id
+        blocklisted = is_direct_upload_blocklisted_for(original_id, full_model)
+        if blocklisted:
+            features.discard("file_input")
+        else:
+            features.add("file_input")
+
+        capabilities = cls._derive_capabilities(
+            architecture,
+            pricing,
+        )
+        capabilities["file_upload"] = not blocklisted
+
+        max_completion_tokens: int | None = None
+        top_provider = full_model.get("top_provider")
+        if isinstance(top_provider, dict):
+            max_completion_tokens = top_provider.get("max_completion_tokens")
+
+        return {
+            "features": features,
+            "capabilities": capabilities,
+            "max_completion_tokens": max_completion_tokens,
+            "supported_parameters": frozenset(supported_parameters),
+
+            "full_model": full_model,
+
+            "context_length": full_model.get("context_length"),
+            "description": full_model.get("description"),
+            "architecture": architecture,
+            **_base_spec_fields(pricing),
+        }
+
+    @classmethod
+    def _preset_headers(cls, api_key: str, http_referer: str | None) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {api_key}",
+            "X-OpenRouter-Title": _OPENROUTER_TITLE,
+            "X-OpenRouter-Categories": _OPENROUTER_CATEGORIES,
+            **openrouter_attribution_headers(http_referer),
+        }
+
+    @classmethod
+    async def _list_presets(
+        cls,
+        session: aiohttp.ClientSession,
+        base_url: str,
+        headers: dict[str, str],
+        timeout: aiohttp.ClientTimeout,
+    ) -> list[dict[str, Any]]:
+        listed: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        offset = 0
+        while True:
+            url = f"{base_url}/presets?offset={offset}&limit={_PRESET_PAGE_LIMIT}"
+            async with session.get(url, headers=headers, timeout=timeout) as resp:
+                resp.raise_for_status()
+                payload = await resp.json()
+            batch = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(batch, list):
+                raise TypeError("OpenRouter presets answer without a data list")
+            added = 0
+            for item in batch:
+                if not isinstance(item, dict):
+                    continue
+                slug = item.get("slug")
+                if not isinstance(slug, str) or not slug.strip() or slug in seen:
+                    continue
+                seen.add(slug)
+                listed.append(item)
+                added += 1
+            if len(batch) < _PRESET_PAGE_LIMIT:
+                break
+            total_count = payload.get("total_count")
+            if (
+                isinstance(total_count, int)
+                and not isinstance(total_count, bool)
+                and total_count >= 0
+                and len(seen) >= total_count
+            ):
+                break
+            if not added:
+                break
+            offset += _PRESET_PAGE_LIMIT
+        return listed
+
+    @classmethod
+    async def _fetch_preset_details(
+        cls,
+        session: aiohttp.ClientSession,
+        base_url: str,
+        headers: dict[str, str],
+        timeout: aiohttp.ClientTimeout,
+        pending: list[tuple[str, str]],
+        fingerprint: str,
+    ) -> dict[str, tuple[str, dict[str, Any] | None]]:
+        semaphore = asyncio.Semaphore(_PRESET_DETAIL_CONSUMERS)
+
+        async def fetch(slug: str, version: str) -> dict[str, Any]:
+            async with semaphore, session.get(
+                f"{base_url}/presets/{quote(slug, safe='')}",
+                headers=headers,
+                timeout=timeout,
+            ) as resp:
+                resp.raise_for_status()
+                payload = await resp.json()
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(data, dict):
+                raise TypeError("OpenRouter preset answer without a data object")
+            designated = data.get("designated_version")
+            config = designated.get("config") if isinstance(designated, dict) else None
+            if not isinstance(config, dict):
+                raise TypeError(
+                    "OpenRouter preset answer without a designated version config"
+                )
+            cls._preset_details.setdefault(fingerprint, {})[slug] = (version, config)
+            return config
+
+        results = await asyncio.gather(
+            *(fetch(slug, version) for slug, version in pending),
+            return_exceptions=True,
+        )
+        resolved: dict[str, tuple[str, dict[str, Any] | None]] = {}
+        for (slug, version), outcome in zip(pending, results):
+            resolved[slug] = (version, outcome if isinstance(outcome, dict) else None)
+        _trim_credential_history(cls._preset_details, fingerprint, None)
+        return resolved
+
+    @classmethod
+    def _note_preset_state(
+        cls,
+        states: dict[str, str],
+        served: dict[str, Any],
+        logger: logging.Logger,
+        slug: str,
+        state: str,
+    ) -> None:
+        if states.get(slug) == state:
+            return
+        states[slug] = state
+        if state.startswith("dropped"):
+            logger.warning(
+                "OpenRouter preset %s %s the model picker (%s).",
+                slug,
+                "left" if slug in served else "is not in",
+                state.removeprefix("dropped:"),
+            )
+
+    @classmethod
+    async def _load_presets(
+        cls,
+        session: aiohttp.ClientSession,
+        *,
+        base_url: str,
+        api_key: str,
+        logger: logging.Logger,
+        http_referer: str | None,
+        base_full: dict[str, dict[str, Any]],
+        served_norms: frozenset[str] | set[str],
+    ) -> tuple[dict[str, tuple[dict[str, Any], dict[str, Any]]], list[str]]:
+        fingerprint = _fingerprint(api_key)
+        headers = cls._preset_headers(api_key, http_referer)
+        timeout = _catalog_timeout()
+        base = base_url.rstrip("/")
+        listed = await cls._list_presets(session, base, headers, timeout)
+        states = dict(cls._preset_states.get(fingerprint, {}))
+        previous = cls._preset_rows.get(fingerprint, {})
+        wanted: dict[str, tuple[str, dict[str, Any], dict[str, Any]]] = {}
+        plans: dict[str, tuple[str, dict[str, Any] | None]] = {}
+        listed_by_slug: dict[str, dict[str, Any]] = {}
+        for item in listed:
+            slug = item.get("slug")
+            if not isinstance(slug, str) or not slug.strip():
+                continue
+            listed_by_slug[slug] = item
+            if item.get("status") != "active":
+                cls._note_preset_state(states, previous, logger, slug, "dropped:status")
+                continue
+            version = item.get("designated_version_id")
+            if not isinstance(version, str) or not version:
+                cls._note_preset_state(
+                    states, previous, logger, slug, "dropped:no-designated-version"
+                )
+                continue
+            cached = cls._preset_details.get(fingerprint, {}).get(slug)
+            if cached is not None and cached[0] == version and isinstance(cached[1], dict):
+                plans[slug] = (version, cached[1])
+            else:
+                plans[slug] = (version, None)
+        awaiting = [
+            (slug, version)
+            for slug, (version, config) in plans.items()
+            if config is None
+        ]
+        fetched = await cls._fetch_preset_details(
+            session, base, headers, timeout, awaiting, fingerprint
+        )
+        plans.update(fetched)
+        for slug, (_, config) in plans.items():
+            preset_id = f"@preset/{slug}"
+            norm = _catalog_norm(preset_id)
+            listed_full = base_full.get(norm) if norm in served_norms else None
+            if listed_full is not None:
+                wanted[slug] = (
+                    norm,
+                    cls._derive_chat_spec(listed_full, norm),
+                    cls._preset_row(preset_id, norm, listed_full),
+                )
+                cls._note_preset_state(states, previous, logger, slug, "built")
+                continue
+            if config is None:
+                kept = previous.get(slug)
+                if kept is not None:
+                    wanted[slug] = kept
+                cls._note_preset_state(states, previous, logger, slug, "kept")
+                continue
+            base_id = config.get("model")
+            if not isinstance(base_id, str) or not base_id.strip():
+                candidates = config.get("models")
+                base_id = (
+                    next(
+                        (
+                            candidate
+                            for candidate in candidates
+                            if isinstance(candidate, str) and candidate.strip()
+                        ),
+                        None,
+                    )
+                    if isinstance(candidates, list)
+                    else None
+                )
+            if not isinstance(base_id, str) or not base_id.strip():
+                cls._note_preset_state(states, previous, logger, slug, "dropped:no-base-model")
+                continue
+            base_id = base_id.strip()
+            base_row = base_full.get(_catalog_norm(base_id))
+            if base_row is None:
+                cls._note_preset_state(
+                    states, previous, logger, slug, f"dropped:base-missing:{base_id}"
+                )
+                continue
+            name = listed_by_slug[slug].get("name")
+            preset_full = dict(base_row)
+            preset_full["id"] = preset_id
+            preset_full["name"] = name if isinstance(name, str) and name else preset_id
+            wanted[slug] = (
+                norm,
+                cls._derive_chat_spec(preset_full, norm),
+                cls._preset_row(preset_id, norm, preset_full),
+            )
+            cls._note_preset_state(states, previous, logger, slug, "built")
+        cls._preset_rows[fingerprint] = dict(wanted)
+        _trim_credential_history(cls._preset_rows, fingerprint, None)
+        cls._preset_states[fingerprint] = states
+        _trim_credential_history(cls._preset_states, fingerprint, None)
+        return (
+            {
+                norm: (spec, row)
+                for norm, spec, row in wanted.values()
+                if norm not in served_norms
+            },
+            sorted(slug for slug, entry in fetched.items() if entry[1] is None),
+        )
+
+    @classmethod
+    def _owe_preset_retry(cls, fingerprint: str, cache_seconds: int, *, paced: bool) -> None:
+        now = time.time()
+        cls._preset_retry_after[fingerprint] = now + cache_seconds
+        _trim_credential_history(cls._preset_retry_after, fingerprint, None)
+        if not paced:
+            cls._preset_retry_not_before.pop(fingerprint, None)
+            cls._preset_retry_failures.pop(fingerprint, None)
+            return
+        failures = cls._preset_retry_failures.get(fingerprint, 0) + 1
+        cls._preset_retry_failures[fingerprint] = failures
+        _trim_credential_history(cls._preset_retry_failures, fingerprint, None)
+        cls._preset_retry_not_before[fingerprint] = now + min(
+            float(cache_seconds), 5.0 * (2 ** min(failures - 1, 5))
+        )
+        _trim_credential_history(cls._preset_retry_not_before, fingerprint, None)
+
+    @classmethod
+    def _settle_preset_retry(cls, fingerprint: str) -> None:
+        for owed in (
+            cls._preset_read_failing,
+            cls._preset_retry_after,
+            cls._preset_retry_not_before,
+            cls._preset_retry_failures,
+        ):
+            owed.pop(fingerprint, None)
+
+    @classmethod
+    def _first_preset_read_failure(cls, fingerprint: str) -> bool:
+        if cls._preset_read_failing.get(fingerprint):
+            return False
+        cls._preset_read_failing[fingerprint] = True
+        _trim_credential_history(cls._preset_read_failing, fingerprint, None)
+        return True
+
+    @classmethod
+    def _preset_row(cls, preset_id: str, norm: str, full: dict[str, Any]) -> dict[str, Any]:
+        name = full.get("name")
+        return {
+            "id": sanitize_model_id(preset_id),
+            "norm_id": norm,
+            "original_id": preset_id,
+            "name": name if isinstance(name, str) and name else preset_id,
+        }
+
+    @classmethod
+    async def _refresh_presets_only(
+        cls,
+        session: aiohttp.ClientSession,
+        *,
+        base_url: str,
+        api_key: str,
+        cache_seconds: int,
+        logger: logging.Logger,
+        http_referer: str | None = None,
+    ) -> None:
+        fingerprint = _fingerprint(api_key)
+        previous_by_norm = {
+            entry[0]: entry[1]
+            for entry in cls._preset_rows.get(fingerprint, {}).values()
+        }
+        owned_norms = {
+            norm
+            for norm, spec in previous_by_norm.items()
+            if cls._specs.get(norm) is spec
+        }
+        served_norms = frozenset(cls._chat_catalog_norms) - owned_norms
+        base_full = {
+            norm: spec["full_model"]
+            for norm, spec in cls._specs.items()
+            if norm in served_norms and isinstance(spec.get("full_model"), dict)
+        }
+        try:
+            wanted, unread = await cls._load_presets(
+                session,
+                base_url=base_url,
+                api_key=api_key,
+                logger=logger,
+                http_referer=http_referer,
+                base_full=base_full,
+                served_norms=served_norms,
+            )
+        except Exception as exc:
+            cls._owe_preset_retry(fingerprint, cache_seconds, paced=True)
+            logger.debug("OpenRouter presets retry failed: %s", exc, exc_info=True)
+            return
+        if unread:
+            cls._owe_preset_retry(fingerprint, cache_seconds, paced=True)
+        else:
+            cls._settle_preset_retry(fingerprint)
+        still_listed = {
+            entry[0] for entry in cls._preset_rows.get(fingerprint, {}).values()
+        }
+        specs = dict(cls._specs)
+        models_by_norm = {
+            model.get("norm_id"): model
+            for model in cls._models
+            if isinstance(model, dict) and model.get("norm_id") is not None
+        }
+        id_map = dict(cls._id_map)
+        removed: set[str] = set()
+        for norm in previous_by_norm.keys() - frozenset(wanted):
+            if norm in still_listed:
+                continue
+            removed.add(norm)
+            specs.pop(norm, None)
+            row = models_by_norm.pop(norm, None)
+            if row is not None:
+                id_map.pop(cls._exact_norm(str(row.get("id") or "")), None)
+        replaced: set[str] = set()
+        for norm, (spec, row) in wanted.items():
+            specs[norm] = spec
+            models_by_norm[norm] = row
+            id_map[cls._exact_norm(str(row["id"]))] = str(row["original_id"])
+            replaced.add(norm)
+        models: list[dict[str, Any]] = []
+        for model in cls._models:
+            norm = model.get("norm_id") if isinstance(model, dict) else None
+            if norm is not None:
+                if norm in removed:
+                    continue
+                if norm in replaced:
+                    models.append(models_by_norm[norm])
+                    continue
+            models.append(model)
+        present_norms = {
+            model.get("norm_id") for model in models if isinstance(model, dict)
+        }
+        for norm, (_, row) in wanted.items():
+            if norm not in present_norms:
+                models.append(row)
+        models.sort(key=lambda m: str(m.get("name") or "").lower())
+        roster = cls._zdr_roster_for(api_key)
+        for norm in replaced:
+            spec = specs.get(norm)
+            if isinstance(spec, dict):
+                cls._stamp_zdr_capable(spec, norm, roster, specs)
+        cls._models = models
+        cls._specs = specs
+        cls._id_map = id_map
+        cls._invalidate_name_map()
+        chat_norms = (cls._chat_catalog_norms - removed) | frozenset(wanted)
+        cls._chat_catalog_norms = chat_norms
+        cls._chat_content_digest = _content_digest(chat_norms, specs)
+        ModelFamily.set_dynamic_specs(specs)
+        cls._zdr_model_ids = roster
+        cls._zdr_stamp_roster = roster
+        cls._zdr_stamped_specs = specs
 
     @classmethod
     def register_image_models(

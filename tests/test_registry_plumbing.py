@@ -64,6 +64,13 @@ def reset_registry():
     reg._last_errors = {}
     reg._last_error = None
     reg._last_error_time = 0.0
+    reg._preset_rows = {}
+    reg._preset_details = {}
+    reg._preset_states = {}
+    reg._preset_retry_after = {}
+    reg._preset_read_failing = {}
+    reg._preset_retry_not_before = {}
+    reg._preset_retry_failures = {}
     ow.ModelFamily.set_dynamic_specs(None)
     yield
 
@@ -355,20 +362,53 @@ _DOCS = Path(__file__).resolve().parents[1] / "docs"
 
 
 @pytest.mark.asyncio
-async def test_a_presetless_catalog_answer_is_refetched_before_presets_drop(caplog):
-    full = {
+async def test_presets_served_from_the_presets_endpoints_survive_a_failed_read_and_reread_without_models(monkeypatch):
+    catalog = {
         "data": [
             {"id": "example/one", "name": "One"},
             {"id": "example/two", "name": "Two"},
-            {"id": "@preset/alpha", "name": "Alpha"},
-            {"id": "@preset/beta", "name": "Beta"},
         ]
     }
-    anonymous = {
+    catalog_listing_alpha = {"data": [*catalog["data"], {"id": "@preset/alpha", "name": "Alpha"}]}
+    preset_list = {
         "data": [
-            {"id": "example/one", "name": "One"},
-            {"id": "example/two", "name": "Two"},
-        ]
+            {
+                "slug": "alpha",
+                "name": "Alpha",
+                "status": "active",
+                "designated_version_id": "v1",
+            },
+            {
+                "slug": "beta",
+                "name": "Beta",
+                "status": "active",
+                "designated_version_id": "v2",
+            },
+            {
+                "slug": "gamma",
+                "name": "Gamma",
+                "status": "active",
+                "designated_version_id": "v3",
+            },
+        ],
+        "total_count": 3,
+    }
+
+    def preset_detail(slug: str, version: str, config: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "data": {
+                "slug": slug,
+                "name": slug.capitalize(),
+                "status": "active",
+                "designated_version_id": version,
+                "designated_version": {"id": version, "config": config},
+            }
+        }
+
+    details = {
+        "alpha": preset_detail("alpha", "v1", {"model": "example/one"}),
+        "beta": preset_detail("beta", "v2", {"models": ["example/two", "example/one"]}),
+        "gamma": preset_detail("gamma", "v3", {"model": "example/ghost"}),
     }
     reg = ow.OpenRouterModelRegistry
     reg._models = []
@@ -379,57 +419,44 @@ async def test_a_presetless_catalog_answer_is_refetched_before_presets_drop(capl
     import aiohttp
     from aioresponses import aioresponses
 
-    with aioresponses() as http:
-        http.get("https://api/models", payload=full)
-        http.get("https://api/endpoints/zdr", payload={"data": []}, repeat=True)
-        async with aiohttp.ClientSession() as session:
-            await reg.ensure_loaded(
-                session,
-                base_url="https://api",
-                api_key="k",
-                cache_seconds=3600,
-                logger=logging.getLogger("test"),
-            )
-        served = {m["id"] for m in reg.list_models()}
-        assert {"@preset.alpha", "@preset.beta"} <= served
+    from open_webui_openrouter_pipe import Pipe
 
-        reg._last_fetch = 0
-        reg._next_refresh_after = 0
-        http.get("https://api/models", payload=anonymous)
-        http.get("https://api/models", payload=full)
-        async with aiohttp.ClientSession() as session:
-            await reg.ensure_loaded(
-                session,
-                base_url="https://api",
-                api_key="k",
-                cache_seconds=3600,
-                logger=logging.getLogger("test"),
-            )
-        served = {m["id"] for m in reg.list_models()}
-        assert {"@preset.alpha", "@preset.beta"} <= served, (
-            "an anonymous catalog answer dropped the presets the previous answer served"
-        )
-        from open_webui_openrouter_pipe import Pipe
+    pipe = Pipe()
 
-        pipe = Pipe()
+    def served() -> set[str]:
+        return {m["id"] for m in reg.list_models()}
+
+    def gate_reasons(model_id: str) -> list[str]:
         catalog_norm_ids = {
             m["norm_id"]
             for m in reg.list_models()
             if isinstance(m, dict) and m.get("norm_id")
         }
-        reasons = pipe._model_restriction_reasons(
-            "@preset.alpha",
+        return pipe._model_restriction_reasons(
+            model_id,
             valves=pipe.valves,
             allowlist_norm_ids=set(),
             catalog_norm_ids=catalog_norm_ids,
         )
-        assert "not_in_catalog" not in reasons, reasons
 
-        reg._last_fetch = 0
-        reg._next_refresh_after = 0
-        for _ in range(3):
-            http.get("https://api/models", payload=anonymous)
-        caplog.set_level(logging.WARNING, logger="test")
+    def mock_presets(
+        http: Any,
+        *,
+        list_payload: dict[str, Any] | None,
+        error: Exception | None = None,
+    ) -> None:
+        if error is not None:
+            http.get("https://api/presets?offset=0&limit=100", exception=error)
+            return
+        assert list_payload is not None
+        http.get("https://api/presets?offset=0&limit=100", payload=list_payload)
+        for slug, payload in details.items():
+            http.get(f"https://api/presets/{slug}", payload=payload)
+
+    with aioresponses() as http:
+        http.get("https://api/models", payload=catalog_listing_alpha)
+        http.get("https://api/endpoints/zdr", payload={"data": []}, repeat=True)
+        mock_presets(http, list_payload=preset_list)
         async with aiohttp.ClientSession() as session:
             await reg.ensure_loaded(
                 session,
@@ -438,14 +465,109 @@ async def test_a_presetless_catalog_answer_is_refetched_before_presets_drop(capl
                 cache_seconds=3600,
                 logger=logging.getLogger("test"),
             )
-        served = {m["id"] for m in reg.list_models()}
-        assert "example.one" in served, "the third answer was not accepted"
-        assert not {"@preset.alpha", "@preset.beta"} & served
-        drop_warnings = [
-            record.getMessage()
-            for record in caplog.records
-            if record.levelno == logging.WARNING
-            and "@preset/alpha" in record.getMessage()
-            and "@preset/beta" in record.getMessage()
-        ]
-        assert len(drop_warnings) == 1, drop_warnings
+        served_now = served()
+        assert {"example.one", "example.two", "@preset.alpha", "@preset.beta"} <= served_now
+        assert "@preset.gamma" not in served_now, (
+            "a preset whose base the catalog does not list is left out,"
+            " the way OpenRouter leaves it out"
+        )
+        for piped in ("@preset.alpha", "@preset.beta"):
+            reasons = gate_reasons(piped)
+            assert "not_in_catalog" not in reasons, (piped, reasons)
+        assert len(reg._models) == len({m["norm_id"] for m in reg._models}), (
+            "a preset OpenRouter's own row serves was served a second time"
+        )
+
+    reg._last_fetch = 0
+    reg._next_refresh_after = 0
+    with aioresponses() as http:
+        http.get("https://api/models", payload=catalog)
+        http.get("https://api/endpoints/zdr", payload={"data": []}, repeat=True)
+        mock_presets(http, list_payload=None, error=RuntimeError("presets list unavailable"))
+        async with aiohttp.ClientSession() as session:
+            await reg.ensure_loaded(
+                session,
+                base_url="https://api",
+                api_key="k",
+                cache_seconds=3600,
+                logger=logging.getLogger("test"),
+            )
+    assert {"@preset.alpha", "@preset.beta"} <= served(), (
+        "a failed presets read dropped the presets the previous refresh served,"
+        " OpenRouter's own row (alpha) or the one the pipe built (beta)"
+    )
+    for piped in ("@preset.alpha", "@preset.beta"):
+        reasons = gate_reasons(piped)
+        assert "not_in_catalog" not in reasons, (piped, reasons)
+
+    with aioresponses() as http:
+        mock_presets(http, list_payload=None, error=RuntimeError("presets list still unavailable"))
+        async with aiohttp.ClientSession() as session:
+            await reg.ensure_loaded(
+                session,
+                base_url="https://api",
+                api_key="k",
+                cache_seconds=3600,
+                logger=logging.getLogger("test"),
+            )
+    assert {"@preset.alpha", "@preset.beta"} <= served()
+
+    later = time.time() + 60
+    monkeypatch.setattr(time, "time", lambda: later)
+    with aioresponses() as http:
+        mock_presets(http, list_payload=preset_list)
+        async with aiohttp.ClientSession() as session:
+            await reg.ensure_loaded(
+                session,
+                base_url="https://api",
+                api_key="k",
+                cache_seconds=3600,
+                logger=logging.getLogger("test"),
+            )
+    assert {"@preset.alpha", "@preset.beta"} <= served()
+    touched = [str(key) for key in http.requests]
+    assert [key for key in touched if "/models" in key] == [], (
+        "the owed retry must re-read the presets without refetching the catalog"
+    )
+    assert [key for key in touched if "/presets?" in key], (
+        "the owed retry never re-read the presets"
+    )
+
+    after_window = later + 3601
+    monkeypatch.setattr(time, "time", lambda: after_window)
+    with aioresponses() as http:
+        http.get("https://api/models", payload=catalog_listing_alpha)
+        http.get("https://api/endpoints/zdr", payload={"data": []}, repeat=True)
+        mock_presets(http, list_payload=None, error=RuntimeError("presets list unavailable again"))
+        async with aiohttp.ClientSession() as session:
+            await reg.ensure_loaded(
+                session,
+                base_url="https://api",
+                api_key="k",
+                cache_seconds=3600,
+                logger=logging.getLogger("test"),
+            )
+    assert {"@preset.alpha", "@preset.beta"} <= served()
+
+    retry_time = after_window + 60
+    monkeypatch.setattr(time, "time", lambda: retry_time)
+    without_alpha = {
+        "data": [item for item in preset_list["data"] if item["slug"] != "alpha"],
+        "total_count": 2,
+    }
+    with aioresponses() as http:
+        mock_presets(http, list_payload=without_alpha)
+        async with aiohttp.ClientSession() as session:
+            await reg.ensure_loaded(
+                session,
+                base_url="https://api",
+                api_key="k",
+                cache_seconds=3600,
+                logger=logging.getLogger("test"),
+            )
+    assert "@preset.alpha" not in served(), (
+        "a preset the presets list no longer returns stayed in the picker"
+        " because OpenRouter's own row had served it"
+    )
+    assert "@preset.alpha" not in reg._chat_catalog_norms
+    assert "@preset.beta" in served()
