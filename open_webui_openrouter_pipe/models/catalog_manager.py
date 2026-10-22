@@ -204,7 +204,6 @@ def _ensure_failure_level(latch: set[str], family: str, exc: BaseException) -> i
     return warn_level(latch, f"{family}:{type(exc).__name__}")
 
 
-_ROW_NOT_FETCHED = object()
 _ROWS_UNREADABLE = object()
 
 _warned_web_tools_filter_ensure: set[str] = set()
@@ -1865,6 +1864,7 @@ class ModelCatalogManager:
             maker_data_mapping: dict[str, str] = {}
             slug_to_icon_url: dict[str, str] = {}
             maker_to_image_url: dict[str, str] = {}
+            reused_icon_rows: set[str] = set()
             if valves.UPDATE_MODEL_IMAGES:
                 slug_to_icon_url = {}
                 for model in models:
@@ -1884,17 +1884,20 @@ class ModelCatalogManager:
                     original_id = model.get("original_id")
                     if not isinstance(original_id, str) or not original_id:
                         continue
-                    row = stored_icons.get(f"{pipe_identifier}.{model.get('id')}")
+                    row_id = f"{pipe_identifier}.{model.get('id')}"
+                    row = stored_icons.get(row_id)
                     if row is not None and (row[2] or row[3]):
                         continue
                     if not frontend_answered and row is not None and row[4] == _FRONTEND_SOURCE_KIND and row[0]:
                         stored_data_by_url[original_id] = row[0]
+                        reused_icon_rows.add(row_id)
                         continue
                     icon_url = slug_to_icon_url.get(original_id)
                     if icon_url:
                         covered = _covered_icon(row, icon_url)
                         if covered is not None:
                             stored_data_by_url[original_id] = covered
+                            reused_icon_rows.add(row_id)
                             continue
                         fetchable[original_id] = icon_url
                         continue
@@ -1903,6 +1906,7 @@ class ModelCatalogManager:
                         covered = _covered_icon(row, maker_to_image_url[maker_id])
                         if covered is not None:
                             stored_data_by_url[original_id] = covered
+                            reused_icon_rows.add(row_id)
                         else:
                             needs_maker.add(maker_id)
 
@@ -2352,6 +2356,7 @@ class ModelCatalogManager:
                 if (
                     valves.UPDATE_MODEL_IMAGES
                     and isinstance(original_id, str) and original_id
+                    and openwebui_model_id not in reused_icon_rows
                 ):
                     profile_image_url = icon_data_mapping.get(original_id)
                     if profile_image_url:
@@ -2551,15 +2556,7 @@ class ModelCatalogManager:
                             update_descriptions=valves.UPDATE_MODEL_DESCRIPTIONS,
                             new_model_access_control=valves.NEW_MODEL_ACCESS_CONTROL,
                             param_digest=param_digest,
-                            existing=(
-                                _ROWS_UNREADABLE
-                                if model_rows is _ROWS_UNREADABLE
-                                else (
-                                    model_rows.get(openwebui_model_id, _ROW_NOT_FETCHED)
-                                    if model_rows is not None
-                                    else _ROW_NOT_FETCHED
-                                )
-                            ),
+                            rows_unreadable=model_rows is _ROWS_UNREADABLE,
                         )
                     except Exception as exc:
                         sync_failures.append(openwebui_model_id)
@@ -2663,19 +2660,20 @@ class ModelCatalogManager:
                 continue
 
             fresh = await Models.get_model_by_id(model.id)
-            if fresh is not None and fresh.meta is not None:
-                meta_dict = fresh.meta.model_dump()
-                filter_ids = meta_dict.get("filterIds", [])
-                if not isinstance(filter_ids, list) or not filter_ids:
-                    continue
-                pruned = [
-                    fid for fid in filter_ids
-                    if not isinstance(fid, str)
-                    or not fid.startswith("openrouter_")
-                    or fid in valid_ids
-                ]
-                if len(pruned) == len(filter_ids):
-                    continue
+            if fresh is None or fresh.meta is None:
+                continue
+            meta_dict = fresh.meta.model_dump()
+            filter_ids = meta_dict.get("filterIds", [])
+            if not isinstance(filter_ids, list) or not filter_ids:
+                continue
+            pruned = [
+                fid for fid in filter_ids
+                if not isinstance(fid, str)
+                or not fid.startswith("openrouter_")
+                or fid in valid_ids
+            ]
+            if len(pruned) == len(filter_ids):
+                continue
 
             removed = set(filter_ids) - set(pruned)
             meta_dict["filterIds"] = pruned
@@ -2685,15 +2683,15 @@ class ModelCatalogManager:
                     model_form_cls=ModelForm,
                     supports_access_control=supports_access_control,
                     id=model.id,
-                    base_model_id=model.base_model_id,
-                    name=model.name,
+                    base_model_id=fresh.base_model_id,
+                    name=fresh.name,
                     meta=meta_obj,
-                    params=_params_unchanged(ModelParams, model.params),
+                    params=_params_unchanged(ModelParams, fresh.params),
                     access_payload=self._resolve_model_access_payload(
-                        model_obj=model,
+                        model_obj=fresh,
                         supports_access_control=supports_access_control,
                     ),
-                    is_active=model.is_active,
+                    is_active=fresh.is_active,
                 )
                 if await Models.update_model_by_id(model.id, form) is None:
                     raise _ModelWriteRefused(
@@ -2771,7 +2769,7 @@ class ModelCatalogManager:
         image_source_kind: str | None = None,
         update_descriptions: bool = False,
         new_model_access_control: str,
-        existing: Any = _ROW_NOT_FETCHED,
+        rows_unreadable: bool = False,
         param_digest: set[tuple[str, str]] | None = None,
     ):
         from open_webui.models.models import ModelForm, ModelMeta, ModelParams, Models
@@ -2782,13 +2780,12 @@ class ModelCatalogManager:
             return
         name = (name or "").strip() or openwebui_model_id
 
-        if existing is _ROWS_UNREADABLE:
+        if rows_unreadable:
             raise _ModelWriteRefused(
                 f"the models table could not be read, so {openwebui_model_id} is left "
                 "exactly as it is"
             )
-        if existing is _ROW_NOT_FETCHED:
-            existing = await Models.get_model_by_id(openwebui_model_id)
+        existing = await Models.get_model_by_id(openwebui_model_id)
 
         disable_model_metadata_sync = False
         disable_capability_updates = False

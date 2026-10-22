@@ -746,6 +746,119 @@ async def test_sync_model_metadata_skips_model_without_valid_id(pipe_instance_as
 
 
 @pytest.mark.asyncio
+async def test_a_system_prompt_and_a_picture_saved_while_a_sync_pass_runs_are_still_there_after_the_pass(
+    pipe_instance_async,
+) -> None:
+    pipe = pipe_instance_async
+    manager = pipe._ensure_catalog_manager()
+    pipe.valves.UPDATE_MODEL_CAPABILITIES = True
+    pipe.valves.UPDATE_MODEL_IMAGES = True
+    for valve in (
+        "AUTO_ATTACH_WEB_TOOLS_FILTER",
+        "AUTO_INSTALL_WEB_TOOLS_FILTER",
+        "AUTO_ATTACH_DIRECT_UPLOADS_FILTER",
+        "AUTO_INSTALL_DIRECT_UPLOADS_FILTER",
+        "AUTO_ATTACH_IMAGE_GEN_FILTER",
+        "AUTO_INSTALL_IMAGE_GEN_FILTER",
+    ):
+        setattr(pipe.valves, valve, False)
+
+    icon_url = "https://example.com/icons/pictured-model.png"
+    manager._fetch_frontend_model_catalog = AsyncMock(
+        return_value={
+            "data": [
+                {
+                    "slug": "acme/pictured-model",
+                    "endpoint": {
+                        "provider_info": {
+                            "icon": {"url": icon_url},
+                            "baseUrl": "https://api.example.com/v1",
+                        }
+                    },
+                }
+            ]
+        }
+    )
+    manager._build_maker_profile_image_mapping = AsyncMock(return_value={})
+    pipe._multimodal_handler._fetch_image_as_data_url = AsyncMock(return_value=None)
+
+    row_id = "test_pipe.acme/tuned-model"
+    pictured_id = "test_pipe.acme/pictured-model"
+    stamp = {"image_source_url": icon_url, "image_source_kind": "frontend"}
+    stored_picture = "data:image/png;base64,QUJD"
+    admin_picture = "data:image/png;base64,REVG"
+    table = {
+        row_id: _make_existing_model(row_id, meta={}, params={"temperature": 0.3}),
+        pictured_id: _make_existing_model(
+            pictured_id,
+            meta={"profile_image_url": stored_picture, "openrouter_pipe": dict(stamp)},
+        ),
+    }
+
+    async def read_rows_then_let_an_admin_save(ids, db=None):
+        rows = [table[model_id] for model_id in ids if model_id in table]
+        table[row_id] = _make_existing_model(
+            row_id, meta={}, params={"temperature": 0.3, "system": "Reply in French."}
+        )
+        table[pictured_id] = _make_existing_model(
+            pictured_id,
+            meta={"profile_image_url": admin_picture, "openrouter_pipe": dict(stamp)},
+        )
+        return rows
+
+    async def read_row(model_id, db=None):
+        return table.get(model_id)
+
+    async def write_row(model_id, form, db=None, user_id=None, production_version_id=None):
+        table[model_id] = SimpleNamespace(
+            id=model_id,
+            base_model_id=form.base_model_id,
+            name=form.name,
+            meta=form.meta,
+            params=form.params,
+            access_grants=[],
+            is_active=form.is_active,
+        )
+        return table[model_id]
+
+    with patch(
+        "open_webui.models.models.Models.get_models_by_ids", new=read_rows_then_let_an_admin_save
+    ), patch("open_webui.models.models.Models.get_model_by_id", new=read_row), patch(
+        "open_webui.models.models.Models.update_model_by_id", new=write_row
+    ):
+        await manager._sync_model_metadata_to_owui(
+            [
+                {"id": "acme/tuned-model", "name": "Tuned Model"},
+                {
+                    "id": "acme/pictured-model",
+                    "name": "Pictured Model",
+                    "original_id": "acme/pictured-model",
+                },
+            ],
+            pipe_identifier="test_pipe",
+        )
+
+    for written_id in (row_id, pictured_id):
+        stored_meta = table[written_id].meta.model_dump()
+        assert stored_meta.get("openrouter_pipe", {}).get("capabilities"), (
+            f"the pass wrote nothing to {written_id}, so the checks below would pass whether "
+            f"or not the sync reads the row again: the stored meta is {stored_meta!r}"
+        )
+    stored = table[row_id]
+    assert dict(stored.params).get("system") == "Reply in French.", (
+        "the sync wrote the row it had read at the start of the pass over the system "
+        "prompt an admin saved after that read; the stored params are "
+        f"{dict(stored.params)!r}"
+    )
+    picture_after_the_pass = table[pictured_id].meta.model_dump().get("profile_image_url")
+    assert picture_after_the_pass == admin_picture, (
+        "the sync handed the stored icon it had read at the start of the pass back to the "
+        "writer, over the picture an admin saved after that read; the stored picture is "
+        f"{picture_after_the_pass!r}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_sync_model_metadata_uses_id_as_name_when_missing(pipe_instance_async) -> None:
     """Uses model id as name when name is missing or invalid."""
     pipe = pipe_instance_async
@@ -3584,8 +3697,12 @@ async def test_bulk_prune_removes_stale_ids_from_multiple_models(pipe_instance_a
 
     functions_mod = _make_functions_module(valid_filters)
 
+    async def read_row(model_id, db=None):
+        return next((model for model in models if model.id == model_id), None)
+
     with patch.dict(sys.modules, {"open_webui.models.functions": functions_mod}), \
          patch("open_webui.models.models.Models.get_all_models", new=AsyncMock(return_value=models)), \
+         patch("open_webui.models.models.Models.get_model_by_id", new=read_row), \
          patch("open_webui.models.models.Models.update_model_by_id", new=AsyncMock(side_effect=capture_update)), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
@@ -3630,8 +3747,12 @@ async def test_bulk_prune_preserves_non_openrouter_filter_ids(pipe_instance_asyn
 
     functions_mod = _make_functions_module(valid_filters)
 
+    async def read_row(model_id, db=None):
+        return next((model for model in models if model.id == model_id), None)
+
     with patch.dict(sys.modules, {"open_webui.models.functions": functions_mod}), \
          patch("open_webui.models.models.Models.get_all_models", new=AsyncMock(return_value=models)), \
+         patch("open_webui.models.models.Models.get_model_by_id", new=read_row), \
          patch("open_webui.models.models.Models.update_model_by_id", new=AsyncMock(side_effect=capture_update)), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
