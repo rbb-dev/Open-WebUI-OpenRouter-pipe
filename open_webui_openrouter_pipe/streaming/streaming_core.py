@@ -623,7 +623,6 @@ class StreamingHandler:
             is_continuation,
         )
         self.logger.debug("Streaming config: direct pass-through (no server batching)")
-        streamed_tool_call_ids: set[str] = set()
         streamed_tool_call_indices: dict[str, int] = {}
         tool_call_names: dict[str, str] = {}
 
@@ -2780,7 +2779,6 @@ class StreamingHandler:
                                 delta_text = raw_delta if isinstance(raw_delta, str) else ""
                                 if not delta_text:
                                     continue
-                                streamed_tool_call_ids.add(call_id)
                                 await _publish_turn_frame(
                                     {
                                         "type": "response.function_call_arguments.delta",
@@ -2794,7 +2792,6 @@ class StreamingHandler:
                             raw_args = event.get("arguments")
                             args_text = raw_args.strip() if isinstance(raw_args, str) else ""
                             if args_text:
-                                streamed_tool_call_ids.add(call_id)
                                 streamed_tool_call_args[call_id] = _ReasoningTextBox()
                                 streamed_tool_call_args[call_id].add(args_text)
                                 if call_id in host_call_finalised:
