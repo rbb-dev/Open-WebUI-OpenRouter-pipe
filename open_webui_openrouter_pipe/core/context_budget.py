@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..models.registry import ModelFamily
+from .media_slot import MediaSlot
 from .url_scheme import url_scheme
 from .utils import (
     TOOL_CALL_STATUSES,
@@ -332,6 +333,8 @@ def inline_payload_bytes(value: str) -> int:
 
 
 def _payload_bytes(value: Any) -> tuple[int, str, str | None] | None:
+    if isinstance(value, MediaSlot):
+        return (value.approx_bytes, value.mime, None) if value.approx_bytes else None
     if isinstance(value, str):
         media_type = ""
         payload: str | None = None

@@ -29,6 +29,8 @@ Coverage areas:
 # pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 from __future__ import annotations
 
+from tests.media_slots import bare_slot, inlined_file
+from tests.posted_body import posted_json
 import ast
 import base64
 import json
@@ -126,7 +128,7 @@ def _smart_callback(captured_payloads: list[dict], content: str = "OK",
                     captured_endpoints: list[str] | None = None):
     """Create a callback that returns JSON for non-streaming, SSE for streaming."""
     def callback(url, **kwargs):
-        payload = kwargs.get("json", {})
+        payload = posted_json(kwargs, {})
         captured_payloads.append(payload)
 
         is_streaming = payload.get("stream", False)
@@ -402,7 +404,7 @@ async def test_extract_direct_uploads_skips_invalid_items():
         # Mock the file inlining to simulate successful inlining at the multimodal handler level
         async def mock_inline_owui_file_id(file_id, *args, **kwargs):
             asked.append(file_id)
-            return InlinedFile(data_url=f"data:application/pdf;base64,{_pdf_like_base64()}", filename="doc.pdf")
+            return inlined_file(f"data:application/pdf;base64,{_pdf_like_base64()}", "doc.pdf")
 
         pipe._file_gateway.inline_owui_file_id = mock_inline_owui_file_id
 
@@ -606,7 +608,7 @@ async def test_inject_direct_uploads_handles_list_content():
 
         # Mock the file inlining at the multimodal handler level
         async def mock_inline_owui_file_id(file_id, *args, **kwargs):
-            return InlinedFile(data_url=f"data:application/pdf;base64,{_pdf_like_base64()}", filename="doc.pdf")
+            return inlined_file(f"data:application/pdf;base64,{_pdf_like_base64()}", "doc.pdf")
 
         pipe._file_gateway.inline_owui_file_id = mock_inline_owui_file_id
 
@@ -686,7 +688,7 @@ async def test_direct_uploads_pdf_parser_injects_plugin():
             pass
 
         async def mock_inline_owui_file_id(file_id, *args, **kwargs):
-            return InlinedFile(data_url=f"data:application/pdf;base64,{_pdf_like_base64()}", filename="doc.pdf")
+            return inlined_file(f"data:application/pdf;base64,{_pdf_like_base64()}", "doc.pdf")
 
         pipe._file_gateway.inline_owui_file_id = mock_inline_owui_file_id
 
@@ -766,7 +768,7 @@ async def test_inject_direct_uploads_handles_none_content():
 
         # Mock the file inlining
         async def mock_inline_owui_file_id(file_id, *args, **kwargs):
-            return InlinedFile(data_url=f"data:application/pdf;base64,{_pdf_like_base64()}", filename="doc.pdf")
+            return inlined_file(f"data:application/pdf;base64,{_pdf_like_base64()}", "doc.pdf")
 
         pipe._file_gateway.inline_owui_file_id = mock_inline_owui_file_id
 
@@ -918,7 +920,7 @@ async def test_sniff_audio_format_wav(monkeypatch):
         mock_file_obj.id = "audio_1"
         mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_wav_like_base64())
+        pipe._file_gateway.read_file_record_media = AsyncMock(return_value=bare_slot(_wav_like_base64()))
 
         async def event_emitter(event):
             pass
@@ -972,7 +974,7 @@ async def test_native_audio_read_threads_resolved_user(monkeypatch):
     """Native audio reads must thread the resolved user into the gateway read.
 
     Proves the orchestrator resolves user_model and passes user=<resolved user>
-    to read_file_record_base64, the gateway's authorization chokepoint.
+    to read_file_record_media, the gateway's authorization chokepoint.
     """
     pipe = Pipe()
 
@@ -1007,8 +1009,8 @@ async def test_native_audio_read_threads_resolved_user(monkeypatch):
             "open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id",
             AsyncMock(return_value=mock_file_obj),
         )
-        read_mock = AsyncMock(return_value=_wav_like_base64())
-        pipe._file_gateway.read_file_record_base64 = read_mock
+        read_mock = AsyncMock(return_value=bare_slot(_wav_like_base64()))
+        pipe._file_gateway.read_file_record_media = read_mock
 
         async def event_emitter(event):
             pass
@@ -1097,7 +1099,7 @@ async def test_native_audio_unauthorized_read_is_surfaced(monkeypatch):
             "open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id",
             AsyncMock(return_value=mock_file_obj),
         )
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(
+        pipe._file_gateway.read_file_record_media = AsyncMock(
             side_effect=RequiredInternalFileError(
                 "You do not have access to a referenced file.", denied=True
             )
@@ -1183,7 +1185,7 @@ async def test_sniff_audio_format_mp3_id3(monkeypatch):
         mock_file_obj.id = "audio_1"
         mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_mp3_like_base64())
+        pipe._file_gateway.read_file_record_media = AsyncMock(return_value=bare_slot(_mp3_like_base64()))
 
         async def event_emitter(event):
             pass
@@ -1264,7 +1266,7 @@ async def test_sniff_audio_format_mp3_sync(monkeypatch):
         mock_file_obj.id = "audio_1"
         mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_mp3_sync_base64())
+        pipe._file_gateway.read_file_record_media = AsyncMock(return_value=bare_slot(_mp3_sync_base64()))
 
         async def event_emitter(event):
             pass
@@ -1346,7 +1348,7 @@ async def test_sniff_audio_format_m4a(monkeypatch):
         mock_file_obj.id = "audio_1"
         mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_m4a_like_base64())
+        pipe._file_gateway.read_file_record_media = AsyncMock(return_value=bare_slot(_m4a_like_base64()))
 
         async def event_emitter(event):
             pass
@@ -1427,7 +1429,7 @@ async def test_sniff_audio_format_flac(monkeypatch):
         mock_file_obj.id = "audio_1"
         mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_flac_like_base64())
+        pipe._file_gateway.read_file_record_media = AsyncMock(return_value=bare_slot(_flac_like_base64()))
 
         async def event_emitter(event):
             pass
@@ -1508,7 +1510,7 @@ async def test_sniff_audio_format_ogg(monkeypatch):
         mock_file_obj.id = "audio_1"
         mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_ogg_like_base64())
+        pipe._file_gateway.read_file_record_media = AsyncMock(return_value=bare_slot(_ogg_like_base64()))
 
         async def event_emitter(event):
             pass
@@ -1588,7 +1590,7 @@ async def test_sniff_audio_format_webm(monkeypatch):
         mock_file_obj.id = "audio_1"
         mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_webm_like_base64())
+        pipe._file_gateway.read_file_record_media = AsyncMock(return_value=bare_slot(_webm_like_base64()))
 
         emitted: list[Any] = []
 
@@ -1685,8 +1687,8 @@ async def test_audio_with_explicit_format(monkeypatch):
         mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         # Return generic base64 - sniffing won't find format, but declared format used
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(
-            return_value=base64.b64encode(b"some audio data").decode("ascii")
+        pipe._file_gateway.read_file_record_media = AsyncMock(
+            return_value=bare_slot(base64.b64encode(b"some audio data").decode("ascii"))
         )
 
         async def event_emitter(event):
@@ -1774,7 +1776,7 @@ async def test_audio_format_allowlist_from_metadata(monkeypatch):
         mock_file_obj.id = "audio_1"
         mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_wav_like_base64())
+        pipe._file_gateway.read_file_record_media = AsyncMock(return_value=bare_slot(_wav_like_base64()))
 
         async def event_emitter(event):
             pass
@@ -1913,7 +1915,7 @@ async def test_audio_file_encode_error(monkeypatch):
         mock_file_obj.id = "bad_audio"
         mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=None)  # Encoding fails
+        pipe._file_gateway.read_file_record_media = AsyncMock(return_value=None)  # Encoding fails
 
         emitted_events: list[dict] = []
 
@@ -1979,8 +1981,8 @@ async def test_audio_missing_format_error(monkeypatch):
         mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         # Return data that doesn't match any known signature
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(
-            return_value=base64.b64encode(b"random garbage data").decode("ascii")
+        pipe._file_gateway.read_file_record_media = AsyncMock(
+            return_value=bare_slot(base64.b64encode(b"random garbage data").decode("ascii"))
         )
 
         emitted_events: list[dict] = []
@@ -2055,7 +2057,7 @@ async def test_video_upload_injection(monkeypatch):
         mock_file_obj.id = "video_1"
         mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_mp4_video_base64())
+        pipe._file_gateway.read_file_record_media = AsyncMock(return_value=bare_slot(_mp4_video_base64()))
 
         async def event_emitter(event):
             pass
@@ -2200,7 +2202,7 @@ async def test_video_infers_mime_type(monkeypatch):
         mock_file_obj.id = "video_1"
         mock_file_obj.meta = {"content_type": "video/webm", "size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_mp4_video_base64())
+        pipe._file_gateway.read_file_record_media = AsyncMock(return_value=bare_slot(_mp4_video_base64()))
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.infer_file_mime_type", MagicMock(return_value="video/webm"))
 
         async def event_emitter(event):
@@ -2280,7 +2282,7 @@ async def test_video_file_encode_error(monkeypatch):
         mock_file_obj.id = "bad_video"
         mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=None)  # Encoding fails
+        pipe._file_gateway.read_file_record_media = AsyncMock(return_value=None)  # Encoding fails
 
         emitted_events: list[dict] = []
 
@@ -2444,7 +2446,7 @@ async def test_endpoint_override_conflict_with_forced_responses(monkeypatch):
         mock_file_obj.id = "video_1"
         mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_mp4_video_base64())
+        pipe._file_gateway.read_file_record_media = AsyncMock(return_value=bare_slot(_mp4_video_base64()))
 
         emitted_events: list[dict] = []
 
@@ -2926,7 +2928,7 @@ async def test_reasoning_effort_retry_on_unsupported_value():
         captured_payloads: list[dict] = []
 
         def callback_with_error_then_success(url, **kwargs):
-            payload = kwargs.get("json", {})
+            payload = posted_json(kwargs, {})
             captured_payloads.append(payload)
             call_count[0] += 1
 
@@ -3428,204 +3430,6 @@ async def test_tool_rename_debug_logging(caplog):
 # -----------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_decode_base64_prefix_empty_data(monkeypatch):
-    """Test _decode_base64_prefix returns empty bytes when data is empty string.
-
-    Covers line 147: return b"" when not data.
-    """
-    pipe = Pipe()
-
-    try:
-        pipe.valves.API_KEY = EncryptedStr("test-api-key")
-        pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
-
-        metadata: dict[str, Any] = {
-            "chat_id": "chat_123",
-            "model": {"id": "openai/gpt-4o-mini"},
-            "openrouter_pipe": {
-                "direct_uploads": {
-                    "audio": [{"id": "audio_1"}],  # No format, will trigger sniffing
-                }
-            },
-        }
-
-        mock_file_obj = MagicMock()
-        mock_file_obj.id = "audio_1"
-        mock_file_obj.meta = {"size": 4096}
-        monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
-        # Return empty string - triggers line 147: return b""
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value="")
-
-        emitted_events: list[dict] = []
-
-        async def event_emitter(event):
-            emitted_events.append(event)
-
-        with aioresponses() as mock_http:
-            mock_http.get(
-                "https://openrouter.ai/api/v1/models",
-                payload={"data": [{"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini"}]},
-                repeat=True,
-            )
-
-            body = {
-                "model": "openai/gpt-4o-mini",
-                "messages": [{"role": "user", "content": "listen"}],
-                "stream": True,
-            }
-
-            result = await pipe.pipe(
-                body=body,
-                __user__={"id": "user_123"},
-                __request__=None,
-                __event_emitter__=event_emitter,
-                __event_call__=None,
-                __metadata__=metadata,
-                __tools__=None,
-                __task__=None,
-                __task_body__=None,
-            )
-
-            await _consume_stream(result)
-            # Should fail with missing format error since empty data means empty prefix means no sniffing
-
-    finally:
-        await pipe.close()
-
-
-@pytest.mark.asyncio
-async def test_decode_base64_prefix_invalid_chars(monkeypatch):
-    """Test _decode_base64_prefix returns empty bytes for invalid base64 characters.
-
-    Covers line 160: return b"" when invalid character found.
-    """
-    pipe = Pipe()
-
-    try:
-        pipe.valves.API_KEY = EncryptedStr("test-api-key")
-        pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
-
-        metadata: dict[str, Any] = {
-            "chat_id": "chat_123",
-            "model": {"id": "openai/gpt-4o-mini"},
-            "openrouter_pipe": {
-                "direct_uploads": {
-                    "audio": [{"id": "audio_1"}],
-                }
-            },
-        }
-
-        mock_file_obj = MagicMock()
-        mock_file_obj.id = "audio_1"
-        mock_file_obj.meta = {"size": 4096}
-        monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
-        # Return data with invalid characters (Japanese chars have ord > 127)
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value="invalid\u3000base64data")
-
-        emitted_events: list[dict] = []
-
-        async def event_emitter(event):
-            emitted_events.append(event)
-
-        with aioresponses() as mock_http:
-            mock_http.get(
-                "https://openrouter.ai/api/v1/models",
-                payload={"data": [{"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini"}]},
-                repeat=True,
-            )
-
-            body = {
-                "model": "openai/gpt-4o-mini",
-                "messages": [{"role": "user", "content": "listen"}],
-                "stream": True,
-            }
-
-            result = await pipe.pipe(
-                body=body,
-                __user__={"id": "user_123"},
-                __request__=None,
-                __event_emitter__=event_emitter,
-                __event_call__=None,
-                __metadata__=metadata,
-                __tools__=None,
-                __task__=None,
-                __task_body__=None,
-            )
-
-            await _consume_stream(result)
-            # Should handle gracefully - format missing error will be raised
-
-    finally:
-        await pipe.close()
-
-
-@pytest.mark.asyncio
-async def test_decode_base64_prefix_invalid_base64_structure(monkeypatch):
-    """Test _decode_base64_prefix handles malformed base64 with fallback decode.
-
-    Covers lines 165-169: base64 decode exceptions with fallback.
-    """
-    pipe = Pipe()
-
-    try:
-        pipe.valves.API_KEY = EncryptedStr("test-api-key")
-        pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
-
-        metadata: dict[str, Any] = {
-            "chat_id": "chat_123",
-            "model": {"id": "openai/gpt-4o-mini"},
-            "openrouter_pipe": {
-                "direct_uploads": {
-                    "audio": [{"id": "audio_1"}],
-                }
-            },
-        }
-
-        mock_file_obj = MagicMock()
-        mock_file_obj.id = "audio_1"
-        mock_file_obj.meta = {"size": 4096}
-        monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
-        # Valid base64 chars but structurally wrong (will try fallback decode)
-        # Using valid chars but random content that might fail strict decode
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value="AAAA====AAAA")
-
-        emitted_events: list[dict] = []
-
-        async def event_emitter(event):
-            emitted_events.append(event)
-
-        with aioresponses() as mock_http:
-            mock_http.get(
-                "https://openrouter.ai/api/v1/models",
-                payload={"data": [{"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini"}]},
-                repeat=True,
-            )
-
-            body = {
-                "model": "openai/gpt-4o-mini",
-                "messages": [{"role": "user", "content": "listen"}],
-                "stream": True,
-            }
-
-            result = await pipe.pipe(
-                body=body,
-                __user__={"id": "user_123"},
-                __request__=None,
-                __event_emitter__=event_emitter,
-                __event_call__=None,
-                __metadata__=metadata,
-                __tools__=None,
-                __task__=None,
-                __task_body__=None,
-            )
-
-            await _consume_stream(result)
-
-    finally:
-        await pipe.close()
-
-
 # -----------------------------------------------------------------------------
 # Additional Coverage Tests: _sniff_audio_format with Empty Prefix (line 176)
 # -----------------------------------------------------------------------------
@@ -3666,7 +3470,7 @@ async def test_sniff_audio_format_empty_prefix(monkeypatch):
         mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         # Return None data - this will fail encoding check before sniffing
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=None)
+        pipe._file_gateway.read_file_record_media = AsyncMock(return_value=None)
 
         emitted_events: list[dict] = []
 
@@ -3780,7 +3584,7 @@ async def test_files_loop_skips_invalid_file_id():
         # Mock file inlining
         async def mock_inline_owui_file_id(file_id, *args, **kwargs):
             asked.append(file_id)
-            return InlinedFile(data_url=f"data:application/pdf;base64,{_pdf_like_base64()}", filename="doc.pdf")
+            return inlined_file(f"data:application/pdf;base64,{_pdf_like_base64()}", "doc.pdf")
 
         pipe._file_gateway.inline_owui_file_id = mock_inline_owui_file_id
 
@@ -3869,7 +3673,7 @@ async def test_audio_loop_skips_invalid_file_id(monkeypatch):
             return mock_file_obj
 
         monkeypatch.setattr(orch_mod, "get_file_by_id", recording_get_file_by_id)
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_mp3_like_base64())
+        pipe._file_gateway.read_file_record_media = AsyncMock(return_value=bare_slot(_mp3_like_base64()))
 
         async def event_emitter(event):
             pass
@@ -3973,7 +3777,7 @@ async def test_video_loop_skips_invalid_file_id(monkeypatch):
             return mock_file_obj
 
         monkeypatch.setattr(orch_mod, "get_file_by_id", recording_get_file_by_id)
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_mp4_video_base64())
+        pipe._file_gateway.read_file_record_media = AsyncMock(return_value=bare_slot(_mp4_video_base64()))
 
         async def event_emitter(event):
             pass
@@ -4069,7 +3873,7 @@ async def test_csv_set_with_non_string_value(monkeypatch):
         mock_file_obj.id = "audio_1"
         mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_mp3_like_base64())
+        pipe._file_gateway.read_file_record_media = AsyncMock(return_value=bare_slot(_mp3_like_base64()))
 
         async def event_emitter(event):
             pass
@@ -4415,7 +4219,7 @@ async def test_reasoning_retry_without_reasoning():
         captured_payloads: list[dict] = []
 
         def callback_with_reasoning_error_then_success(url, **kwargs):
-            payload = kwargs.get("json", {})
+            payload = posted_json(kwargs, {})
             captured_payloads.append(payload)
             call_count[0] += 1
 
@@ -4515,7 +4319,7 @@ async def test_signature_retry_strips_replayed_reasoning_end_to_end():
         captured_payloads: list[dict] = []
 
         def callback(url, **kwargs):
-            payload = kwargs.get("json", {})
+            payload = posted_json(kwargs, {})
             captured_payloads.append(payload)
             call_count[0] += 1
             if call_count[0] == 1:
@@ -4614,7 +4418,7 @@ async def test_reasoning_effort_retry_emits_status():
         captured_payloads: list[dict] = []
 
         def callback_with_effort_error_then_success(url, **kwargs):
-            payload = kwargs.get("json", {})
+            payload = posted_json(kwargs, {})
             captured_payloads.append(payload)
             call_count[0] += 1
 
@@ -4734,7 +4538,7 @@ async def test_reasoning_effort_retry_initializes_dict():
         captured_payloads: list[dict] = []
 
         def callback_with_effort_error_then_success(url, **kwargs):
-            payload = kwargs.get("json", {})
+            payload = posted_json(kwargs, {})
             captured_payloads.append(payload)
             call_count[0] += 1
 

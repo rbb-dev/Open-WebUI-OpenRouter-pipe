@@ -1,6 +1,7 @@
 """RED TEAM: does user-chosen content widen a process-global warn latch?"""
 from __future__ import annotations
 
+from tests.media_slots import bare_slot
 import base64
 import json
 import logging
@@ -55,9 +56,9 @@ async def test_distinct_image_sizes_each_add_a_permanent_latch_entry(monkeypatch
     adapter._pipe = MagicMock()
 
     async def _read(file_obj, *_a, **_k):
-        return blobs[file_obj.id]
+        return bare_slot(blobs[file_obj.id])
 
-    adapter._pipe._file_gateway.read_file_record_base64 = AsyncMock(side_effect=_read)
+    adapter._pipe._file_gateway.read_file_record_media = AsyncMock(side_effect=_read)
 
     async def _get_file(file_id, _logger):
         return SimpleNamespace(
@@ -77,8 +78,7 @@ async def test_distinct_image_sizes_each_add_a_permanent_latch_entry(monkeypatch
     monkeypatch.setattr(vm, "probe_video", _probe)
 
     valves = SimpleNamespace(
-        VIDEO_FRAME_IMAGE_MAX_BYTES=1 << 20,
-        VIDEO_FRAME_TOTAL_MAX_BYTES=1 << 20, IMAGE_UPLOAD_CHUNK_BYTES=1024,
+        IMAGE_UPLOAD_CHUNK_BYTES=1024,
         VIDEO_FRAME_IMAGE_MIME_ALLOWLIST="image/png,image/jpeg",
         SEND_MEDIA_VIA_FILE_HOST=True,
         # The clip floor is checked on the relay path, which is the only path a clip takes.

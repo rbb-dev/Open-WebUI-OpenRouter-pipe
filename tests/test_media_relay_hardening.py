@@ -25,6 +25,7 @@ import pytest
 from aioresponses import CallbackResult, aioresponses
 
 from open_webui_openrouter_pipe.core.config import Valves
+from tests.media_slots import bare_slot
 from open_webui_openrouter_pipe.integrations import video as video_module
 from open_webui_openrouter_pipe.integrations.media_relay import (
     _ENDPOINTS,
@@ -99,8 +100,8 @@ class _Relay:
         self.pipe = MagicMock()
         self.pipe.logger = logging.getLogger("relay-hardening")
 
-        async def _read(file_obj, _chunk, _cap, user=None):
-            return base64.b64encode(self.blobs[file_obj.id]).decode()
+        async def _read(file_obj, *, user=None):
+            return bare_slot(base64.b64encode(self.blobs[file_obj.id]).decode())
 
         async def _notify(_emitter, content, *, level="info"):
             self.notices.append(content)
@@ -110,7 +111,7 @@ class _Relay:
                 return heard.pop(0) if heard else True
             return heard
 
-        self.pipe._file_gateway.read_file_record_base64 = _read
+        self.pipe._file_gateway.read_file_record_media = _read
         self.pipe._event_emitter_handler._emit_notification = _notify
         self.adapter = VideoGenerationAdapter(pipe=self.pipe, logger=self.pipe.logger)
 
@@ -300,17 +301,19 @@ def test_an_ordinary_media_type_still_passes(value, expected):
 
 
 @pytest.mark.parametrize("hostile", ["video/mp4\r\nX-Injected: yes", "audio/mpeg\nX: y"])
-def test_a_media_type_carrying_a_header_break_is_refused_not_raised_on(hostile):
+def test_a_media_type_carrying_a_header_break_is_refused_not_raised_on(hostile, tmp_path):
     """aiohttp raises ValueError on CRLF in a header value, and nothing here catches it.
 
     A refusal is a failure card naming the file; the ValueError is a 500 with the request
     already half-published.
     """
+    clip = tmp_path / "c.mp4"
+    clip.write_bytes(b"CLIP")
     with pytest.raises(MediaRelayError, match="not a media type"):
         asyncio.run(
             relay_to_public_url(
-                MagicMock(), b"CLIP", filename="c.mp4", mime=hostile,
-                host="litterbox", retention="1h", max_bytes=0,
+                MagicMock(), clip, filename="c.mp4", mime=hostile,
+                host="litterbox", retention="1h",
             )
         )
 
@@ -319,8 +322,8 @@ def test_a_media_type_carrying_a_header_break_is_refused_not_raised_on(hostile):
 @pytest.mark.parametrize("offered", [17, 200])
 @pytest.mark.asyncio
 async def test_one_request_publishes_at_most_the_reference_ceiling(offered):
-    """The list arrives from the request, and every accepted entry is held in memory as
-    base64 until the uploads start.
+    """The list arrives from the request, and every accepted entry is read out of storage
+    before the uploads start.
 
     Two absolute lengths rather than lengths derived from the ceiling, so raising the
     ceiling cannot quietly satisfy both rows: seventeen is one over the documented
@@ -344,49 +347,13 @@ async def test_one_request_publishes_at_most_the_reference_ceiling(offered):
     assert withheld and str(offered - _MAX_INPUT_REFERENCES) in withheld[-1][0], withheld
 
 
-@pytest.mark.parametrize("cap_mb", [1])
-@pytest.mark.asyncio
-async def test_one_request_cannot_publish_more_bytes_than_the_operator_allows(cap_mb):
-    """The cap the operator set is per file AND per request; three files of the same size otherwise walk straight past
-    it.
-    """
-    each = (cap_mb * 1024 * 1024) // 2
-    blobs = {f"f{i}": MP4 + b"X" * each for i in range(3)}
-    records = {f"f{i}": _record(f"f{i}", "video/mp4") for i in range(3)}
-    relay = _Relay(blobs, records)
-
-    with pytest.raises(VideoGenerationError, match="sends at most"):
-        await relay.encode(
-            [{"id": f"f{i}"} for i in range(3)],
-            _relaying_valves(MEDIA_FILE_HOST_MAX_SIZE_MB=cap_mb),
-        )
-
-    assert relay.posts == [], "the request was already publishing before it counted"
-
-
-@pytest.mark.parametrize("declared_mb", [3, 9])
-@pytest.mark.asyncio
-async def test_a_file_the_record_already_says_is_too_big_is_never_read(declared_mb):
-    """The relay cap used to be enforced inside the uploader -- after a full read and a
-    base64 encode of a file that was always going to be refused."""
-    reads: list[str] = []
-    relay = _Relay({"f1": MP4}, {"f1": _record("f1", "video/mp4", size=declared_mb * 1024 * 1024)})
-    inner = relay.pipe._file_gateway.read_file_record_base64
-
-    async def _record_read(file_obj, *args, **kwargs):
-        reads.append(file_obj.id)
-        return await inner(file_obj, *args, **kwargs)
-
-    relay.pipe._file_gateway.read_file_record_base64 = _record_read
-
-    with pytest.raises(VideoGenerationError, match="limit for sending media"):
-        await relay.encode([{"id": "f1"}], _relaying_valves(MEDIA_FILE_HOST_MAX_SIZE_MB=2))
-
-    assert reads == [], "the file was read out of storage before the cap was consulted"
-    assert relay.posts == []
-
-
 # ------------------------------------------------------------- what comes back --
+def _payload_file(directory):
+    clip = directory / "payload.mp4"
+    clip.write_bytes(b"payload")
+    return clip
+
+
 @pytest.mark.parametrize("host", ["litterbox", "catbox"])
 def test_a_link_the_chosen_host_serves_is_accepted(host):
     """The refusals below must not be a blanket one: the ordinary answer still works."""
@@ -423,9 +390,11 @@ def test_every_known_host_declares_origins_that_cover_its_own_endpoint():
         _validate_endpoints({"catbox": _ENDPOINTS["catbox"]._replace(origins=())})
 
 
-def test_the_upload_does_not_follow_a_redirect_to_somewhere_else():
+def test_the_upload_does_not_follow_a_redirect_to_somewhere_else(tmp_path):
     """A 307 would re-post the user's file wherever it pointed, with no second check."""
     posted: list[bool] = []
+    clip = tmp_path / "c.mp4"
+    clip.write_bytes(b"CLIP")
 
     def _seen(_url, **kwargs):
         posted.append(kwargs.get("allow_redirects", True))
@@ -436,8 +405,8 @@ def test_the_upload_does_not_follow_a_redirect_to_somewhere_else():
             with aioresponses() as http:
                 http.post(_ENDPOINTS["catbox"].url, callback=_seen, repeat=True)
                 return await relay_to_public_url(
-                    session, b"CLIP", filename="c.mp4", mime="video/mp4",
-                    host="catbox", retention="1h", max_bytes=0,
+                    session, clip, filename="c.mp4", mime="video/mp4",
+                    host="catbox", retention="1h",
                 )
 
     assert asyncio.run(_run()) == "https://files.catbox.moe/ok.mp4"
@@ -570,7 +539,7 @@ async def test_a_reason_carrying_the_users_own_numbers_does_not_widen_the_latch(
     [(403, 1), (503, 1)],
 )
 @pytest.mark.asyncio
-async def test_a_host_that_answers_is_not_retried(status, attempts):
+async def test_a_host_that_answers_is_not_retried(status, attempts, tmp_path):
     """A host that replied has made its decision; only an unreachable one is tried again.
 
     The admin text for `Use the other file host if one is down` said the upload "is
@@ -605,12 +574,11 @@ async def test_a_host_that_answers_is_not_retried(status, attempts):
     with pytest.raises(MediaRelayError) as raised:
         await relay_to_public_url(
             _Session(),  # pyright: ignore[reportArgumentType]
-            b"payload",
+            _payload_file(tmp_path),
             filename="a.mp4",
             mime="video/mp4",
             host="litterbox",
             retention="1h",
-            max_bytes=4096,
             seconds_left=30,
         )
 
@@ -625,7 +593,7 @@ async def test_a_host_that_answers_is_not_retried(status, attempts):
 
 
 @pytest.mark.asyncio
-async def test_a_host_that_never_answers_is_retried_the_stated_number_of_times():
+async def test_a_host_that_never_answers_is_retried_the_stated_number_of_times(tmp_path):
     """The count the admin text states is the count the loop performs.
 
     Every attempt is counted at the transport, so the number is the number of uploads
@@ -657,12 +625,11 @@ async def test_a_host_that_never_answers_is_retried_the_stated_number_of_times()
     with pytest.raises(MediaRelayError) as raised:
         await relay_to_public_url(
             _Session(),  # pyright: ignore[reportArgumentType]
-            b"payload",
+            _payload_file(tmp_path),
             filename="a.mp4",
             mime="video/mp4",
             host="litterbox",
             retention="1h",
-            max_bytes=4096,
             seconds_left=30,
         )
 

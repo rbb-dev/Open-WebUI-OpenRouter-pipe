@@ -463,7 +463,7 @@ class TestExtractFrame:
         calls: list[bool] = []
 
         async def _scripted_ffmpeg(path, *, timestamp_seconds, logger, from_end=False,
-                                   saw_damage=None, max_frame_bytes=0, hop_index=None):
+                                   saw_damage=None, hop_index=None):
             calls.append(from_end)
             if not from_end:
                 raise FrameExtractionError(
@@ -471,7 +471,7 @@ class TestExtractFrame:
                 )
             return await real_ffmpeg(
                 path, timestamp_seconds=timestamp_seconds, logger=logger, from_end=True,
-                max_frame_bytes=max_frame_bytes, hop_index=hop_index,
+                hop_index=hop_index,
             )
 
         monkeypatch.setattr(fe, "_extract_frame_ffmpeg", _scripted_ffmpeg)
@@ -547,8 +547,8 @@ class TestExtractFrame:
             )
 
         async def _ffmpeg(_p, *, timestamp_seconds, logger, from_end=False, saw_damage=None,
-                          max_frame_bytes=0, hop_index=None):
-            del timestamp_seconds, max_frame_bytes, hop_index
+                          hop_index=None):
+            del timestamp_seconds, hop_index
             seen.append("end" if from_end else "direct")
             if saw_damage is not None:
                 saw_damage.append(ladder_damage if from_end else direct_damage)
@@ -875,78 +875,8 @@ def _declared(path: Path) -> tuple[object, ...] | None:
     return tuple(size) if isinstance(size, (list, tuple)) else None
 
 
-def _noise_png(width: int, height: int) -> bytes:
-    """A PNG no compressor can shrink, built in process and never written down.
-
-    Entropy, not dimensions, is what a PNG's size follows. A constant-colour frame
-    of the same shape measures about eighty kilobytes and a re-encode of it about
-    twenty, so a test built that way is under any plausible budget before the code
-    under test has done anything -- it passes on the unfixed tree and cannot fail.
-    """
-    import numpy as np
-
-    array = np.random.default_rng(0).integers(0, 256, (height, width, 3), dtype=np.uint8)
-    buf = io.BytesIO()
-    Image.fromarray(array).save(buf, format="PNG")
-    return buf.getvalue()
-
-
 _REQUEST = object()
 _STORAGE_FALLBACK_USER = SimpleNamespace(id="fallback-storage-user")
-
-
-# -----------------------------------------------------------------------------
-# The end-walk's rescue return site, which had no byte gate at all.
-#
-# `_extract_frame_with_budget` returns an `ExtractedFrame` from four places. Three of
-# them call `_check_frame_bytes` first; the fourth -- the plain seek to
-# `_index_end(meta, "last")` that answers a request whose own seek and whose whole
-# `-sseof` end walk both came back empty -- did not, so a frame over the budget left
-# the extractor, was uploaded to Open WebUI storage, thumbnailed, counted in
-# `frames_extracted`, and was then refused by `_encode_frame_images` on a turn already
-# billed for the classifier call.
-#
-# The gate belongs at that site and nowhere else. In `_encode_frame_images` the frame
-# is already stored, so a post-hoc check still pays the upload; and a truncated PNG is
-# not a frame, so clamping is not an option either.
-#
-# The walk is driven through the ffmpeg PROCESS boundary, argv by argv, so which leg
-# runs is shipped code -- the branch selection is the thing under test and it is left
-# alone. `docs/openrouter_video_intent_classifier.md:133` already claims the
-# invariant ("Every frame the extractor returns is also held under the
-# `VIDEO_FRAME_IMAGE_MAX_BYTES` byte budget"), and the row below is the acceptance
-# criterion that sentence is written against.
-# -----------------------------------------------------------------------------
-
-
-_H1452_BUDGET = 200_000
-
-
-def _over_budget_png() -> bytes:
-    """A real PNG that is over the frame budget and UNDER the ffmpeg read cap.
-
-    The read cap is `max_frame_bytes + _FRAME_READ_SLACK_BYTES` and it fires inside
-    `_extract_frame_ffmpeg`, on every leg, before the bytes reach any return site. A
-    payload above it would be refused by the READ rather than by the budget gate: on
-    the direct legs that is a different gate answering the same assertion, and on the
-    rescue leg the refusal is caught by the ladder's own `except` and the call is
-    answered from the imageio arm instead, so the row would measure neither.
-
-    1920x52 of entropy measures 300014 bytes against a 200000 byte budget and a
-    462144 byte cap, so this frame is refused by the budget gate alone. The window is
-    asserted rather than assumed, so a fixture or a cap that moved reports which of
-    the two it can no longer tell apart.
-    """
-    import open_webui_openrouter_pipe.media.frame_extraction as fe
-
-    payload = _noise_png(1920, 52)
-    cap = fe._read_cap(_H1452_BUDGET)
-    assert _H1452_BUDGET < len(payload) <= cap, (
-        f"the fixture measures {len(payload)} bytes; the budget is {_H1452_BUDGET} and "
-        f"the ffmpeg read cap is {cap}, so this row can no longer tell the budget gate "
-        f"from the read cap"
-    )
-    return payload
 
 
 _CANCEL_WAIT_POLLS = 600

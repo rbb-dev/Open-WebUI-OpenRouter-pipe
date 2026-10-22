@@ -8,6 +8,7 @@ is recognised -- missing it bills a generation of the word "help".
 
 from __future__ import annotations
 
+from tests.posted_body import posted_json
 import json
 import logging
 import re
@@ -181,7 +182,7 @@ async def test_image_help_renders_the_panel_and_sends_no_request(
         def _callback(url, **kwargs):
             from aioresponses import CallbackResult
 
-            sent.append(kwargs["json"])
+            sent.append(posted_json(kwargs))
             return CallbackResult(
                 status=200,
                 body=(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from tests.posted_body import posted_json
 import logging
 import types
 from typing import Any
@@ -78,7 +79,7 @@ class _FakeSession:
         return _FakeResponse(self._payload_for(url))
 
     def post(self, url: str, **kwargs: Any) -> _FakeResponse:
-        self.posts.append({"url": str(url), "body": kwargs.get("json")})
+        self.posts.append({"url": str(url), "body": posted_json(kwargs)})
         return _FakeResponse(_RESPONSE_OK)
 
     async def close(self) -> None:

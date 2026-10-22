@@ -293,7 +293,6 @@ _SHELL_TEXT = re.compile(r">([^<>{}]{2,60})<")
 _NOT_A_SETTING = {
     "Built-in tools": "Open WebUI's own checkbox on the model editor; the pipe writes it but never draws it",
     "File context": "Open WebUI's own checkbox on the model editor; the pipe writes it but never draws it",
-    "Video too large": "the opening words of the rejection the request transformer raises, not a control",
 }
 
 

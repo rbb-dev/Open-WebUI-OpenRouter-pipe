@@ -27,6 +27,7 @@ from .utils import (
     CONTINUED_REPLY,
     _pretty_json,
     _resolve_retry_after_seconds,
+    closing_status_descriptions,
     join_answer_and_card,
 )
 
@@ -251,6 +252,7 @@ class ErrorFormatter:
         terminal: bool = True,
         partial_answer: str = "",
         fallback_template: str | None = None,
+        end_notices: list[str] | None = None,
     ) -> str:
         if not self._event_emitter_handler:
             return ""
@@ -263,6 +265,7 @@ class ErrorFormatter:
             terminal=terminal,
             partial_answer=partial_answer,
             fallback_template=fallback_template,
+            end_notices=end_notices,
         )
 
     def _build_error_context(self) -> tuple[str, dict[str, Any]]:
@@ -436,6 +439,7 @@ class ErrorFormatter:
         usage: dict[str, Any] | None = None,
         partial_answer: str = "",
         terminal: bool = True,
+        end_notices: list[str] | None = None,
     ) -> str:
         sign_in_failure = is_sign_in_failure(exc)
         if sign_in_failure:
@@ -496,6 +500,10 @@ class ErrorFormatter:
                     },
                 }
             )
+            for closing_line in closing_status_descriptions(None, end_notices or (), join=False):
+                await event_emitter(
+                    {"type": "status", "data": {"description": closing_line, "done": True}}
+                )
             continuing = CONTINUED_REPLY.get() is not None
             if on_channel or not continuing:
                 await event_emitter({"type": "chat:message", "data": {"content": shown}})

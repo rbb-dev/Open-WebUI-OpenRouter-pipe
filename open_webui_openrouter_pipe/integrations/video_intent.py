@@ -1034,9 +1034,6 @@ def _make_default_invoke(
 
 _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
     "frame_extract_failed": "Could not extract frame from previous video.",
-    "frame_over_byte_budget": (
-        "One frame of the previous video was too large to send and was left out."
-    ),
     "frame_mime_not_allowed": (
         "One frame of the previous video was left out because the allowed frame image "
         "formats do not include any this pipe can write."

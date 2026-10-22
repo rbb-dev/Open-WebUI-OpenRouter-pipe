@@ -27,7 +27,6 @@ _CHAT_VALVES = {
     **_CONTRACT_IDENTITY,
     "MAX_INPUT_IMAGES_PER_REQUEST": 0,
     "IMAGE_INPUT_SELECTION": "latest_user",
-    "BASE64_MAX_SIZE_MB": 10,
     "IMAGE_UPLOAD_CHUNK_BYTES": 65536,
     "DIRECT_UPLOAD_FAILURE_TEMPLATE": "Direct upload failed: {reason}",
     "ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE": "Endpoint conflict: {reason}",

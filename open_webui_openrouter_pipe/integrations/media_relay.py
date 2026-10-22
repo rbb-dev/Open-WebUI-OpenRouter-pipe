@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import os
 import re
 import time
+from pathlib import Path
 from typing import Any, NamedTuple
 from urllib.parse import urlunsplit
 
@@ -95,6 +98,12 @@ def _as_the_host_put_it(text: str) -> str:
     return f"`{_UNQUOTABLE.sub(' ', ' '.join(text.split()))[:_HOST_REPLY_LIMIT]}`"
 
 
+def _file_unreadable() -> MediaRelayError:
+    return MediaRelayError(
+        "the file could not be read", may_have_stored_it=False, host_independent=True
+    )
+
+
 def _as_the_host_explained(failure: BaseException, nothing: str) -> str:
     said = str(failure).strip()
     return _as_the_host_put_it(said) if said else nothing
@@ -136,7 +145,7 @@ _validate_endpoints(_ENDPOINTS)
 
 
 def _form(
-    fields: dict[str, str], filename: str, blob: bytes, mime: str, field: str
+    fields: dict[str, str], filename: str, blob: Any, mime: str, field: str
 ) -> aiohttp.FormData:
     form = aiohttp.FormData()
     for name, value in fields.items():
@@ -147,13 +156,12 @@ def _form(
 
 async def relay_to_public_url(
     session: aiohttp.ClientSession,
-    blob: bytes,
+    source: Path,
     *,
     filename: str,
     mime: str,
     host: str,
     retention: str,
-    max_bytes: int,
     seconds_left: float = MAX_RELAY_SECONDS_PER_REQUEST,
 ) -> str:
     endpoint = _ENDPOINTS.get(host)
@@ -170,14 +178,11 @@ async def relay_to_public_url(
             may_have_stored_it=False,
             host_independent=True,
         )
-    if max_bytes > 0 and len(blob) > max_bytes:
-        raise MediaRelayError(
-            f"the file is {megabytes(len(blob))} and the limit for sending media to a "
-            f"file host is {megabytes(max_bytes)}",
-            may_have_stored_it=False,
-            host_independent=True,
-        )
-    if not blob:
+    try:
+        size = (await asyncio.to_thread(os.stat, source)).st_size
+    except OSError as exc:
+        raise _file_unreadable() from exc
+    if not size:
         raise MediaRelayError(
             "the file is empty", may_have_stored_it=False, host_independent=True
         )
@@ -200,28 +205,35 @@ async def relay_to_public_url(
                 out_of_time = True
             break
         try:
-            async with session.post(
-                endpoint.url,
-                data=_form(
-                    fields, filename or "upload.bin", blob, content_type, endpoint.field
-                ),
-                timeout=aiohttp.ClientTimeout(total=min(_MAX_UPLOAD_SECONDS, window)),
-                allow_redirects=False,
-            ) as response:
-                text = (await response.text()).strip()
-                if response.status == 200:
-                    link = _extract_url(text, endpoint.origins)
-                    if link:
-                        return link
-                    stored = True
-                    last = (
-                        f"{host} answered without a link it serves: "
-                        f"{_as_the_host_put_it(text)}"
-                    )
+            with contextlib.ExitStack() as opened:
+                try:
+                    part = opened.enter_context(await asyncio.to_thread(open, source, "rb"))
+                except OSError as exc:
+                    raise _file_unreadable() from exc
+                async with session.post(
+                    endpoint.url,
+                    data=_form(
+                        fields, filename or "upload.bin", part, content_type, endpoint.field
+                    ),
+                    timeout=aiohttp.ClientTimeout(total=min(_MAX_UPLOAD_SECONDS, window)),
+                    allow_redirects=False,
+                ) as response:
+                    text = (await response.text()).strip()
+                    if response.status == 200:
+                        link = _extract_url(text, endpoint.origins)
+                        if link:
+                            return link
+                        stored = True
+                        last = (
+                            f"{host} answered without a link it serves: "
+                            f"{_as_the_host_put_it(text)}"
+                        )
+                        break
+                    stored = response.status in _MAY_HAVE_INGESTED
+                    last = f"{host} answered {response.status}"
+                    if text:
+                        last = f"{last}: {_as_the_host_put_it(text)}"
                     break
-                stored = response.status in _MAY_HAVE_INGESTED
-                last = f"{host} answered {response.status}"
-                break
         except asyncio.CancelledError:
             raise
         except (aiohttp.ClientConnectorError, aiohttp.ConnectionTimeoutError) as exc:

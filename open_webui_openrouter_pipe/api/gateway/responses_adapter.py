@@ -31,6 +31,7 @@ from ...core.errors import (
     is_sign_in_failure,
 )
 from ...core.logging_system import SessionLogger
+from ...core.request_body import StreamedJSONPayload
 from ...core.timing_logger import timed, timing_mark
 from ...core.utils import (
     _apply_retry_after_metadata,
@@ -394,8 +395,6 @@ class ResponsesAdapter:
         if not files_inlined:
             request_body = await self._pipe._file_gateway.inline_internal_responses_input_files(
                 request_body,
-                chunk_size=effective_valves.IMAGE_UPLOAD_CHUNK_BYTES,
-                max_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
                 user=user,
             )
         headers = {
@@ -546,7 +545,12 @@ class ResponsesAdapter:
                             try:
                                 timing_mark("responses_http_request_start")
                                 async with session.post(
-                                    url, json=request_body, headers=headers,
+                                    url,
+                                    data=StreamedJSONPayload(
+                                        request_body,
+                                        chunk_bytes=effective_valves.IMAGE_UPLOAD_CHUNK_BYTES,
+                                    ),
+                                    headers=headers,
                                     timeout=self._timeout(effective_valves),
                                 ) as resp:
                                     timing_mark("responses_http_headers_received")
@@ -954,8 +958,6 @@ class ResponsesAdapter:
         if not files_inlined:
             request_params = await self._pipe._file_gateway.inline_internal_responses_input_files(
                 request_params,
-                chunk_size=effective_valves.IMAGE_UPLOAD_CHUNK_BYTES,
-                max_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
                 user=user,
             )
         headers = {
@@ -983,7 +985,12 @@ class ResponsesAdapter:
             async for attempt in retryer:
                 with attempt:
                     async with session.post(
-                        url, json=request_params, headers=headers,
+                        url,
+                        data=StreamedJSONPayload(
+                            request_params,
+                            chunk_bytes=effective_valves.IMAGE_UPLOAD_CHUNK_BYTES,
+                        ),
+                        headers=headers,
                         timeout=self._timeout(effective_valves),
                     ) as resp:
                         if resp.status >= 400:

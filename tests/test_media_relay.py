@@ -13,6 +13,7 @@ import base64
 import io
 import json
 import logging
+import tempfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,6 +26,7 @@ from aioresponses import CallbackResult, aioresponses
 from PIL import Image
 
 from open_webui_openrouter_pipe.core.config import Valves
+from open_webui_openrouter_pipe.core.media_slot import MediaSlot
 from open_webui_openrouter_pipe.integrations import media_relay
 from open_webui_openrouter_pipe.integrations.media_relay import _ENDPOINTS
 from open_webui_openrouter_pipe.integrations.media_relay import (
@@ -33,11 +35,11 @@ from open_webui_openrouter_pipe.integrations.media_relay import (
     MediaRelayError,
     _as_the_host_put_it,
     host_keeps_forever,
-    megabytes,
     relay_to_public_url,
 )
 from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
 from open_webui_openrouter_pipe.integrations.video_types import VideoGenerationError
+from tests.media_slots import bare_slot
 from tests.test_media_relay_hardening import _WALL_BODY
 
 
@@ -95,52 +97,12 @@ def test_a_notice_that_names_no_placeholders_is_left_alone():
     )
 
 
-@pytest.mark.parametrize(("size_mb", "cap_mb"), [(4, 1), (200, 200)])
-def test_a_file_over_the_cap_is_refused_before_anything_is_uploaded(size_mb, cap_mb):
-    """The refusal names both numbers, because 'too big' alone tells an operator nothing.
-
-    `(200, 200)` is the boundary arm: a blob of exactly `max_bytes` is NOT over the
-    cap, so it must reach the host. The row's `size_mb > cap_mb` is therefore read
-    off the pair rather than assumed, and the `session.post` guard below fires on
-    the over arms only.
-    """
-    session = MagicMock()
-    over = size_mb > cap_mb
-    if over:
-        session.post = MagicMock(
-            side_effect=AssertionError("an oversize file must not be posted")
-        )
-
-    if over:
-        with pytest.raises(MediaRelayError) as raised:
-            asyncio.run(
-                relay_to_public_url(
-                    session,
-                    b"x" * (size_mb * 1024 * 1024),
-                    filename="clip.mp4",
-                    mime="video/mp4",
-                    host="litterbox",
-                    retention="1h",
-                    max_bytes=cap_mb * 1024 * 1024,
-                )
-            )
-        message = str(raised.value)
-        assert f"{size_mb}.0 MB" in message and f"{cap_mb}.0 MB" in message, message
-    else:
-        link, wire = asyncio.run(_relayed([(200, "https://litter.catbox.moe/ok.mp4")]))
-        assert link == "https://litter.catbox.moe/ok.mp4", link
-        assert len(wire.calls) == 1, (
-            f"a blob of exactly the cap posted {len(wire.calls)} time(s); at the cap it "
-            f"is not over it and must be uploaded"
-        )
-
-
 def test_a_host_this_pipe_does_not_know_is_refused_by_name():
     with pytest.raises(MediaRelayError, match="not a file host"):
         asyncio.run(
             relay_to_public_url(
-                MagicMock(), b"x", filename="a.mp4", mime="video/mp4",
-                host="somewhere-else", retention="1h", max_bytes=0,
+                MagicMock(), Path("a.mp4"), filename="a.mp4", mime="video/mp4",
+                host="somewhere-else", retention="1h",
             )
         )
 
@@ -197,9 +159,9 @@ async def test_a_clip_reaches_the_request_as_a_link_rather_than_as_bytes(monkeyp
     uploaded: list[tuple[str, str, int]] = []
 
     async def fake_relay(
-        _session, blob, *, filename, mime, host, retention, max_bytes, seconds_left
+        _session, source, *, filename, mime, host, retention, seconds_left
     ):
-        uploaded.append((host, retention, len(blob)))
+        uploaded.append((host, retention, source.stat().st_size))
         assert seconds_left > 0, "the upload was given no time at all"
         return "https://litter.catbox.moe/abc123.mp4"
 
@@ -220,7 +182,7 @@ async def test_a_clip_reaches_the_request_as_a_link_rather_than_as_bytes(monkeyp
             __aenter__=AsyncMock(return_value=MagicMock()), __aexit__=AsyncMock(return_value=False)
         )
     )
-    adapter._pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value="AAAAGGZ0eXBtcDQy")
+    adapter._pipe._file_gateway.read_file_record_media = AsyncMock(return_value=bare_slot("AAAAGGZ0eXBtcDQy"))
 
     valves = Valves()
     valves.SEND_MEDIA_VIA_FILE_HOST = True
@@ -299,9 +261,11 @@ async def test_a_reference_kind_is_offered_only_where_the_model_declares_it(
     PAIR = base64.b64encode(pair_png.getvalue()).decode()
 
     async def _bytes(file_obj, *_args, **_kwargs):
-        return PAIR if str(file_obj.id).startswith("pair") else base64.b64encode(payload).decode()
+        return bare_slot(
+            PAIR if str(file_obj.id).startswith("pair") else base64.b64encode(payload).decode()
+        )
 
-    adapter._pipe._file_gateway.read_file_record_base64 = AsyncMock(side_effect=_bytes)
+    adapter._pipe._file_gateway.read_file_record_media = AsyncMock(side_effect=_bytes)
 
     valves = Valves()
     valves.SEND_MEDIA_VIA_FILE_HOST = True
@@ -502,6 +466,11 @@ class _Wire:
         self.calls = []
 
     def __call__(self, url, **kwargs):
+        form = kwargs["data"]
+        form._fields = [
+            (options, headers, io.BytesIO(value.read()) if isinstance(value, io.IOBase) else value)
+            for options, headers, value in form._fields
+        ]
         self.calls.append({"url": str(url), **kwargs})
         status, text = self.answers[min(len(self.calls) - 1, len(self.answers) - 1)]
         return CallbackResult(status=status, body=text)
@@ -517,24 +486,27 @@ class _Wire:
 
 async def _relayed(answers, *, host="litterbox", retention="1h", blob=b"\x00\x01clip", sleeps=None):
     wire = _Wire(answers)
-    async with aiohttp.ClientSession() as session:
-        with aioresponses() as mocked:
-            mocked.post(_ENDPOINTS[host][0], callback=wire, repeat=True)
-            paused = []
+    with tempfile.TemporaryDirectory() as scratch:
+        clip = Path(scratch) / "clip.mp4"
+        clip.write_bytes(blob)
+        async with aiohttp.ClientSession() as session:
+            with aioresponses() as mocked:
+                mocked.post(_ENDPOINTS[host][0], callback=wire, repeat=True)
+                paused = []
 
-            async def _record(seconds):
-                paused.append(seconds)
+                async def _record(seconds):
+                    paused.append(seconds)
 
-            with patch.object(media_relay.asyncio, "sleep", _record):
-                try:
-                    link = await relay_to_public_url(
-                        session, blob, filename="clip.mp4", mime="video/mp4",
-                        host=host, retention=retention, max_bytes=0,
-                    )
-                except MediaRelayError as exc:
-                    link = exc
-            if sleeps is not None:
-                sleeps.extend(paused)
+                with patch.object(media_relay.asyncio, "sleep", _record):
+                    try:
+                        link = await relay_to_public_url(
+                            session, clip, filename="clip.mp4", mime="video/mp4",
+                            host=host, retention=retention,
+                        )
+                    except MediaRelayError as exc:
+                        link = exc
+                if sleeps is not None:
+                    sleeps.extend(paused)
     return link, wire
 
 
@@ -710,15 +682,15 @@ def _adapter_with_files(records, reads, uploads):
     pipe.logger = logging.getLogger("relay-order")
     pipe._event_emitter_handler._emit_notification = _AsyncMock(return_value=True)
 
-    async def _read(file_obj, _chunk, _cap, user=None):
+    async def _read(file_obj, *, user=None):
         reads.append(file_obj.id)
-        return records[file_obj.id]["b64"]
+        return bare_slot(records[file_obj.id]["b64"])
 
-    pipe._file_gateway.read_file_record_base64 = _read
+    pipe._file_gateway.read_file_record_media = _read
     adapter = VideoGenerationAdapter(pipe=pipe, logger=logging.getLogger("relay-order"))
 
     async def _relay(
-        self, valves, b64, *, filename, mime, family, deadline, session=None,
+        self, valves, media, *, filename, mime, family, deadline, session=None,
         event_emitter=None, stored=None, already_uploaded=False,
     ):
         uploads.append((filename, mime, family))
@@ -864,6 +836,17 @@ async def test_a_clip_that_cannot_be_sent_is_never_read_out_of_storage(
     assert reads == expected_reads
 
 
+def _a_clip_on_disk(directory):
+    clip = directory / "clip.mp4"
+    clip.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+    return MediaSlot(mime="video/mp4", path=clip)
+
+
+def _path_of(slot):
+    assert slot.path is not None
+    return Path(slot.path)
+
+
 class _RelaySession:
     """A real aiohttp session wrapped as the pipe's `_create_http_session` context."""
 
@@ -889,7 +872,7 @@ def _relay_adapter(session):
 @pytest.mark.parametrize("refusal", [400])
 @pytest.mark.asyncio
 async def test_the_second_file_host_is_tried_only_when_the_operator_turned_it_on(
-    chosen, refusal
+    chosen, refusal, tmp_path
 ):
     """`USE_THE_OTHER_FILE_HOST_IF_ONE_IS_DOWN` is the difference between a clip and an error.
 
@@ -902,17 +885,14 @@ async def test_the_second_file_host_is_tried_only_when_the_operator_turned_it_on
     because silently reaching a host the operator did not pick publishes a user's file
     somewhere they did not agree to.
     """
-    import base64
-
     other = next(name for name in RELAY_HOSTS if name != chosen)
-    blob = base64.b64encode(b"\x00\x00\x00\x18ftypmp42").decode()
+    clip = _a_clip_on_disk(tmp_path)
 
     async with aiohttp.ClientSession() as session:
         adapter = _relay_adapter(session)
         valves = Valves()
         valves.MEDIA_FILE_HOST = chosen
         valves.USE_THE_OTHER_FILE_HOST_IF_ONE_IS_DOWN = True
-        valves.MEDIA_FILE_HOST_MAX_SIZE_MB = 200
 
         with aioresponses() as http:
             http.post(_ENDPOINTS[chosen][0], status=refusal, body="no", repeat=True)
@@ -921,7 +901,7 @@ async def test_the_second_file_host_is_tried_only_when_the_operator_turned_it_on
             )
             with patch.object(media_relay.asyncio, "sleep", AsyncMock()):
                 link, used = await adapter._relay_reference(
-                    valves, blob, filename="clip.mp4", mime="video/mp4", family="video",
+                    valves, clip, filename="clip.mp4", mime="video/mp4", family="video",
                     deadline=time.monotonic() + 30.0, event_emitter=object(),
                 )
 
@@ -938,7 +918,7 @@ async def test_the_second_file_host_is_tried_only_when_the_operator_turned_it_on
             with patch.object(media_relay.asyncio, "sleep", AsyncMock()):
                 with pytest.raises(VideoGenerationError) as failed:
                     await adapter._relay_reference(
-                        valves, blob, filename="clip.mp4", mime="video/mp4", family="video",
+                        valves, clip, filename="clip.mp4", mime="video/mp4", family="video",
                         deadline=time.monotonic() + 30.0,
                     )
             reached = sorted({str(url) for (_method, url) in http.requests})
@@ -960,7 +940,7 @@ async def test_the_second_file_host_is_tried_only_when_the_operator_turned_it_on
 )
 @pytest.mark.asyncio
 async def test_a_host_that_may_already_hold_the_file_is_not_followed_by_a_second_host(
-    chosen, outcome
+    chosen, outcome, tmp_path
 ):
     """A 5xx arrives after the whole file is on the wire, so the host may have written it.
 
@@ -982,10 +962,8 @@ async def test_a_host_that_may_already_hold_the_file_is_not_followed_by_a_second
     the host's name, because `catbox` is a substring of the litterbox endpoint too and a
     substring filter would satisfy itself.
     """
-    import base64
-
     other = next(name for name in RELAY_HOSTS if name != chosen)
-    blob = base64.b64encode(b"\x00\x00\x00\x18ftypmp42").decode()
+    clip = _a_clip_on_disk(tmp_path)
     status, text = outcome if isinstance(outcome, tuple) else (outcome, "down")
 
     async with aiohttp.ClientSession() as session:
@@ -1003,7 +981,7 @@ async def test_a_host_that_may_already_hold_the_file_is_not_followed_by_a_second
             with patch.object(media_relay.asyncio, "sleep", AsyncMock()):
                 with pytest.raises(VideoGenerationError) as failed:
                     await adapter._relay_reference(
-                        valves, blob, filename="clip.mp4", mime="video/mp4", family="video",
+                        valves, clip, filename="clip.mp4", mime="video/mp4", family="video",
                         deadline=time.monotonic() + 30.0,
                     )
             reached = sorted({str(url) for (_method, url) in http.requests})
@@ -1017,8 +995,10 @@ async def test_a_host_that_may_already_hold_the_file_is_not_followed_by_a_second
 
 
 @pytest.mark.asyncio
-async def test_a_clip_that_is_not_readable_is_refused_before_any_host_sees_it():
-    """Bytes that are not base64 would upload as whatever `b64decode` salvaged."""
+async def test_a_clip_that_is_not_readable_is_refused_before_any_host_sees_it(tmp_path):
+    """A clip whose file is gone from the request's own storage is refused, not uploaded."""
+    clip = _a_clip_on_disk(tmp_path)
+    _path_of(clip).unlink()
     async with aiohttp.ClientSession() as session:
         adapter = _relay_adapter(session)
         valves = Valves()
@@ -1027,29 +1007,33 @@ async def test_a_clip_that_is_not_readable_is_refused_before_any_host_sees_it():
         with aioresponses() as http:
             with pytest.raises(VideoGenerationError) as failed:
                 await adapter._relay_reference(
-                    valves, "AAAAA", filename="clip.mp4", mime="video/mp4", family="video",
+                    valves, clip, filename="clip.mp4", mime="video/mp4", family="video",
                     deadline=time.monotonic() + 30.0,
                 )
             assert list(http.requests) == [], "an unreadable clip still reached a host"
         assert "video" in str(failed.value)
+        assert str(tmp_path) not in str(failed.value), failed.value
 
 
 @pytest.mark.parametrize("host", list(RELAY_HOSTS))
-def test_an_empty_file_is_refused_rather_than_published_as_a_zero_byte_link(host):
+def test_an_empty_file_is_refused_rather_than_published_as_a_zero_byte_link(host, tmp_path):
     """Both hosts accept a zero-byte upload and hand back a permanent link to nothing.
 
     The provider then fetches it, fails, and the user is billed for a refusal caused by a
     file the pipe could have declined for free. Checked on both hosts because the guard
     sits above the host split.
     """
+    empty = tmp_path / "empty.mp4"
+    empty.write_bytes(b"")
+
     async def _run():
         async with aiohttp.ClientSession() as session:
             with aioresponses() as http:
                 http.post(_ENDPOINTS[host][0], status=200, body="https://x.test/nothing")
                 with pytest.raises(MediaRelayError) as refused:
                     await relay_to_public_url(
-                        session, b"", filename="clip.mp4", mime="video/mp4",
-                        host=host, retention="1h", max_bytes=200 * 1024 * 1024,
+                        session, empty, filename="clip.mp4", mime="video/mp4",
+                        host=host, retention="1h",
                     )
                 assert list(http.requests) == [], "an empty file still reached the host"
         return str(refused.value)
@@ -1057,7 +1041,7 @@ def test_an_empty_file_is_refused_rather_than_published_as_a_zero_byte_link(host
     assert "empty" in asyncio.run(_run())
 
 
-def _relay_raising(failure):
+def _relay_raising(failure, clip):
     async def _run():
         async with aiohttp.ClientSession() as session:
             with aioresponses() as http:
@@ -1065,8 +1049,8 @@ def _relay_raising(failure):
                 with patch.object(media_relay.asyncio, "sleep", AsyncMock()):
                     with pytest.raises(MediaRelayError) as refused:
                         await relay_to_public_url(
-                            session, b"\x00\x01clip", filename="clip.mp4", mime="video/mp4",
-                            host="litterbox", retention="1h", max_bytes=0,
+                            session, clip, filename="clip.mp4", mime="video/mp4",
+                            host="litterbox", retention="1h",
                         )
                 attempts = len(next(iter(http.requests.values())))
         return refused.value, attempts
@@ -1081,14 +1065,14 @@ def _relay_raising(failure):
         aiohttp.ConnectionTimeoutError("connect timed out"),
     ],
 )
-def test_a_host_never_contacted_is_named_and_retried(failure):
+def test_a_host_never_contacted_is_named_and_retried(failure, tmp_path):
     """A DNS or TCP failure is the common file-host outage, and it raises rather than answers.
 
     These are the two classes aiohttp raises before a single byte of the body is written,
     which is the only case where posting again cannot add a second permanent copy. Two
     of them, so an arm that catches only one is not enough.
     """
-    refused, attempts = _relay_raising(failure)
+    refused, attempts = _relay_raising(failure, _path_of(_a_clip_on_disk(tmp_path)))
     said = str(refused)
     assert "litterbox could not be reached" in said, said
     assert attempts == 3, f"a pre-send failure was retried {attempts} time(s), not three"
@@ -1099,14 +1083,14 @@ def test_a_host_never_contacted_is_named_and_retried(failure):
     "failure",
     [aiohttp.ServerDisconnectedError("gone"), TimeoutError("timed out")],
 )
-def test_a_failure_that_could_have_landed_is_neither_retried_nor_claimed_pre_send(failure):
+def test_a_failure_that_could_have_landed_is_neither_retried_nor_claimed_pre_send(failure, tmp_path):
     """A disconnect and a whole-request timeout both happen after the body is on the wire.
 
     Neither rules out the host having written the file, and neither carries a credential
     that could delete it. Two classes on the same side of the line so a handler that
     special-cases one of them still fails here.
     """
-    refused, attempts = _relay_raising(failure)
+    refused, attempts = _relay_raising(failure, _path_of(_a_clip_on_disk(tmp_path)))
     assert attempts == 1, f"a possibly-stored upload was posted {attempts} times"
     assert str(failure) in str(refused), f"the reason is missing: {refused}"
     assert refused.may_have_stored_it is True
@@ -1192,3 +1176,58 @@ async def test_a_clip_below_the_models_pixel_floor_is_dropped_before_it_is_publi
     if not sent:
         assert f"{width} by {height}" in withheld[0][1], withheld[0][1]
         assert f"{floor.pixels:,}" in withheld[0][1], withheld[0][1]
+
+
+@pytest.mark.asyncio
+async def test_the_floor_probe_reads_a_stored_clip_under_a_name_the_decoder_accepts(monkeypatch):
+    import base64 as _base64
+
+    from open_webui_openrouter_pipe.integrations import video as video_module
+    from open_webui_openrouter_pipe.media.frame_extraction import (
+        VideoMetadata,
+        _refuse_unsafe_input,
+    )
+
+    model_id = "bytedance/seedance-2.0"
+    records = {"clip-1": {"b64": _base64.b64encode(b"\x00\x00\x00\x18ftypmp42").decode()}}
+    reads: list[str] = []
+    uploads: list[tuple[str, str, str]] = []
+    adapter, module, relay, _AsyncMock = _adapter_with_files(records, reads, uploads)
+    probed: list[Path] = []
+
+    async def _get_file(file_id, _logger):
+        return SimpleNamespace(id=file_id, filename="clip.mp4", user_id=_OWNER.id)
+
+    async def _probe(path):
+        probed.append(path)
+        _refuse_unsafe_input(path)
+        return VideoMetadata(
+            duration_seconds=2.0, width=320, height=240, fps=24.0, has_audio=False
+        )
+
+    monkeypatch.setattr(module, "get_file_by_id", _get_file)
+    monkeypatch.setattr(module, "infer_file_mime_type", lambda _f: "video/mp4")
+    monkeypatch.setattr(video_module, "probe_video", _probe)
+    monkeypatch.setattr(VideoGenerationAdapter, "_relay_reference", relay, raising=True)
+
+    valves = Valves()
+    valves.SEND_MEDIA_VIA_FILE_HOST = True
+    valves.SEND_VIDEO_VIA_FILE_HOST = True
+    withheld: list[tuple[str, str]] = []
+
+    encoded = await adapter._encode_input_references(
+        {"input_references": [{"id": "clip-1"}], "model_id": model_id},
+        valves,
+        withheld=withheld,
+        video_model={"id": model_id, "input_modalities": ["video", "image"]},
+        relayed=set(),
+        companions=True,
+        user_obj=_OWNER,
+        event_emitter=_a_listening_chat,
+    )
+
+    assert encoded == []
+    assert uploads == []
+    assert len(withheld) == 1
+    assert [path.suffix for path in probed] == [".mp4"]
+    assert not probed[0].exists()

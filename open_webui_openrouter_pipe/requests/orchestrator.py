@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import base64
-import binascii
+import asyncio
 import functools
 import inspect
 import json
@@ -55,6 +54,7 @@ from ..core.fusion_defaults import (
     resolve_fusion_run,
 )
 from ..core.logging_system import SessionLogger
+from ..core.media_slot import MediaSlot
 from ..core.timing_logger import timed
 from ..core.utils import (
     CONTINUED_REPLY,
@@ -63,6 +63,7 @@ from ..core.utils import (
     _select_best_effort_fallback,
     continued_turn_counts,
     ends_on_hidden_marker_line,
+    take_closing_notices,
 )
 from ..core.warn_latch import bounded_warn_level, warn_level
 from ..filters.filter_manager import FilterManager
@@ -85,7 +86,6 @@ from ..models.registry import (
 from ..storage.multimodal import Confidence, _sniff_evidence
 from ..storage.owui_chats import read_chat_owner_id
 from ..storage.owui_files import (
-    declared_file_size,
     get_file_by_id,
     index_referenced_file_payloads,
     infer_file_mime_type,
@@ -195,6 +195,15 @@ def _is_chatless_caller(metadata: dict[str, Any] | None) -> bool:
     return not (isinstance(pipe_meta, dict) and pipe_meta.get("fusion_inner"))
 
 
+def _closing_notices(responses_body: Any, metadata: dict[str, Any] | None) -> list[str]:
+    meta = metadata if isinstance(metadata, dict) else {}
+    pipe_meta = meta.get(_PIPE_METADATA_KEY)
+    fusion_inner = isinstance(pipe_meta, dict) and bool(pipe_meta.get("fusion_inner"))
+    return take_closing_notices(
+        responses_body, silenced=fusion_inner or _is_api_caller(metadata)
+    )
+
+
 async def _resolve_user_model(
     user_id: str, carried: Any, logger: logging.Logger
 ) -> tuple[Any, bool]:
@@ -277,11 +286,9 @@ async def _read_attachment(
     *,
     gateway: Any,
     logger: Any,
-    chunk_size: int,
-    max_bytes: int,
     user_model: Any,
     record: Any = None,
-) -> tuple[str, Any]:
+) -> tuple[MediaSlot, Any]:
     memo_key = (modality, file_id, user_id)
     if memo_key in attachment_bytes:
         return attachment_bytes[memo_key]
@@ -291,15 +298,13 @@ async def _read_attachment(
         raise FileUnavailableError(
             f"{label} could not be loaded."
         )
-    b64 = await gateway.read_file_record_base64(
-        file_obj, chunk_size, max_bytes, user=user_model
-    )
-    if not b64:
+    media = await gateway.read_file_record_media(file_obj, user=user_model)
+    if media is None:
         raise FileUnavailableError(
             f"{label} could not be encoded."
         )
-    attachment_bytes[memo_key] = (b64, file_obj)
-    return b64, file_obj
+    attachment_bytes[memo_key] = (media, file_obj)
+    return media, file_obj
 
 
 def _prefix_is_text(prefix: bytes) -> bool:
@@ -317,20 +322,20 @@ def _video_data_url(
     file_id: str,
     user_id: str,
     content_type: str,
-    b64: str,
-) -> str:
+    media: MediaSlot,
+) -> MediaSlot:
     memo_key = ("video_url", file_id, user_id, content_type)
     cached = attachment_bytes.get(memo_key)
-    if isinstance(cached, str):
+    if isinstance(cached, MediaSlot):
         return cached
-    url = f"data:{content_type};base64,{b64}"
+    url = media.shaped(mime=content_type, kind="data_url")
     attachment_bytes[memo_key] = url
     return url
 
 
 def _memoised_video_url(
     attachment_bytes: dict[Any, Any], file_id: str, user_id: str
-) -> str | None:
+) -> MediaSlot | None:
     for key, value in attachment_bytes.items():
         if (
             isinstance(key, tuple)
@@ -338,7 +343,7 @@ def _memoised_video_url(
             and key[0] == "video_url"
             and key[1] == file_id
             and key[2] == user_id
-            and isinstance(value, str)
+            and isinstance(value, MediaSlot)
         ):
             return value
     return None
@@ -579,16 +584,7 @@ _PER_MODEL_WARN_WINDOW = 300
 
 _warned_chat_provider_keys: OrderedDict[str, None] = OrderedDict()
 _warned_ruled_out_tool_use: OrderedDict[str, None] = OrderedDict()
-_warned_direct_upload_caps: OrderedDict[str, None] = OrderedDict()
 _warned_textless_task: set[str] = set()
-
-_DEFAULT_DIRECT_TOTAL_PAYLOAD_MAX_MB = 50
-_DIRECT_UPLOAD_TOTAL_CAP = "DIRECT_TOTAL_PAYLOAD_MAX_MB"
-_DIRECT_UPLOAD_FAMILY_CAPS: tuple[tuple[str, str, int], ...] = (
-    ("files", "DIRECT_FILE_MAX_UPLOAD_SIZE_MB", 50),
-    ("audio", "DIRECT_AUDIO_MAX_UPLOAD_SIZE_MB", 25),
-    ("video", "DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB", 20),
-)
 
 
 _FUSION_CONTINUE_NOTICE = "Continue is not available for Fusion replies. Regenerate the reply to run Fusion again."
@@ -859,13 +855,13 @@ def _video_url_of(block: dict[str, Any]) -> Any:
     payload = block.get("video_url")
     if isinstance(payload, dict):
         url = payload.get("url")
-    elif isinstance(payload, (str, bytes)):
+    elif isinstance(payload, (str, bytes, MediaSlot)):
         url = payload
     else:
         url = None
-    if not isinstance(url, (str, bytes)) or not url:
+    if not isinstance(url, (str, bytes, MediaSlot)) or not url:
         url = block.get("url")
-    return url if isinstance(url, (str, bytes)) and url else None
+    return url if isinstance(url, (str, bytes, MediaSlot)) and url else None
 
 
 def _block_key(block: dict[str, Any]) -> Any:
@@ -876,7 +872,7 @@ def _block_key(block: dict[str, Any]) -> Any:
             return None
         return (
             "video_url",
-            len(url),
+            url.b64_len if isinstance(url, MediaSlot) else len(url),
             hash(url),
         )
     inner = block.get(kind) if isinstance(kind, str) else None
@@ -890,12 +886,12 @@ def _block_key(block: dict[str, Any]) -> Any:
         )
     if kind == "input_audio":
         data = inner.get("data")
-        if not isinstance(data, (str, bytes)):
+        if not isinstance(data, (str, bytes, MediaSlot)):
             return None
         return (
             "input_audio",
             inner.get("format"),
-            len(data),
+            data.b64_len if isinstance(data, MediaSlot) else len(data),
             hash(data),
         )
     return None
@@ -1072,14 +1068,9 @@ class RequestOrchestrator:
                 appended.add(key)
                 content_blocks.append(block)
 
-            max_bytes = valves.BASE64_MAX_SIZE_MB * 1024 * 1024
-            chunk_size = valves.IMAGE_UPLOAD_CHUNK_BYTES
-
             allowlist_key = "responses_audio_format_allowlist"
             operator_audio_key = "audio_format_allowlist"
-            _gate: list[
-                tuple[tuple[set[str], set[str], str], tuple[int, dict[str, tuple[int, str]]]]
-            ] = []
+            _gate: list[tuple[set[str], set[str], str]] = []
 
             def _csv_set(value: Any) -> set[str]:
                 if not isinstance(value, str):
@@ -1091,60 +1082,7 @@ class RequestOrchestrator:
                         items.append(item)
                 return set(items)
 
-            def _positive_cap(value: Any, fallback: int) -> int:
-                if isinstance(value, bool):
-                    return fallback
-                if isinstance(value, int):
-                    return value if value > 0 else fallback
-                if isinstance(value, float):
-                    return int(value) if value > 0 else fallback
-                if isinstance(value, str) and value.strip():
-                    try:
-                        parsed = int(value.strip())
-                    except ValueError:
-                        return fallback
-                    return parsed if parsed > 0 else fallback
-                return fallback
-
-            def _size_caps(
-                stored: dict[str, Any], read_ok: bool
-            ) -> tuple[int, dict[str, tuple[int, str]]]:
-                if not read_ok:
-                    bound = _positive_cap(
-                        valves.BASE64_MAX_SIZE_MB, _DEFAULT_DIRECT_TOTAL_PAYLOAD_MAX_MB
-                    )
-                    self.logger.log(
-                        bounded_warn_level(
-                            _warned_direct_upload_caps,
-                            "direct_uploads_size_row",
-                            _PER_MODEL_WARN_WINDOW,
-                        ),
-                        "Could not read the stored Direct Uploads filter valves; every "
-                        "direct-upload size cap falls back to BASE64_MAX_SIZE_MB (%d MB) "
-                        "for this turn rather than to no limit at all",
-                        bound,
-                    )
-                    return bound, {
-                        family: (bound, cap_key)
-                        for family, cap_key, _default in _DIRECT_UPLOAD_FAMILY_CAPS
-                    }
-                return (
-                    _positive_cap(
-                        stored.get(_DIRECT_UPLOAD_TOTAL_CAP),
-                        _DEFAULT_DIRECT_TOTAL_PAYLOAD_MAX_MB,
-                    ),
-                    {
-                        family: (
-                            _positive_cap(stored.get(cap_key), default),
-                            cap_key,
-                        )
-                        for family, cap_key, default in _DIRECT_UPLOAD_FAMILY_CAPS
-                    },
-                )
-
-            async def _direct_upload_policy() -> tuple[
-                tuple[set[str], set[str], str], tuple[int, dict[str, tuple[int, str]]]
-            ]:
+            async def _direct_upload_allowlists() -> tuple[set[str], set[str], str]:
                 if _gate:
                     return _gate[0]
                 _key_seen = allowlist_key in attachments
@@ -1157,7 +1095,6 @@ class RequestOrchestrator:
                 _operator = _csv_set(_operator_csv) if isinstance(_operator_csv, str) else set()
                 _source = "metadata"
                 _stored, _read_ok = await self._pipe._stored_direct_uploads_valves()
-                _caps = _size_caps(_stored, _read_ok)
                 if not _read_ok:
                     _source = "unreadable"
                     _operator = set()
@@ -1170,73 +1107,12 @@ class RequestOrchestrator:
                         _operator = _csv_set(_row_operator)
                         _source = "row"
                 _resolved = (
-                    (_responses & _DEFAULT_RESPONSES_AUDIO_FORMATS, _operator, _source),
-                    _caps,
+                    _responses & _DEFAULT_RESPONSES_AUDIO_FORMATS,
+                    _operator,
+                    _source,
                 )
                 _gate.append(_resolved)
                 return _resolved
-
-            async def _direct_upload_allowlists() -> tuple[set[str], set[str], str]:
-                return (await _direct_upload_policy())[0]
-
-            total_limit_mb, family_caps = (await _direct_upload_policy())[1]
-            total_limit_bytes = total_limit_mb * 1024 * 1024
-            gate_records: dict[tuple[str, str], Any] = {}
-            total_bytes = 0
-            for family in ("files", "audio", "video"):
-                limit_mb, cap_key = family_caps[family]
-                for item in attachments.get(family, []):
-                    file_id = item.get("id")
-                    if not isinstance(file_id, str) or not file_id:
-                        continue
-                    memo_key = ("direct_upload_record", family, file_id, user_id)
-                    file_obj = attachment_bytes.get(memo_key)
-                    if file_obj is None:
-                        file_obj = await get_file_by_id(file_id, self.logger)
-                        attachment_bytes[memo_key] = file_obj
-                    gate_records[(family, file_id)] = file_obj
-                    declared = declared_file_size(file_obj)
-                    if declared is None:
-                        raise ValueError(
-                            f"An attachment on this request carries no readable stored size, "
-                            f"so the pipe cannot show the {limit_mb} MB {cap_key} valve "
-                            f"holds for it, and it was not sent."
-                        )
-                    if declared > limit_mb * 1024 * 1024:
-                        raise ValueError(
-                            f"An attachment on this request is stored as {declared} bytes, "
-                            f"over the {limit_mb} MB {cap_key} valve, and was not sent."
-                        )
-                    if total_bytes + declared > total_limit_bytes:
-                        raise ValueError(
-                            f"Direct uploads exceed the total limit ({total_limit_mb} MB, "
-                            f"{_DIRECT_UPLOAD_TOTAL_CAP}) once an attachment stored as "
-                            f"{declared} bytes is added, so it was not sent."
-                        )
-                    total_bytes += declared
-
-            def _decode_base64_prefix(data: str, *, byte_count: int = 96) -> bytes:
-                if not data:
-                    return b""
-                wanted = max(1, min(byte_count, 4096))
-                needed = ((wanted + 2) // 3) * 4
-                prefix = data[:needed]
-                if not prefix:
-                    return b""
-                base64_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
-                for ch in prefix:
-                    if ord(ch) > 127 or ch not in base64_chars:
-                        return b""
-                pad = (-len(prefix)) % 4
-                prefix = prefix + ("=" * pad)
-                try:
-                    decoded = base64.b64decode(prefix, validate=True)
-                except binascii.Error:
-                    try:
-                        decoded = base64.b64decode(prefix, validate=False)
-                    except binascii.Error:
-                        return b""
-                return decoded[:wanted]
 
             def _sniff_audio_format(prefix: bytes) -> str:
                 if not prefix:
@@ -1287,11 +1163,10 @@ class RequestOrchestrator:
                 file_id = item.get("id")
                 if not isinstance(file_id, str) or not file_id:
                     continue
-                b64, _audio_record = await _read_attachment(
+                audio_slot, _audio_record = await _read_attachment(
                     attachment_bytes, "audio", file_id, user_id,
                     gateway=self._pipe._file_gateway, logger=self._pipe.logger,
-                    chunk_size=chunk_size, max_bytes=max_bytes, user_model=user_model,
-                    record=gate_records.get(("audio", file_id)),
+                    user_model=user_model,
                 )
                 allowed_for_responses, operator_audio_formats, allowlist_source = (
                     await _direct_upload_allowlists()
@@ -1304,7 +1179,7 @@ class RequestOrchestrator:
                 }
                 declared = item.get("format")
                 declared_format = declared.strip().lower() if isinstance(declared, str) else ""
-                sniffed = _sniff_audio_format(_decode_base64_prefix(b64))
+                sniffed = _sniff_audio_format(await asyncio.to_thread(audio_slot.head, 96))
                 audio_format = (sniffed or declared_format).strip().lower()
                 if not audio_format:
                     raise ValueError("Native audio attachment missing required 'format'.")
@@ -1341,7 +1216,7 @@ class RequestOrchestrator:
                     ("audio", file_id),
                     {
                         "type": "input_audio",
-                        "input_audio": {"data": b64, "format": audio_format},
+                        "input_audio": {"data": audio_slot, "format": audio_format},
                     },
                 )
 
@@ -1351,11 +1226,10 @@ class RequestOrchestrator:
                     continue
                 data_url = _memoised_video_url(attachment_bytes, file_id, user_id)
                 if data_url is None:
-                    b64, file_obj = await _read_attachment(
+                    video_slot, file_obj = await _read_attachment(
                         attachment_bytes, "video", file_id, user_id,
                         gateway=self._pipe._file_gateway, logger=self._pipe.logger,
-                        chunk_size=chunk_size, max_bytes=max_bytes, user_model=user_model,
-                        record=gate_records.get(("video", file_id)),
+                        user_model=user_model,
                     )
                     mime = item.get("content_type")
                     if not isinstance(mime, str) or not mime.strip():
@@ -1366,7 +1240,7 @@ class RequestOrchestrator:
                             f"Native video attachment declared type {mime!r} is not a media "
                             f"type, so there is no honest way to declare the clip to a provider."
                         )
-                    prefix = _decode_base64_prefix(b64)
+                    prefix = await asyncio.to_thread(video_slot.head, 96)
                     attachment_name = item.get("name")
                     label = (
                         f"{attachment_name!r} (file {file_id})"
@@ -1393,7 +1267,7 @@ class RequestOrchestrator:
                             f"{evidence.mime}, not a video, so nothing was sent."
                         )
                     data_url = _video_data_url(
-                        attachment_bytes, file_id, user_id, content_type, b64
+                        attachment_bytes, file_id, user_id, content_type, video_slot
                     )
                     attachment_bytes.pop(("video", file_id, user_id), None)
                 _append(
@@ -1853,7 +1727,6 @@ class RequestOrchestrator:
             verdicts=await _tool_picture_verdicts_for_input(
                 self._pipe, responses_body.input,
             ),
-            event_emitter=__event_emitter__,
         )
         if (
             budget_outcome is not None
@@ -2647,6 +2520,7 @@ class RequestOrchestrator:
                 event_emitter=__event_emitter__,
                 normalized_model_id=responses_body.model,
                 api_model_id=getattr(responses_body, "api_model", None),
+                end_notices=take_closing_notices(responses_body, silenced=fusion_inner),
             )
             if not fusion_inner:
                 await self._pipe._dispatch_generation_complete(
@@ -2971,6 +2845,7 @@ class RequestOrchestrator:
                     f"Unexpected error in request loop: {exc} "
                     f"(Content-Type: {exc.content_type}): {exc.body_excerpt[:200]}"
                 ),
+                end_notices=take_closing_notices(responses_body, silenced=fusion_inner),
             )
             if not fusion_inner:
                 await self._pipe._dispatch_generation_complete(

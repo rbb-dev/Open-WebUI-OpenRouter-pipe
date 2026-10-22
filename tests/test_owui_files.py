@@ -8,6 +8,7 @@ module helpers (auth, size, containment, mime, base64) and the
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import copy
 import importlib
@@ -24,16 +25,15 @@ import pytest
 
 from open_webui_openrouter_pipe.core.config import Valves
 from open_webui_openrouter_pipe.core.errors import FileUnavailableError, RequiredInternalFileError
+from open_webui_openrouter_pipe.core.media_slot import MediaSlot, current_send_spool
 from open_webui_openrouter_pipe.storage import owui_files
 from open_webui_openrouter_pipe.storage.owui_files import (
-    InlineFileTooLargeError,
     InlinedFile,
     OwuiFileGateway,
     authorize_file_read,
     contained_under_upload_dir,
     copy_to_private_temp,
     declared_file_size,
-    encode_file_path_base64,
     extract_internal_file_id,
     get_owui_storage,
     infer_file_mime_type,
@@ -486,8 +486,8 @@ async def test_materialize_post_copy_stat_over_limit_unlinks_and_raises(
     captured: dict[str, Path] = {}
     real_copy = owui_files.copy_to_private_temp
 
-    def _spy(path, *, suffix=""):
-        out = real_copy(path, suffix=suffix)
+    def _spy(path, *, suffix="", directory=None):
+        out = real_copy(path, suffix=suffix, directory=directory)
         captured["temp"] = out
         return out
 
@@ -557,151 +557,136 @@ async def test_materialize_storage_unavailable_raises(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 8. read_file_record_base64 (gateway method)
+# 8. read_file_record_media (gateway method)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_read_b64_max_bytes_zero_raises_value_error(gateway: OwuiFileGateway):
-    with pytest.raises(ValueError):
-        await gateway.read_file_record_base64(_file_obj(id="f1"), 1024, 0)
-
-
-@pytest.mark.asyncio
-async def test_read_b64_auth_first_deny(gateway: OwuiFileGateway, monkeypatch: pytest.MonkeyPatch):
+async def test_read_media_auth_first_deny(gateway: OwuiFileGateway, monkeypatch: pytest.MonkeyPatch):
     """Real record + unauthorized => RequiredInternalFileError before any byte source."""
     monkeypatch.setattr(owui_files, "authorize_file_read", AsyncMock(return_value=False))
     fobj = _file_obj(id="f1", user_id="owner", data={"b64": "QUJD"})
     with pytest.raises(RequiredInternalFileError) as ei:
-        await gateway.read_file_record_base64(
-            fobj, 1024, 1024, user=SimpleNamespace(id="x", role="user")
-        )
+        await gateway.read_file_record_media(fobj, user=SimpleNamespace(id="x", role="user"))
     assert ei.value.denied is True
 
 
 @pytest.mark.asyncio
-async def test_read_b64_inline_data_fast_path_b64(gateway: OwuiFileGateway, monkeypatch: pytest.MonkeyPatch):
-    """data dict with a 'b64' string returns it directly (stripped)."""
+async def test_read_media_inline_data_fast_path_b64(gateway: OwuiFileGateway, monkeypatch: pytest.MonkeyPatch):
+    """data dict with a 'b64' string is carried as base64 text (stripped)."""
     monkeypatch.setattr(owui_files, "authorize_file_read", AsyncMock(return_value=True))
     fobj = _file_obj(id="f1", user_id="u1", data={"b64": "  QUJD  "})
-    out = await gateway.read_file_record_base64(
-        fobj, 1024, 1024, user=SimpleNamespace(id="u1", role="user")
-    )
-    assert out == "QUJD"
+    out = await gateway.read_file_record_media(fobj, user=SimpleNamespace(id="u1", role="user"))
+    assert out == MediaSlot(mime="", kind="bare", text="QUJD")
 
 
 @pytest.mark.asyncio
-async def test_read_b64_inline_data_keys_base64_and_data(gateway: OwuiFileGateway):
+async def test_read_media_inline_text_that_is_not_base64_is_an_unreadable_file(gateway: OwuiFileGateway):
+    out = await gateway.read_file_record_media(_file_obj(data={"b64": 'QUJD"}'}), require_auth=False)
+    assert out is None
+
+
+@pytest.mark.asyncio
+async def test_read_media_inline_data_keys_base64_and_data(gateway: OwuiFileGateway):
     """No-id synthetic records: inline 'base64' and 'data' keys both work without auth."""
-    out1 = await gateway.read_file_record_base64(
-        _file_obj(data={"base64": "WFla"}), 1024, 1024, require_auth=False
-    )
-    assert out1 == "WFla"
-    out2 = await gateway.read_file_record_base64(
-        _file_obj(data={"data": "WFla"}), 1024, 1024, require_auth=False
-    )
-    assert out2 == "WFla"
+    out1 = await gateway.read_file_record_media(_file_obj(data={"base64": "WFla"}), require_auth=False)
+    assert out1 is not None and out1.text == "WFla"
+    out2 = await gateway.read_file_record_media(_file_obj(data={"data": "WFla"}), require_auth=False)
+    assert out2 is not None and out2.text == "WFla"
 
 
 @pytest.mark.asyncio
-async def test_read_b64_inline_bytes_key(gateway: OwuiFileGateway):
-    """data dict carrying raw 'bytes' is base64-encoded."""
-    out = await gateway.read_file_record_base64(
-        _file_obj(data={"bytes": b"ABC"}), 1024, 1024, require_auth=False
-    )
-    assert out == base64.b64encode(b"ABC").decode("ascii")
+async def test_read_media_inline_bytes_key(gateway: OwuiFileGateway):
+    """data dict carrying raw 'bytes' is written to the request's own file."""
+    out = await gateway.read_file_record_media(_file_obj(data={"bytes": b"ABC"}), require_auth=False)
+    assert out is not None and out.path is not None
+    assert Path(out.path).read_bytes() == b"ABC"
 
 
 @pytest.mark.asyncio
-async def test_read_b64_inline_oversize_raises(gateway: OwuiFileGateway):
-    """Inline base64 is rejected by BOTH the valve and the caller's own cap.
-
-    The inline-string fast path checks two independent limits, and the per-call
-    `max_bytes` no longer misses: it is measured as the valve measures the
-    payload (estimated decode = len*3/4), so the string has to exceed the cap by
-    a quarter before the cap refuses it. The valve row is kept because the valve
-    is the operator's absolute ceiling and a generous caller cap must not
-    replace it.
-    """
-    gateway.valves.BASE64_MAX_SIZE_MB = 1
-    big = "A" * int(1 * 1024 * 1024 * (4 / 3) + 1024)
-    with pytest.raises(ValueError):
-        await gateway.read_file_record_base64(
-            _file_obj(data={"b64": big}), 1024, 10 * 1024 * 1024, require_auth=False
-        )
-
-    gateway.valves.BASE64_MAX_SIZE_MB = 50
-    over_cap = "A" * int(5 * 1024 * 1024 * (4 / 3) + 1024)
-    with pytest.raises(InlineFileTooLargeError):
-        await gateway.read_file_record_base64(
-            _file_obj(data={"b64": over_cap}), 1024, 5 * 1024 * 1024, require_auth=False
-        )
-
-
-@pytest.mark.asyncio
-async def test_read_b64_real_record_routes_through_materialize_and_unlinks(
+async def test_read_media_real_record_routes_through_materialize_and_keeps_the_copy(
     gateway: OwuiFileGateway, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    """Real record with a path goes Storage->temp->encode and unlinks the temp after."""
+    """Real record with a path goes Storage->temp inside the request's spool; the copy stays for the send."""
     monkeypatch.setattr(owui_files, "authorize_file_read", AsyncMock(return_value=True))
     temp = tmp_path / "materialized.bin"
     temp.write_bytes(b"PAYLOAD")
     mat = AsyncMock(return_value=temp)
     monkeypatch.setattr(owui_files, "materialize_owui_file_to_temp", mat)
     fobj = _file_obj(id="f1", user_id="u1", path="key", meta={"size": 7})
-    out = await gateway.read_file_record_base64(
-        fobj, 1024, 1024, user=SimpleNamespace(id="u1", role="user")
-    )
-    assert out == base64.b64encode(b"PAYLOAD").decode("ascii")
-    assert temp.exists() is False
+    out = await gateway.read_file_record_media(fobj, user=SimpleNamespace(id="u1", role="user"))
+    assert out is not None
+    assert out.path == str(temp)
+    assert out.raw_len == 7
+    assert temp.exists()
     assert mat.await_args is not None
     assert mat.await_args.kwargs["require_auth"] is False
+    assert mat.await_args.kwargs["directory"] == current_send_spool().directory
 
 
 @pytest.mark.asyncio
-async def test_read_b64_synthetic_record_uses_local_path(
+async def test_a_stored_file_is_copied_into_the_spool_once_per_requester_however_often_it_is_read(
+    gateway: OwuiFileGateway, monkeypatch: pytest.MonkeyPatch
+):
+    authorize = AsyncMock(return_value=True)
+    monkeypatch.setattr(owui_files, "authorize_file_read", authorize)
+    spool = current_send_spool()
+    copies: list[Path] = []
+
+    async def materialize(_file_obj: Any, *, directory: str, **_kwargs: Any) -> Path:
+        target = Path(directory) / f"copy-{len(copies)}"
+        target.write_bytes(b"PAYLOAD")
+        copies.append(target)
+        return target
+
+    monkeypatch.setattr(owui_files, "materialize_owui_file_to_temp", materialize)
+    fobj = _file_obj(id="f1", user_id="u1", path="key", meta={"size": 7})
+    owner = SimpleNamespace(id="u1", role="user")
+
+    first, second = await asyncio.gather(
+        gateway.read_file_record_media(fobj, user=owner),
+        gateway.read_file_record_media(fobj, user=owner),
+    )
+    third = await gateway.read_file_record_media(fobj, user=owner)
+
+    assert first == second == third
+    assert len(copies) == 1 and os.listdir(spool.directory) == [copies[0].name]
+    assert authorize.await_count == 3
+
+    await gateway.read_file_record_media(fobj, user=SimpleNamespace(id="u2", role="admin"))
+    assert len(copies) == 2
+
+    copies[0].unlink()
+    again = await gateway.read_file_record_media(fobj, user=owner)
+    assert len(copies) == 3 and again is not None and again.path == str(copies[2])
+
+
+@pytest.mark.asyncio
+async def test_read_media_synthetic_record_copies_its_local_path_into_the_spool(
     gateway: OwuiFileGateway, tmp_path: Path
 ):
-    """A no-id record reads its local 'path' directly via the legacy path."""
+    """A no-id record reads its local 'path' through a copy owned by the request."""
     f = tmp_path / "legacy.bin"
     f.write_bytes(b"LEGACY")
-    out = await gateway.read_file_record_base64(
-        _file_obj(path=str(f)), 1024, 1024, require_auth=False
-    )
-    assert out == base64.b64encode(b"LEGACY").decode("ascii")
+    out = await gateway.read_file_record_media(_file_obj(path=str(f)), require_auth=False)
+    assert out is not None and out.path is not None
+    assert out.path != str(f)
+    assert Path(out.path).read_bytes() == b"LEGACY"
 
 
 @pytest.mark.asyncio
-async def test_read_b64_raw_bytes_attr_fallback(gateway: OwuiFileGateway):
+async def test_read_media_raw_bytes_attr_fallback(gateway: OwuiFileGateway):
     """When no inline-dict/path applies, raw 'content' bytes are used."""
-    out = await gateway.read_file_record_base64(
-        _file_obj(content=b"RAWBYTES"), 1024, 1024, require_auth=False
-    )
-    assert out == base64.b64encode(b"RAWBYTES").decode("ascii")
+    out = await gateway.read_file_record_media(_file_obj(content=b"RAWBYTES"), require_auth=False)
+    assert out is not None and out.path is not None
+    assert Path(out.path).read_bytes() == b"RAWBYTES"
 
 
 @pytest.mark.asyncio
-async def test_read_b64_returns_none_when_no_source(gateway: OwuiFileGateway):
+async def test_read_media_returns_none_when_no_source(gateway: OwuiFileGateway):
     """A record with no usable byte source returns None."""
-    out = await gateway.read_file_record_base64(
-        _file_obj(path="/nonexistent/none.bin"), 1024, 1024, require_auth=False
-    )
+    out = await gateway.read_file_record_media(_file_obj(path="/nonexistent/none.bin"), require_auth=False)
     assert out is None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 9. validate_base64_size
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def test_validate_base64_size_within_limit(gateway: OwuiFileGateway):
-    assert gateway.validate_base64_size("QUJD") is True
-    assert gateway.validate_base64_size("") is True
-
-
-def test_validate_base64_size_over_limit(gateway: OwuiFileGateway):
-    over = "A" * (gateway.valves.BASE64_MAX_SIZE_MB * 1024 * 1024 + 8) * 2
-    assert gateway.validate_base64_size(over) is False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -711,23 +696,23 @@ def test_validate_base64_size_over_limit(gateway: OwuiFileGateway):
 
 @pytest.mark.asyncio
 async def test_inline_owui_file_id_success(gateway: OwuiFileGateway, monkeypatch: pytest.MonkeyPatch):
-    """Returns InlinedFile(data_url, filename) on success."""
+    """Returns InlinedFile(media, filename) on success."""
     fobj = _file_obj(id="abc", user_id="u1", meta={"name": "report.pdf"}, mime_type="application/pdf")
     monkeypatch.setattr(owui_files, "get_file_by_id", AsyncMock(return_value=fobj))
     monkeypatch.setattr(
-        gateway, "read_file_record_base64", AsyncMock(return_value="QkFTRTY0")
+        gateway,
+        "read_file_record_media",
+        AsyncMock(return_value=MediaSlot(mime="", kind="bare", text="QkFTRTY0")),
     )
-    result = await gateway.inline_owui_file_id(
-        "abc", chunk_size=1024, max_bytes=1024, user=SimpleNamespace(id="u1", role="user")
-    )
+    result = await gateway.inline_owui_file_id("abc", user=SimpleNamespace(id="u1", role="user"))
     assert isinstance(result, InlinedFile)
-    assert result.data_url == "data:application/pdf;base64,QkFTRTY0"
+    assert result.media == MediaSlot(mime="application/pdf", kind="data_url", text="QkFTRTY0")
     assert result.filename == "report.pdf"
 
 
 @pytest.mark.asyncio
 async def test_inline_owui_file_id_blank_returns_none(gateway: OwuiFileGateway):
-    assert await gateway.inline_owui_file_id("   ", chunk_size=1024, max_bytes=1024) is None
+    assert await gateway.inline_owui_file_id("   ") is None
 
 
 @pytest.mark.asyncio
@@ -735,7 +720,7 @@ async def test_inline_owui_file_id_missing_file_returns_none(
     gateway: OwuiFileGateway, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setattr(owui_files, "get_file_by_id", AsyncMock(return_value=None))
-    assert await gateway.inline_owui_file_id("abc", chunk_size=1024, max_bytes=1024) is None
+    assert await gateway.inline_owui_file_id("abc") is None
 
 
 @pytest.mark.asyncio
@@ -744,43 +729,24 @@ async def test_inline_owui_file_id_empty_b64_returns_none(
 ):
     fobj = _file_obj(id="abc", user_id="u1", meta={"name": "x"})
     monkeypatch.setattr(owui_files, "get_file_by_id", AsyncMock(return_value=fobj))
-    monkeypatch.setattr(gateway, "read_file_record_base64", AsyncMock(return_value=None))
-    assert await gateway.inline_owui_file_id(
-        "abc", chunk_size=1024, max_bytes=1024, user=SimpleNamespace(id="u1", role="user")
-    ) is None
-
-
-@pytest.mark.asyncio
-async def test_inline_owui_file_id_value_error_swallowed_to_none(
-    gateway: OwuiFileGateway, monkeypatch: pytest.MonkeyPatch
-):
-    """A size ValueError from read is logged and yields None (not raised)."""
-    fobj = _file_obj(id="abc", user_id="u1", meta={"name": "x"})
-    monkeypatch.setattr(owui_files, "get_file_by_id", AsyncMock(return_value=fobj))
-    monkeypatch.setattr(
-        gateway, "read_file_record_base64", AsyncMock(side_effect=ValueError("too big"))
-    )
-    assert await gateway.inline_owui_file_id(
-        "abc", chunk_size=1024, max_bytes=1024, user=SimpleNamespace(id="u1", role="user")
-    ) is None
+    monkeypatch.setattr(gateway, "read_file_record_media", AsyncMock(return_value=None))
+    assert await gateway.inline_owui_file_id("abc", user=SimpleNamespace(id="u1", role="user")) is None
 
 
 @pytest.mark.asyncio
 async def test_inline_owui_file_id_propagates_required_error(
     gateway: OwuiFileGateway, monkeypatch: pytest.MonkeyPatch
 ):
-    """RequiredInternalFileError from auth must NOT be swallowed as ValueError."""
+    """RequiredInternalFileError from auth is not swallowed."""
     fobj = _file_obj(id="abc", user_id="owner", meta={"name": "x"})
     monkeypatch.setattr(owui_files, "get_file_by_id", AsyncMock(return_value=fobj))
     monkeypatch.setattr(
         gateway,
-        "read_file_record_base64",
+        "read_file_record_media",
         AsyncMock(side_effect=RequiredInternalFileError("denied", denied=True)),
     )
     with pytest.raises(RequiredInternalFileError):
-        await gateway.inline_owui_file_id(
-            "abc", chunk_size=1024, max_bytes=1024, user=SimpleNamespace(id="x", role="user")
-        )
+        await gateway.inline_owui_file_id("abc", user=SimpleNamespace(id="x", role="user"))
 
 
 @pytest.mark.asyncio
@@ -790,10 +756,12 @@ async def test_inline_owui_file_id_filename_falls_back_to_attr(
     """Filename falls back to file_obj.filename when meta has no name."""
     fobj = _file_obj(id="abc", user_id="u1", meta={}, filename="fallback.txt", mime_type="text/plain")
     monkeypatch.setattr(owui_files, "get_file_by_id", AsyncMock(return_value=fobj))
-    monkeypatch.setattr(gateway, "read_file_record_base64", AsyncMock(return_value="QQ=="))
-    result = await gateway.inline_owui_file_id(
-        "abc", chunk_size=1024, max_bytes=1024, user=SimpleNamespace(id="u1", role="user")
+    monkeypatch.setattr(
+        gateway,
+        "read_file_record_media",
+        AsyncMock(return_value=MediaSlot(mime="", kind="bare", text="QQ==")),
     )
+    result = await gateway.inline_owui_file_id("abc", user=SimpleNamespace(id="u1", role="user"))
     assert result is not None
     assert result.filename == "fallback.txt"
 
@@ -806,20 +774,18 @@ async def test_inline_owui_file_id_filename_falls_back_to_attr(
 @pytest.mark.asyncio
 async def test_inline_internal_file_url_delegates(gateway: OwuiFileGateway, monkeypatch: pytest.MonkeyPatch):
     """Extracts the id from a URL and delegates to inline_owui_file_id."""
-    inline = AsyncMock(return_value=InlinedFile(data_url="data:x;base64,QQ==", filename="f"))
-    monkeypatch.setattr(gateway, "inline_owui_file_id", inline)
-    out = await gateway.inline_internal_file_url(
-        "/api/v1/files/zzz-1/content", chunk_size=1024, max_bytes=2048
+    inline = AsyncMock(
+        return_value=InlinedFile(media=MediaSlot(mime="text/plain", text="QQ=="), filename="f")
     )
+    monkeypatch.setattr(gateway, "inline_owui_file_id", inline)
+    out = await gateway.inline_internal_file_url("/api/v1/files/zzz-1/content")
     assert out is not None
-    inline.assert_awaited_once_with("zzz-1", chunk_size=1024, max_bytes=2048, user=None)
+    inline.assert_awaited_once_with("zzz-1", user=None)
 
 
 @pytest.mark.asyncio
 async def test_inline_internal_file_url_no_id_returns_none(gateway: OwuiFileGateway):
-    assert await gateway.inline_internal_file_url(
-        "https://example.com/not-a-file", chunk_size=1024, max_bytes=1024
-    ) is None
+    assert await gateway.inline_internal_file_url("https://example.com/not-a-file") is None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -846,7 +812,7 @@ def _body(block: dict[str, Any]) -> dict[str, Any]:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 12. infer_file_mime_type / extract_internal_file_id / is_internal_file_url /
-#     encode_file_path_base64 / get_owui_storage
+#     get_owui_storage
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -904,35 +870,6 @@ def test_is_internal_file_url(url, expected):
     assert is_internal_file_url(url) is expected
 
 
-@pytest.mark.asyncio
-async def test_encode_file_path_base64_roundtrip(tmp_path: Path):
-    """Chunked encoding matches a one-shot base64 encode of the same bytes."""
-    payload = b"The quick brown fox jumps over the lazy dog." * 50
-    f = tmp_path / "data.bin"
-    f.write_bytes(payload)
-    out = await encode_file_path_base64(f, chunk_size=64 * 1024, max_bytes=10 * 1024 * 1024)
-    assert out == base64.b64encode(payload).decode("ascii")
-    assert base64.b64decode(out) == payload
-
-
-@pytest.mark.asyncio
-async def test_encode_file_path_base64_size_cap(tmp_path: Path):
-    """Exceeding max_bytes during streaming raises ValueError."""
-    f = tmp_path / "big.bin"
-    f.write_bytes(b"X" * 5000)
-    with pytest.raises(ValueError):
-        await encode_file_path_base64(f, chunk_size=64 * 1024, max_bytes=100)
-
-
-@pytest.mark.asyncio
-async def test_encode_file_path_base64_empty_file(tmp_path: Path):
-    """An empty file encodes to an empty string."""
-    f = tmp_path / "empty.bin"
-    f.write_bytes(b"")
-    out = await encode_file_path_base64(f, chunk_size=64 * 1024, max_bytes=1000)
-    assert out == ""
-
-
 def test_get_owui_storage_returns_stub():
     """The conftest stub Storage provider is importable via the gateway helper."""
     storage = get_owui_storage()
@@ -941,8 +878,9 @@ def test_get_owui_storage_returns_stub():
 
 
 def test_inlinedfile_namedtuple_shape():
-    """InlinedFile carries data_url and filename positionally."""
-    f = InlinedFile(data_url="data:x;base64,QQ==", filename="n")
-    assert f.data_url == "data:x;base64,QQ=="
+    """InlinedFile carries media and filename positionally."""
+    slot = MediaSlot(mime="text/plain", text="QQ==")
+    f = InlinedFile(media=slot, filename="n")
+    assert f.media is slot
     assert f.filename == "n"
-    assert tuple(f) == ("data:x;base64,QQ==", "n")
+    assert tuple(f) == (slot, "n")

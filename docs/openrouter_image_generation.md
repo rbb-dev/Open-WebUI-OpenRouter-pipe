@@ -1606,7 +1606,6 @@ Related (existing) valves:
 | Valve | Default | Purpose |
 |-------|---------|---------|
 | `MODEL_CATALOG_REFRESH_SECONDS` | `3600` | TTL governing how often the image catalog is re-fetched from `/api/v1/models?output_modalities=image`. A change of `API_KEY` refetches immediately rather than waiting the window out: both the model-list clock and the contract-sweep clock are stamped with the credential that asked, so the new account is never answered from the previous one's state, and the same account inside the window still reads from cache. |
-| `BASE64_MAX_SIZE_MB` | (multimodal section) | Send-side cap on inline payloads; received images are bounded by the fixed 2 GiB per-item receive ceiling instead. |
 
 Tuning hints:
 

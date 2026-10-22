@@ -68,6 +68,7 @@ from ..core.logging_system import SessionLogger, bounded_log_record_text
 from ..core.timing_logger import timed, timing_mark
 from ..core.url_scheme import is_http_or_https_url, loggable_link
 from ..core.utils import (
+    ATTACHMENT_NOTICES,
     BUILTIN_ASK_USER_ROUND_KEY,
     CONTINUED_REPLY,
     IMAGE_NO_IMAGES_REASON,
@@ -85,11 +86,13 @@ from ..core.utils import (
     _serialize_marker,
     _serialize_phase_marker,
     citation_access_stamp,
+    closing_status_descriptions,
     continued_turn_counts,
     current_turn_items,
     is_picture_output,
     join_answer_and_card,
     merge_usage_stats,
+    note_for_the_end,
     owui_call_status,
     parse_tool_arguments,
     picture_output,
@@ -100,6 +103,7 @@ from ..core.utils import (
     server_tool_status,
     split_tool_argument_objects,
     strip_hidden_marker_lines,
+    take_closing_notices,
     tool_output_text_and_pictures,
     wrap_code_block,
 )
@@ -2323,6 +2327,10 @@ class StreamingHandler:
             raise
 
         try:
+            end_notices = getattr(body, "_attachment_notices", None)
+            if not isinstance(end_notices, list):
+                end_notices = []
+            end_notices_token = ATTACHMENT_NOTICES.set(end_notices)
             max_loops = max(1, int(valves.MAX_FUNCTION_CALL_LOOPS))
             input_is_sanitized = False
             _answer_carry = [assistant_message]
@@ -4483,7 +4491,6 @@ class StreamingHandler:
                                 gated_output, round_refused = await _gate_round_output_pictures(
                                     self._pipe,
                                     round_output.get("output"),
-                                    self._pipe.valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
                                     allow_insecure=(
                                         self._pipe._multimodal_handler._is_insecure_http_allowed
                                     ),
@@ -4509,12 +4516,10 @@ class StreamingHandler:
                                     loggable_link(url), reason, cause,
                                 )
                             notice = _tool_picture_notice(round_refusals)
-                            await self._pipe._event_emitter_handler._emit_status(
-                                event_emitter, notice, done=False,
-                            )
-                            notices = getattr(body, "_attachment_notices", None)
-                            if isinstance(notices, list):
-                                notices.append(notice)
+                            if not note_for_the_end(notice):
+                                await self._pipe._event_emitter_handler._emit_status(
+                                    event_emitter, notice, done=False,
+                                )
                         body.input.extend(budgeted_outputs)
                         input_is_sanitized = False
                         shipped_budget = _sanitize_request_input(
@@ -4670,6 +4675,8 @@ class StreamingHandler:
         finally:
             if unclaimed_token is not None:
                 _UNCLAIMED_LATCH.reset(unclaimed_token)
+            with contextlib.suppress(ValueError):
+                ATTACHMENT_NOTICES.reset(end_notices_token)
             if fusion_batcher is not None and not handed_back_for_retry:
                 try:
                     for _straggler in fusion_batcher.flush_all():
@@ -4789,24 +4796,43 @@ class StreamingHandler:
                     if duration > 0:
                         stream_window = duration
                 if terminal or handed_back:
+                    from ..requests.orchestrator import _is_api_caller
+
                     description = self._pipe._ensure_error_formatter()._format_final_status_description(
                         elapsed=elapsed,
                         total_usage=total_usage,
                         valves=valves,
                         stream_duration=stream_window,
                     )
+                    closing = closing_status_descriptions(
+                        description,
+                        take_closing_notices(
+                            body, silenced=fusion_inner_call or _is_api_caller(metadata)
+                        ),
+                        join=bool(valves.SHOW_FINAL_USAGE_STATUS),
+                    )
                     try:
-                        await event_emitter(
-                            {
-                                "type": "status",
-                                "data": {
-                                    "description": description,
-                                    "done": True,
-                                },
-                            }
-                        )
+                        for closing_line in closing:
+                            await event_emitter(
+                                {
+                                    "type": "status",
+                                    "data": {
+                                        "description": closing_line,
+                                        "done": True,
+                                    },
+                                }
+                            )
                     except (asyncio.CancelledError, Exception):
                         self.logger.exception("Failed to emit final status in finally")
+            elif error_occurred and terminal and not was_cancelled and not fusion_inner_call:
+                from ..requests.orchestrator import _is_api_caller
+
+                try:
+                    await self._pipe._event_emitter_handler._emit_closing_notices(
+                        event_emitter, body, silenced=_is_api_caller(metadata)
+                    )
+                except (asyncio.CancelledError, Exception):
+                    self.logger.exception("Failed to emit the closing notices in finally")
 
             resolved_chat_id = str(metadata.get("chat_id") or "")
             from ..logging.session_log_manager import resolve_message_id
@@ -5215,7 +5241,7 @@ class StreamingHandler:
             and notices
             and isinstance(answer, str)
         ):
-            return join_answer_and_card(answer, " ".join(notices))
+            return join_answer_and_card(answer, " ".join(dict.fromkeys(notices)))
         return answer
 
 

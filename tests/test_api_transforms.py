@@ -7,6 +7,7 @@ through the Pipe class.
 # pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 from __future__ import annotations
 
+from tests.posted_body import posted_json
 import json
 import logging
 from copy import deepcopy
@@ -18,6 +19,7 @@ from pydantic import ValidationError
 from aioresponses import aioresponses, CallbackResult
 
 from open_webui_openrouter_pipe import Pipe
+from open_webui_openrouter_pipe.core.media_slot import MediaSlot
 from open_webui_openrouter_pipe.core.config import (
     CROCKFORD_ALPHABET,
     OPENAI_EMPTY_USER_TURN_FALLBACK,
@@ -344,20 +346,20 @@ class TestResponsesPayloadToChatCompletionsPayload:
             "input": "hi",
             "plugins": [{"id": "fusion"}, {"id": "file-parser", "pdf": {"engine": "native"}}],
         }
-        result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
         assert result["plugins"] == [{"id": "file-parser", "pdf": {"engine": "native"}}]
 
     @pytest.mark.asyncio
     async def test_drops_plugins_key_when_only_fusion_entry(self):
         payload = {"model": "openrouter/fusion", "input": "hi", "plugins": [{"id": "fusion"}]}
-        result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
         assert "plugins" not in result
 
     @pytest.mark.asyncio
     async def test_keeps_fusion_plugin_for_non_fusion_model(self):
         """A caller-attached fusion plugin on an ordinary model is deliberate config."""
         payload = {"model": "openai/gpt-4o", "input": "hi", "plugins": [{"id": "fusion"}]}
-        result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
         assert result["plugins"] == [{"id": "fusion"}]
 
     @pytest.mark.asyncio
@@ -369,7 +371,7 @@ class TestResponsesPayloadToChatCompletionsPayload:
                 {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Hello"}]}
             ],
         }
-        result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
 
         assert "messages" in result
         assert result["messages"][0]["role"] == "user"
@@ -389,7 +391,7 @@ class TestResponsesPayloadToChatCompletionsPayload:
                 {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Hi"}]}
             ],
         }
-        result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
 
         # Instructions should be first message as system
         assert result["messages"][0]["role"] == "system"
@@ -404,7 +406,7 @@ class TestResponsesPayloadToChatCompletionsPayload:
             "input": [],
             "stop_server_tools_when": [{"type": "max_cost", "max_cost_in_dollars": 0.5}],
         }
-        result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
         assert result.get("stop_server_tools_when") == [{"type": "max_cost", "max_cost_in_dollars": 0.5}]
 
     @pytest.mark.asyncio
@@ -421,7 +423,7 @@ class TestResponsesPayloadToChatCompletionsPayload:
                 }
             ],
         }
-        result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
 
         assert result["messages"][0]["role"] == "assistant"
         assert result["messages"][0]["content"] == [{"type": "text", "text": "Thinking..."}]
@@ -435,7 +437,7 @@ class TestResponsesPayloadToChatCompletionsPayload:
             "max_output_tokens": 500,
             "input": [],
         }
-        result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
 
         assert result["max_tokens"] == 500
         assert "max_output_tokens" not in result
@@ -455,7 +457,7 @@ class TestResponsesPayloadToChatCompletionsPayload:
                 }
             ],
         }
-        result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
 
         assert "tools" in result
         assert result["tools"][0]["type"] == "function"
@@ -469,7 +471,7 @@ class TestResponsesPayloadToChatCompletionsPayload:
             "stream": True,
             "input": [],
         }
-        result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
 
         assert "stream_options" not in result
 
@@ -481,7 +483,7 @@ class TestResponsesPayloadToChatCompletionsPayload:
             "top_k": 2.7,
             "input": [],
         }
-        result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
 
         # Python round(2.7) = 3 (standard rounding)
         assert result["top_k"] == 3
@@ -505,7 +507,7 @@ class TestResponsesPayloadToChatCompletionsPayload:
                 }
             ],
         }
-        result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
 
         # Find the text content block
         content = result["messages"][0]["content"]
@@ -528,20 +530,20 @@ class TestResponsesPayloadToChatCompletionsPayload:
                 }
             ],
         }
-        result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
         assert "cache_control" not in result
 
     @pytest.mark.asyncio
     async def test_non_dict_returns_empty(self):
         """Test non-dict input returns empty dict."""
-        assert await _responses_payload_to_chat_completions_payload("not a dict", max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext) == {}  # type: ignore[arg-type]
-        assert await _responses_payload_to_chat_completions_payload(None, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext) == {}  # type: ignore[arg-type]
+        assert await _responses_payload_to_chat_completions_payload("not a dict", allow_insecure=_refuses_cleartext) == {}  # type: ignore[arg-type]
+        assert await _responses_payload_to_chat_completions_payload(None, allow_insecure=_refuses_cleartext) == {}  # type: ignore[arg-type]
 
     @pytest.mark.asyncio
     async def test_non_streaming_no_stream_options(self):
         """Test non-streaming request doesn't get stream_options."""
         payload = {"model": "gpt-4", "input": [], "stream": False}
-        result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
         assert result["stream"] is False
         assert "stream_options" not in result
 
@@ -554,21 +556,21 @@ class TestResponsesPayloadToChatCompletionsPayload:
             "stream": True,
             "stream_options": {"custom": True},
         }
-        result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
         assert result["stream_options"]["custom"] is True
 
     @pytest.mark.asyncio
     async def test_usage_not_forwarded(self):
         """Test usage is not forwarded to chat payload."""
         payload = {"model": "gpt-4", "input": [], "usage": {"custom": "value"}}
-        result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
         assert "usage" not in result
 
     @pytest.mark.asyncio
     async def test_int_params_rounded(self):
         """Test integer parameters are rounded."""
         payload = {"model": "gpt-4", "input": [], "top_k": 2.7, "seed": 10.3}
-        result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
         assert result["top_k"] == 3
         assert result["seed"] == 10
 
@@ -576,14 +578,14 @@ class TestResponsesPayloadToChatCompletionsPayload:
     async def test_int_param_string_converted(self):
         """Test string integer params are converted."""
         payload = {"model": "gpt-4", "input": [], "top_k": "5"}
-        result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
         assert result["top_k"] == 5
 
     @pytest.mark.asyncio
     async def test_int_param_empty_string_removed(self):
         """Test empty string integer params are removed."""
         payload = {"model": "gpt-4", "input": [], "top_k": "  "}
-        result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
         assert "top_k" not in result
 
     @pytest.mark.asyncio
@@ -591,7 +593,7 @@ class TestResponsesPayloadToChatCompletionsPayload:
         """Test invalid response_format is removed with warning."""
         payload = {"model": "gpt-4", "input": [], "response_format": {"type": "invalid"}}
         with caplog.at_level(logging.WARNING):
-            result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+            result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
         assert "response_format" not in result
 
     @pytest.mark.asyncio
@@ -602,7 +604,7 @@ class TestResponsesPayloadToChatCompletionsPayload:
             "input": [],
             "text": {"format": {"type": "json_object"}},
         }
-        result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
         assert result["response_format"] == {"type": "json_object"}
 
     @pytest.mark.asyncio
@@ -613,7 +615,7 @@ class TestResponsesPayloadToChatCompletionsPayload:
             "input": [],
             "text": {"verbosity": "verbose"},
         }
-        result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
         assert result["verbosity"] == "verbose"
 
     @pytest.mark.asyncio
@@ -640,7 +642,7 @@ class TestResponsesPayloadToChatCompletionsPayload:
             "instructions": instructions,
             "input": [{"type": "message", "role": "system", "content": existing}],
         }
-        result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
         content = result["messages"][0]["content"]
         assert isinstance(content, str)
         assert content == expected
@@ -659,7 +661,7 @@ class TestResponsesPayloadToChatCompletionsPayload:
                 }
             ],
         }
-        result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
         # Instructions should be prepended as text block, folded into the first usable
         # text block with a real blank line -- the string arm's output, and not an empty
         # separator block, which providers reject.
@@ -671,7 +673,7 @@ class TestResponsesPayloadToChatCompletionsPayload:
     async def test_instructions_with_no_messages(self):
         """Test instructions create system message when no messages."""
         payload = {"model": "gpt-4", "instructions": "Be helpful", "input": []}
-        result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
         assert result["messages"][0]["role"] == "system"
         assert result["messages"][0]["content"] == "Be helpful"
 
@@ -683,7 +685,7 @@ class TestResponsesPayloadToChatCompletionsPayload:
             "instructions": "Be helpful",
             "input": [{"type": "message", "role": "user", "content": "Hi"}],
         }
-        result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
         assert result["messages"][0]["role"] == "system"
         assert result["messages"][0]["content"] == "Be helpful"
         assert result["messages"][1]["role"] == "user"
@@ -696,7 +698,7 @@ class TestResponsesPayloadToChatCompletionsPayload:
             "input": [{"type": "message", "role": "user", "content": "Hi"}],
             "trace": {"trace_id": "abc123", "generation_name": "test"},
         }
-        result = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
         assert result["trace"] == {"trace_id": "abc123", "generation_name": "test"}
 
 
@@ -1242,7 +1244,7 @@ class TestResponsesInputToChatMessages:
                 "content": [{"type": "input_text", "text": "Hello"}],
             }
         ]
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
 
         assert len(result) == 1
         assert result[0]["role"] == "user"
@@ -1262,7 +1264,7 @@ class TestResponsesInputToChatMessages:
                 "content": [{"type": "output_text", "text": "Hi there!"}],
             }
         ]
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
 
         assert len(result) == 1
         assert result[0]["role"] == "assistant"
@@ -1282,7 +1284,7 @@ class TestResponsesInputToChatMessages:
                 "content": [{"type": "input_text", "text": "System prompt"}],
             }
         ]
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
 
         assert result[0]["role"] == "system"
         # Content blocks (input_text) become structured (type: text)
@@ -1307,12 +1309,27 @@ class TestResponsesInputToChatMessages:
                 ],
             }
         ]
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
 
         content = result[0]["content"]
         assert isinstance(content, list)
         image_block = next((c for c in content if c.get("type") == "image_url"), None)
         assert image_block is not None
+
+    @pytest.mark.asyncio
+    async def test_a_stored_video_slot_reaches_the_chat_message(self):
+        slot = MediaSlot(mime="video/mp4", text="QUJD")
+        input_value = [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_video", "video_url": slot}],
+            }
+        ]
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
+
+        video_blocks = [c for c in result[0]["content"] if c.get("type") == "video_url"]
+        assert [b["video_url"]["url"] for b in video_blocks] == [slot]
 
     @pytest.mark.asyncio
     async def test_handles_function_call_output(self):
@@ -1330,7 +1347,7 @@ class TestResponsesInputToChatMessages:
                 "output": '{"result": "sunny"}',
             },
         ]
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
 
         assert result[1]["role"] == "tool"
         assert result[1]["tool_call_id"] == "call_123"
@@ -1351,7 +1368,7 @@ class TestResponsesInputToChatMessages:
                 "output": '{"result": "sunny"}',
             },
         ]
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
 
         assert result[0]["role"] == "assistant"
         tool_calls = result[0].get("tool_calls", [])
@@ -1361,13 +1378,13 @@ class TestResponsesInputToChatMessages:
     @pytest.mark.asyncio
     async def test_handles_empty(self):
         """Test empty input."""
-        assert await _responses_input_to_chat_messages([], max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext) == []
-        assert await _responses_input_to_chat_messages(None, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext) == []
+        assert await _responses_input_to_chat_messages([], allow_insecure=_refuses_cleartext) == []
+        assert await _responses_input_to_chat_messages(None, allow_insecure=_refuses_cleartext) == []
 
     @pytest.mark.asyncio
     async def test_string_input(self):
         """Test plain string input is converted to user message."""
-        result = await _responses_input_to_chat_messages("Hello, world!", max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages("Hello, world!", allow_insecure=_refuses_cleartext)
         assert len(result) == 1
         assert result[0]["role"] == "user"
         assert result[0]["content"] == "Hello, world!"
@@ -1377,21 +1394,21 @@ class TestResponsesInputToChatMessages:
         """Task/chat-history strings should not leak hidden marker lines to chat completions."""
         result = await _responses_input_to_chat_messages(
             "ASSISTANT: Visible answer\n[P:final_answer]: #\n\n[0001H74WE6NX0KKR9ZC7]: #\n"
-        , max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        , allow_insecure=_refuses_cleartext)
 
         assert result == [{"role": "user", "content": "ASSISTANT: Visible answer"}]
 
     @pytest.mark.asyncio
     async def test_empty_string_input(self):
         """Test empty string input returns empty list."""
-        result = await _responses_input_to_chat_messages("   ", max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages("   ", allow_insecure=_refuses_cleartext)
         assert result == []
 
     @pytest.mark.asyncio
     async def test_non_list_non_string_returns_empty(self):
         """Test non-list, non-string input returns empty list."""
-        assert await _responses_input_to_chat_messages(123, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext) == []
-        assert await _responses_input_to_chat_messages({"type": "message"}, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext) == []
+        assert await _responses_input_to_chat_messages(123, allow_insecure=_refuses_cleartext) == []
+        assert await _responses_input_to_chat_messages({"type": "message"}, allow_insecure=_refuses_cleartext) == []
 
     @pytest.mark.asyncio
     async def test_non_dict_items_skipped(self):
@@ -1400,7 +1417,7 @@ class TestResponsesInputToChatMessages:
             "not a dict",
             {"type": "message", "role": "user", "content": "Hi"},
         ]
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
         assert len(result) == 1
         assert result[0]["content"] == "Hi"
 
@@ -1408,14 +1425,14 @@ class TestResponsesInputToChatMessages:
     async def test_message_without_role_skipped(self):
         """Test messages without role are skipped."""
         input_value = [{"type": "message", "content": "No role"}]
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
         assert result == []
 
     @pytest.mark.asyncio
     async def test_message_with_string_content(self):
         """Test message with string content."""
         input_value = [{"type": "message", "role": "user", "content": "Plain text"}]
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
         assert result[0]["content"] == "Plain text"
 
     @pytest.mark.asyncio
@@ -1434,7 +1451,7 @@ class TestResponsesInputToChatMessages:
             }
         ]
 
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
 
         assert result[0]["content"] == [
             {
@@ -1460,7 +1477,7 @@ class TestResponsesInputToChatMessages:
     async def _marker_only_turn(self, blocks: list[dict[str, Any]], role: str = "user"):
         return await _responses_input_to_chat_messages(
             [{"type": "message", "role": role, "content": blocks}],
-            max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext,
+            allow_insecure=_refuses_cleartext,
         )
 
     @pytest.mark.asyncio
@@ -1474,7 +1491,7 @@ class TestResponsesInputToChatMessages:
                 "annotations": [{"type": "url_citation", "url": "http://example.com"}],
             }
         ]
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
         assert "annotations" in result[0]
         assert len(result[0]["annotations"]) == 1
 
@@ -1489,7 +1506,7 @@ class TestResponsesInputToChatMessages:
                 "reasoning_details": [{"type": "thinking"}],
             }
         ]
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
         assert "reasoning_details" in result[0]
 
     @pytest.mark.asyncio
@@ -1504,7 +1521,7 @@ class TestResponsesInputToChatMessages:
                 ],
             }
         ]
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
         content = result[0]["content"]
         assert content[0]["type"] == "image_url"
         assert content[0]["image_url"]["url"] == "https://example.com/img.png"
@@ -1521,7 +1538,7 @@ class TestResponsesInputToChatMessages:
                 ],
             }
         ]
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
         content = result[0]["content"]
         assert content[0]["image_url"]["url"] == "https://example.com/img.png"
 
@@ -1555,7 +1572,7 @@ class TestResponsesInputToChatMessages:
                 ],
             }
         ]
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
         content = result[0]["content"]
         assert content[0]["image_url"]["detail"] == expected
 
@@ -1571,7 +1588,7 @@ class TestResponsesInputToChatMessages:
                 ],
             }
         ]
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
         content = result[0]["content"]
         assert content[0]["type"] == "input_audio"
 
@@ -1587,7 +1604,7 @@ class TestResponsesInputToChatMessages:
                 ],
             }
         ]
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
         content = result[0]["content"]
         assert content[0]["type"] == "video_url"
 
@@ -1603,7 +1620,7 @@ class TestResponsesInputToChatMessages:
                 ],
             }
         ]
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
         content = result[0]["content"]
         assert content[0]["video_url"]["url"] == "https://example.com/vid.mp4"
 
@@ -1623,7 +1640,7 @@ class TestResponsesInputToChatMessages:
                 ],
             }
         ]
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
         content = result[0]["content"]
         assert content[0]["type"] == "file"
         assert content[0]["file"]["filename"] == "test.txt"
@@ -1644,7 +1661,7 @@ class TestResponsesInputToChatMessages:
                 ],
             }
         ]
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
         content = result[0]["content"]
         assert content[0]["file"]["file_data"] == "https://example.com/file.txt"
 
@@ -1660,7 +1677,7 @@ class TestResponsesInputToChatMessages:
         four routes.
         """
         input_value = [{"type": "message", "role": "user", "content": []}]
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
         assert result[0]["content"] == []
 
     @pytest.mark.asyncio
@@ -1679,7 +1696,7 @@ class TestResponsesInputToChatMessages:
                 "output": {"result": "data"},
             },
         ]
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
         assert result[1]["content"] == '{"result": "data"}'
 
     @pytest.mark.asyncio
@@ -1698,7 +1715,7 @@ class TestResponsesInputToChatMessages:
                 "output": None,
             },
         ]
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
         assert result[1]["content"] == ""
 
     @pytest.mark.asyncio
@@ -1717,7 +1734,7 @@ class TestResponsesInputToChatMessages:
                 "output": '{"ok": true}',
             },
         ]
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
         assert result[0]["tool_calls"][0]["id"] == "call_456"
 
     @pytest.mark.asyncio
@@ -1736,7 +1753,7 @@ class TestResponsesInputToChatMessages:
                 "output": '{"ok": true}',
             },
         ]
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
         assert result[0]["tool_calls"][0]["function"]["arguments"] == '{"key": "value"}'
 
     @pytest.mark.asyncio
@@ -1755,7 +1772,7 @@ class TestResponsesInputToChatMessages:
                 "output": '{"ok": true}',
             },
         ]
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
         assert result[0]["tool_calls"][0]["function"]["arguments"] == "{}"
 
     @pytest.mark.asyncio
@@ -1766,7 +1783,7 @@ class TestResponsesInputToChatMessages:
             {"type": "function_call", "id": "123"},  # No name
             {"type": "function_call", "id": "456", "name": ""},  # Empty name
         ]
-        result = await _responses_input_to_chat_messages(input_value, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+        result = await _responses_input_to_chat_messages(input_value, allow_insecure=_refuses_cleartext)
         assert result == []
 
 
@@ -2944,7 +2961,7 @@ class TestPipeIntegration:
 
         def capture_payload(url, **kwargs):
             nonlocal received_payload
-            received_payload = kwargs.get("json", {})
+            received_payload = posted_json(kwargs, {})
             return CallbackResult(
                 body=sse_response.encode("utf-8"),
                 headers={"Content-Type": "text/event-stream"},
@@ -3002,7 +3019,7 @@ class TestPipeIntegration:
 
         def capture_payload(url, **kwargs):
             nonlocal received_payload
-            received_payload = kwargs.get("json", {})
+            received_payload = posted_json(kwargs, {})
             return CallbackResult(
                 body=sse_response.encode("utf-8"),
                 headers={"Content-Type": "text/event-stream"},
@@ -3064,7 +3081,7 @@ class TestPipeIntegration:
 
         def capture_payload(url, **kwargs):
             nonlocal received_payload
-            received_payload = kwargs.get("json", {})
+            received_payload = posted_json(kwargs, {})
             return CallbackResult(
                 body=sse_response.encode("utf-8"),
                 headers={"Content-Type": "text/event-stream"},
@@ -3132,9 +3149,6 @@ def test_strip_disable_model_settings_params_removes_pipe_control_flags() -> Non
 
 
 from open_webui_openrouter_pipe import _filter_openrouter_request
-
-_INLINE_CAP_BYTES = 50 * 1024 * 1024
-
 
 def _refuses_cleartext(_url: str) -> bool:
     return False

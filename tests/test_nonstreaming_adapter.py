@@ -13,6 +13,7 @@ Coverage target: Missing lines from nonstreaming_adapter.py:
 # pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 from __future__ import annotations
 
+from tests.posted_body import posted_json
 import json
 from typing import Any
 
@@ -779,7 +780,7 @@ async def test_nonstreaming_chat_developer_role_and_usage_details(pipe_instance_
 
         await session.close()
 
-    sent_json = captured.get("json") or {}
+    sent_json = posted_json(captured) or {}
     sent_messages = sent_json.get("messages", [])
     roles = [m.get("role") for m in sent_messages if isinstance(m, dict)]
     assert "developer" in roles

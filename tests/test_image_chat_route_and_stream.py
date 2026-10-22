@@ -12,6 +12,7 @@ that all four of its events are handled -- including the one spelled ``error`` o
 
 from __future__ import annotations
 
+from tests.posted_body import posted_json
 import base64
 import json
 from pathlib import Path
@@ -105,7 +106,6 @@ class _Valves:
         self.BASE_URL = BASE
         self.HTTP_REFERER_OVERRIDE = ""
         self.MODEL_CATALOG_REFRESH_SECONDS = 3600
-        self.BASE64_MAX_SIZE_MB = 50
         self.SHOW_FINAL_USAGE_STATUS = False
         self.FINAL_USAGE_STATUS_STYLE = "text"
         self.USAGE_STATUS_ICON_SET = ""
@@ -487,7 +487,7 @@ async def test_a_chat_image_models_settings_are_fitted_on_the_way_out_of_the_pip
         def _callback(url, **kwargs):
             from aioresponses import CallbackResult
 
-            sent.append(kwargs["json"])
+            sent.append(posted_json(kwargs))
             return CallbackResult(
                 status=200,
                 body='data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
@@ -768,7 +768,7 @@ async def test_the_stream_flag_reaches_the_request_for_the_models_that_publish_o
         ]
 
     assert posts
-    assert ("stream" in posts[0].kwargs["json"]) is asked
+    assert ("stream" in posted_json(posts[0].kwargs)) is asked
 
 
 @pytest.mark.parametrize("typed", [{"style": "digital_illustration"}, {"style": "vector_illustration"}])
@@ -797,7 +797,7 @@ async def test_the_filters_provider_options_survive_to_the_image_request(typed):
         def _callback(url, **kwargs):
             from aioresponses import CallbackResult
 
-            sent.append(kwargs["json"])
+            sent.append(posted_json(kwargs))
             return CallbackResult(status=200, payload={"data": [], "usage": {}})
 
         with aioresponses() as mocked:

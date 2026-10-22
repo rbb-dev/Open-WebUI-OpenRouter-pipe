@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from tests.posted_body import posted_json
 import json
 from typing import Any
 from unittest.mock import AsyncMock
@@ -88,8 +89,8 @@ async def _send_one_request(*, event_call, metadata, body, valves, extra_tools=N
     captured: dict[str, Any] = {}
 
     def capture_request(url, **kwargs):
-        if "json" in kwargs:
-            captured.update(kwargs["json"])
+        if "data" in kwargs:
+            captured.update(posted_json(kwargs))
 
     from open_webui_openrouter_pipe import ModelFamily
 

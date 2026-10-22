@@ -876,6 +876,34 @@ async def test_successful_tool_status_is_preserved():
 
 
 @pytest.mark.asyncio
+async def test_a_replayed_tool_picture_the_gate_refuses_is_noted_for_the_end_of_the_turn():
+    from open_webui_openrouter_pipe.requests.sanitizer import _sanitize_request_input
+
+    pipe = Pipe()
+    try:
+        body = SimpleNamespace(
+            input=[
+                {"type": "function_call", "call_id": "c1", "name": "snap", "arguments": "{}"},
+                {
+                    "type": "function_call_output",
+                    "call_id": "c1",
+                    "output": [
+                        {"type": "input_text", "text": "taken"},
+                        {"type": "input_image", "image_url": "http://example.com/a.png"},
+                    ],
+                },
+            ],
+            model="openai/gpt-4o",
+            _attachment_notices=[],
+        )
+        _sanitize_request_input(pipe, body)
+
+        assert len(body._attachment_notices) == 1
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
 async def test_build_tool_output_status_normalization():
     """Test that statuses outside the OpenRouter enum are normalized to 'incomplete'."""
     pipe = Pipe()

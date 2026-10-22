@@ -23,6 +23,7 @@ assert the JSON fallback instead of the card.
 
 from __future__ import annotations
 
+from tests.media_slots import bare_slot
 import asyncio
 import json
 from typing import Any, cast
@@ -689,14 +690,14 @@ async def test_a_direct_upload_endpoint_conflict_card_is_returned_as_well_as_sho
     async def _get_file(*_args: Any, **_kwargs: Any) -> Any:
         return _FileRecord()
 
-    async def _read_b64(*_args: Any, **_kwargs: Any) -> str:
-        return "AAAA"
+    async def _read_media(*_args: Any, **_kwargs: Any) -> Any:
+        return bare_slot("AAAA")
 
     monkeypatch.setattr(
         "open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id",
         _get_file,
     )
-    monkeypatch.setattr(pipe._file_gateway, "read_file_record_base64", _read_b64)
+    monkeypatch.setattr(pipe._file_gateway, "read_file_record_media", _read_media)
     try:
         orchestrator = pipe._ensure_request_orchestrator()
         result = await orchestrator.process_request(

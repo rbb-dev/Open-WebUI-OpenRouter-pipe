@@ -27,8 +27,9 @@ from ...core.errors import (
     _build_openrouter_api_error,
 )
 from ...core.logging_system import SessionLogger
+from ...core.request_body import StreamedJSONPayload
 from ...core.timing_logger import timed, timing_mark
-from ...core.utils import _apply_retry_after_metadata, http_timeout
+from ...core.utils import _apply_retry_after_metadata, http_timeout, note_for_the_end
 from ...core.warn_latch import warn_level
 from ...core.web_search_record import chat_route_search_item, offers_web_search
 from ...requests.debug import (
@@ -275,11 +276,12 @@ class ChatCompletionsAdapter:
     ) -> None:
         from ...requests.transformer import _tool_picture_notice
 
-        if not refusals or event_emitter is None:
+        if not refusals:
             return
-        await self._pipe._event_emitter_handler._emit_status(
-            event_emitter, _tool_picture_notice(refusals), done=False,
-        )
+        notice = _tool_picture_notice(refusals)
+        if note_for_the_end(notice) or event_emitter is None:
+            return
+        await self._pipe._event_emitter_handler._emit_status(event_emitter, notice, done=False)
 
     def _timeout(self, effective_valves: Any) -> aiohttp.ClientTimeout:
         return http_timeout(effective_valves)
@@ -289,8 +291,6 @@ class ChatCompletionsAdapter:
         messages = chat_payload.get("messages")
         if not isinstance(messages, list) or not messages:
             return
-        chunk_size = effective_valves.IMAGE_UPLOAD_CHUNK_BYTES
-        max_bytes = effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024
         for msg in messages:
             if not isinstance(msg, dict):
                 continue
@@ -312,7 +312,7 @@ class ChatCompletionsAdapter:
                         continue
                     try:
                         inlined = await self._pipe._file_gateway.inline_internal_file_url(
-                            picture_value, chunk_size=chunk_size, max_bytes=max_bytes, user=user,
+                            picture_value, user=user,
                         )
                     except RequiredInternalFileError:
                         raise
@@ -325,9 +325,9 @@ class ChatCompletionsAdapter:
                             "A referenced picture could not be prepared for the provider.", kind="image",
                         )
                     if isinstance(image_value, dict):
-                        image_value["url"] = inlined.data_url
+                        image_value["url"] = inlined.media
                     else:
-                        block["image_url"] = inlined.data_url
+                        block["image_url"] = inlined.media
                     continue
                 if block.get("type") != "file":
                     continue
@@ -344,7 +344,7 @@ class ChatCompletionsAdapter:
                     continue
                 try:
                     inlined = await self._pipe._file_gateway.inline_internal_file_url(
-                        file_value, chunk_size=chunk_size, max_bytes=max_bytes, user=user,
+                        file_value, user=user,
                     )
                 except RequiredInternalFileError:
                     raise
@@ -356,7 +356,7 @@ class ChatCompletionsAdapter:
                     raise RequiredInternalFileError(
                         "A referenced file could not be prepared for the provider.", kind="file",
                     )
-                file_obj["file_data"] = inlined.data_url
+                file_obj["file_data"] = inlined.media
                 file_obj.pop("file_url", None)
                 if inlined.filename and "filename" not in file_obj:
                     file_obj["filename"] = inlined.filename
@@ -383,14 +383,11 @@ class ChatCompletionsAdapter:
         if not files_inlined:
             responses_payload = await self._pipe._file_gateway.inline_internal_responses_input_files(
                 responses_request_body or {},
-                chunk_size=effective_valves.IMAGE_UPLOAD_CHUNK_BYTES,
-                max_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
                 user=user,
                 refusals=chat_refused,
             )
         chat_payload = await _responses_payload_to_chat_completions_payload(
             responses_payload,
-            max_inline_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
             allow_insecure=self._pipe._multimodal_handler._is_insecure_http_allowed,
             pipe=self._pipe,
             refused_out=chat_refused,
@@ -1003,7 +1000,12 @@ class ChatCompletionsAdapter:
                     timing_mark("chat_http_request_start")
                     try:
                         async with session.post(
-                            url, json=chat_payload, headers=headers,
+                            url,
+                            data=StreamedJSONPayload(
+                                chat_payload,
+                                chunk_bytes=effective_valves.IMAGE_UPLOAD_CHUNK_BYTES,
+                            ),
+                            headers=headers,
                             timeout=self._timeout(effective_valves),
                         ) as resp:
                             timing_mark("chat_http_headers_received")
@@ -1342,14 +1344,11 @@ class ChatCompletionsAdapter:
         if not files_inlined:
             responses_payload = await self._pipe._file_gateway.inline_internal_responses_input_files(
                 responses_request_body or {},
-                chunk_size=effective_valves.IMAGE_UPLOAD_CHUNK_BYTES,
-                max_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
                 user=user,
                 refusals=chat_refused,
             )
         chat_payload = await _responses_payload_to_chat_completions_payload(
             responses_payload,
-            max_inline_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
             allow_insecure=self._pipe._multimodal_handler._is_insecure_http_allowed,
             pipe=self._pipe,
             refused_out=chat_refused,
@@ -1385,7 +1384,12 @@ class ChatCompletionsAdapter:
 
                     timing_mark("chat_nonstream_http_request_start")
                     async with session.post(
-                        url, json=chat_payload, headers=headers,
+                        url,
+                        data=StreamedJSONPayload(
+                            chat_payload,
+                            chunk_bytes=effective_valves.IMAGE_UPLOAD_CHUNK_BYTES,
+                        ),
+                        headers=headers,
                         timeout=self._timeout(effective_valves),
                     ) as resp:
                         timing_mark("chat_nonstream_http_response")
@@ -1472,8 +1476,6 @@ class ChatCompletionsAdapter:
         inlined_refusals: list[tuple[str, str, str]] = []
         inlined_request_body = await self._pipe._file_gateway.inline_internal_responses_input_files(
             responses_request_body or {},
-            chunk_size=effective_valves.IMAGE_UPLOAD_CHUNK_BYTES,
-            max_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
             user=user,
             refusals=inlined_refusals,
         )
@@ -1486,7 +1488,6 @@ class ChatCompletionsAdapter:
             gated_body = _gate_responses_input_media(
                 dict(inlined_request_body or {}),
                 allow_insecure=self._pipe._multimodal_handler._is_insecure_http_allowed,
-                max_inline_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
                 refusals=media_refusals,
             )
             request_payload = _filter_openrouter_request(gated_body)

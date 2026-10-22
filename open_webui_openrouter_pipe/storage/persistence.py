@@ -47,6 +47,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from ..core.media_slot import MediaSlot
 from ..core.timing_logger import timed
 from ..core.utils import (
     BUILTIN_ASK_USER_ROUND_KEY,
@@ -449,6 +450,12 @@ def _copy_payload(value: Any) -> Any:
     return value
 
 
+def _text_unless_a_media_slot(value: Any) -> str:
+    if isinstance(value, MediaSlot):
+        raise TypeError("a media slot points into one request's own files and is never held in the artifact store")
+    return str(value)
+
+
 def _payload_is_json_native(value: Any) -> bool:
     seen: set[int] = set()
     stack: list[Any] = [value]
@@ -591,7 +598,7 @@ class ReplyMemory:
     def hold(self, rows: list[dict[str, Any]]) -> list[str]:
         prepared = [
             (row, _copy_payload(payload) if _payload_is_json_native(payload)
-             else json.loads(json.dumps(payload, default=str)))
+             else json.loads(json.dumps(payload, default=_text_unless_a_media_slot)))
             for row in rows
             for payload in (row.get("payload"),)
         ]

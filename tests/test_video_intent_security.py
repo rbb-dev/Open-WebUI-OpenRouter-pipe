@@ -203,7 +203,6 @@ class TestResolveOwuiFilePath:
     def _make_adapter(self):
         from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
         pipe = MagicMock()
-        pipe.valves.VIDEO_MAX_SIZE_MB = 500
         pipe.logger = logging.getLogger("test")
         return VideoGenerationAdapter(pipe=pipe, logger=logging.getLogger("test"))
 

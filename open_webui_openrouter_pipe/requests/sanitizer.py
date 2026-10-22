@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from collections import Counter
@@ -125,9 +124,6 @@ def _request_overhead_chars(body: Any) -> int:
         return 0
 
 
-_pending_status_emissions: set[asyncio.Task[Any]] = set()
-
-
 def _inline_head_is_forwardable(url: str) -> bool:
     from .transformer import _is_forwardable_image_type
 
@@ -139,7 +135,7 @@ def _inline_head_is_forwardable(url: str) -> bool:
 
 def _gate_tool_pictures(
     item: dict[str, Any], logger: logging.Logger, *,
-    max_inline_bytes: int, allow_insecure: Callable[[str], bool],
+    allow_insecure: Callable[[str], bool],
     verdicts: dict[str, bool | None] | None = None,
     refusals: list[tuple[str, str, str]] | None = None,
 ) -> tuple[dict[str, Any], bool]:
@@ -156,9 +152,7 @@ def _gate_tool_pictures(
         for part in parts
         if isinstance(part, dict) and part.get("type") == "input_image" and part.get("image_url")
     ]
-    kept, refused = _tool_picture_gate(
-        urls, max_inline_bytes=max_inline_bytes, allow_insecure=allow_insecure,
-    )
+    kept, refused = _tool_picture_gate(urls, allow_insecure=allow_insecure)
     kept, unfetchable = _tool_picture_verdict_gate(kept, verdicts)
     refused = [*refused, *unfetchable]
     unforwardable = [url for url in kept if not _inline_head_is_forwardable(url)]
@@ -194,7 +188,6 @@ def _gate_tool_pictures(
 def _sanitize_request_input(
     pipe: Pipe, body: ResponsesBody, *,
     verdicts: dict[str, bool | None] | None = None,
-    event_emitter: Any = None,
 ) -> BudgetOutcome | None:
     picture_refusals: list[tuple[str, str, str]] = []
     items = getattr(body, "input", None)
@@ -236,7 +229,6 @@ def _sanitize_request_input(
         if item_type == "function_call_output":
             item, gated = _gate_tool_pictures(
                 item, pipe.logger,
-                max_inline_bytes=pipe.valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
                 allow_insecure=pipe._multimodal_handler._is_insecure_http_allowed,
                 verdicts=verdicts,
                 refusals=picture_refusals,
@@ -316,30 +308,19 @@ def _sanitize_request_input(
                 len(omitted_call_ids),
             )
         body.input = validated
-    _report_refused_tool_pictures(pipe, picture_refusals, event_emitter)
+    _report_refused_tool_pictures(body, picture_refusals)
     return budget
 
 
 def _report_refused_tool_pictures(
-    pipe: Pipe,
+    body: ResponsesBody,
     refusals: list[tuple[str, str, str]],
-    event_emitter: Any,
 ) -> None:
     from .transformer import _tool_picture_notice
 
-    if not refusals or event_emitter is None:
-        return
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return
-    task = loop.create_task(
-        pipe._event_emitter_handler._emit_status(
-            event_emitter, _tool_picture_notice(refusals), done=False,
-        )
-    )
-    _pending_status_emissions.add(task)
-    task.add_done_callback(_pending_status_emissions.discard)
+    notices = getattr(body, "_attachment_notices", None)
+    if refusals and isinstance(notices, list):
+        notices.append(_tool_picture_notice(refusals))
 
 
 def _validate_tool_call_pairs(

@@ -29,7 +29,6 @@ from ..core.config import (
     _PIPE_METADATA_KEY,
     OWUI_CHAT_ID,
     OWUI_REQUEST,
-    Valves,
     _select_openrouter_http_referer,
 )
 from ..core.costs import maybe_dump_costs_snapshot
@@ -44,6 +43,7 @@ from ..core.errors import (
     UpstreamBodyUnreadable,
     is_sign_in_failure,
 )
+from ..core.media_slot import MediaSlot, current_send_spool
 from ..core.utils import (
     _clean_str,
     _csv_set,
@@ -51,6 +51,7 @@ from ..core.utils import (
     _iter_kind_marker_spans,
     _safe_marker_body,
     _serialize_kind_marker,
+    closing_status_descriptions,
     summarise_names,
 )
 from ..core.warn_latch import warn_level
@@ -65,6 +66,7 @@ from ..media.frame_extraction import _INPUT_DEMUXER, _without_paths
 from ..models.registry import OpenRouterModelRegistry
 from ..requests.fusion_engine import asks_for_help, latest_user_text
 from ..requests.orchestrator import (
+    _closing_notices,
     _is_api_caller,
     _is_chatless_caller,
     _provider_error_response,
@@ -77,10 +79,8 @@ from ..storage.multimodal import (
 from ..storage.owui_files import (
     NO_CHAT_ID_KEY,
     PUBLISHING_NEEDS_OWNERSHIP,
-    InlineFileTooLargeError,
     authorize_file_publication,
     chat_latch_key,
-    declared_file_size,
     get_file_by_id,
     infer_file_mime_type,
     is_channel_chat,
@@ -96,7 +96,6 @@ from .media_relay import (
     RELAY_HOSTS,
     MediaRelayError,
     host_keeps_forever,
-    megabytes,
     relay_to_public_url,
     usable_media_type,
 )
@@ -168,13 +167,6 @@ _INTENT_NOTIFIED_WINDOW = 300
 _INTENT_CHAT_COUNT_WINDOW = 300
 
 _INTENT_BREAKER_SWEEP_INTERVAL_SECONDS = 60.0
-
-_DEFAULT_FRAME_MAX_BYTES = int(Valves.model_fields["VIDEO_FRAME_IMAGE_MAX_BYTES"].default)
-
-
-def _frame_max_bytes(valves: Valves) -> int:
-    return int(valves.VIDEO_FRAME_IMAGE_MAX_BYTES)
-
 
 def _reference_slot(video_meta: dict[str, Any]) -> str:
     keys = _reference_source_keys(video_meta)
@@ -317,66 +309,30 @@ def _reference_family(label: str) -> str:
     return head if head in _REFERENCE_FAMILY_FIELDS else ""
 
 
-_B64_WHITESPACE = " \n\r\t\v\f"
-
-_B64_DROP_WHITESPACE = str.maketrans("", "", _B64_WHITESPACE)
-
-_B64_ALPHABET = frozenset(
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-)
-
-_VIDEO_DECODE_QUANTUM_CHARS = 1024 * 1024
-
-_B64_SCAN_QUANTUM = 1024 * 1024
+_DECODE_QUANTUM_CHARS = 1024 * 1024
 
 
-def _b64_scan_chunk(core: str, start: int, stop: int) -> str:
-    return core[start : min(start + _B64_SCAN_QUANTUM, stop)]
+def _append_decoded_base64(target: Path, piece: str) -> None:
+    with target.open("ab") as sink:
+        sink.write(base64.b64decode(piece, validate=True))
 
 
-async def _strip_b64_whitespace(core: str) -> str:
-    if not any(char in core for char in _B64_WHITESPACE):
-        return core
-    parts: list[str] = []
-    for start in range(0, len(core), _B64_SCAN_QUANTUM):
-        piece = _b64_scan_chunk(core, start, len(core))
-        if any(char in piece for char in _B64_WHITESPACE):
-            parts.append(await asyncio.to_thread(piece.translate, _B64_DROP_WHITESPACE))
-        else:
-            parts.append(piece)
-    return "".join(parts)
+def _write_decoded_base64(target: Path, text: str) -> None:
+    target.write_bytes(base64.b64decode(text, validate=False))
 
 
-async def _decoded_length(b64: str) -> int:
-    core = await _strip_b64_whitespace(b64)
-    length = len(core)
-    if length == 0:
-        return 0
-    if length % 4:
-        raise binascii.Error("Invalid base64-encoded string: number of characters is not a multiple of 4")
-    pad = core[-4:].count("=")
-    body_length = length - pad
-    if pad > 2 or body_length < 0 or body_length % 4 != (4 - pad) % 4:
-        raise binascii.Error("Invalid base64-encoded string")
-    for start in range(0, body_length, _B64_SCAN_QUANTUM):
-        if not await asyncio.to_thread(
-            _B64_ALPHABET.issuperset, _b64_scan_chunk(core, start, body_length)
-        ):
-            raise binascii.Error("Invalid base64-encoded string")
-    return (length // 4) * 3 - pad
-
-
-async def _decoded_payload(b64: str) -> bytes:
-    core = await _strip_b64_whitespace(b64)
-    out = bytearray()
+async def _file_backed(media: MediaSlot) -> MediaSlot:
+    if media.path is not None or media.text is None:
+        return media
+    target = current_send_spool().new_path()
     try:
-        for start in range(0, len(core), _VIDEO_DECODE_QUANTUM_CHARS):
-            out += await asyncio.to_thread(
-                base64.b64decode, core[start : start + _VIDEO_DECODE_QUANTUM_CHARS], validate=True
+        for start in range(0, len(media.text), _DECODE_QUANTUM_CHARS):
+            await asyncio.to_thread(
+                _append_decoded_base64, target, media.text[start : start + _DECODE_QUANTUM_CHARS]
             )
     except (binascii.Error, ValueError):
-        return await asyncio.to_thread(base64.b64decode, b64, validate=False)
-    return bytes(out)
+        await asyncio.to_thread(_write_decoded_base64, target, media.text)
+    return MediaSlot(mime=media.mime, kind=media.kind, path=target)
 
 
 @dataclass(frozen=True, slots=True)
@@ -385,10 +341,9 @@ class _AcceptedReference:
     kind: str
     family: str
     mime: str
-    b64: str
+    media: MediaSlot
     via_file_host: bool
     filename: str
-    blob: bytes
 
 
 _FLOOR_UNPUBLISHED = (
@@ -503,21 +458,6 @@ def _video_int_value(value: Any) -> int | None:
 _OVER_URL_BUDGET = (
     f"only the first {_MAX_PASSTHROUGH_URLS} links in a request are forwarded"
 )
-
-_OVER_REFERENCE_BUDGET = (
-    "the request's combined frame budget was already spent"
-)
-
-
-def _over_the_relay_cap(size: int | None, already: int, cap: int) -> str:
-    if size is not None and size > cap:
-        return (f"The attachment is {megabytes(size)} and the limit for sending media "
-                f"to a file host is {megabytes(cap)}.")
-    if already + (size or 0) > cap:
-        return (f"The attachments come to {megabytes(already + (size or 0))} and one request "
-                f"sends at most {megabytes(cap)} to a file host.")
-    return f"The attachment is larger than the {megabytes(cap)} one request sends to a file host."
-
 
 _A_COPY_MAY_ALREADY_BE_THERE = (
     "{host} may already hold a copy of it{second}"
@@ -749,33 +689,6 @@ if TYPE_CHECKING:
     from ..streaming.event_emitter import EventEmitter
 
 
-def _write_and_close(handle: int, blob: bytes) -> None:
-    with open(handle, "wb") as sink:
-        sink.write(blob)
-
-
-def _refuse_frame_over_byte_budget(
-    logger: logging.Logger,
-    *,
-    entry: FramePlanEntry,
-    position: int,
-    exc: FrameExtractionError,
-    intent: VideoIntentResult,
-    thumb_urls: list[str],
-) -> None:
-    logger.log(
-        warn_level(
-            _warned_frame_not_materialised, "byte_budget",
-        ),
-        "frame over the byte budget for entry %s: %s",
-        entry.source_index, exc,
-    )
-    intent.downgrades.append(
-        f"frame_over_byte_budget_idx_{entry.source_index}_at_{position}"
-    )
-    thumb_urls.append("")
-
-
 def _refuse_frame_for_mime(
     logger: logging.Logger,
     *,
@@ -923,6 +836,7 @@ class VideoGenerationAdapter:
         breaker_key: str | None = None,
     ) -> str | StreamingResponse:
         sink: dict[str, Any] = _writable_sink(outcome_sink)
+        end_notices = _closing_notices(responses_body, metadata)
         prompt = self._extract_prompt(body)
         video_spec = OpenRouterModelRegistry.spec(normalized_model_id)
         video_model = video_spec.get("video_model") if isinstance(video_spec, dict) else {}
@@ -931,6 +845,9 @@ class VideoGenerationAdapter:
                 api_model_id,
                 video_model if isinstance(video_model, dict) else None,
                 admin_valves=valves,
+            )
+            await self._emit_closing_status(
+                event_emitter, None, valves=valves, end_notices=end_notices
             )
             await self._emit_completion(event_emitter, content)
             if outcome_sink is not None:
@@ -948,6 +865,8 @@ class VideoGenerationAdapter:
                 metadata=metadata,
                 responses_body=responses_body,
                 request=request,
+                valves=valves,
+                end_notices=end_notices,
             )
 
         message_lock = await self._acquire_message_lock(key)
@@ -978,11 +897,16 @@ class VideoGenerationAdapter:
                     metadata=metadata,
                     responses_body=responses_body,
                     request=request,
+                    valves=valves,
+                    end_notices=end_notices,
                 )
 
             persisted = await self._persistence.load_message_content(chat_id=chat_id, message_id=message_id, user=user_obj)
             if self._looks_like_final_video_content(persisted):
                 sink["error_occurred"] = "<video>" not in persisted
+                await self._emit_closing_status(
+                    event_emitter, None, valves=valves, end_notices=end_notices
+                )
                 await self._emit_completion(event_emitter, persisted)
                 return persisted
             resume_job_id = self._extract_video_job_marker(persisted)
@@ -999,7 +923,10 @@ class VideoGenerationAdapter:
                             + (_VIDEO_CAN_BE_PICKED_BACK_UP if is_linkable_chat(chat_id) else "")
                         ),
                     )
-                    await self._emit_status(event_emitter, "Video generation limit reached.", done=True)
+                    await self._emit_closing_status(
+                        event_emitter, "Video generation limit reached.",
+                        valves=valves, end_notices=end_notices,
+                    )
                     await self._emit_completion(event_emitter, content)
                     sink["member_refusal_reason"] = _VIDEO_USER_LIMIT_REFUSAL
                     return content
@@ -1032,6 +959,7 @@ class VideoGenerationAdapter:
                     started_at=time.monotonic(),
                     disclosure_block=resumed_disclosure,
                     breaker_key=breaker_key,
+                    end_notices=end_notices,
                 )
                 lifecycle_transferred = True
                 async with self._pipe._video_active_tasks_dict_lock:
@@ -1146,8 +1074,9 @@ class VideoGenerationAdapter:
                         and intent_result.clarification.needs
                     ):
                         clar_content = render_clarification_message(intent_result)
-                        await self._emit_status(
-                            event_emitter, "Need a quick clarification", done=True,
+                        await self._emit_closing_status(
+                            event_emitter, "Need a quick clarification",
+                            valves=valves, end_notices=end_notices,
                         )
                         await self._emit_completion(event_emitter, clar_content)
                         self._emit_intent_telemetry(intent_result, valves=valves, chat_id=chat_id)
@@ -1173,7 +1102,7 @@ class VideoGenerationAdapter:
                         )
                         sink["member_refusal_reason"] = _VIDEO_USER_LIMIT_REFUSAL
                         return await self._refuse_for_user_limit(
-                            event_emitter, api_model_id, valves
+                            event_emitter, api_model_id, valves, end_notices
                         )
                     self._apply_uploaded_attachment_retargeting(
                         intent_result, video_meta_pre, valves,
@@ -1194,7 +1123,6 @@ class VideoGenerationAdapter:
                         chat_id=chat_id if isinstance(chat_id, str) else "",
                         message_id=message_id if isinstance(message_id, str) else "",
                         reused_frame_index=reused_frame_pref,
-                        frame_max_bytes=_frame_max_bytes(valves),
                         video_model=video_model,
                         valves=valves,
                         want_thumbnails=confirm_mode != "never",
@@ -1263,13 +1191,13 @@ class VideoGenerationAdapter:
                 ) = await self._admit_video_request(user_id, valves)
             if not user_slot_acquired:
                 sink["member_refusal_reason"] = _VIDEO_USER_LIMIT_REFUSAL
-                return await self._refuse_for_user_limit(event_emitter, api_model_id, valves)
+                return await self._refuse_for_user_limit(
+                    event_emitter, api_model_id, valves, end_notices
+                )
 
             video_meta = self._extract_video_metadata(metadata)
-            image_bytes: dict[str, int] = {"total": 0}
             frame_images = await self._encode_frame_images(
                 video_meta, video_model, valves, user_obj=user_obj or user,
-                spent=image_bytes,
             )
             try:
                 input_references = await self._encode_input_references(
@@ -1277,7 +1205,7 @@ class VideoGenerationAdapter:
                     video_model=video_model, relayed=relayed_families,
                     maybe_stored=maybe_stored_families,
                     companions=bool(frame_images), event_emitter=event_emitter,
-                    vetted=vetted_addresses, spent=image_bytes,
+                    vetted=vetted_addresses,
                 )
             finally:
                 disclosure_block = self._with_the_file_host_record(
@@ -1296,7 +1224,10 @@ class VideoGenerationAdapter:
                 withheld_record_written = True
                 if disclosure_block:
                     content = disclosure_block + "\n" + content
-                await self._emit_status(event_emitter, "Video generation could not start.", done=True)
+                await self._emit_closing_status(
+                    event_emitter, "Video generation could not start.",
+                    valves=valves, end_notices=end_notices,
+                )
                 await self._emit_generation_outcome(event_emitter, content, failed=True)
                 await self._report_generation(None, "failed", metadata)
                 sink["member_refusal_reason"] = _VIDEO_NO_PROMPT_REFUSAL
@@ -1372,6 +1303,7 @@ class VideoGenerationAdapter:
                 started_at=time.monotonic(),
                 disclosure_block=disclosure_block,
                 breaker_key=breaker_key,
+                end_notices=end_notices,
             )
             lifecycle_transferred = True
             async with self._pipe._video_active_tasks_dict_lock:
@@ -1407,6 +1339,7 @@ class VideoGenerationAdapter:
                 normalized_model_id=normalized_model_id,
                 api_model_id=api_model_id,
                 partial_answer=disclosure_block,
+                end_notices=end_notices,
             )
         except UpstreamBodyUnreadable as exc:
             self._count_a_failed_start(
@@ -1432,7 +1365,10 @@ class VideoGenerationAdapter:
             )
             if disclosure_block:
                 content = disclosure_block + "\n" + content
-            await self._emit_status(event_emitter, _VIDEO_GENERATION_FAILED_STATUS, done=True)
+            await self._emit_closing_status(
+                event_emitter, _VIDEO_GENERATION_FAILED_STATUS,
+                valves=valves, end_notices=end_notices,
+            )
             await self._emit_generation_outcome(event_emitter, content, failed=True)
             await self._report_generation(None, "failed", metadata)
             return content
@@ -1449,7 +1385,10 @@ class VideoGenerationAdapter:
             content = self._build_failure_content(job_id=job_id, model_id=api_model_id, reason=reason)
             if disclosure_block:
                 content = disclosure_block + "\n" + content
-            await self._emit_status(event_emitter, _VIDEO_GENERATION_FAILED_STATUS, done=True)
+            await self._emit_closing_status(
+                event_emitter, _VIDEO_GENERATION_FAILED_STATUS,
+                valves=valves, end_notices=end_notices,
+            )
             await self._emit_generation_outcome(event_emitter, content, failed=True)
             await self._report_generation(None, "failed", metadata)
             return content
@@ -1579,6 +1518,7 @@ class VideoGenerationAdapter:
         started_at: float,
         disclosure_block: str = "",
         breaker_key: str | None = None,
+        end_notices: list[str] | None = None,
     ) -> asyncio.Task[VideoLifecycleResult]:
         task: asyncio.Task[VideoLifecycleResult] = asyncio.create_task(
             self._run_lifecycle_after_submit(
@@ -1599,6 +1539,7 @@ class VideoGenerationAdapter:
                 started_at=started_at,
                 disclosure_block=disclosure_block,
                 breaker_key=breaker_key,
+                end_notices=end_notices,
             ),
             name=f"openrouter-video-{job_id}",
             context=contextvars.Context(),
@@ -1655,7 +1596,9 @@ class VideoGenerationAdapter:
         started_at: float,
         disclosure_block: str = "",
         breaker_key: str | None = None,
+        end_notices: list[str] | None = None,
     ) -> VideoLifecycleResult:
+        notices = end_notices or []
         content = ""
         failed = False
         usage: dict[str, Any] = {}
@@ -1822,7 +1765,9 @@ class VideoGenerationAdapter:
             if disclosure_block:
                 content = disclosure_block + "\n" + content
             description = self._format_final_status(elapsed=elapsed, usage=usage, valves=valves)
-            await self._emit_status(event_emitter, description, done=True, progress=100)
+            await self._emit_closing_status(
+                event_emitter, description, valves=valves, end_notices=notices, progress=100,
+            )
             await self._record_what_it_cost(
                 usage=usage,
                 billing=billing,
@@ -1872,7 +1817,9 @@ class VideoGenerationAdapter:
             if disclosure_block:
                 content = disclosure_block + "\n" + content
             description = _VIDEO_IS_STILL_RUNNING_STATUS
-            await self._emit_status(event_emitter, description, done=True)
+            await self._emit_closing_status(
+                event_emitter, description, valves=valves, end_notices=notices
+            )
             await self._record_what_it_cost(
                 usage=usage,
                 billing=billing,
@@ -1905,7 +1852,9 @@ class VideoGenerationAdapter:
             if disclosure_block:
                 content = disclosure_block + "\n" + content
             description = _VIDEO_GENERATION_FAILED_STATUS
-            await self._emit_status(event_emitter, description, done=True)
+            await self._emit_closing_status(
+                event_emitter, description, valves=valves, end_notices=notices
+            )
             await self._record_what_it_cost(
                 usage=usage,
                 billing=billing,
@@ -1941,7 +1890,9 @@ class VideoGenerationAdapter:
             if disclosure_block:
                 content = disclosure_block + "\n" + content
             description = _VIDEO_GENERATION_FAILED_STATUS
-            await self._emit_status(event_emitter, description, done=True)
+            await self._emit_closing_status(
+                event_emitter, description, valves=valves, end_notices=notices
+            )
             await self._record_what_it_cost(
                 usage=usage,
                 billing=billing,
@@ -2112,6 +2063,8 @@ class VideoGenerationAdapter:
         metadata: dict[str, Any] | None = None,
         responses_body: Any = None,
         request: Any = None,
+        valves: Any = None,
+        end_notices: list[str] | None = None,
     ) -> str | StreamingResponse:
         await self._emit_status(event_emitter, "Waiting for active video generation job...", done=False)
         result = await asyncio.shield(task)
@@ -2119,7 +2072,9 @@ class VideoGenerationAdapter:
         escape = self._unreadable_body_escape(
             result, metadata=metadata, responses_body=responses_body, request=request
         )
-        await self._emit_status(event_emitter, result.status_description, done=True)
+        await self._emit_closing_status(
+            event_emitter, result.status_description, valves=valves, end_notices=end_notices or [],
+        )
         await self._emit_generation_outcome(
             event_emitter, result.content, failed=result.failed, usage=result.usage
         )
@@ -2244,7 +2199,11 @@ class VideoGenerationAdapter:
         return True, user_slot_lock, global_semaphore, True
 
     async def _refuse_for_user_limit(
-        self, event_emitter: Any, model_id: str, valves: Any
+        self,
+        event_emitter: Any,
+        model_id: str,
+        valves: Any,
+        end_notices: list[str] | None = None,
     ) -> str:
         content = self._build_failure_content(
             job_id="",
@@ -2254,7 +2213,10 @@ class VideoGenerationAdapter:
                 f"({valves.MAX_CONCURRENT_VIDEO_GENS_PER_USER} active job(s))."
             ),
         )
-        await self._emit_status(event_emitter, "Video generation limit reached.", done=True)
+        await self._emit_closing_status(
+            event_emitter, "Video generation limit reached.",
+            valves=valves, end_notices=end_notices or [],
+        )
         await self._emit_generation_outcome(event_emitter, content, failed=True)
         return content
 
@@ -2751,7 +2713,6 @@ class VideoGenerationAdapter:
         valves: Any,
         *,
         user_obj: Any = None,
-        spent: dict[str, int] | None = None,
     ) -> list[dict[str, Any]]:
         raw_frames = video_meta.get("frame_images")
         if not isinstance(raw_frames, list) or not raw_frames:
@@ -2759,11 +2720,7 @@ class VideoGenerationAdapter:
         supported = self._supported_frame_types(video_model)
         if not supported:
             raise VideoGenerationError("The selected video model does not accept frame images.")
-        max_bytes = int(valves.VIDEO_FRAME_IMAGE_MAX_BYTES)
-        total_max = int(valves.VIDEO_FRAME_TOTAL_MAX_BYTES)
-        chunk_size = int(getattr(valves, "IMAGE_UPLOAD_CHUNK_BYTES", 1024 * 1024))
         encoded: list[dict[str, Any]] = []
-        total_bytes = int(spent["total"]) if spent else 0
         seen_file_ids: set[str] = set()
 
         for item in raw_frames:
@@ -2784,47 +2741,22 @@ class VideoGenerationAdapter:
                 raise VideoGenerationError(f"Frame image '{file_id}' could not be loaded from Open WebUI storage.")
             mime = infer_file_mime_type(file_obj)
             mime = _clean_str(mime).split(";", 1)[0].lower()
-            if not _promotable_as_frame({"content_type": mime}, valves):
+            if not usable_media_type(mime) or not _promotable_as_frame({"content_type": mime}, valves):
                 raise VideoGenerationError(f"Frame image MIME '{mime or 'unknown'}' is not allowed.")
             try:
-                b64 = await self._pipe._file_gateway.read_file_record_base64(
-                    file_obj, chunk_size, max_bytes, user=user_obj,
-                )
+                media = await self._pipe._file_gateway.read_file_record_media(file_obj, user=user_obj)
             except RequiredInternalFileError as exc:
-                if exc.kind == "size":
-                    raise VideoGenerationError(
-                        f"Frame image '{file_id}' is larger than the "
-                        f"{megabytes(max_bytes)} this deployment sends per frame."
-                    ) from exc
                 raise VideoGenerationError(exc.user_message) from exc
-            except ValueError as exc:
-                if "File exceeds BASE64_MAX_SIZE_MB limit" not in str(exc):
-                    raise
-                raise VideoGenerationError(
-                    f"Frame image '{file_id}' is larger than the "
-                    f"{megabytes(max_bytes)} this deployment sends per frame."
-                ) from exc
-            if not b64:
+            if media is None:
                 raise VideoGenerationError(f"Frame image '{file_id}' could not be encoded.")
-            try:
-                decoded_len = await _decoded_length(b64)
-            except Exception as exc:
-                raise VideoGenerationError(f"Frame image '{file_id}' contains invalid base64 data.") from exc
-            total_bytes += decoded_len
-            if total_bytes > total_max:
-                raise VideoGenerationError(
-                    f"Frame images exceed the total request limit ({total_bytes} bytes; max {total_max} bytes)."
-                )
             encoded.append(
                 {
                     "type": "image_url",
                     "frame_type": frame_type,
-                    "image_url": {"url": f"data:{mime};base64,{b64}"},
+                    "image_url": {"url": media.shaped(mime=mime, kind="data_url")},
                 }
             )
             seen_file_ids.add(file_id)
-        if spent is not None:
-            spent["total"] = total_bytes
         return encoded
 
     async def _encode_input_references(
@@ -2840,28 +2772,16 @@ class VideoGenerationAdapter:
         companions: bool = False,
         event_emitter: Any = None,
         vetted: dict[str, bool | None] | None = None,
-        spent: dict[str, int] | None = None,
     ) -> list[dict[str, Any]]:
         raw = resolve_reference_items(video_meta)
         if not raw:
             return []
-        image_max = int(valves.VIDEO_FRAME_IMAGE_MAX_BYTES)
-        asset_max = RECEIVE_ITEM_MAX_BYTES
-        total_max = int(valves.VIDEO_FRAME_TOTAL_MAX_BYTES)
-        relay_max = int(getattr(valves, "MEDIA_FILE_HOST_MAX_SIZE_MB", 200)) * 1024 * 1024
-        chunk_size = int(getattr(valves, "IMAGE_UPLOAD_CHUNK_BYTES", 1024 * 1024))
         allowed_images = _csv_set(valves.VIDEO_FRAME_IMAGE_MIME_ALLOWLIST)
         accepted: list[_AcceptedReference] = []
         model_takes = _declared_input_kinds(video_model)
         blob_floor = _INPUT_PIXEL_FLOORS.get(_clean_str(video_meta.get("model_id")))
         encoded: list[dict[str, Any]] = []
-        total_bytes = int(spent["total"]) if spent else 0
-        relay_bytes = 0
         past_the_count = 0
-
-        _over_reference_single = (
-            f"it is larger than the {megabytes(image_max)} one reference may be"
-        )
 
         def _skip(name: str, cause: str, text: str) -> None:
             self.logger.log(
@@ -2911,118 +2831,30 @@ class VideoGenerationAdapter:
             if via_file_host and not authorize_file_publication(file_obj, user_obj):
                 _skip(file_id, "not-owner", PUBLISHING_NEEDS_OWNERSHIP)
                 continue
-            if family == "image" and via_file_host:
-                declared = declared_file_size(file_obj)
-                if declared and declared > image_max:
-                    _skip(file_id, "over-single", _over_reference_single)
-                    continue
-                if declared is not None and (
-                    declared > relay_max or relay_bytes + declared > relay_max
-                ):
-                    _skip(
-                        file_id, "over-relay",
-                        _over_the_relay_cap(declared, relay_bytes, relay_max),
-                    )
-                    continue
-            if via_file_host and family != "image":
-                self._refuse_over_the_relay_cap(
-                    declared_file_size(file_obj), relay_bytes, relay_max
-                )
             try:
-                b64 = await self._pipe._file_gateway.read_file_record_base64(
-                    file_obj,
-                    chunk_size,
-                    relay_max if via_file_host else (image_max if family == "image" else asset_max),
-                    user=user_obj,
-                )
+                media = await self._pipe._file_gateway.read_file_record_media(file_obj, user=user_obj)
             except RequiredInternalFileError as exc:
-                if getattr(exc, "kind", None) == "size":
-                    if family == "image":
-                        if via_file_host and relay_max < image_max:
-                            _skip(
-                                file_id,
-                                "over-relay",
-                                _over_the_relay_cap(
-                                    declared_file_size(file_obj), relay_bytes, relay_max
-                                ),
-                            )
-                            continue
-                        _skip(file_id, "over-single", _over_reference_single)
-                        continue
-                    bound = relay_max if via_file_host else (
-                        image_max if family == "image" else asset_max
-                    )
-                    raise VideoGenerationError(
-                        f"The attached {family} is {megabytes(declared_file_size(file_obj) or 0)}"
-                        f" and the limit for one {family} is {megabytes(bound)}."
-                    ) from exc
                 _skip(file_id, "not-allowed", exc.user_message)
                 continue
-            except InlineFileTooLargeError:
-                if family == "image":
-                    _skip(file_id, "over-single", _over_reference_single)
-                    continue
-                raise
-            except ValueError as exc:
-                if not via_file_host:
-                    raise
-                raise VideoGenerationError(
-                    f"The attached {family} is larger than the "
-                    f"{megabytes(relay_max)} this deployment sends to a file host."
-                ) from exc
-            if not b64:
+            if media is None:
                 _skip(file_id, "unencodable", "it could not be encoded")
                 continue
-            blob = b""
-            try:
-                if via_file_host:
-                    blob = await _decoded_payload(b64)
-                    decoded_len = len(blob)
-                else:
-                    decoded_len = await _decoded_length(b64)
-            except Exception as exc:
-                self.logger.debug(
-                    "input_references asset %s is not valid base64: %s", file_id, exc,
-                    exc_info=True,
-                )
-                _skip(file_id, "not-base64", "it contains invalid base64 data")
-                continue
-            if family == "image":
-                if decoded_len > image_max:
-                    _skip(file_id, "over-single", _over_reference_single)
-                    continue
-                if total_bytes + decoded_len > total_max:
-                    _skip(file_id, "over-budget", _OVER_REFERENCE_BUDGET)
-                    continue
-                total_bytes += decoded_len
-                if spent is not None:
-                    spent["total"] = total_bytes
             if via_file_host:
-                if family == "image":
-                    if decoded_len > relay_max or relay_bytes + decoded_len > relay_max:
-                        _skip(
-                            file_id, "over-relay",
-                            _over_the_relay_cap(decoded_len, relay_bytes, relay_max),
-                        )
-                        continue
-                else:
-                    self._refuse_over_the_relay_cap(decoded_len, relay_bytes, relay_max)
+                media = await _file_backed(media)
                 if family == "video":
-                    note = await self._clip_too_small_note(blob_floor, blob, mime)
+                    note = await self._clip_too_small_note(blob_floor, media, mime)
                     if note:
                         _skip(file_id, "clip-size", note)
                         continue
-                relay_bytes += decoded_len
             accepted.append(
                 _AcceptedReference(
                     file_id=file_id,
                     kind=kind,
                     family=family,
                     mime=mime,
-                    b64=b64 if not via_file_host else "",
+                    media=media.shaped(mime=mime, kind="data_url"),
                     via_file_host=via_file_host,
                     filename=_clean_str(getattr(file_obj, "filename", "")),
-                    blob=blob if via_file_host else b"",
                 )
             )
         if past_the_count:
@@ -3053,7 +2885,7 @@ class VideoGenerationAdapter:
                         )
                     remaining = max(0.0, relay_deadline - time.monotonic())
                     link, host = await self._relay_reference(
-                        valves, entry.blob, filename=entry.filename,
+                        valves, entry.media, filename=entry.filename,
                         mime=entry.mime, family=entry.family,
                         deadline=min(
                             relay_deadline,
@@ -3071,28 +2903,8 @@ class VideoGenerationAdapter:
                     if relayed is not None:
                         relayed.add((entry.family, host))
                     continue
-                encoded.append(
-                    {
-                        "type": entry.kind,
-                        entry.kind: {"url": f"data:{entry.mime};base64,{entry.b64}"},
-                    }
-                )
+                encoded.append({"type": entry.kind, entry.kind: {"url": entry.media}})
         return encoded
-
-    @staticmethod
-    def _refuse_over_the_relay_cap(size: int | None, already: int, cap: int) -> None:
-        if cap <= 0 or size is None or size <= 0:
-            return
-        if size > cap:
-            raise VideoGenerationError(
-                f"The attachment is {megabytes(size)} and the limit for sending media "
-                f"to a file host is {megabytes(cap)}."
-            )
-        if already + size > cap:
-            raise VideoGenerationError(
-                f"The attachments come to {megabytes(already + size)} and one request "
-                f"sends at most {megabytes(cap)} to a file host."
-            )
 
     @staticmethod
     def _relay_hosts(valves: Any) -> list[str]:
@@ -3373,23 +3185,18 @@ class VideoGenerationAdapter:
         return bool(per_kind and getattr(valves, per_kind, False))
 
     async def _clip_too_small_note(
-        self, floor: _InputPixelFloor | None, payload: str | bytes, mime: str
+        self, floor: _InputPixelFloor | None, media: MediaSlot, mime: str
     ) -> str:
-        if floor is None:
+        if floor is None or media.path is None:
             return ""
-        if isinstance(payload, (bytes, bytearray)):
-            blob = bytes(payload)
-        else:
-            try:
-                blob = await _decoded_payload(payload)
-            except (binascii.Error, ValueError):
-                return ""
-        suffix = extension_for_video_mime(mime) or ".mp4"
-        handle, path = tempfile.mkstemp(suffix=suffix, prefix="openrouter-clip-")
-        temp = Path(path)
         try:
-            await asyncio.to_thread(_write_and_close, handle, blob)
-            meta = await probe_video(temp)
+            alias = await asyncio.to_thread(
+                current_send_spool().adopt, media.path, extension_for_video_mime(mime) or ".mp4"
+            )
+        except OSError:
+            return ""
+        try:
+            meta = await probe_video(alias)
         except FrameExtractionError:
             return ""
         except asyncio.CancelledError:
@@ -3398,7 +3205,7 @@ class VideoGenerationAdapter:
             return ""
         finally:
             with contextlib.suppress(OSError):
-                temp.unlink()
+                alias.unlink()
         pixels = int(meta.width) * int(meta.height)
         if pixels <= 0 or pixels >= floor.pixels:
             return ""
@@ -3408,21 +3215,17 @@ class VideoGenerationAdapter:
         )
 
     async def _relay_reference(
-        self, valves: Any, payload: str | bytes, *, filename: str, mime: str,
+        self, valves: Any, media: MediaSlot, *, filename: str, mime: str,
         family: str, deadline: float, session: aiohttp.ClientSession | None = None,
         event_emitter: Any = None,
         stored: set[tuple[str, str]] | None = None,
         already_uploaded: bool = False,
     ) -> tuple[str, str]:
-        if isinstance(payload, (bytes, bytearray)):
-            blob = bytes(payload)
-        else:
-            try:
-                blob = await _decoded_payload(payload)
-            except (binascii.Error, ValueError) as exc:
-                raise VideoGenerationError(
-                    f"The attached {family} could not be read, so it was not sent."
-                ) from exc
+        if media.path is None:
+            raise VideoGenerationError(
+                f"The attached {family} could not be read, so it was not sent."
+            )
+        source = Path(media.path)
         hosts = self._relay_hosts(valves)
         failures: list[str] = []
         async with contextlib.AsyncExitStack() as stack:
@@ -3440,14 +3243,11 @@ class VideoGenerationAdapter:
                         )
                     link = await relay_to_public_url(
                         http,
-                        blob,
+                        source,
                         filename=filename or f"reference.{mime.split('/', 1)[-1]}",
                         mime=mime,
                         host=host,
                         retention=str(getattr(valves, "MEDIA_FILE_HOST_RETENTION", "1h")),
-                        max_bytes=int(getattr(valves, "MEDIA_FILE_HOST_MAX_SIZE_MB", 200))
-                        * 1024
-                        * 1024,
                         seconds_left=deadline - time.monotonic(),
                     )
                     return link, host
@@ -3764,7 +3564,6 @@ class VideoGenerationAdapter:
         chat_id: str,
         message_id: str,
         reused_frame_index: Literal["first", "last"] = "last",
-        frame_max_bytes: int = _DEFAULT_FRAME_MAX_BYTES,
         video_model: Any = None,
         valves: Any = None,
         want_thumbnails: bool = True,
@@ -3876,7 +3675,6 @@ class VideoGenerationAdapter:
                             fallback_to_last_on_overshoot=True,
                             reused_frame_index=effective_fallback,
                             logger=self.logger,
-                            max_frame_bytes=frame_max_bytes,
                             meta=probed.get(file_id),
                             probe_failed=file_id in probe_failed,
                         )
@@ -3901,21 +3699,10 @@ class VideoGenerationAdapter:
                                     fallback_to_last_on_overshoot=True,
                                     reused_frame_index=effective_fallback,
                                     logger=self.logger,
-                                    max_frame_bytes=frame_max_bytes,
                                     meta=probed.get(file_id),
                                     probe_failed=file_id in probe_failed,
                                 )
-                            except FrameExtractionError as retry_exc:
-                                if getattr(retry_exc, "byte_budget", False):
-                                    _refuse_frame_over_byte_budget(
-                                        self.logger,
-                                        entry=entry,
-                                        position=position,
-                                        exc=retry_exc,
-                                        intent=intent,
-                                        thumb_urls=thumb_urls,
-                                    )
-                                    continue
+                            except FrameExtractionError:
                                 raise exc
                             intent.downgrades.append(
                                 f"frame_pixel_cap_used_scaled_frame_idx_{entry.source_index}_at_{position}"
@@ -3925,16 +3712,6 @@ class VideoGenerationAdapter:
                             )
                             if frame.downgrade_note:
                                 intent.downgrades.append(frame.downgrade_note)
-                        elif getattr(exc, "byte_budget", False):
-                            _refuse_frame_over_byte_budget(
-                                self.logger,
-                                entry=entry,
-                                position=position,
-                                exc=exc,
-                                intent=intent,
-                                thumb_urls=thumb_urls,
-                            )
-                            continue
                         else:
                             self.logger.log(
                                 warn_level(
@@ -3960,16 +3737,6 @@ class VideoGenerationAdapter:
                         )
                         continue
                     frame_bytes, frame_mime, frame_ext = converted
-                    if 0 < frame_max_bytes < len(frame_bytes):
-                        _refuse_frame_over_byte_budget(
-                            self.logger, entry=entry, position=position,
-                            exc=FrameExtractionError(
-                                f"frame too large: {len(frame_bytes)} bytes exceeds the "
-                                f"{frame_max_bytes} byte frame budget", byte_budget=True,
-                            ),
-                            intent=intent, thumb_urls=thumb_urls,
-                        )
-                        continue
                     if frame_mime != "image/png":
                         intent.downgrades.append(
                             f"frame_reencoded_{frame_mime.replace('/', '_')}_idx_"
@@ -4410,6 +4177,25 @@ class VideoGenerationAdapter:
                 "data": data,
             },
         )
+
+    async def _emit_closing_status(
+        self,
+        emitter: EventEmitter | None,
+        description: str | None,
+        *,
+        valves: Any,
+        end_notices: list[str],
+        progress: int | None = None,
+    ) -> None:
+        closing_lines = closing_status_descriptions(
+            description,
+            end_notices,
+            join=bool(getattr(valves, "SHOW_FINAL_USAGE_STATUS", False)),
+        )
+        for index, closing_line in enumerate(closing_lines):
+            await self._emit_status(
+                emitter, closing_line, done=True, progress=progress if index == 0 else None
+            )
 
     async def _emit_completion(
         self,

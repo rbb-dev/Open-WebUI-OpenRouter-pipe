@@ -266,8 +266,7 @@ then let the HTTP client resolve the name again:
   (TODO T569 in `tests/test_one_persons_reused_picture_is_never_sent_to_another.py`).
   Every turn re-checks the URL before those bytes are sent, and a URL the
   current valve values refuse is dropped from the memo and fetched through the gated
-  path instead; the same is true of the remote-download size cap, so a picture memoised
-  while that cap was higher is released rather than reused once it is lowered. So every byte that reaches the provider passed the gate under the valve
+  path instead. So every byte that reaches the provider passed the gate under the valve
   values in force at the moment it was sent, and tightening the valve or editing a host
   allowlist takes effect on the next turn rather than the next fetch. The re-check
   costs one address resolution and no download; a URL the check then refuses is fetched
@@ -371,7 +370,6 @@ address a user typed is never exempt.
 Even when a URL passes SSRF checks, downloads are constrained by:
 - the pipe's fixed 2 GiB per-item receive ceiling on every download, and the cap the Open WebUI admin last saved under Admin → Settings → Documents → Max Upload Size, which binds on the storage leg whether or not Open WebUI’s RAG bypass is on (that flag switches off embedding, not the admin’s ceiling)
 - `REMOTE_DOWNLOAD_*` retry/time budget valves
-- `BASE64_MAX_SIZE_MB` and `VIDEO_MAX_SIZE_MB` for certain inline/base64 payloads
 
 The three transport fetches carry their own fixed caps, because none of them is
 operator-configurable and each follows redirects, so the body is chosen by whatever the

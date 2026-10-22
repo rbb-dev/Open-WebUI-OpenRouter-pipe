@@ -212,7 +212,6 @@ def test_status_messages_are_strings():
 def test_valve_defaults_are_sensible():
     """Key valve defaults should stay within documented bounds."""
     valves = Pipe.Valves()
-    assert 1 <= valves.VIDEO_MAX_SIZE_MB <= 1000
     assert valves.ENABLE_SSRF_PROTECTION is True
     assert valves.ALLOW_INSECURE_HTTP is False
     assert valves.ALLOW_INSECURE_HTTP_HOSTS == ""

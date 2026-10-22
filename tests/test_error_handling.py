@@ -1805,3 +1805,108 @@ def _status_field(description: str, index: int) -> str:
     fields = [part.strip() for part in description.split(" | ")]
     assert len(fields) > index, description
     return fields[index]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_attachment_is_noted_once_after_the_answer_and_never_mid_reply(
+    pipe_instance_async, monkeypatch
+):
+    from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import (
+        CHAT,
+        answer_round,
+        install,
+        run,
+    )
+
+    pipe = pipe_instance_async
+    install(pipe, monkeypatch, lambda _n, _request: answer_round("It is a short clip."))
+    messages = [{"role": "user", "content": [
+        {"type": "text", "text": "what is in this clip"},
+        {"type": "video_url", "video_url": {"url": "http://example.com/clip.mp4"}},
+    ]}]
+
+    chunks, _raw = await run(pipe, mode="Pipeline", stream=True, metadata=dict(CHAT), messages=messages)
+
+    def event_of(chunk: Any) -> dict[str, Any]:
+        found = chunk.get("event") if isinstance(chunk, dict) else None
+        return found if isinstance(found, dict) else {}
+
+    answer_at = next(
+        i for i, chunk in enumerate(chunks)
+        if isinstance(chunk, dict) and (chunk.get("choices") or [{}])[0].get("delta", {}).get("content")
+    )
+    error_positions = [i for i, chunk in enumerate(chunks) if event_of(chunk).get("type") == "chat:message:error"]
+    assert not error_positions, (
+        f"the reply carried a mid-answer error frame before its answer (first answer at {answer_at}): "
+        f"{[chunks[i] for i in error_positions]}"
+    )
+
+    statuses = [(i, event_of(chunk)["data"]) for i, chunk in enumerate(chunks) if event_of(chunk).get("type") == "status"]
+    noted = [(i, data) for i, data in statuses if "ALLOW_INSECURE_HTTP" in data.get("description", "")]
+    assert len(noted) == 1, f"the refusal was noted {len(noted)} times: {statuses}"
+    assert noted[0] == statuses[-1], f"the note is not the last status: {statuses}"
+    assert noted[0][0] > answer_at
+    assert noted[0][1].get("done") is True
+    assert [data for _i, data in statuses if data.get("done") is True] == [noted[0][1]]
+    assert event_of(chunks[-1]).get("type") == "chat:completion"
+
+
+@pytest.mark.parametrize("failure", ["in_the_loop", "handed_back", "image"])
+@pytest.mark.asyncio
+async def test_a_refused_attachment_is_noted_once_before_the_card_when_the_reply_fails(
+    pipe_instance_async, monkeypatch, failure
+):
+    from open_webui_openrouter_pipe.core.errors import _build_openrouter_api_error
+    from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+    from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import (
+        BASE_URL,
+        CHAT,
+        MODEL,
+        NORM,
+        install,
+        run,
+    )
+
+    refusal = json.dumps({"error": {"message": "the provider failed"}})
+
+    def fails(_n: int, _request: dict[str, Any]):
+        if failure == "in_the_loop":
+            raise RuntimeError("the connection broke")
+        raise _build_openrouter_api_error(500, "Server Error", refusal)
+
+    pipe = pipe_instance_async
+    install(pipe, monkeypatch, fails)
+    if failure == "image":
+        monkeypatch.setattr(
+            OpenRouterModelRegistry,
+            "_specs",
+            {NORM: {"architecture": {"output_modalities": ["image"]}, "features": {"image_output"}}},
+        )
+    messages = [{"role": "user", "content": [
+        {"type": "text", "text": "what is in this clip"},
+        {"type": "video_url", "video_url": {"url": "http://example.com/clip.mp4"}},
+    ]}]
+
+    with aioresponses() as mocked:
+        mocked.get(f"{BASE_URL}/images/models/{MODEL}/endpoints", payload={"endpoints": [{}]}, repeat=True)
+        mocked.post(f"{BASE_URL}/images", status=500, body=refusal, repeat=True)
+        chunks, _raw = await run(pipe, mode="Pipeline", stream=True, metadata=dict(CHAT), messages=messages)
+
+    events = [
+        found if isinstance(found := chunk.get("event") if isinstance(chunk, dict) else None, dict) else {}
+        for chunk in chunks
+    ]
+    statuses = [(i, e["data"]) for i, e in enumerate(events) if e.get("type") == "status"]
+    noted = [(i, data) for i, data in statuses if "ALLOW_INSECURE_HTTP" in data.get("description", "")]
+    assert len(noted) == 1, f"the refusal was noted {len(noted)} times: {statuses}"
+    assert noted[0] == statuses[-1], f"the note is not the last status: {statuses}"
+    assert noted[0][1].get("done") is True
+    completion_at = next(
+        i for i, e in enumerate(events)
+        if e.get("type") == "chat:completion" and e["data"].get("done") is True
+    )
+    assert noted[0][0] < completion_at
+    assert not [
+        i for i, e in enumerate(events)
+        if i != noted[0][0] and "ALLOW_INSECURE_HTTP" in json.dumps(e)
+    ]

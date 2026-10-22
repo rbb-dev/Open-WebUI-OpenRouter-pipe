@@ -8,7 +8,6 @@ from open_webui_openrouter_pipe import (
     _responses_payload_to_chat_completions_payload,
 )
 
-_INLINE_CAP_BYTES = 50 * 1024 * 1024
 
 
 def _refuses_cleartext(_url: str) -> bool:
@@ -72,7 +71,7 @@ async def test_responses_payload_to_chat_maps_text_format_to_response_format() -
         ],
         "text": {"format": {"type": "json_object"}},
     }
-    chat = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+    chat = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
     assert chat["response_format"] == {"type": "json_object"}
 
 
@@ -97,6 +96,6 @@ async def test_responses_payload_to_chat_prefers_response_format_over_text_forma
             }
         },
     }
-    chat = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+    chat = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
     assert chat["response_format"] == {"type": "json_object"}
 

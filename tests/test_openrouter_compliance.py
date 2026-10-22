@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from tests.media_slots import inlined_file
 import base64
 from unittest.mock import AsyncMock
 
@@ -76,7 +77,7 @@ async def test_supported_image_formats_are_inlined(
     monkeypatch.setattr(
         pipe_instance._file_gateway,
         "inline_owui_file_id",
-        AsyncMock(return_value=InlinedFile(data_url="data:image/png;base64,STORED", filename=f"test.{ext}")),
+        AsyncMock(return_value=inlined_file("data:image/png;base64,STORED", f"test.{ext}")),
     )
 
     block = {"type": "image_url", "image_url": data_url}
@@ -150,6 +151,7 @@ async def test_audio_requires_base64_not_urls(
     """
 
     events: list = []
+    notices: list[str] = []
 
     async def emitter(event):
         events.append(event)
@@ -160,6 +162,7 @@ async def test_audio_requires_base64_not_urls(
         [{"role": "user", "content": [block]}],
         user_obj=mock_user,
         event_emitter=emitter,
+        attachment_notices=notices,
     )
     result = transformed[0]["content"][0]
 
@@ -168,21 +171,11 @@ async def test_audio_requires_base64_not_urls(
         "[An attached item was not sent: an audio clip must be base64-encoded; "
         "URLs are not supported.]"
     )
-    statuses = [e for e in events if e.get("type") == "status"]
-    assert [e["data"]["description"] for e in statuses] == [
+    assert notices == [
         "Files: skipped 1 (an audio clip must be base64-encoded; URLs are not supported)."
-    ], events
+    ], notices
     assert not [e for e in events if isinstance((e.get("data") or {}).get("error"), dict)], (
         f"a malformed payload was reported as an error card as well: {events!r}"
     )
 
 
-def test_file_size_limit_enforced(pipe_instance):
-    """Large base64 payloads must be rejected to honor OpenRouter limits."""
-
-    pipe_instance.valves.BASE64_MAX_SIZE_MB = 1  # shrink for predictable test sizes
-    small_payload = base64.b64encode(b"0" * (256 * 1024)).decode("ascii")
-    large_payload = base64.b64encode(b"0" * (2 * 1024 * 1024)).decode("ascii")
-
-    assert pipe_instance._file_gateway.validate_base64_size(small_payload) is True
-    assert pipe_instance._file_gateway.validate_base64_size(large_payload) is False

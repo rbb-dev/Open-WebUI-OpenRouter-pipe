@@ -13,6 +13,8 @@ import pytest
 from aioresponses import CallbackResult, aioresponses
 
 from open_webui_openrouter_pipe.core.config import Valves
+from open_webui_openrouter_pipe.core.media_slot import MediaSlot
+from tests.media_slots import bare_slot
 from open_webui_openrouter_pipe.integrations import video as video_module
 from open_webui_openrouter_pipe.integrations.media_relay import _ENDPOINTS
 from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
@@ -49,15 +51,15 @@ class _Harness:
         self.pipe = MagicMock()
         self.pipe.logger = logging.getLogger("redteam")
 
-        async def _read(file_obj, _chunk, _cap, user=None):
-            return base64.b64encode(self.blobs[file_obj.id]).decode()
+        async def _read(file_obj, *, user=None):
+            return bare_slot(base64.b64encode(self.blobs[file_obj.id]).decode())
 
         async def _notify(_emitter, content, *, level="info"):
             self.notices.append(content)
             self.timeline.append("told")
             return self.the_chat_hears_it
 
-        self.pipe._file_gateway.read_file_record_base64 = _read
+        self.pipe._file_gateway.read_file_record_media = _read
         self.pipe._event_emitter_handler._emit_notification = _notify
         self.adapter = VideoGenerationAdapter(pipe=self.pipe, logger=self.pipe.logger)
 
@@ -204,7 +206,7 @@ async def test_a_file_already_published_is_disclosed_even_when_the_request_fails
 @pytest.mark.parametrize("count", [40, 400])
 @pytest.mark.asyncio
 async def test_a_single_request_cannot_publish_an_unbounded_number_of_files(count):
-    """Every accepted reference is held in memory as base64 before the first upload
+    """Every accepted reference is read out of storage before the first upload
     starts, and the deployment-wide semaphore is taken only afterwards."""
     blobs = {f"f{i}": MP4 for i in range(count)}
     records = {f"f{i}": _record(f"f{i}", "video/mp4") for i in range(count)}
@@ -228,7 +230,7 @@ async def test_a_single_request_cannot_publish_an_unbounded_number_of_files(coun
     ["https://attacker.example/beacon.mp4", "http://169.254.169.254/latest/meta-data/"],
 )
 @pytest.mark.asyncio
-async def test_the_link_forwarded_is_the_one_the_chosen_host_serves(answer):
+async def test_the_link_forwarded_is_the_one_the_chosen_host_serves(answer, tmp_path):
     """Whatever the anonymous host replies becomes a URL this pipe hands to
     OpenRouter with no origin or scheme check."""
     pipe = MagicMock()
@@ -245,9 +247,11 @@ async def test_the_link_forwarded_is_the_one_the_chosen_host_serves(answer):
                 callback=lambda url, **kw: CallbackResult(status=200, body=answer),
                 repeat=True,
             )
+            clip = tmp_path / "a.mp4"
+            clip.write_bytes(MP4)
             with pytest.raises(VideoGenerationError) as refused:
                 await adapter._relay_reference(
-                    valves, base64.b64encode(MP4).decode(),
+                    valves, MediaSlot(mime="video/mp4", path=clip),
                     filename="a.mp4", mime="video/mp4", family="video",
                     deadline=time.monotonic() + 30.0,
                 )

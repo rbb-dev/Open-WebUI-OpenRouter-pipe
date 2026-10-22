@@ -23,11 +23,10 @@ from ..core.config import (
     OPENAI_EMPTY_USER_TURN_FALLBACK,
     markdown_image_spans,
 )
-from ..core.context_budget import inline_payload_bytes
 from ..core.errors import RequiredInternalFileError, StatusMessages
 from ..core.image_detail import image_detail_or_auto
+from ..core.media_slot import MediaSlot, current_send_spool
 from ..core.url_scheme import (
-    base64_data_url_payload_chars,
     base64_data_url_payload_len,
     first_n_non_whitespace,
     is_absolute_url,
@@ -90,7 +89,6 @@ from ..storage.multimodal import (
 )
 from ..storage.owui_files import (
     _INTERNAL_FILE_SUBSTRING,
-    InlineFileTooLargeError,
     extract_internal_file_id,
     is_temporary_chat,
     names_a_hostless_owui_file_path,
@@ -385,17 +383,6 @@ _warned_image_reuse: dict[str, float] = {}
 _warned_oversized_inline: dict[str, float] = {}
 
 
-def _b64encode_ascii(raw: bytes) -> str:
-    pieces: list[str] = []
-    whole_bytes = (len(raw) // 3) * 3
-    if whole_bytes:
-        pieces.append(base64.b64encode(raw[:whole_bytes]).decode("ascii"))
-    leftover = raw[whole_bytes:]
-    if leftover:
-        pieces.append(base64.b64encode(leftover).decode("ascii"))
-    return "".join(pieces)
-
-
 def _base64_quantum_is_valid(payload: str) -> bool:
     try:
         binascii.a2b_base64(payload, strict_mode=True)
@@ -503,7 +490,7 @@ def _normalize_audio_format(
 class ImageRefusal(NamedTuple):
     reason: str
     cause: str
-    severity: Literal["status", "error", "fatal"] = "status"
+    severity: Literal["status", "fatal"] = "status"
     subject: str = ""
 
 
@@ -537,9 +524,20 @@ def _resolve_inline_type(
     return f"{head},{body}", None
 
 
+def _resolve_slot_type(
+    slot: MediaSlot,
+    *,
+    cause: str = "reuse_untyped",
+    subject: str = "",
+) -> tuple[MediaSlot, ImageRefusal | None]:
+    resolved = resolve_download_type(slot.mime, _sniff_evidence(slot.head(_SNIFF_PREFIX_BYTES)))
+    if not _is_forwardable_image_type(resolved):
+        return slot, ImageRefusal("not identifiable as an image", cause, subject=subject)
+    return slot.shaped(mime=(resolved or "").split(";", 1)[0].strip().lower()), None
+
+
 async def _gate_inline_data_url(
     url: str,
-    max_inline_bytes: int,
     *,
     resolve_type: bool,
 ) -> tuple[str, tuple[str, str] | None, ImageRefusal | None]:
@@ -550,14 +548,6 @@ async def _gate_inline_data_url(
             "unencoded_inline",
             subject=loggable_link(url),
         )
-    if (payload_chars * 3) // 4 > max_inline_bytes:
-        folded = base64_data_url_payload_chars(url)
-        if folded is None or (folded * 3) // 4 > max_inline_bytes:
-            return url, None, ImageRefusal(
-                f"larger than the {max_inline_bytes}-byte inline limit",
-                "oversized_inline",
-                subject=loggable_link(url),
-            )
     split = split_base64_data_url(url)
     assert split is not None
     body = "".join(split[1].split())
@@ -579,7 +569,6 @@ async def _gate_inline_data_url(
 
 async def _gate_inline_tool_pictures(
     pictures: list[str],
-    max_inline_bytes: int,
     *,
     allow_insecure: Callable[[str], bool],
 ) -> tuple[list[str], list[tuple[str, str, str]]]:
@@ -587,15 +576,11 @@ async def _gate_inline_tool_pictures(
     refused: list[tuple[str, str, str]] = []
     for url in pictures:
         if not is_inline_data_url(url):
-            admitted, not_a_link = _tool_picture_gate(
-                [url], max_inline_bytes=max_inline_bytes, allow_insecure=allow_insecure,
-            )
+            admitted, not_a_link = _tool_picture_gate([url], allow_insecure=allow_insecure)
             kept.extend(admitted)
             refused.extend(not_a_link)
             continue
-        _gated, _parts, refusal = await _gate_inline_data_url(
-            url, max_inline_bytes, resolve_type=True,
-        )
+        _gated, _parts, refusal = await _gate_inline_data_url(url, resolve_type=True)
         if refusal is not None:
             refused.append((url, refusal.reason, refusal.cause))
             continue
@@ -607,14 +592,11 @@ async def _gated_tool_pictures_with_address(
     pipe: Pipe,
     pictures: list[str],
     *,
-    max_inline_bytes: int,
     allow_insecure: Callable[[str], bool],
     seen: dict[str, bool | None] | None = None,
     budget: _AddressBudget | None = None,
 ) -> tuple[list[str], list[tuple[str, str, str]]]:
-    typed, refused = await _gate_inline_tool_pictures(
-        pictures, max_inline_bytes, allow_insecure=allow_insecure,
-    )
+    typed, refused = await _gate_inline_tool_pictures(pictures, allow_insecure=allow_insecure)
     admitted, unfetchable = await _tool_picture_address_gate(
         pipe, typed, seen=seen, budget=budget,
     )
@@ -624,7 +606,6 @@ async def _gated_tool_pictures_with_address(
 async def _gate_round_output_pictures(
     pipe: Pipe,
     output: Any,
-    max_inline_bytes: int,
     *,
     allow_insecure: Callable[[str], bool],
     seen: dict[str, bool | None] | None = None,
@@ -634,14 +615,9 @@ async def _gate_round_output_pictures(
         return output, []
     text, pictures = tool_output_text_and_pictures(output)
     kept, refused = await _gated_tool_pictures_with_address(
-        pipe, pictures, max_inline_bytes=max_inline_bytes, allow_insecure=allow_insecure,
-        seen=seen, budget=budget,
+        pipe, pictures, allow_insecure=allow_insecure, seen=seen, budget=budget,
     )
     return picture_output(text, kept), refused
-
-
-def _inline_payload_bytes(value: str) -> int:
-    return inline_payload_bytes(value)
 
 
 def _text_block_carries_words(text: str) -> bool:
@@ -649,6 +625,8 @@ def _text_block_carries_words(text: str) -> bool:
 
 
 def _payload_is_present(value: Any) -> bool:
+    if isinstance(value, MediaSlot):
+        return True
     if isinstance(value, str):
         return bool(value.strip())
     if isinstance(value, dict):
@@ -717,15 +695,6 @@ def _unconverted_block_reason(block: dict[str, Any]) -> str | None:
             block.get(key) for key in ("file_id", "file_data", "file_url", "file")
         ) else None
     return None
-
-
-def _oversized_inline_refusal(
-    limit_bytes: int, cause: str, subject: str
-) -> ImageRefusal:
-    return ImageRefusal(
-        f"larger than the {limit_bytes}-byte inline limit", cause,
-        severity="error", subject=subject,
-    )
 
 
 def _is_text_ordinal_upper_bound(
@@ -882,7 +851,7 @@ _TRANSPORT_ONLY_KEYS = (
 )
 _LIFTED_TEXT_IMAGE_PLACEHOLDER = "image"
 
-_SIZE_REFUSAL_CAUSES = frozenset({"oversized_inline", "oversized_remote"})
+_SIZE_REFUSAL_CAUSES = frozenset({"oversized_remote"})
 
 _MEDIA_BLOCK_TYPES = frozenset({
     "image_url", "input_image", "image", "input_file", "file",
@@ -1170,7 +1139,6 @@ def history_round_entry_ok(tool_call: Any) -> bool:
 def _tool_picture_gate(
     pictures: list[str],
     *,
-    max_inline_bytes: int,
     allow_insecure: Callable[[str], bool],
 ) -> tuple[list[str], list[tuple[str, str, str]]]:
     kept: list[str] = []
@@ -1195,12 +1163,6 @@ def _tool_picture_gate(
                 refused.append((url, ("a data URL that is not base64-encoded, which OpenRouter "
                                       "does not accept"), "unencoded_inline"))
                 continue
-            if (payload_len * 3) // 4 > max_inline_bytes:
-                folded = base64_data_url_payload_chars(url)
-                if folded is None or (folded * 3) // 4 > max_inline_bytes:
-                    refused.append((url, f"larger than the {max_inline_bytes}-byte inline limit",
-                                    "oversized_inline"))
-                    continue
         kept.append(url)
     return kept, refused
 
@@ -1306,14 +1268,12 @@ async def _tool_picture_gate_with_address(
     pipe: Pipe | None,
     pictures: list[str],
     *,
-    max_inline_bytes: int,
     seen: dict[str, bool | None] | None = None,
     budget: _AddressBudget | None = None,
 ) -> tuple[list[str], list[tuple[str, str, str]]]:
     if pipe is None:
         kept, refused = _tool_picture_gate(
             pictures,
-            max_inline_bytes=max_inline_bytes,
             allow_insecure=lambda _url: True,
         )
         return [
@@ -1326,7 +1286,6 @@ async def _tool_picture_gate_with_address(
         ]
     kept, refused = _tool_picture_gate(
         pictures,
-        max_inline_bytes=max_inline_bytes,
         allow_insecure=pipe._multimodal_handler._is_insecure_http_allowed,
     )
     admitted, unfetchable = await _tool_picture_address_gate(
@@ -1416,9 +1375,9 @@ class _AddressBudget:
             self.charge(time.monotonic() - started)
 
 
-def _read_picture(path: str) -> bytes:
+def _read_picture_head(path: str) -> bytes:
     with open(path, "rb") as picture_fh:
-        return picture_fh.read()
+        return picture_fh.read(_SNIFF_PREFIX_BYTES)
 
 
 async def _memo_hit_is_still_permitted(
@@ -1492,9 +1451,6 @@ async def transform_messages_to_input(
         image_limit = active_valves.MAX_INPUT_IMAGES_PER_REQUEST
         selection_mode = active_valves.IMAGE_INPUT_SELECTION
         image_reuse_turns = active_valves.IMAGE_REUSE_MAX_TURNS
-        chunk_size = active_valves.IMAGE_UPLOAD_CHUNK_BYTES
-        max_inline_bytes = active_valves.BASE64_MAX_SIZE_MB * 1024 * 1024
-        video_max_size_mb = active_valves.VIDEO_MAX_SIZE_MB
         target_model_id = model_id or openwebui_model_id or ""
         vision_lookup_id = capability_model_id or target_model_id
         phase_lookup_id = capability_model_id or target_model_id
@@ -1514,13 +1470,15 @@ async def transform_messages_to_input(
         _deferred_tool_pictures: list[str] = []
         _deferred_tool_refusals: list[tuple[str, str, str]] = []
 
+        collected_notices: list[str] = attachment_notices if attachment_notices is not None else []
+
         def _message_identifier(entry: dict[str, Any]) -> str | None:
             return message_identifier(entry)
 
         async def _flush_deferred_tool_pictures() -> None:
             if _deferred_tool_pictures:
                 admitted, gated_refusals = await _gate_inline_tool_pictures(
-                    _deferred_tool_pictures, max_inline_bytes,
+                    _deferred_tool_pictures,
                     allow_insecure=pipe._multimodal_handler._is_insecure_http_allowed,
                 )
                 _deferred_tool_refusals.extend(gated_refusals)
@@ -1534,12 +1492,7 @@ async def transform_messages_to_input(
                         "Not forwarding a tool's picture (%s): %s [cause=%s]",
                         loggable_link(url), reason, refusal_cause,
                     )
-                notice = _tool_picture_notice(_deferred_tool_refusals)
-                await pipe._event_emitter_handler._emit_status(
-                    event_emitter, notice, done=False,
-                )
-                if attachment_notices is not None:
-                    attachment_notices.append(notice)
+                collected_notices.append(_tool_picture_notice(_deferred_tool_refusals))
                 _deferred_tool_refusals.clear()
 
         def _compute_turn_indices() -> tuple[list[int | None], int]:
@@ -2075,7 +2028,7 @@ async def transform_messages_to_input(
                 if tool_pictures and not _handoff_ahead(messages, idx):
                     try:
                         admitted, tool_refusals = await _tool_picture_gate_with_address(
-                            pipe, tool_pictures, max_inline_bytes=max_inline_bytes,
+                            pipe, tool_pictures,
                             seen=address_verdicts, budget=address_budget,
                         )
                     except Exception:
@@ -2135,12 +2088,12 @@ async def transform_messages_to_input(
                     try:
                         image_payload = block.get("image_url")
                         detail: str | None = None
-                        url: str = ""
+                        url: Any = ""
 
                         if isinstance(image_payload, dict):
                             url = image_payload.get("url", "")
                             detail = image_payload.get("detail")
-                        elif isinstance(image_payload, str):
+                        elif isinstance(image_payload, (MediaSlot, str)):
                             url = image_payload
                             block_detail = block.get("detail")
                             if isinstance(block_detail, str):
@@ -2157,6 +2110,13 @@ async def transform_messages_to_input(
                             if named_file is not None:
                                 return {"type": "input_file", "file_id": named_file}
                             return None
+
+                        if isinstance(url, MediaSlot):
+                            return {
+                                "type": "input_image",
+                                "image_url": url,
+                                "detail": image_detail_or_auto(detail),
+                            }
 
                         owui_internal = names_an_owui_file_path(url)
                         if (
@@ -2188,7 +2148,7 @@ async def transform_messages_to_input(
                         if is_inline_data_url(url):
                             try:
                                 url, gated_split, refusal = await _gate_inline_data_url(
-                                    url, max_inline_bytes, resolve_type=True,
+                                    url, resolve_type=True,
                                 )
                                 if refusal is not None:
                                     return refusal
@@ -2308,19 +2268,11 @@ async def transform_messages_to_input(
                                         subject=loggable_link(url),
                                     )
                             if held_path is not None:
-                                picture = await asyncio.to_thread(_read_picture, held_path)
-                                oversized = len(picture) > max_inline_bytes
-                                if oversized:
-                                    return _refuse(
-                                        f"{len(picture)} bytes, over the "
-                                        f"{max_inline_bytes}-byte limit, so it was not sent",
-                                        "oversized_remote",
-                                        subject=loggable_link(url),
-                                    )
+                                sniff_head = await asyncio.to_thread(_read_picture_head, held_path)
                                 declared_type = str(held_mime or "").split(";", 1)[0].strip().lower()
                                 resolved_type = resolve_download_type(
                                     declared_type,
-                                    _sniff_evidence(picture[:_SNIFF_PREFIX_BYTES]),
+                                    _sniff_evidence(sniff_head),
                                 )
                                 if not _is_forwardable_image_type(resolved_type):
                                     return _refuse(
@@ -2328,6 +2280,11 @@ async def transform_messages_to_input(
                                         "inline_untyped",
                                         subject=loggable_link(url),
                                     )
+                                picture_slot = MediaSlot(
+                                    mime=str(resolved_type).split(";", 1)[0].strip().lower(),
+                                    path=await asyncio.to_thread(current_send_spool().adopt, held_path),
+                                )
+                                picture_size = picture_slot.raw_len or 0
                                 if mode == "reuse" and memo_key is not None:
                                     request_memo[memo_key] = (
                                         memo_owner,
@@ -2339,13 +2296,13 @@ async def transform_messages_to_input(
                                     and not temporary_chat
                                     and remembered is None
                                     and memo_key is not None
-                                    and len(picture)
+                                    and picture_size
                                     <= _REUSE_DOWNLOAD_MEMO_MAX_BYTES
                                 ):
                                     held = _reuse_download_memo.held
                                     while (
                                         _reuse_download_memo
-                                        and held + len(picture)
+                                        and held + picture_size
                                         > _REUSE_DOWNLOAD_MEMO_MAX_BYTES
                                     ):
                                         _reuse_download_memo.popitem(last=False)
@@ -2355,9 +2312,7 @@ async def transform_messages_to_input(
                                         _claim_memo_picture(held_path),
                                         held_mime or "",
                                     )
-                                url = f"data:{resolved_type};base64," + await asyncio.to_thread(
-                                    _b64encode_ascii, picture
-                                )
+                                url = picture_slot
                         owui_file_id = extract_internal_file_id(url) if owui_internal else None
                         if owui_internal and not owui_file_id:
                             raise RequiredInternalFileError(
@@ -2366,19 +2321,10 @@ async def transform_messages_to_input(
                             )
 
                         if owui_file_id:
-                            try:
-                                inlined = await pipe._file_gateway.inline_owui_file_id(
-                                    owui_file_id,
-                                    chunk_size=chunk_size,
-                                    max_bytes=max_inline_bytes,
-                                    user=user_obj,
-                                )
-                            except InlineFileTooLargeError:
-                                return ImageRefusal(
-                                    f"larger than the {max_inline_bytes}-byte inline limit",
-                                    "oversized_inline",
-                                    subject="image",
-                                )
+                            inlined = await pipe._file_gateway.inline_owui_file_id(
+                                owui_file_id,
+                                user=user_obj,
+                            )
                             if not inlined:
                                 return ImageRefusal(
                                     "no longer available in Open WebUI storage",
@@ -2386,35 +2332,43 @@ async def transform_messages_to_input(
                                     severity="fatal",
                                     subject=owui_file_id,
                                 )
-                            url = inlined.data_url
-
-                        split = (
-                            gated_split
-                            if gated_split is not None
-                            else (None if from_gate else split_base64_data_url(url))
-                        )
-                        if (
-                            mode == "reuse"
-                            and not from_gate
-                            and not (split[1] if split is not None else "")
-                            and not is_http_or_https_url(url)
-                        ):
-                            return ImageRefusal(
-                                "could not be fetched, so its type could not be established",
-                                "reuse_unfetched",
-                                subject=_image_subject(url),
-                            )
-
-                        if split is not None and split[1]:
-                            url, refusal = _resolve_inline_type(
-                                split[0],
-                                split[1],
+                            url, slot_refusal = await asyncio.to_thread(
+                                _resolve_slot_type,
+                                inlined.media,
                                 cause="reuse_untyped" if mode == "reuse" else "inline_untyped",
-                                subject=loggable_link(url),
-                                split_from=url,
+                                subject=f"data:{inlined.media.mime}",
                             )
-                            if refusal is not None:
-                                return refusal
+                            if slot_refusal is not None:
+                                return slot_refusal
+
+                        if not isinstance(url, MediaSlot):
+                            split = (
+                                gated_split
+                                if gated_split is not None
+                                else (None if from_gate else split_base64_data_url(url))
+                            )
+                            if (
+                                mode == "reuse"
+                                and not from_gate
+                                and not (split[1] if split is not None else "")
+                                and not is_http_or_https_url(url)
+                            ):
+                                return ImageRefusal(
+                                    "could not be fetched, so its type could not be established",
+                                    "reuse_unfetched",
+                                    subject=_image_subject(url),
+                                )
+
+                            if split is not None and split[1]:
+                                url, refusal = _resolve_inline_type(
+                                    split[0],
+                                    split[1],
+                                    cause="reuse_untyped" if mode == "reuse" else "inline_untyped",
+                                    subject=loggable_link(url),
+                                    split_from=url,
+                                )
+                                if refusal is not None:
+                                    return refusal
 
                         result: dict[str, Any] = {"type": "input_image", "image_url": url}
                         if url:
@@ -2548,16 +2502,16 @@ async def transform_messages_to_input(
                                     subject="file_url",
                                 )
 
-                        def _is_inline_payload(name: str, value: str) -> bool:
+                        def _is_inline_payload(field_name: str, value: str) -> bool:
                             scheme = url_scheme(value)
-                            return scheme == "data" or (name == "file_data" and not scheme)
+                            return scheme == "data" or (field_name == "file_data" and not scheme)
 
-                        def _is_provider_fetched_link(name: str, value: Any) -> bool:
+                        def _is_provider_fetched_link(field_name: str, value: Any) -> bool:
                             if not isinstance(value, str) or not value:
                                 return False
-                            if _is_inline_payload(name, value):
+                            if _is_inline_payload(field_name, value):
                                 return False
-                            return bool(url_scheme(value)) or name == "file_url"
+                            return bool(url_scheme(value)) or field_name == "file_url"
 
                         _gate_fields = (("file_data", file_data), ("file_url", file_url))
                         _scheme_verdicts: dict[str, bool | None] = {}
@@ -2635,25 +2589,6 @@ async def transform_messages_to_input(
                                 else:
                                     file_url = None
 
-                        oversized = {
-                            name: value
-                            for name, value in (("file_data", file_data), ("file_url", file_url))
-                            if isinstance(value, str)
-                            and value
-                            and _is_inline_payload(name, value)
-                            and _inline_payload_bytes(value) > max_inline_bytes
-                        }
-                        if oversized and not file_id:
-                            return ImageRefusal(
-                                f"larger than the {max_inline_bytes}-byte inline limit",
-                                "oversized_inline_file",
-                                subject=link_media_type(next(iter(oversized.values()))),
-                            )
-                        if "file_data" in oversized:
-                            file_data = None
-                        if "file_url" in oversized:
-                            file_url = None
-
                         if not (file_id or file_data or file_url):
                             return _no_source_refusal()
 
@@ -2689,23 +2624,9 @@ async def transform_messages_to_input(
                     def _refuse_audio(why: str, cause: str) -> ImageRefusal:
                         return ImageRefusal(why, cause, subject="audio")
 
-                    async def _refuse_oversized_inline(estimate: int) -> ImageRefusal:
-                        pipe.logger.warning(
-                            "Audio payload rejected: ~%.1fMB is over the %dMB inline limit.",
-                            estimate / (1024 * 1024),
-                            max_inline_bytes // (1024 * 1024),
-                        )
-                        await pipe._ensure_error_formatter()._emit_error(
-                            event_emitter,
-                            f"Audio input is larger than the {max_inline_bytes}-byte inline limit and was not sent.",
-                            show_error_message=True,
-                        )
-                        return _oversized_inline_refusal(
-                            max_inline_bytes, "oversized_inline_audio",
-                            "an attached audio clip",
-                        )
-
-                    async def _normalize_base64(data: str) -> str | None:
+                    async def _normalize_base64(data: Any) -> str | MediaSlot | None:
+                        if isinstance(data, MediaSlot):
+                            return data
                         if not data:
                             return None
                         stripped = data.strip()
@@ -2751,7 +2672,7 @@ async def transform_messages_to_input(
                                     return stripped
                         return None
 
-                    def _build_audio_block(data: str, audio_format: str) -> dict[str, Any]:
+                    def _build_audio_block(data: str | MediaSlot, audio_format: str) -> dict[str, Any]:
                         return {
                             "type": "input_audio",
                             "input_audio": {
@@ -2765,8 +2686,6 @@ async def transform_messages_to_input(
 
                         if isinstance(audio_payload, dict) and "data" in audio_payload and "format" in audio_payload:
                             _data = audio_payload.get("data", "")
-                            if isinstance(_data, str) and (_data_bytes := _inline_payload_bytes(_data)) > max_inline_bytes:
-                                return await _refuse_oversized_inline(_data_bytes)
                             cleaned = await _normalize_base64(_data)
                             if not cleaned:
                                 pipe.logger.warning("Audio payload rejected: invalid base64 data.")
@@ -2774,7 +2693,11 @@ async def transform_messages_to_input(
                                     "an audio clip was not valid base64",
                                     "audio_not_base64",
                                 )
-                            declared = link_media_type(_data.strip()) if is_inline_data_url(_data.strip()) else ""
+                            declared = (
+                                link_media_type(_data.strip())
+                                if isinstance(_data, str) and is_inline_data_url(_data.strip())
+                                else ""
+                            )
                             if declared:
                                 audio_format = _map_audio_format(declared)
                                 if audio_format is None:
@@ -2803,10 +2726,7 @@ async def transform_messages_to_input(
 
                         if isinstance(audio_payload, dict):
                             raw_data = audio_payload.get("data")
-                            if isinstance(raw_data, str):
-                                raw_bytes = _inline_payload_bytes(raw_data)
-                                if raw_bytes > max_inline_bytes:
-                                    return await _refuse_oversized_inline(raw_bytes)
+                            if isinstance(raw_data, (str, MediaSlot)):
                                 cleaned = await _normalize_base64(raw_data)
                                 if not cleaned:
                                     pipe.logger.warning("Audio payload rejected: invalid base64 data.")
@@ -2838,10 +2758,6 @@ async def transform_messages_to_input(
                                     _AUDIO_URL_REFUSAL,
                                     "audio_remote_url",
                                 )
-
-                            sanitized_bytes = _inline_payload_bytes(sanitized)
-                            if sanitized_bytes > max_inline_bytes:
-                                return await _refuse_oversized_inline(sanitized_bytes)
 
                             if sanitized[:5].lower() == "data:":
                                 parsed = await asyncio.to_thread(pipe._multimodal_handler._parse_data_url, sanitized if sanitized.startswith("data:") else f"data:{sanitized.split(':', 1)[1]}")
@@ -2928,6 +2844,19 @@ async def transform_messages_to_input(
                                 subject="video",
                             )
 
+                        if isinstance(url, MediaSlot):
+                            await pipe._event_emitter_handler._emit_status(
+                                event_emitter,
+                                StatusMessages.VIDEO_BASE64,
+                                done=False
+                            )
+                            return {
+                                "type": "video_url",
+                                "video_url": {
+                                    "url": url
+                                }
+                            }
+
                         if not is_inline_data_url(url) and names_an_owui_file_path(url):
                             raise RequiredInternalFileError(
                                 "A video link whose path names this Open WebUI's own file "
@@ -2941,41 +2870,16 @@ async def transform_messages_to_input(
                             and not pipe._multimodal_handler._is_insecure_http_allowed(url)
                         ):
                             pipe.logger.error("Blocked insecure HTTP video URL by default: %s", loggable_link(url))
-                            await pipe._ensure_error_formatter()._emit_error(
-                                event_emitter,
-                                "Video URL blocked by security policy (HTTP disabled by default). "
-                                "Enable ALLOW_INSECURE_HTTP + ALLOW_INSECURE_HTTP_HOSTS to allow specific hosts.",
-                                show_error_message=True,
-                            )
                             return ImageRefusal(
                                 "served over plain HTTP, which is blocked by security "
                                 "policy; use an https link, or set ALLOW_INSECURE_HTTP "
                                 "and list the host in ALLOW_INSECURE_HTTP_HOSTS (a bare "
                                 "entry is port 80; write host:port for any other port)",
                                 "insecure_http_video",
-                                severity="error",
                                 subject=loggable_link(url),
                             )
 
                         if url_scheme(url) == "data":
-                            estimated_size_bytes = _inline_payload_bytes(url)
-                            max_size_bytes = video_max_size_mb * 1024 * 1024
-                            if estimated_size_bytes > max_size_bytes:
-                                estimated_size_mb = estimated_size_bytes / (1024 * 1024)
-                                pipe.logger.warning(
-                                    f"Base64 video size (~{estimated_size_mb:.1f}MB) exceeds configured limit "
-                                    f"({video_max_size_mb}MB), rejecting to prevent memory issues"
-                                )
-                                await pipe._ensure_error_formatter()._emit_error(
-                                    event_emitter,
-                                    f"Video too large (~{estimated_size_mb:.1f}MB, max: {video_max_size_mb}MB)",
-                                    show_error_message=True
-                                )
-                                return _oversized_inline_refusal(
-                                    max_size_bytes, "oversized_inline_video",
-                                    "an attached video clip",
-                                )
-
                             await pipe._event_emitter_handler._emit_status(
                                 event_emitter,
                                 StatusMessages.VIDEO_BASE64,
@@ -3003,16 +2907,9 @@ async def transform_messages_to_input(
                                         "Refusing video URL %s: %s", loggable_link(url),
                                         _ADDRESS_CHECK_CEILING_REASON,
                                     )
-                                    await pipe._ensure_error_formatter()._emit_error(
-                                        event_emitter,
-                                        f"Video URL was not checked: "
-                                        f"{_ADDRESS_CHECK_CEILING_REASON}.",
-                                        show_error_message=True,
-                                    )
                                     return ImageRefusal(
                                         _ADDRESS_CHECK_CEILING_REASON,
                                         "address_ceiling_video",
-                                        severity="error",
                                         subject=loggable_link(url),
                                     )
                                 if _verdict is None and is_http_or_https_url(url):
@@ -3022,28 +2919,14 @@ async def transform_messages_to_input(
                                         "the request's address budget, so the link was not sent",
                                         loggable_link(url),
                                     )
-                                    await pipe._ensure_error_formatter()._emit_error(
-                                        event_emitter,
-                                        "Video URL could not be checked against the address policy "
-                                        "in time, so it was not sent",
-                                        show_error_message=True
-                                    )
                                     return ImageRefusal(
                                         "not checked against the address policy in time, so it "
                                         "was not sent",
                                         "uncheckable_video_url",
-                                        severity="error",
                                         subject=loggable_link(url),
                                     )
                                 pipe.logger.error(
                                     "SSRF protection blocked video URL: %s", loggable_link(url)
-                                )
-                                await pipe._ensure_error_formatter()._emit_error(
-                                    event_emitter,
-                                    "Video URL blocked by security policy (only http and https links are allowed)"
-                                    if not is_http_or_https_url(url)
-                                    else "Video URL blocked by security policy (private network)",
-                                    show_error_message=True
                                 )
                                 return ImageRefusal(
                                     "not an http or https link, which is blocked by security "
@@ -3052,7 +2935,6 @@ async def transform_messages_to_input(
                                     else "a link to a private network address, which is "
                                     "blocked by security policy",
                                     "unsafe_video_url",
-                                    severity="error",
                                     subject=loggable_link(url),
                                 )
                             else:
@@ -3104,26 +2986,11 @@ async def transform_messages_to_input(
                         return any(_carries_url(item) for item in value)
                     return False
 
-                def _oversized_inline_payload(value: Any) -> bool:
-                    if isinstance(value, str):
-                        return url_scheme(value) == "data" and _inline_payload_bytes(value) > max_inline_bytes
-                    if isinstance(value, dict):
-                        return any(_oversized_inline_payload(item) for item in value.values())
-                    if isinstance(value, (list, tuple)):
-                        return any(_oversized_inline_payload(item) for item in value)
-                    return False
-
                 def _identity_block(b: dict[str, Any]) -> dict[str, Any] | ImageRefusal | None:
                     if _carries_url(b):
                         nonlocal dropped_unknown_block
                         dropped_unknown_block = True
                         return None
-                    if _oversized_inline_payload(b):
-                        return ImageRefusal(
-                            f"larger than the {max_inline_bytes}-byte inline limit",
-                            "oversized_inline_unknown",
-                            subject="an unrecognised content block",
-                        )
                     return b
 
                 block_transform = {
@@ -3146,10 +3013,8 @@ async def transform_messages_to_input(
                 refused_images: list[str] = []
                 refused_files: list[str] = []
                 status_files: list[str] = []
-                carded_refusals: list[str] = []
                 encountered_user_images = False
                 reusable_image_blocks: list[dict[str, Any]] = []
-                vision_warning_sent = False
                 dropped_unknown_block = False
                 latest_user_message = role == "user" and idx in current_turn_people
                 is_last_current_turn_person = bool(current_turn_people) and idx == current_turn_people[-1]
@@ -3199,16 +3064,8 @@ async def transform_messages_to_input(
                             elif admitted is not None:
                                 reusable_image_blocks.append(admitted)
                         if not include_user_images:
-                            if latest_user_message and not vision_supported and not vision_warning_sent:
-                                await pipe._event_emitter_handler._emit_status(
-                                    event_emitter,
-                                    "Model does not accept image inputs; skipping user attachments.",
-                                    done=False,
-                                )
-                                vision_refusal = "the selected model does not accept picture inputs"
-                                refused_images.append(vision_refusal)
-                                carded_refusals.append(vision_refusal)
-                                vision_warning_sent = True
+                            if latest_user_message and not vision_supported:
+                                refused_images.append("the selected model does not accept picture inputs")
                             elif not (latest_user_message or tool_images) and not vision_supported and image_limit > 0:
                                 deferred_vision_skips += 1
                             continue
@@ -3250,8 +3107,7 @@ async def transform_messages_to_input(
                                     result.reason,
                                 )
                                 refused_files.append(result.reason)
-                                if result.severity != "error":
-                                    status_files.append(result.reason)
+                                status_files.append(result.reason)
                                 continue
                             if result.severity == "fatal":
                                 raise RequiredInternalFileError(
@@ -3269,12 +3125,6 @@ async def transform_messages_to_input(
                                 result.reason,
                                 result.cause,
                             )
-                            if result.severity == "error":
-                                await pipe._event_emitter_handler._emit_error_event(
-                                    event_emitter,
-                                    f"An attached image was {result.reason}.",
-                                    show_error_message=True,
-                                )
                             refused_images.append(result.reason)
                             encountered_user_images = True
                             continue
@@ -3400,10 +3250,9 @@ async def transform_messages_to_input(
                         "(this model does not accept image inputs)"
                     )
                     deferred_vision_skips = 0
-                unreported_images = [r for r in refused_images if r not in carded_refusals]
-                if unreported_images:
+                if refused_images:
                     image_notices.append(
-                        f"skipped {len(unreported_images)} ({'; '.join(unreported_images)})"
+                        f"skipped {len(refused_images)} ({'; '.join(dict.fromkeys(refused_images))})"
                     )
                 if turn_images_dropped and is_last_current_turn_person:
                     image_notices.append(
@@ -3424,23 +3273,19 @@ async def transform_messages_to_input(
                     )
                 )
                 if notices and _notice_ok:
-                    await pipe._event_emitter_handler._emit_status(
-                        event_emitter,
-                        " ".join(notices),
-                        done=False,
-                    )
+                    collected_notices.append(" ".join(notices))
                     if msg_turn_index is not None:
                         for _notice in notices:
                             _notice_turn[_notice] = msg_turn_index
-                if attachment_notices is not None and notices and _notice_ok:
-                    attachment_notices.append(" ".join(notices))
 
                 if carried_blocks and not any(_block_is_usable(b) for b in converted_blocks):
                     converted_blocks = [b for b in converted_blocks if _block_is_usable(b)]
                     if not converted_blocks:
                         if refused_images or refused_files:
                             reasons = "; ".join(
-                                reason.rstrip(".") for reason in refused_files + refused_images
+                                dict.fromkeys(
+                                    reason.rstrip(".") for reason in refused_files + refused_images
+                                )
                             )
                             converted_blocks.append({
                                 "type": "input_text",
@@ -3844,7 +3689,7 @@ async def transform_messages_to_input(
                 continue
             _replay_text, shown = tool_output_text_and_pictures(row["output"])
             admitted, refused_shown = await _gated_tool_pictures_with_address(
-                pipe, shown, max_inline_bytes=max_inline_bytes,
+                pipe, shown,
                 allow_insecure=pipe._multimodal_handler._is_insecure_http_allowed,
                 seen=address_verdicts, budget=address_budget,
             )
@@ -3856,12 +3701,7 @@ async def transform_messages_to_input(
             replay_refusals.extend(refused_shown)
             row[_REPLAY_GATED_PICTURES_KEY] = admitted
         if replay_refusals:
-            notice = _tool_picture_notice(replay_refusals)
-            await pipe._event_emitter_handler._emit_status(
-                event_emitter, notice, done=False,
-            )
-            if attachment_notices is not None:
-                attachment_notices.append(notice)
+            collected_notices.append(_tool_picture_notice(replay_refusals))
 
         openai_input = _reinterleave_reasoning_by_anchor(openai_input)
 

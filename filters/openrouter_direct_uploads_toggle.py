@@ -77,30 +77,6 @@ class Filter:
             default=0,
             description="Priority level for the filter operations.",
         )
-        DIRECT_TOTAL_PAYLOAD_MAX_MB: int = Field(
-            default=50,
-            ge=1,
-            le=500,
-            description="Maximum total size (MB) across all diverted direct uploads in a single request. The pipe charges this against the size Open WebUI stored for each file, never against the size the request declared, and an attachment that would take the total over this cap stops the request with the `Direct Upload Issue` card naming this valve. A value here the pipe cannot read as a positive number falls back to 50 MB rather than to no limit at all.",
-        )
-        DIRECT_FILE_MAX_UPLOAD_SIZE_MB: int = Field(
-            default=50,
-            ge=1,
-            le=500,
-            description="Maximum size (MB) for a single diverted direct file upload. The pipe measures the stored Open WebUI record rather than the size the request declares, and refuses before the first byte of the file is read; a record whose stored size cannot be read is refused rather than sent unchecked. A value here the pipe cannot read as a positive number falls back to 50 MB rather than to no limit at all.",
-        )
-        DIRECT_AUDIO_MAX_UPLOAD_SIZE_MB: int = Field(
-            default=25,
-            ge=1,
-            le=500,
-            description="Maximum size (MB) for a single diverted direct audio upload. The pipe measures the stored Open WebUI record rather than the size the request declares, and refuses before the first byte of the clip is read; a record whose stored size cannot be read is refused rather than sent unchecked. A value here the pipe cannot read as a positive number falls back to 25 MB rather than to no limit at all.",
-        )
-        DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB: int = Field(
-            default=20,
-            ge=1,
-            le=500,
-            description="Maximum size (MB) for a single diverted direct video upload. The pipe measures the stored Open WebUI record rather than the size the request declares, and refuses before the first byte of the clip is read; a record whose stored size cannot be read is refused rather than sent unchecked. A value here the pipe cannot read as a positive number falls back to 20 MB rather than to no limit at all.",
-        )
         DIRECT_FILE_MIME_ALLOWLIST: str = Field(
             default="application/pdf,text/plain,text/markdown,application/json,text/csv",
             description="Comma-separated MIME allowlist for diverted direct generic files. The pattern is matched with `fnmatch` against the declared type, so a wildcard admits declared values that are not media types at all; that admitted value is not the type the provider is told, because the pipe declares the file under the type Open WebUI recorded, and a recorded type which is not a media type stops the request before it is sent, with the reason shown on the turn; Non-allowlisted types are fail-open: the item stays on the normal OWUI RAG/Knowledge path instead.",
@@ -180,26 +156,6 @@ class Filter:
         self.log.setLevel(SRC_LOG_LEVELS.get("OPENAI", logging.INFO))
         self.toggle = True
         self.valves = self.Valves()
-
-    @staticmethod
-    def _to_int(value: Any) -> int | None:
-        if value is None:
-            return None
-        if isinstance(value, bool):
-            return None
-        if isinstance(value, int):
-            return value
-        if isinstance(value, float):
-            return int(value)
-        if isinstance(value, str):
-            stripped = value.strip()
-            if not stripped:
-                return None
-            try:
-                return int(stripped)
-            except ValueError:
-                return None
-        return None
 
     @staticmethod
     def _csv_set(value: Any) -> set[str]:
@@ -289,13 +245,7 @@ class Filter:
         diverted: dict[str, list[dict[str, Any]]] = {"files": [], "audio": [], "video": []}
         retained: list[Any] = []
         warnings: list[str] = []
-        total_bytes = 0
         pdf_seen = False
-
-        total_limit = int(self.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB) * 1024 * 1024
-        file_limit = int(self.valves.DIRECT_FILE_MAX_UPLOAD_SIZE_MB) * 1024 * 1024
-        audio_limit = int(self.valves.DIRECT_AUDIO_MAX_UPLOAD_SIZE_MB) * 1024 * 1024
-        video_limit = int(self.valves.DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB) * 1024 * 1024
 
         audio_formats_allowed = self._csv_set(self.valves.DIRECT_AUDIO_FORMAT_ALLOWLIST)
         for item in files:
@@ -325,10 +275,6 @@ class Filter:
             filename = name.strip().lower() if isinstance(name, str) else ""
             is_pdf = ("pdf" in content_type) or filename.endswith(".pdf")
 
-            size_bytes = self._to_int(item.get("size"))
-            if size_bytes is None or size_bytes < 0:
-                size_bytes = -1
-
             kind = "files"
             if content_type.startswith("audio/"):
                 kind = "audio"
@@ -347,32 +293,10 @@ class Filter:
                     # Fail-open: leave unsupported types on the normal OWUI path (RAG/Knowledge).
                     retained.append(item)
                     continue
-                if size_bytes < 0:
-                    warnings.append(
-                        f"Direct file '{name or file_id}' carries no usable size, so it is not sent directly."
-                    )
-                    retained.append(item)
-                    continue
-                if size_bytes > file_limit:
-                    warnings.append(
-                        f"Direct file '{name or file_id}' is too large ({size_bytes} bytes; max {self.valves.DIRECT_FILE_MAX_UPLOAD_SIZE_MB} MB); it stays on Open WebUI."
-                    )
-                    retained.append(item)
-                    continue
-                if total_bytes + size_bytes > total_limit:
-                    warnings.append(
-                        f"Direct file '{name or file_id}' ({size_bytes} bytes) would take the direct "
-                        f"uploads over the total limit ({self.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB} MB); "
-                        f"it stays on Open WebUI."
-                    )
-                    retained.append(item)
-                    continue
-                total_bytes += size_bytes
                 diverted["files"].append(
                     {
                         "id": file_id,
                         "name": name,
-                        "size": size_bytes,
                         "content_type": content_type,
                     }
                 )
@@ -399,32 +323,10 @@ class Filter:
                 if not audio_format or audio_format not in audio_formats_allowed:
                     retained.append(item)
                     continue
-                if size_bytes < 0:
-                    warnings.append(
-                        f"Direct audio '{name or file_id}' carries no usable size, so it is not sent directly."
-                    )
-                    retained.append(item)
-                    continue
-                if size_bytes > audio_limit:
-                    warnings.append(
-                        f"Direct audio '{name or file_id}' is too large ({size_bytes} bytes; max {self.valves.DIRECT_AUDIO_MAX_UPLOAD_SIZE_MB} MB); it stays on Open WebUI."
-                    )
-                    retained.append(item)
-                    continue
-                if total_bytes + size_bytes > total_limit:
-                    warnings.append(
-                        f"Direct audio '{name or file_id}' ({size_bytes} bytes) would take the direct "
-                        f"uploads over the total limit ({self.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB} MB); "
-                        f"it stays on Open WebUI."
-                    )
-                    retained.append(item)
-                    continue
-                total_bytes += size_bytes
                 diverted["audio"].append(
                     {
                         "id": file_id,
                         "name": name,
-                        "size": size_bytes,
                         "content_type": content_type,
                         "format": audio_format,
                     }
@@ -442,32 +344,10 @@ class Filter:
                 if not self._mime_allowed(content_type, self.valves.DIRECT_VIDEO_MIME_ALLOWLIST):
                     retained.append(item)
                     continue
-                if size_bytes < 0:
-                    warnings.append(
-                        f"Direct video '{name or file_id}' carries no usable size, so it is not sent directly."
-                    )
-                    retained.append(item)
-                    continue
-                if size_bytes > video_limit:
-                    warnings.append(
-                        f"Direct video '{name or file_id}' is too large ({size_bytes} bytes; max {self.valves.DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB} MB); it stays on Open WebUI."
-                    )
-                    retained.append(item)
-                    continue
-                if total_bytes + size_bytes > total_limit:
-                    warnings.append(
-                        f"Direct video '{name or file_id}' ({size_bytes} bytes) would take the direct "
-                        f"uploads over the total limit ({self.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB} MB); "
-                        f"it stays on Open WebUI."
-                    )
-                    retained.append(item)
-                    continue
-                total_bytes += size_bytes
                 diverted["video"].append(
                     {
                         "id": file_id,
                         "name": name,
-                        "size": size_bytes,
                         "content_type": content_type,
                     }
                 )
@@ -532,5 +412,8 @@ class Filter:
                         attachments[key] = merged
 
         if diverted_any:
-            self.log.debug("Diverted %d byte(s) for direct upload forwarding", total_bytes)
+            self.log.debug(
+                "Diverted %d upload(s) for direct forwarding",
+                len(diverted["files"]) + len(diverted["audio"]) + len(diverted["video"]),
+            )
         return body

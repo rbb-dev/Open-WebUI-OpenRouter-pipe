@@ -19,7 +19,7 @@ This is useful when:
 ### Admin (recommended defaults)
 - Keep `AUTO_INSTALL_DIRECT_UPLOADS_FILTER=true` so the pipe installs/updates the companion filter in Open WebUI’s Functions DB.
 - Keep `AUTO_ATTACH_DIRECT_UPLOADS_FILTER=true` so the toggle appears only on models where direct files/audio/video are supported.
-- Configure the filter’s **admin valves** (size limits and allowlists) to match your environment and risk tolerance.
+- Configure the filter’s **admin valves** (the MIME and audio-format allowlists) to match your environment and risk tolerance.
 
 ### User (per chat)
 1. Enable the **Direct Uploads** toggle in the Integrations menu.
@@ -44,7 +44,7 @@ There are **two layers** of control:
    - `DIRECT_AUDIO`
    - `DIRECT_VIDEO`
 
-Admins configure size limits and allowlists via the filter’s **admin valves** (see below).
+Admins configure the MIME and audio-format allowlists via the filter’s **admin valves** (see below).
 
 ---
 
@@ -53,7 +53,7 @@ Admins configure size limits and allowlists via the filter’s **admin valves** 
 When the filter is enabled and a user turns on one or more modality valves:
 
 - **Diverted** (direct upload path):
-  - Uploads that match the relevant **MIME allowlist** and **size limits**
+  - Uploads that match the relevant **MIME allowlist**
   - Audio/video uploads only when their MIME/format matches the filter’s allowlists
 
 - **Not diverted** (normal Open WebUI path, fail-open):
@@ -201,22 +201,15 @@ The first hard stop is when an **admin forces `/responses`** for a model but the
 
 ## Limits and allowlists (admin configuration)
 
-Direct uploads are intentionally gated. There are **two kinds** of limits:
+Direct uploads are gated by what kind of file it is, not by how large it is:
 
 1) **Filter valves (admin)**
-   - Per-modality max size
-   - Total max size across diverted attachments
    - MIME and format allowlists
 
-2) **Pipe safety limits (admin)**
-   - The pipe must inline internal Open WebUI file references into base64 data URLs
-   - Inlining is bounded by the pipe valve `BASE64_MAX_SIZE_MB`
+2) **No size limit of the pipe’s own**
+   - The pipe inlines internal Open WebUI file references into the request in pieces, whatever their size. OpenRouter, which knows what each model and provider accepts, is the one that refuses a request that is too big, and its refusal reaches the person through the error template, so a paid large file is not dropped by the pipe for its size.
 
-If a diverted upload exceeds limits, the request fails with a clear error instead of silently falling back. An attachment is measured only when its own modality’s user valve is on; otherwise it is handed straight back to Open WebUI.
-
-One attachment over a cap does not end the turn: the filter hands that one attachment back, names it in the notification and diverts the rest, and Open WebUI carries it on its own `files[]`/RAG path as it always does for anything the pipe did not claim. From that moment it is bounded by `rag.file.max_size` rather than by the direct-upload cap, and `rag.file.max_size` is off by default (`None`) on a stock install, so bounding that path too would need its own valve.
-
-The filter makes a first pass on the size the request declares, and it is the filter’s own check: the pipe re-measures every attachment it is asked to send against the size Open WebUI stored for the file (`Files.meta.size`, written at upload from the bytes themselves) and against the four caps on the installed filter’s stored row — never the copy this turn’s metadata carries, which is the caller’s to write. The pipe’s check runs before the first byte of the file is read, and a record whose stored size cannot be read is refused rather than sent unchecked. A stored cap the pipe cannot read as a positive number falls back to the valve’s shipped default; a filter row it cannot read at all falls back to `BASE64_MAX_SIZE_MB` for the turn, never to no limit.
+An attachment is checked only when its own modality’s user valve is on; otherwise it is handed straight back to Open WebUI. An attachment the filter does not divert is not lost: it stays on Open WebUI’s own `files[]`/RAG path as it always does for anything the pipe did not claim.
 
 ---
 
@@ -230,7 +223,6 @@ These are configured on the **pipe** function in Open WebUI (Admin → Functions
 | --- | --- | --- |
 | `AUTO_ATTACH_DIRECT_UPLOADS_FILTER` | `True` | Auto-enable the OpenRouter Direct Uploads filter in each compatible model’s Advanced Settings (`filterIds`), so the switch appears only where it can work. A pass that could not install the filter, because Open WebUI refused the write, is not a decision to detach: the switch stays exactly where it was and the install is tried again at the next pass. |
 | `AUTO_INSTALL_DIRECT_UPLOADS_FILTER` | `True` | Auto-install / auto-update the companion filter function into Open WebUI’s Functions DB (recommended with auto-attach). Turning this off retires the rows the pipe installed for it - switched off, not deleted, so their settings survive - and turning it back on brings them back; a copy an admin installed by hand carries no such record and is left alone. A row the pipe re-arms comes back private rather than shared: Open WebUI puts every filter marked Global at the front of every model's list, so a row an admin made Global is made private again in the same write that re-enables it. A row an earlier install of this pipe wrote — the pipe function was renamed or re-created, so its record names an id Open WebUI no longer loads as a pipe — is retired too. |
-| `BASE64_MAX_SIZE_MB` | `50` | Upper bound for inlining Open WebUI internal file URLs into base64 data URLs. |
 
 For the full list, see: [Valves & Configuration Atlas](valves_and_configuration_atlas.md).
 
@@ -240,10 +232,6 @@ These are configured on the **OpenRouter Direct Uploads** filter function (Admin
 
 | Valve | Default (verified) | Purpose / notes |
 | --- | --- | --- |
-| `DIRECT_TOTAL_PAYLOAD_MAX_MB` | `50` | Maximum total size (MB) across all diverted direct uploads in a single request. The pipe charges this against the size Open WebUI stored for each file, never against the size the request declared, and an attachment that would take the total over this cap stops the request with the `Direct Upload Issue` card naming this valve. A value here the pipe cannot read as a positive number falls back to 50 MB rather than to no limit at all. |
-| `DIRECT_FILE_MAX_UPLOAD_SIZE_MB` | `50` | Maximum size (MB) for a single diverted direct file upload. The pipe measures the stored Open WebUI record rather than the size the request declares, and refuses before the first byte of the file is read; a record whose stored size cannot be read is refused rather than sent unchecked. A value here the pipe cannot read as a positive number falls back to 50 MB rather than to no limit at all. |
-| `DIRECT_AUDIO_MAX_UPLOAD_SIZE_MB` | `25` | Maximum size (MB) for a single diverted direct audio upload. The pipe measures the stored Open WebUI record rather than the size the request declares, and refuses before the first byte of the clip is read; a record whose stored size cannot be read is refused rather than sent unchecked. A value here the pipe cannot read as a positive number falls back to 25 MB rather than to no limit at all. |
-| `DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB` | `20` | Maximum size (MB) for a single diverted direct video upload. The pipe measures the stored Open WebUI record rather than the size the request declares, and refuses before the first byte of the clip is read; a record whose stored size cannot be read is refused rather than sent unchecked. A value here the pipe cannot read as a positive number falls back to 20 MB rather than to no limit at all. |
 | `DIRECT_FILE_MIME_ALLOWLIST` | `application/pdf,text/plain,text/markdown,application/json,text/csv` | Comma-separated MIME allowlist for diverted direct generic files. The pattern is matched with `fnmatch` against the declared type, so a wildcard admits declared values that are not media types at all. That admitted value is not the type the provider is told: the pipe declares the file under the type Open WebUI recorded, and a recorded type which is not a media type stops the request before it is sent, with the reason shown on the turn. Non-allowlisted types are fail-open: the item stays on the normal OWUI RAG/Knowledge path instead. |
 | `DIRECT_AUDIO_MIME_ALLOWLIST` | `audio/*` | Comma-separated MIME allowlist for diverted direct audio files. |
 | `DIRECT_VIDEO_MIME_ALLOWLIST` | `video/mp4,video/mpeg,video/quicktime,video/webm` | Comma-separated MIME allowlist for diverted direct video files. The pattern is matched with `fnmatch` against the *declared* type, so a wildcard admits declared values that are not media types at all; matching the declaration is all the valve does, and the pipe additionally refuses an allowlisted video attachment whose leading bytes are text (or that it positively identifies as another family) rather than a clip, naming the file and its declared type on the turn. Non-allowlisted types are fail-open: the item stays on the normal OWUI RAG/Knowledge path instead. |
@@ -291,7 +279,7 @@ Common causes:
 - Open WebUI storage object could not be loaded by ID
 - Admin enforced an incompatible endpoint override (forced `/responses` but the request requires `/chat/completions`)
 
-The size rules are not on that list any more: the filter does not fail the request on them, it hands the attachment back and says so in the notification. An attachment over a cap, or over the request's total, or carrying no usable size, is left on Open WebUI's own `files[]`/RAG path and is bounded from then on by `rag.file.max_size` — which is off by default (`None`), so on a default install that path has no ceiling of its own. It is the same card when the *pipe* is the one that refuses, because the pipe measures the stored record against the same four caps before it reads a byte; see [Limits and allowlists](#limits-and-allowlists-admin-configuration).
+There is no size rule on that list: the pipe does not weigh a diverted attachment, and a request OpenRouter refuses for its size comes back through the error template in OpenRouter’s own wording.
 
 ### “Provider says unsupported MIME/type”
 
@@ -310,23 +298,20 @@ If you enable direct uploads and your upload disappears from the RAG/Knowledge p
 If you don’t see it reaching the model:
 - Confirm the filter toggle is enabled in the Integrations menu for that chat.
 - Confirm the relevant user valve is enabled (Files/Audio/Video).
-- Confirm the MIME type is allowlisted and the file is within size limits.
+- Confirm the MIME type is allowlisted.
 
 If direct uploads are enabled but the selected model does not support a required modality (file/audio/video), the filter will **fail open**:
 - The upload stays on the normal Open WebUI path (RAG/Knowledge), and
 - The pipe emits a warning notification that direct uploads were not applied for those attachments.
 
-The capability check is what runs first, and the size checks beside it fail open the same way, so these are the eight paths on which an attachment is handed back to Open WebUI instead of being sent directly:
+The capability check is what runs first, and the checks beside it fail open the same way, so these are the five paths on which an attachment is handed back to Open WebUI instead of being sent directly:
 - **valve off** — the modality’s `DIRECT_*` user valve is off,
 - **modality unsupported by the model**,
 - **MIME not allowlisted** for that modality,
-- **audio only** — the audio format could not be inferred from the name or content type,
-- **audio `webm`** — the container is one OpenRouter documents on neither endpoint, so it is not diverted even when the allowlist names it,
-- **no usable declared size** — the attachment’s dict carries no `size`, or a negative one,
-- **over that modality’s cap** — `DIRECT_FILE_MAX_UPLOAD_SIZE_MB`, `DIRECT_AUDIO_MAX_UPLOAD_SIZE_MB` or `DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB`, and
-- **over the request’s total** — `DIRECT_TOTAL_PAYLOAD_MAX_MB`.
+- **audio only** — the audio format could not be inferred from the name or content type, and
+- **audio `webm`** — the container is one OpenRouter documents on neither endpoint, so it is not diverted even when the allowlist names it.
 
-Each of them leaves one line in `direct_uploads_warnings`, which the pipe shows as a single notification naming the first and counting the rest.
+Of these, the unsupported modality and `webm` leave one line in `direct_uploads_warnings`, which the pipe shows as a single notification naming the first and counting the rest; the others hand the attachment back without a word.
 
 ### Debug logging (useful strings)
 

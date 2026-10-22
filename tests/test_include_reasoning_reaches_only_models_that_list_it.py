@@ -41,6 +41,7 @@ still ask for `{"effort": "none"}` rather than dropping the request's reasoning.
 
 from __future__ import annotations
 
+from tests.posted_body import posted_json
 import copy
 import json
 from typing import Any
@@ -212,7 +213,7 @@ async def _sent_shown(
 
     def _record(url, **kwargs):
         endpoint = "chat/completions" if str(url).endswith("/chat/completions") else "responses"
-        sent.append((endpoint, copy.deepcopy(kwargs.get("json") or {})))
+        sent.append((endpoint, copy.deepcopy(posted_json(kwargs) or {})))
         if reject_first is not None and len(sent) == 1:
             return _rejection(reject_first)
         if responses_unsupported and endpoint == "responses":

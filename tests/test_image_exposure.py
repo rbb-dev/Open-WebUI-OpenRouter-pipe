@@ -11,6 +11,7 @@ constant would satisfy at most one row.
 
 from __future__ import annotations
 
+from tests.posted_body import posted_json
 import json
 import re
 import time
@@ -648,7 +649,7 @@ async def test_no_route_puts_a_refused_address_on_the_wire(route, blocked):
                 api_model_id="m/x",
             )
         sent = [
-            json.dumps(call.kwargs.get("json"))
+            json.dumps(posted_json(call.kwargs))
             for key, calls in mocked.requests.items()
             if key[1].path == "/api/v1/images"
             for call in calls

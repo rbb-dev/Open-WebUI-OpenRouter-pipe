@@ -1440,19 +1440,6 @@ the start and/or end of the generated clip. To use this:
 
 Constraints (admin-tunable):
 
-- **`VIDEO_FRAME_IMAGE_MAX_BYTES`** (default 12 MB): per-image decoded
-  size cap. An **attached** image over it fails before submission, and the
-  error names the offending frame and the cap that fired, so a failure is
-  actionable without the operator having to know which storage-layer limit
-  applied. A frame the pipe itself extracted from a prior video is bounded to
-  1920 on its long edge before it is encoded, so at this default such a frame
-  never meets the cap and raising the valve does not rescue a tall prior video
-  — what was dropped there was the geometry, not the size. It is still measured
-  on its stored bytes — after the conversion to an allowed format, which is what
-  is sent — and is dropped with a note in the chat before it is written, so
-  the video still renders.
-- **`VIDEO_FRAME_TOTAL_MAX_BYTES`** (default 50 MB): combined cap across
-  all frames in one request.
 - **`VIDEO_FRAME_IMAGE_MIME_ALLOWLIST`** (default
   `image/jpeg,image/png,image/webp`): wrong-MIME images fail before
   submission. A frame the pipe itself extracted from a prior video in
@@ -1469,22 +1456,9 @@ Constraints (admin-tunable):
   pipe-extracted frame in: that one frame is left out with a note in the
   chat and the video still renders.
 
-These three are strict for **frames**, because the clip was meant to be
-anchored on them: one that breaks a limit fails the whole request. The
-same three limits are applied again to anything sent only as a reference
-(below), and there a file that breaks one is left out with a warning
-notice in the chat naming it and the reason, while the video still
-renders — with one exception: a **clip or a sound file** over the
-`MEDIA_FILE_HOST_MAX_SIZE_MB` relay cap stops the request instead, naming
-the cap it broke. A picture stays on the left-out rule, because a picture
-is a frame companion and the video still renders without it; a clip is the
-thing being edited, so rendering without it would be the silent
-degradation. Frames and reference pictures share the one combined budget,
-the frames first. A **picture** is held to the per-picture byte cap,
-whichever way it takes: one over `VIDEO_FRAME_IMAGE_MAX_BYTES` is left out
-of the request with a notice naming it, and the video still renders. What
-is never measured about a reference picture is its **pixel** dimensions,
-because OpenRouter publishes no pixel range for one.
+The pipe puts no size limit of its own on a frame or a reference: an image is written into the request whatever its size, and OpenRouter, which knows what each model and provider accepts, is the one that refuses one that is too large, with its refusal reaching the person through the error template. The only thing the pipe does to the size of a frame is on one it extracts itself from a prior video: that frame is bounded to 1920 on its long edge before it is encoded.
+
+The allowlist is strict for **frames**, because the clip was meant to be anchored on them: a frame that breaks it fails the whole request. The same list is applied again to anything sent only as a reference (below), and there a file that breaks it is left out with a warning notice in the chat naming it and the reason, while the video still renders — with one exception: a reference the **file host** refuses, whether a clip, a sound file or a picture handed over as a link, stops the request instead, naming the host and quoting what it said, because rendering without a reference the request was built around would be the silent degradation. What is never measured about a reference picture is its **pixel** dimensions, because OpenRouter publishes no pixel range for one.
 
 Per-model frame support:
 
@@ -1550,11 +1524,11 @@ them: OpenRouter publishes the kinds each model takes, and one that does
 not name a kind is not sent that kind — the file is left out with a
 notice saying the model does not take it, rather than sent somewhere it
 would be discarded without a word. Each reference is checked against the
-frame limits above; a clip or sound file, which travels by way of a public
-file host, is bounded by `MEDIA_FILE_HOST_MAX_SIZE_MB` instead.
+frame image allowlist above; a clip or sound file travels by way of a public
+file host, whatever its size.
 Where **Fall back to the other host** is on, that second host is not
 offered a refusal the first one made about the file itself — a type the
-pipe cannot declare, a file over the cap, an empty file, or the turn's
+pipe cannot declare, an empty file, or the turn's
 upload budget already spent — because it would refuse the same file for
 the same reason. The refusal is reported once and no second host is
 announced for an attempt that never begins.
@@ -1562,17 +1536,13 @@ The pipe's fixed 2 GiB per-item receive ceiling bounds only the finished video c
 anything you attach — and the read-back that reuses a frame from a clip
 this pipe generated is bounded by it too, so the valve that admits a clip
 is the one that reads it. A request carries at most 16 references, and a
-reference that fails on kind, format, count or the combined budget is
+reference that fails on kind, format or count is
 left out with a warning notice naming it and why, and the render still
 goes ahead; a clip that fails on pixel size
-is left out the same way, and one that is simply too large stops the
+is left out the same way, and one the file host refuses stops the
 request instead, so that nothing is generated and billed from a prompt the
-attachment was meant to anchor. A **picture** is decoded and measured like
-any other reference, and one over **Maximum single frame size** is left out
-of the request with a notice naming it, whichever way it travels. It counts
-against the combined budget like any other reference, so on a turn carrying
-several references one large picture can push a later one out with a notice
-naming it. An image reference is sent as-is and the pipe cannot know whether
+attachment was meant to anchor. A **picture** is held to the same allowlist
+and count as any other reference. An image reference is sent as-is and the pipe cannot know whether
 the model read it, because nothing in the video catalog says which models
 honour image references.
 
@@ -2404,8 +2374,6 @@ Functions → OpenRouter pipe → Valves; the per-model filter ones live on each
 | `VIDEO_DOWNLOAD_CHUNK_SIZE` | `1048576` | 65536–8388608 | Chunk size in bytes for streaming download. |
 | `MAX_CONCURRENT_VIDEO_GENS` | `2` | 1–100 | Global concurrency cap per pipe process. Applies on the next generation, with no restart; a lower value binds from that moment and jobs already running finish first. |
 | `MAX_CONCURRENT_VIDEO_GENS_PER_USER` | `2` | 1–25 | Per-user concurrency cap. |
-| `VIDEO_FRAME_IMAGE_MAX_BYTES` | `12_582_912` (12 MB) | 65536–67108864 | Per-image decoded size cap. A frame the pipe extracts from a prior video is bounded to 1920 on its long edge before it is encoded, so at this default it never meets the cap; it is still measured on the re-encoded artefact that is stored and dropped with a note before it is written. An attached frame over the cap still fails the request. |
-| `VIDEO_FRAME_TOTAL_MAX_BYTES` | `52_428_800` (50 MB) | 65536–134217728 | Combined frame-bytes cap across one request. |
 | `VIDEO_FRAME_IMAGE_MIME_ALLOWLIST` | `image/jpeg,image/png,image/webp` | comma-list | Allowed MIMEs for frame images. A frame extracted by the pipe from a prior video is re-encoded to the first listed type it can write (JPEG, then WebP, then PNG) before it is stored. A non-empty list naming none of `image/jpeg`, `image/png` and `image/webp` is refused at save time; empty is accepted and permits no type, and so is a stored value that names none of the three, which is left empty on load. In either case the pipe's own frame is left out with a note, and the video still renders. |
 | `VIDEO_OUTPUT_MIME_ALLOWLIST` | `video/mp4,video/webm` | comma-list | Allowed MIMEs for downloaded video (header first; bytes consulted only when the header is unlisted). |
 | `VIDEO_REFERENCE_ALLOWED_DOMAINS` | `""` | comma-list | Hosts a per-user reference URL may name before this pipe forwards it. Applies to the filter's own reference fields, **and** to any key under the free-text `provider.options` box and to the JSON controls (`VIDEO_KEYFRAMES`, `VIDEO_BACKGROUND`, `VIDEO_CAPTION`, `VIDEO_VOICE_SETTINGS`, `VIDEO_CONTENT_MODERATION`), on the same check over every address in the built request. Exact-or-parent host match, case-insensitive; a bare host matches on any port, a `host:port` entry names that host on that port only, and a URL with no port is read as the port its own scheme implies; empty means unrestricted, which is the default. Additional to the `https://`/SSRF address check, which still runs either way; takes no `!` block entries and no CIDR ranges, and (unlike `ALLOW_INSECURE_HTTP_HOSTS`) a listed parent covers its subdomains. A link the media relay published for this request is recorded as the pipe's own and goes out whatever this holds; a host address a user typed is not recorded and is not exempt.The image side has its own valve, `IMAGE_REFERENCE_ALLOWED_DOMAINS`, on the same dialect; the two are separate so an operator can bound one family and leave the other open. |
@@ -2439,7 +2407,7 @@ Tuning hints:
 - **Slow networks** to OpenRouter: bump `VIDEO_POLL_INTERVAL_MAX_SECONDS`
   to reduce poll storm.
 - **Smaller storage budgets**: the per-item receive ceiling is fixed, so an oversized generated video is refused with a message that names the ceiling, before it reaches the file backend.
-  To bound what users send *out*, lower `MEDIA_FILE_HOST_MAX_SIZE_MB`.
+  The pipe sets no limit of its own on what users send *out*; to bound what can be attached at all, use Open WebUI's own **Max Upload Size** (Admin Panel > Settings > Documents).
 
 ---
 
@@ -2608,8 +2576,7 @@ pipe()
         │        a reference is left out with a notice. A reference is
         │        only uploaded when the requester owns the file and the
         │        stored record names its media type, at most sixteen per
-        │        request and at most MEDIA_FILE_HOST_MAX_SIZE_MB of them
-        │        put together, inside one wall-clock budget for the whole
+        │        request, inside one wall-clock budget for the whole
         │        request, shared evenly across the turn's attachments
         │        rather than first-come; the chat is told which host and
         │        for how long
@@ -2761,7 +2728,7 @@ Key files:
 - [`integrations/media_relay.py`](../open_webui_openrouter_pipe/integrations/media_relay.py)
   — puts an attached clip or sound file behind a public link so it can be
   sent as a reference: which hosts are known, which origins each may
-  answer with, how long each keeps a file, the size ceiling, and the
+  answer with, how long each keeps a file, and the
   retries. A 200 carrying a link the chosen host does not serve is not an
   answer, and whatever the host did say is quoted inertly rather than
   rendered into the chat as markdown, under a bound of 120 characters so a

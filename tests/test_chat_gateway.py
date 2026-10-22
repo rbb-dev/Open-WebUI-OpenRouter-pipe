@@ -13,6 +13,7 @@ These tests target previously uncovered branches including:
 # pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 from __future__ import annotations
 
+from tests.posted_body import posted_json
 import contextlib
 import json
 from typing import Any
@@ -31,6 +32,7 @@ from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.api.gateway.chat_completions_adapter import ChatCompletionsAdapter
 from open_webui_openrouter_pipe.api.gateway.responses_adapter import AcceptedResponseLostBody
 from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
+from open_webui_openrouter_pipe.core.media_slot import MediaSlot
 from open_webui_openrouter_pipe.storage.owui_files import InlinedFile
 
 
@@ -3746,9 +3748,6 @@ from open_webui_openrouter_pipe import (
     _responses_payload_to_chat_completions_payload,
 )
 
-_INLINE_CAP_BYTES = 50 * 1024 * 1024
-
-
 def _refuses_cleartext(_url: str) -> bool:
     return False
 
@@ -3773,7 +3772,7 @@ async def test_responses_payload_to_chat_preserves_cache_control() -> None:
             }
         ],
     }
-    chat = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+    chat = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
     assert chat["model"] == payload["model"]
     assert chat["stream"] is True
     assert chat["messages"][0]["role"] == "system"
@@ -3794,7 +3793,7 @@ async def test_responses_payload_to_chat_preserves_cache_control() -> None:
 @pytest.mark.asyncio
 async def test_responses_payload_to_chat_rounds_top_k_for_chat_completions() -> None:
     payload = {"model": "openai/gpt-5", "stream": False, "input": [], "top_k": 2.5}
-    chat = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+    chat = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
     assert chat["top_k"] == 2
 
 
@@ -3838,7 +3837,7 @@ async def test_responses_payload_to_chat_converts_tools_schema() -> None:
             }
         ],
     }
-    chat = await _responses_payload_to_chat_completions_payload(payload, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext)
+    chat = await _responses_payload_to_chat_completions_payload(payload, allow_insecure=_refuses_cleartext)
     assert chat["tools"] == [
         {
             "type": "function",
@@ -4057,17 +4056,17 @@ async def test_chat_completions_inlines_internal_file_urls(monkeypatch) -> None:
     pipe = Pipe()
     valves = pipe.valves.model_copy(update={"DEFAULT_LLM_ENDPOINT": "chat_completions"})
 
-    async def fake_inline_id(file_id: str, *, chunk_size: int, max_bytes: int, user=None) -> InlinedFile | None:
+    async def fake_inline_id(file_id: str, *, user=None) -> InlinedFile | None:
         assert file_id == "abc123"
-        return InlinedFile(data_url="data:application/pdf;base64,QUJD", filename="doc.pdf")
+        return InlinedFile(media=MediaSlot(mime="application/pdf", text="QUJD"), filename="doc.pdf")
 
     monkeypatch.setattr(pipe._file_gateway, "inline_owui_file_id", fake_inline_id)
 
     captured: dict[str, Any] = {}
 
     def capture_request(url, **kwargs):
-        if "json" in kwargs:
-            captured["body"] = kwargs["json"]
+        if "data" in kwargs or "json" in kwargs:
+            captured["body"] = posted_json(kwargs)
 
     # Mock HTTP at boundary
     with aioresponses() as mock_http:
@@ -4121,9 +4120,9 @@ async def test_inline_internal_chat_files_removes_file_url_after_inline(monkeypa
     """A successful chat-file inline replaces file_url with file_data AND removes the internal URL (no leak)."""
     pipe = Pipe()
     try:
-        async def fake_inline(url, *, chunk_size, max_bytes, user=None):
+        async def fake_inline(url, *, user=None):
             assert url == "/api/v1/files/abc/content"
-            return InlinedFile(data_url="data:application/pdf;base64,QUJD", filename="doc.pdf")
+            return InlinedFile(media=MediaSlot(mime="application/pdf", text="QUJD"), filename="doc.pdf")
 
         monkeypatch.setattr(pipe._file_gateway, "inline_internal_file_url", fake_inline)
         adapter = pipe._ensure_chat_completions_adapter()
@@ -4139,7 +4138,7 @@ async def test_inline_internal_chat_files_removes_file_url_after_inline(monkeypa
         }
         await adapter._inline_internal_chat_files(chat_payload, pipe.valves, user=None)
         file_obj = chat_payload["messages"][0]["content"][0]["file"]
-        assert file_obj["file_data"] == "data:application/pdf;base64,QUJD"
+        assert file_obj["file_data"] == MediaSlot(mime="application/pdf", text="QUJD")
         assert "file_url" not in file_obj
     finally:
         await pipe.close()
@@ -4464,17 +4463,17 @@ async def test_chat_completions_nonstreaming_inlines_internal_file_urls(monkeypa
     pipe = Pipe()
     valves = pipe.valves.model_copy(update={"DEFAULT_LLM_ENDPOINT": "chat_completions"})
 
-    async def fake_inline_id(file_id: str, *, chunk_size: int, max_bytes: int, user=None) -> InlinedFile | None:
+    async def fake_inline_id(file_id: str, *, user=None) -> InlinedFile | None:
         assert file_id == "abc123"
-        return InlinedFile(data_url="data:application/pdf;base64,QUJD", filename="doc.pdf")
+        return InlinedFile(media=MediaSlot(mime="application/pdf", text="QUJD"), filename="doc.pdf")
 
     monkeypatch.setattr(pipe._file_gateway, "inline_owui_file_id", fake_inline_id)
 
     captured: dict[str, Any] = {}
 
     def capture_request(url, **kwargs):
-        if "json" in kwargs:
-            captured["body"] = kwargs["json"]
+        if "data" in kwargs or "json" in kwargs:
+            captured["body"] = posted_json(kwargs)
 
     # Mock HTTP at boundary
     with aioresponses() as mock_http:
@@ -4536,17 +4535,17 @@ async def test_chat_completions_input_file_file_id_preinlined_to_file_data(monke
     pipe = Pipe()
     valves = pipe.valves.model_copy(update={"DEFAULT_LLM_ENDPOINT": "chat_completions"})
 
-    async def fake_inline_id(file_id: str, *, chunk_size: int, max_bytes: int, user=None) -> InlinedFile | None:
+    async def fake_inline_id(file_id: str, *, user=None) -> InlinedFile | None:
         assert file_id == "abc123"
-        return InlinedFile(data_url="data:application/pdf;base64,QUJD", filename="doc.pdf")
+        return InlinedFile(media=MediaSlot(mime="application/pdf", text="QUJD"), filename="doc.pdf")
 
     monkeypatch.setattr(pipe._file_gateway, "inline_owui_file_id", fake_inline_id)
 
     captured: dict[str, Any] = {}
 
     def capture_request(url, **kwargs):
-        if "json" in kwargs:
-            captured["body"] = kwargs["json"]
+        if "data" in kwargs or "json" in kwargs:
+            captured["body"] = posted_json(kwargs)
 
     with aioresponses() as mock_http:
         mock_http.post(
@@ -4600,7 +4599,7 @@ async def test_chat_completions_denied_internal_file_aborts_before_http(monkeypa
     pipe = Pipe()
     valves = pipe.valves.model_copy(update={"DEFAULT_LLM_ENDPOINT": "chat_completions"})
 
-    async def deny(file_id: str, *, chunk_size: int, max_bytes: int, user=None):
+    async def deny(file_id: str, *, user=None):
         raise RequiredInternalFileError("denied", kind="file", denied=True)
 
     monkeypatch.setattr(pipe._file_gateway, "inline_owui_file_id", deny)
@@ -4664,9 +4663,9 @@ async def test_chat_completions_preinline_threads_user(monkeypatch) -> None:
 
     seen_user: dict[str, Any] = {}
 
-    async def fake_inline_id(file_id: str, *, chunk_size: int, max_bytes: int, user=None) -> InlinedFile | None:
+    async def fake_inline_id(file_id: str, *, user=None) -> InlinedFile | None:
         seen_user["user"] = user
-        return InlinedFile(data_url="data:application/pdf;base64,QUJD", filename="doc.pdf")
+        return InlinedFile(media=MediaSlot(mime="application/pdf", text="QUJD"), filename="doc.pdf")
 
     monkeypatch.setattr(pipe._file_gateway, "inline_owui_file_id", fake_inline_id)
 
@@ -4724,7 +4723,7 @@ class _ScriptedStreamSession:
         self._scripts = scripts
         self.calls = 0
 
-    def post(self, url: str, json: Any = None, headers: Any = None, timeout: Any = None):
+    def post(self, url: str, data: Any = None, headers: Any = None, timeout: Any = None):
         script = self._scripts[min(self.calls, len(self._scripts) - 1)]
         self.calls += 1
         return _ScriptedResponseCM(script)

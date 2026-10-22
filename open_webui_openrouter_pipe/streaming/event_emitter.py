@@ -17,7 +17,9 @@ from ..core.utils import (
     CONTINUED_REPLY,
     _render_error_template,
     citation_access_stamp,
+    closing_status_descriptions,
     join_answer_and_card,
+    take_closing_notices,
 )
 from ..storage.owui_files import is_channel_chat, loggable_session_id
 
@@ -156,6 +158,20 @@ class EventEmitterHandler:
                 self.logger.exception("Failed to emit status")
 
 
+    async def _emit_closing_notices(
+        self,
+        event_emitter: EventEmitter | None,
+        body: Any,
+        *,
+        silenced: bool = False,
+    ) -> None:
+        if not event_emitter:
+            return
+        for closing_line in closing_status_descriptions(
+            None, take_closing_notices(body, silenced=silenced), join=False
+        ):
+            await self._emit_status(event_emitter, closing_line, done=True)
+
     async def _emit_error_event(
         self,
         event_emitter: EventEmitter | None,
@@ -237,6 +253,7 @@ class EventEmitterHandler:
         terminal: bool = True,
         partial_answer: str = "",
         fallback_template: str | None = None,
+        end_notices: list[str] | None = None,
     ) -> str:
         error_id, context_defaults = self._create_error_context()
         enriched_variables = {
@@ -282,6 +299,10 @@ class EventEmitterHandler:
                 "type": "status",
                 "data": {"description": "The request could not be completed. See details below.", "done": True},
             })
+            for closing_line in closing_status_descriptions(None, end_notices or (), join=False):
+                await event_emitter(
+                    {"type": "status", "data": {"description": closing_line, "done": True}}
+                )
             await self._publish_card(event_emitter, shown, on_channel, continuing, terminal=terminal)
             automation_error = self._automation_error(markdown)
             completion: dict[str, Any] = {"done": terminal}

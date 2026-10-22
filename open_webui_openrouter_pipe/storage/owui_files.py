@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import base64
+import contextlib
 import copy
 import inspect
 import io
@@ -23,6 +23,7 @@ from starlette.datastructures import Headers
 
 from ..core.config import _INTERNAL_FILE_ID_PATTERN, _PIPE_METADATA_KEY, OWUI_CHAT_ID
 from ..core.errors import FileUnavailableError, RequiredInternalFileError
+from ..core.media_slot import MediaSlot, SendSpool, current_send_spool
 from ..core.timing_logger import timed
 from ..core.url_scheme import (
     is_absolute_url,
@@ -88,16 +89,8 @@ except Exception:
 
 
 class InlinedFile(NamedTuple):
-    data_url: str
+    media: MediaSlot
     filename: str
-
-
-class InlineFileTooLargeError(ValueError):
-    pass
-
-
-def _estimate_base64_bytes(b64_data: str) -> float:
-    return (len(b64_data) * 3) / 4
 
 
 @timed
@@ -174,8 +167,12 @@ def contained_under_upload_dir(local_path: Any) -> Path | None:
     return None
 
 
-def copy_to_private_temp(contained_path: Path, *, suffix: str = "") -> Path:
-    with tempfile.NamedTemporaryFile(prefix="orpipe-read-", suffix=suffix, delete=False) as tmp:
+def copy_to_private_temp(
+    contained_path: Path, *, suffix: str = "", directory: str | None = None
+) -> Path:
+    with tempfile.NamedTemporaryFile(
+        prefix="orpipe-read-", suffix=suffix, delete=False, dir=directory
+    ) as tmp:
         temp_path = Path(tmp.name)
     try:
         shutil.copyfile(contained_path, temp_path)
@@ -537,6 +534,7 @@ async def materialize_owui_file_to_temp(
     require_auth: bool = True,
     allowed_suffixes: set[str] | None = None,
     suffix: str = "",
+    directory: str | None = None,
 ) -> Path:
     if (
         require_auth
@@ -581,7 +579,9 @@ async def materialize_owui_file_to_temp(
         raise RequiredInternalFileError("A referenced file has an unsupported type.")
 
     copy_task = asyncio.ensure_future(
-        asyncio.to_thread(copy_to_private_temp, contained, suffix=suffix or contained.suffix)
+        asyncio.to_thread(
+            copy_to_private_temp, contained, suffix=suffix or contained.suffix, directory=directory
+        )
     )
     try:
         temp_path = await asyncio.shield(copy_task)
@@ -632,35 +632,6 @@ def infer_file_mime_type(file_obj: Any) -> str:
             if guessed:
                 return "image/jpeg" if guessed == "image/jpg" else guessed
     return "application/octet-stream"
-
-
-@timed
-async def encode_file_path_base64(path: Path, chunk_size: int, max_bytes: int) -> str:
-    chunk_size = max(64 * 1024, min(chunk_size, max_bytes))
-
-    def _encode_stream() -> str:
-        total = 0
-        buffer = io.StringIO()
-        leftover = b""
-        with path.open("rb") as source:
-            while True:
-                chunk = source.read(chunk_size)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > max_bytes:
-                    raise InlineFileTooLargeError("File exceeds BASE64_MAX_SIZE_MB limit")
-                chunk = leftover + chunk
-                whole_bytes = (len(chunk) // 3) * 3
-                if whole_bytes:
-                    buffer.write(base64.b64encode(chunk[:whole_bytes]).decode("ascii"))
-                leftover = chunk[whole_bytes:]
-        if leftover:
-            buffer.write(base64.b64encode(leftover).decode("ascii"))
-        return buffer.getvalue()
-
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _encode_stream)
 
 
 def extract_internal_file_id(url: str) -> str | None:
@@ -896,6 +867,11 @@ async def index_referenced_file_payloads(
         return {}
 
 
+def _slot_from_file(path: str | Path) -> MediaSlot | None:
+    slot = MediaSlot(mime="", kind="bare", path=path)
+    return slot if slot.raw_len else None
+
+
 class OwuiFileGateway:
     def __init__(self, logger, valves, valves_owner=None):
         self.logger = logger
@@ -912,52 +888,46 @@ class OwuiFileGateway:
         live = getattr(self._valves_owner, "valves", None)
         return self._valves if live is None else live
 
-    def validate_base64_size(self, b64_data: str) -> bool:
-        if not b64_data:
-            return True
-
-        return self.validate_base64_length(len(b64_data))
-
-    def validate_base64_length(self, char_count: int) -> bool:
-        if not char_count:
-            return True
-
-        estimated_size_bytes = (char_count * 3) / 4
-        max_size_bytes = self.valves.BASE64_MAX_SIZE_MB * 1024 * 1024
-
-        if estimated_size_bytes > max_size_bytes:
-            estimated_size_mb = estimated_size_bytes / (1024 * 1024)
-            self.logger.warning(
-                f"Base64 data size (~{estimated_size_mb:.1f}MB) exceeds configured limit "
-                f"({self.valves.BASE64_MAX_SIZE_MB}MB), rejecting to prevent memory issues"
-            )
-            return False
-
-        return True
-
     @timed
-    async def read_file_record_base64(
+    async def read_file_record_media(
         self,
         file_obj: Any,
-        chunk_size: int,
-        max_bytes: int,
         *,
         user: Any = None,
         require_auth: bool = True,
-    ) -> str | None:
-        if max_bytes <= 0:
-            raise ValueError("BASE64_MAX_SIZE_MB must be greater than zero")
-
+    ) -> MediaSlot | None:
         real = is_real_owui_file_record(file_obj)
         if require_auth and real and not await authorize_file_read(file_obj, user, self.logger):
             raise RequiredInternalFileError(
                 "You do not have access to a referenced file.", denied=True
             )
 
-        def _from_bytes(raw: bytes) -> str:
-            if len(raw) > max_bytes:
-                raise InlineFileTooLargeError("File exceeds BASE64_MAX_SIZE_MB limit")
-            return base64.b64encode(raw).decode("ascii")
+        spool = current_send_spool()
+        requester = _requester_field(user, "id") if real else None
+        if not requester:
+            return await self._media_of_record(file_obj, user, real, spool)
+        key = (str(file_obj.id), str(requester))
+        async with spool.copy_lock(key):
+            held = spool.held_copy(key)
+            if held is not None:
+                with contextlib.suppress(OSError):
+                    kept = _slot_from_file(held)
+                    if kept is not None:
+                        return kept
+            media = await self._media_of_record(file_obj, user, real, spool)
+            if media is not None and media.path is not None:
+                spool.hold_copy(key, media.path)
+            return media
+
+    async def _media_of_record(
+        self, file_obj: Any, user: Any, real: bool, spool: SendSpool
+    ) -> MediaSlot | None:
+        async def _slot_from_bytes(raw: bytes) -> MediaSlot | None:
+            if not raw:
+                return None
+            target = spool.new_path()
+            await asyncio.to_thread(target.write_bytes, raw)
+            return _slot_from_file(target)
 
         if real:
             if getattr(file_obj, "path", None):
@@ -965,13 +935,11 @@ class OwuiFileGateway:
                     file_obj,
                     user=user,
                     logger=self.logger,
-                    max_bytes=max_bytes,
+                    max_bytes=0,
                     require_auth=False,
+                    directory=spool.directory,
                 )
-                try:
-                    return await encode_file_path_base64(temp_path, chunk_size, max_bytes)
-                finally:
-                    temp_path.unlink(missing_ok=True)
+                return _slot_from_file(temp_path)
         else:
             prefer_paths = [
                 getattr(file_obj, attr, None)
@@ -983,37 +951,36 @@ class OwuiFileGateway:
                 path = Path(candidate)
                 if not path.exists():
                     continue
-                return await encode_file_path_base64(path, chunk_size, max_bytes)
+                return _slot_from_file(await asyncio.to_thread(spool.adopt, path))
 
         data_field = getattr(file_obj, "data", None)
         if isinstance(data_field, dict):
             for key in ("b64", "base64", "data"):
                 inline_value = data_field.get(key)
                 if isinstance(inline_value, str) and inline_value.strip():
-                    if _estimate_base64_bytes(inline_value) > max_bytes:
-                        raise InlineFileTooLargeError("File exceeds BASE64_MAX_SIZE_MB limit")
-                    if not self.validate_base64_size(inline_value):
-                        raise InlineFileTooLargeError("Stored base64 payload exceeds configured limit")
-                    return inline_value.strip()
+                    try:
+                        return MediaSlot(mime="", kind="bare", text=inline_value.strip())
+                    except ValueError:
+                        self.logger.warning(
+                            "A referenced file's stored %r text is not base64, so the file was not read",
+                            key,
+                        )
+                        return None
             blob_value = data_field.get("bytes")
             if isinstance(blob_value, (bytes, bytearray)):
-                return _from_bytes(bytes(blob_value))
+                return await _slot_from_bytes(bytes(blob_value))
             content_value = data_field.get("content")
             if (
                 isinstance(content_value, str)
                 and content_value
                 and not getattr(file_obj, "path", None)
             ):
-                return _from_bytes(content_value.encode("utf-8"))
+                return await _slot_from_bytes(content_value.encode("utf-8"))
 
-        raw_bytes = None
         for attr in ("content", "blob", "data"):
             value = getattr(file_obj, attr, None)
             if isinstance(value, (bytes, bytearray)):
-                raw_bytes = bytes(value)
-                break
-        if raw_bytes is not None:
-            return _from_bytes(raw_bytes)
+                return await _slot_from_bytes(bytes(value))
         return None
 
     @timed
@@ -1021,8 +988,6 @@ class OwuiFileGateway:
         self,
         file_id: str,
         *,
-        chunk_size: int,
-        max_bytes: int,
         user: Any = None,
     ) -> InlinedFile | None:
         normalized = (file_id or "").strip()
@@ -1032,55 +997,39 @@ class OwuiFileGateway:
         if not file_obj:
             return None
         mime_type = infer_file_mime_type(file_obj)
-        try:
-            b64 = await self.read_file_record_base64(
-                file_obj, chunk_size, max_bytes, user=user
-            )
-        except InlineFileTooLargeError as exc:
-            self.logger.warning("Failed to inline file %s: %s", normalized, exc)
-            raise
-        except ValueError as exc:
-            self.logger.warning("Failed to inline file %s: %s", normalized, exc)
-            return None
-        if not b64:
+        media = await self.read_file_record_media(file_obj, user=user)
+        if media is None:
             return None
         media_type = media_type_or_empty(mime_type)
         if not media_type:
             raise RequiredInternalFileError(
                 "A referenced file's recorded type is not a media type.", kind="file"
             )
-        data_url = f"data:{media_type};base64,{b64}"
         meta = getattr(file_obj, "meta", None)
         filename = ""
         if isinstance(meta, dict):
             filename = meta.get("name", "") or ""
         if not filename:
             filename = getattr(file_obj, "filename", "") or ""
-        return InlinedFile(data_url=data_url, filename=filename)
+        return InlinedFile(media=media.shaped(mime=media_type, kind="data_url"), filename=filename)
 
     @timed
     async def inline_internal_file_url(
         self,
         url: str,
         *,
-        chunk_size: int,
-        max_bytes: int,
         user: Any = None,
     ) -> InlinedFile | None:
         file_id = extract_internal_file_id(url)
         if not file_id:
             return None
-        return await self.inline_owui_file_id(
-            file_id, chunk_size=chunk_size, max_bytes=max_bytes, user=user
-        )
+        return await self.inline_owui_file_id(file_id, user=user)
 
     @timed
     async def inline_internal_responses_input_files(
         self,
         request_body: dict[str, Any],
         *,
-        chunk_size: int,
-        max_bytes: int,
         user: Any = None,
         refusals: list[tuple[str, str, str]] | None = None,
     ) -> dict[str, Any]:
@@ -1107,18 +1056,16 @@ class OwuiFileGateway:
                 if refusals is not None:
                     refusals.append((image_url, reason, cause))
                 return False
-            inlined = await self.inline_owui_file_id(
-                picture_id, chunk_size=chunk_size, max_bytes=max_bytes, user=user
-            )
+            inlined = await self.inline_owui_file_id(picture_id, user=user)
             if not inlined:
                 raise FileUnavailableError(
                     "A referenced picture is no longer available in Open WebUI storage.",
                     kind="image",
                 )
             if isinstance(holder, dict):
-                holder["url"] = inlined.data_url
+                holder["url"] = inlined.media
             else:
-                part["image_url"] = inlined.data_url
+                part["image_url"] = inlined.media
             return True
 
         async def _inline_file_block(block: dict[str, Any]) -> bool:
@@ -1150,18 +1097,13 @@ class OwuiFileGateway:
                     )
                 return True
 
-            result = await self.inline_owui_file_id(
-                internal_file_id,
-                chunk_size=chunk_size,
-                max_bytes=max_bytes,
-                user=user,
-            )
+            result = await self.inline_owui_file_id(internal_file_id, user=user)
             if not result:
                 raise FileUnavailableError(
                     "A referenced file is no longer available in Open WebUI storage.",
                 )
 
-            block["file_data"] = result.data_url
+            block["file_data"] = result.media
             if result.filename and "filename" not in block:
                 block["filename"] = result.filename
             block.pop("file_id", None)

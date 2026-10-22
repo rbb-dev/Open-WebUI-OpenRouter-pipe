@@ -5852,21 +5852,6 @@ class TestAdaptiveToolBudgeting:
 # Validate Base64 Size Tests
 
 
-class TestValidateBase64Size:
-    """Tests for _validate_base64_size method."""
-
-    def test_validate_base64_size_method_on_pipe(self, pipe_instance):
-        """Test _validate_base64_size method on Pipe class."""
-        pipe = pipe_instance
-
-        small_b64 = base64.b64encode(b"small").decode()
-        assert pipe._file_gateway.validate_base64_size(small_b64) is True
-
-        large_b64 = base64.b64encode(b"x" * 1000).decode()
-        result = pipe._file_gateway.validate_base64_size(large_b64)
-        assert isinstance(result, bool)
-
-
 # Final Status Tests
 
 
@@ -8634,47 +8619,6 @@ class TestStreamingCoreAdditionalCoverage:
             )
 
     @pytest.mark.asyncio
-    async def test_materialize_image_validate_base64_size_fails(self, monkeypatch, pipe_instance_async):
-        """Test image materialization when base64 validation fails (lines 312-313, 344-345)."""
-        pipe = pipe_instance_async
-        body = ResponsesBody(model="test/model", input=[], stream=True)
-
-        def mock_validate_size(data):
-            return False
-
-        pipe._file_gateway.validate_base64_size = mock_validate_size
-
-        events = [
-            {
-                "type": "response.output_item.done",
-                "item": {
-                    "type": "image_generation_call",
-                    "id": "img-1",
-                    "result": [{"b64_json": "dGVzdA=="}],
-                },
-            },
-            {"type": "response.completed", "response": {"output": [], "usage": {}}},
-        ]
-
-        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
-
-        emitted: list[dict] = []
-        async def emitter(event):
-            emitted.append(event)
-
-        result = await pipe._streaming_handler._run_streaming_loop(
-            body,
-            pipe.valves,
-            emitter,
-            metadata={"model": {"id": "test"}},
-            tools={},
-            session=cast(Any, object()),
-            user_id="user-123",
-        )
-
-        assert "![" not in result
-
-    @pytest.mark.asyncio
     async def test_delayed_thinking_task_timeout_path(self, monkeypatch, pipe_instance_async):
         """Test delayed thinking task timeout path (lines 550-555)."""
         pipe = pipe_instance_async
@@ -11373,50 +11317,6 @@ class TestRawBase64Persistence:
         )
 
         assert uploaded or "Done" in result
-
-
-class TestValidateBase64SizeFails:
-    """Tests for base64 size validation failures (line 311, 313)."""
-
-    @pytest.mark.asyncio
-    async def test_base64_size_too_large_returns_none(self, monkeypatch, pipe_instance_async):
-        """Test base64 string that's too large returns None (lines 311-313)."""
-        pipe = pipe_instance_async
-        body = ResponsesBody(model="test/model", input=[], stream=True)
-
-        large_b64 = base64.b64encode(b"x" * 100000).decode()
-
-        events = [
-            {
-                "type": "response.output_item.done",
-                "item": {
-                    "type": "image_generation_call",
-                    "status": "completed",
-                    "result": large_b64,
-                },
-            },
-            {"type": "response.output_text.delta", "delta": "Done"},
-            {"type": "response.completed", "response": {"output": [], "usage": {}}},
-        ]
-
-        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
-
-        def mock_validate(b64_str):
-            return False
-
-        monkeypatch.setattr(pipe._file_gateway, "validate_base64_size", mock_validate)
-
-        result = await pipe._streaming_handler._run_streaming_loop(
-            body,
-            pipe.valves,
-            None,
-            metadata={"model": {"id": "test"}},
-            tools={},
-            session=cast(Any, object()),
-            user_id="user-123",
-        )
-
-        assert result == "Done"
 
 
 class TestRequiredInternalFileErrorStreaming:

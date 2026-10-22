@@ -19,6 +19,8 @@ from aioresponses import CallbackResult, aioresponses
 
 import open_webui_openrouter_pipe.integrations.media_relay as media_relay
 from open_webui_openrouter_pipe.core.config import Valves
+from open_webui_openrouter_pipe.core.media_slot import MediaSlot
+from tests.media_slots import bare_slot
 from open_webui_openrouter_pipe.integrations.media_relay import (
     _ENDPOINTS,
     MAX_RELAY_SECONDS_PER_REQUEST,
@@ -44,7 +46,7 @@ class _Ctx:
 
 @pytest.mark.parametrize("budget", [11.0, 47.0])
 @pytest.mark.asyncio
-async def test_an_upload_is_given_no_more_time_than_the_budget_it_was_handed(budget):
+async def test_an_upload_is_given_no_more_time_than_the_budget_it_was_handed(budget, tmp_path):
     """Three attempts at a five-minute timeout each is fifteen minutes per host.
 
     The assertion is on the deadline the transport is handed, because that is the thing
@@ -53,6 +55,8 @@ async def test_an_upload_is_given_no_more_time_than_the_budget_it_was_handed(bud
     `ClientTimeout(total=_MAX_UPLOAD_SECONDS)` that ignores the argument fails both.
     """
     asked: list[float] = []
+    clip = tmp_path / "c.mp4"
+    clip.write_bytes(MP4)
 
     def _capture(_url, **kwargs):
         asked.append(kwargs["timeout"].total)
@@ -62,8 +66,8 @@ async def test_an_upload_is_given_no_more_time_than_the_budget_it_was_handed(bud
         with aioresponses() as http:
             http.post(_ENDPOINTS["litterbox"][0], callback=_capture, repeat=True)
             await relay_to_public_url(
-                session, MP4, filename="c.mp4", mime="video/mp4",
-                host="litterbox", retention="1h", max_bytes=0,
+                session, clip, filename="c.mp4", mime="video/mp4",
+                host="litterbox", retention="1h",
                 seconds_left=budget,
             )
 
@@ -73,16 +77,18 @@ async def test_an_upload_is_given_no_more_time_than_the_budget_it_was_handed(bud
 
 
 @pytest.mark.asyncio
-async def test_an_upload_handed_no_time_at_all_never_reaches_the_host():
+async def test_an_upload_handed_no_time_at_all_never_reaches_the_host(tmp_path):
     """An exhausted request budget must refuse rather than start one more transfer."""
+    clip = tmp_path / "c.mp4"
+    clip.write_bytes(MP4)
     async with aiohttp.ClientSession() as session:
         with aioresponses() as http:
             http.post(_ENDPOINTS["litterbox"][0], status=200, body="https://x/a.mp4",
                       repeat=True)
             with pytest.raises(MediaRelayError) as refused:
                 await relay_to_public_url(
-                    session, MP4, filename="c.mp4", mime="video/mp4",
-                    host="litterbox", retention="1h", max_bytes=0, seconds_left=0.0,
+                    session, clip, filename="c.mp4", mime="video/mp4",
+                    host="litterbox", retention="1h", seconds_left=0.0,
                 )
             assert list(http.requests) == [], "an out-of-time upload still reached a host"
     assert refused.value.may_have_stored_it is False
@@ -191,8 +197,8 @@ async def _relay_every_reference(
     pipe._event_emitter_handler._emit_notification = _AlwaysHeard()
     adapter = VideoGenerationAdapter(pipe=pipe, logger=pipe.logger)
 
-    async def _read(_file_obj, _chunk, _cap, user=None):
-        return base64.b64encode(MP4).decode()
+    async def _read(_file_obj, *, user=None):
+        return bare_slot(base64.b64encode(MP4).decode())
 
     async def _file(file_id, _logger):
         return SimpleNamespace(
@@ -200,7 +206,7 @@ async def _relay_every_reference(
             content_type=None, meta={"content_type": "video/mp4"},
         )
 
-    pipe._file_gateway.read_file_record_base64 = _read
+    pipe._file_gateway.read_file_record_media = _read
     monkeypatch.setattr(video_module, "get_file_by_id", _file)
     monkeypatch.setattr(video_module, "infer_file_mime_type", infer_file_mime_type)
     monkeypatch.setattr(video_module, "relay_to_public_url", _relay)
@@ -240,7 +246,7 @@ class _AlwaysHeard:
 @pytest.mark.parametrize("budget", [8.0])
 @pytest.mark.asyncio
 async def test_the_second_host_draws_on_what_the_first_one_already_spent(
-    budget, monkeypatch
+    budget, monkeypatch, tmp_path
 ):
     """A budget re-derived per host doubles the wall clock the moment a fallback fires.
 
@@ -276,8 +282,10 @@ The first host is unreachable, which is the one failure that both retries and fr
         with aioresponses() as http:
             http.post(_ENDPOINTS["litterbox"][0], exception=unreachable, repeat=True)
             http.post(_ENDPOINTS["catbox"][0], callback=_tick, repeat=True)
+            clip = tmp_path / "c.mp4"
+            clip.write_bytes(MP4)
             link, host = await adapter._relay_reference(
-                valves, base64.b64encode(MP4).decode(), filename="c.mp4",
+                valves, MediaSlot(mime="video/mp4", path=clip), filename="c.mp4",
                 mime="video/mp4", family="video",
                 deadline=time.monotonic() + budget, event_emitter=object(),
             )

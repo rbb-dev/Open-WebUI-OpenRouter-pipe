@@ -1,6 +1,7 @@
 """Tests for retargeting telemetry and classifier-failure toast diagnostics."""
 from __future__ import annotations
 
+from tests.media_slots import bare_slot
 import io
 import logging
 from pathlib import Path
@@ -335,12 +336,10 @@ class TestInputReferenceTargetIsMovedNotStamped:
 
         monkeypatch.setattr(video_module, "get_file_by_id", _file)
         monkeypatch.setattr(video_module, "infer_file_mime_type", lambda _obj: "image/png")
-        adapter._pipe._file_gateway.read_file_record_base64 = AsyncMock(
-            return_value=base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()
+        adapter._pipe._file_gateway.read_file_record_media = AsyncMock(
+            return_value=bare_slot(base64.b64encode(b"\x89PNG\r\n\x1a\n").decode())
         )
         valves = SimpleNamespace(
-            VIDEO_FRAME_IMAGE_MAX_BYTES=10_000_000,
-            VIDEO_FRAME_TOTAL_MAX_BYTES=20_000_000,
             IMAGE_UPLOAD_CHUNK_BYTES=1024,
             VIDEO_FRAME_IMAGE_MIME_ALLOWLIST="image/png",
         )

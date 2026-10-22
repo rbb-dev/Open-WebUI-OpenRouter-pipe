@@ -181,7 +181,6 @@ class TaskModelAdapter:
             _gate_responses_input_media(
                 task_body,
                 allow_insecure=self._pipe._multimodal_handler._is_insecure_http_allowed,
-                max_inline_bytes=valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
             )
         )
         _drop_include_reasoning_for_unsupported_fallbacks(task_body, self.logger)

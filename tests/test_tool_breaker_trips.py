@@ -10,6 +10,7 @@ skip wording can.
 
 from __future__ import annotations
 
+from tests.posted_body import posted_json
 import asyncio
 import json
 import time
@@ -1669,7 +1670,7 @@ async def test_a_fusion_turn_where_some_panel_members_answered_clears_the_count(
     _reach_fusion(monkeypatch, pipe)
 
     def m1_and_one_panel_member_fail(_url, **kwargs):
-        model = str((kwargs.get("json") or {}).get("model") or "")
+        model = str((posted_json(kwargs) or {}).get("model") or "")
         if model == "m1" or "gemini" in model:
             return CallbackResult(status=500, payload={"error": {"message": "upstream trouble"}})
         return CallbackResult(status=200, body=_sse_answer())

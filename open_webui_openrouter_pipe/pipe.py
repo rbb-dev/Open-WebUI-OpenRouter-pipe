@@ -144,6 +144,7 @@ from .core.errors import (
     channel_safe_values,
 )
 from .core.logging_system import SessionLogger, resolve_level
+from .core.media_slot import SEND_SPOOL, SendSpool
 from .core.process_state import _upgrade_process_state
 from .core.stall_alarm import attach_stall_alarm, detach_stall_alarm, ensure_stall_alarm
 from .core.utils import (
@@ -3994,6 +3995,7 @@ class Pipe:
 
         session: aiohttp.ClientSession | None = None
         owned_session = False
+        send_spool: SendSpool | None = None
         tokens: list[tuple[ContextVar[Any], contextvars.Token[Any]]] = []
         tool_context: _ToolExecutionContext | None = None
         tool_token: contextvars.Token[_ToolExecutionContext | None] | None = None
@@ -4062,6 +4064,8 @@ class Pipe:
                 tokens.append((CONTINUED_REPLY, CONTINUED_REPLY.set(job.continued_reply)))
                 tokens.append((OWUI_REQUEST, OWUI_REQUEST.set(job.request)))
                 tokens.append((FILE_READ_AUTH_MEMO, FILE_READ_AUTH_MEMO.set({})))
+                send_spool = SendSpool()
+                tokens.append((SEND_SPOOL, SEND_SPOOL.set(send_spool)))
                 tokens.append(
                     (SESSION_LOG_OWNERSHIP_MEMO, SESSION_LOG_OWNERSHIP_MEMO.set({}))
                 )
@@ -4255,6 +4259,8 @@ class Pipe:
                     with contextlib.suppress(Exception):
                         await session.close()
             finally:
+                if send_spool is not None:
+                    send_spool.close()
                 if session_rid:
                     SessionLogger.drain_queued_for(session_rid)
                 SessionLogger.release(session_rid)

@@ -89,8 +89,6 @@ class NonStreamingAdapter:
         )
         inlined_request_body = await self._pipe._file_gateway.inline_internal_responses_input_files(
             responses_request_body or {},
-            chunk_size=effective_valves.IMAGE_UPLOAD_CHUNK_BYTES,
-            max_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
             user=user,
         )
         endpoint = endpoint_override or forced_selected_endpoint
@@ -119,7 +117,6 @@ class NonStreamingAdapter:
             gated_body = _gate_responses_input_media(
                 dict(inlined_request_body or {}),
                 allow_insecure=self._pipe._multimodal_handler._is_insecure_http_allowed,
-                max_inline_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
             )
             request_payload = _filter_openrouter_request(gated_body)
             response = await self._pipe.send_openai_responses_nonstreaming_request(

@@ -455,39 +455,6 @@ async def test_the_index_resolves_the_one_reference_the_gateway_will_inline(
     )
 
 
-#: The bytes each stored record hands the gateway, derived from the same size the record
-#: declares, so the record the index reads and the record the gateway inlines agree.
-_DISPATCH_PAYLOADS = {
-    _FILE_ID: base64.b64encode(b"%PDF-1.4\n" + b"x" * 1_000).decode("ascii"),
-    _UNSIZED_ID: _FOUR_MB_BODY,
-    _SECOND_ID: base64.b64encode(b"%PDF-1.4\n" + b"x" * 4_000_000).decode("ascii"),
-}
-
-
-async def _dispatch(monkeypatch, block: dict, records: list) -> dict:
-    """The real gateway over one block, with only the two boundaries stubbed."""
-    by_id = {record.id: record for record in records}
-
-    async def _record_for(file_id, _logger=None):
-        return by_id.get(file_id)
-
-    monkeypatch.setattr(owui_files, "get_file_by_id", _record_for)
-    gateway = OwuiFileGateway.__new__(OwuiFileGateway)
-    gateway.logger = logging.getLogger("test")
-
-    async def _base64(file_obj, chunk_size: int, max_bytes: int, **_kwargs):
-        return _DISPATCH_PAYLOADS[file_obj.id]
-
-    gateway.read_file_record_base64 = _base64
-    dispatched = await gateway.inline_internal_responses_input_files(
-        {"input": _blocks({"type": "input_file", **block})},
-        chunk_size=1024,
-        max_bytes=50 * 1024 * 1024,
-        user=_OWNER,
-    )
-    return cast(dict, dispatched["input"][0]["content"][0])
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("bulk", "bulk_fails", "stored", "expect_single_reads"),
@@ -1568,9 +1535,6 @@ def test_the_tools_a_request_carries_reach_the_budget_not_just_the_helper() -> N
 
     class _Pipe:
         logger = logging.getLogger("test")
-
-        class valves:  # type: ignore[no-redef]
-            BASE64_MAX_SIZE_MB = 50
 
         class _multimodal_handler:  # type: ignore[no-redef]
             @staticmethod

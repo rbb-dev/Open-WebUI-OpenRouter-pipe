@@ -14,6 +14,7 @@ from ..core.config import (
     _apply_owui_forward_user_headers,
 )
 from ..core.errors import UpstreamBodyUnreadable, _build_openrouter_api_error
+from ..core.request_body import StreamedJSONPayload
 from ..core.url_scheme import _split
 from ..core.utils import _DEFAULT_VALVES, http_timeout
 from ..requests.debug import (
@@ -216,7 +217,9 @@ class OpenRouterVideoClient:
         url = f"{self._base_url}/videos"
         headers = self._headers()
         _debug_print_request(headers, {"method": "POST", "url": url, "json": payload}, logger=self._logger)
-        async with self._session.post(url, headers=headers, json=payload, **self._timeout_kwargs()) as resp:
+        async with self._session.post(
+            url, headers=headers, data=StreamedJSONPayload(payload), **self._timeout_kwargs()
+        ) as resp:
             if resp.status >= 400:
                 body = await _debug_print_error_response(resp, logger=self._logger)
                 raise _build_openrouter_api_error(

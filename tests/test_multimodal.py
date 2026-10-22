@@ -26,6 +26,8 @@ import pytest
 import pytest_asyncio
 
 from open_webui_openrouter_pipe import Pipe
+from tests.media_slots import slot_base64 as _slot_base64
+from open_webui_openrouter_pipe.core.media_slot import MediaSlot
 from open_webui_openrouter_pipe.core.url_scheme import url_scheme
 from open_webui_openrouter_pipe.requests import transformer as transformer_module
 from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
@@ -434,79 +436,48 @@ class TestInferFileMimeType:
         assert result == "image/png"
 
 
-class TestReadFileRecordBase64:
-    """Tests for reading file records and encoding to base64."""
-
-    @pytest.mark.asyncio
-    async def test_raises_when_max_bytes_zero(self, pipe_instance_async):
-        """Should raise ValueError when max_bytes is zero."""
-        file_obj = SimpleNamespace()
-        with pytest.raises(ValueError, match="BASE64_MAX_SIZE_MB must be greater than zero"):
-            await pipe_instance_async._file_gateway.read_file_record_base64(
-                file_obj, chunk_size=1024, max_bytes=0
-            )
+class TestReadFileRecordMedia:
+    """Tests for reading file records into media slots."""
 
     @pytest.mark.asyncio
     async def test_reads_inline_b64_from_data_dict(self, pipe_instance_async):
         """Should read b64 from data dict."""
         b64_content = base64.b64encode(b"test content").decode("ascii")
         file_obj = SimpleNamespace(data={"b64": b64_content})
-        result = await pipe_instance_async._file_gateway.read_file_record_base64(
-            file_obj, chunk_size=1024, max_bytes=1024 * 1024
-        )
-        assert result == b64_content
+        result = await pipe_instance_async._file_gateway.read_file_record_media(file_obj)
+        assert _slot_base64(result) == b64_content
 
     @pytest.mark.asyncio
     async def test_reads_inline_base64_from_data_dict(self, pipe_instance_async):
         """Should read base64 key from data dict."""
         b64_content = base64.b64encode(b"test content").decode("ascii")
         file_obj = SimpleNamespace(data={"base64": b64_content})
-        result = await pipe_instance_async._file_gateway.read_file_record_base64(
-            file_obj, chunk_size=1024, max_bytes=1024 * 1024
-        )
-        assert result == b64_content
+        result = await pipe_instance_async._file_gateway.read_file_record_media(file_obj)
+        assert _slot_base64(result) == b64_content
 
     @pytest.mark.asyncio
     async def test_reads_inline_data_key_from_data_dict(self, pipe_instance_async):
         """Should read data key from data dict."""
         b64_content = base64.b64encode(b"test content").decode("ascii")
         file_obj = SimpleNamespace(data={"data": b64_content})
-        result = await pipe_instance_async._file_gateway.read_file_record_base64(
-            file_obj, chunk_size=1024, max_bytes=1024 * 1024
-        )
-        assert result == b64_content
+        result = await pipe_instance_async._file_gateway.read_file_record_media(file_obj)
+        assert _slot_base64(result) == b64_content
 
     @pytest.mark.asyncio
     async def test_reads_bytes_from_data_dict(self, pipe_instance_async):
         """Should read bytes from data dict and encode."""
         raw_bytes = b"raw byte content"
         file_obj = SimpleNamespace(data={"bytes": raw_bytes})
-        result = await pipe_instance_async._file_gateway.read_file_record_base64(
-            file_obj, chunk_size=1024, max_bytes=1024 * 1024
-        )
-        assert result == base64.b64encode(raw_bytes).decode("ascii")
+        result = await pipe_instance_async._file_gateway.read_file_record_media(file_obj)
+        assert _slot_base64(result) == base64.b64encode(raw_bytes).decode("ascii")
 
     @pytest.mark.asyncio
     async def test_reads_bytearray_from_data_dict(self, pipe_instance_async):
         """Should read bytearray from data dict and encode."""
         raw_bytes = bytearray(b"raw byte content")
         file_obj = SimpleNamespace(data={"bytes": raw_bytes})
-        result = await pipe_instance_async._file_gateway.read_file_record_base64(
-            file_obj, chunk_size=1024, max_bytes=1024 * 1024
-        )
-        assert result == base64.b64encode(bytes(raw_bytes)).decode("ascii")
-
-    @pytest.mark.asyncio
-    async def test_raises_when_stored_b64_exceeds_limit(self, pipe_instance_async):
-        """Should raise ValueError when stored b64 exceeds size limit."""
-        pipe_instance_async.valves.BASE64_MAX_SIZE_MB = 0.0001
-        large_b64 = "A" * 10000
-        file_obj = SimpleNamespace(data={"b64": large_b64})
-
-        with pytest.raises(ValueError, match="Stored base64 payload exceeds configured limit"):
-            await pipe_instance_async._file_gateway.read_file_record_base64(
-                file_obj, chunk_size=1024, max_bytes=1024 * 1024
-            )
+        result = await pipe_instance_async._file_gateway.read_file_record_media(file_obj)
+        assert _slot_base64(result) == base64.b64encode(bytes(raw_bytes)).decode("ascii")
 
     @pytest.mark.asyncio
     async def test_reads_from_file_path_attribute(self, pipe_instance_async, tmp_path):
@@ -516,10 +487,8 @@ class TestReadFileRecordBase64:
         test_file.write_bytes(test_content)
 
         file_obj = SimpleNamespace(path=str(test_file))
-        result = await pipe_instance_async._file_gateway.read_file_record_base64(
-            file_obj, chunk_size=1024, max_bytes=1024 * 1024
-        )
-        assert result == base64.b64encode(test_content).decode("ascii")
+        result = await pipe_instance_async._file_gateway.read_file_record_media(file_obj)
+        assert _slot_base64(result) == base64.b64encode(test_content).decode("ascii")
 
     @pytest.mark.asyncio
     async def test_reads_from_file_path_attribute_file_path(self, pipe_instance_async, tmp_path):
@@ -529,50 +498,31 @@ class TestReadFileRecordBase64:
         test_file.write_bytes(test_content)
 
         file_obj = SimpleNamespace(file_path=str(test_file))
-        result = await pipe_instance_async._file_gateway.read_file_record_base64(
-            file_obj, chunk_size=1024, max_bytes=1024 * 1024
-        )
-        assert result == base64.b64encode(test_content).decode("ascii")
+        result = await pipe_instance_async._file_gateway.read_file_record_media(file_obj)
+        assert _slot_base64(result) == base64.b64encode(test_content).decode("ascii")
 
     @pytest.mark.asyncio
     async def test_reads_from_content_attribute(self, pipe_instance_async):
         """Should read from content attribute as bytes."""
         raw_bytes = b"content attribute bytes"
         file_obj = SimpleNamespace(content=raw_bytes)
-        result = await pipe_instance_async._file_gateway.read_file_record_base64(
-            file_obj, chunk_size=1024, max_bytes=1024 * 1024
-        )
-        assert result == base64.b64encode(raw_bytes).decode("ascii")
+        result = await pipe_instance_async._file_gateway.read_file_record_media(file_obj)
+        assert _slot_base64(result) == base64.b64encode(raw_bytes).decode("ascii")
 
     @pytest.mark.asyncio
     async def test_reads_from_blob_attribute(self, pipe_instance_async):
         """Should read from blob attribute as bytes."""
         raw_bytes = b"blob attribute bytes"
         file_obj = SimpleNamespace(blob=raw_bytes)
-        result = await pipe_instance_async._file_gateway.read_file_record_base64(
-            file_obj, chunk_size=1024, max_bytes=1024 * 1024
-        )
-        assert result == base64.b64encode(raw_bytes).decode("ascii")
+        result = await pipe_instance_async._file_gateway.read_file_record_media(file_obj)
+        assert _slot_base64(result) == base64.b64encode(raw_bytes).decode("ascii")
 
     @pytest.mark.asyncio
     async def test_returns_none_when_no_data_source(self, pipe_instance_async):
         """Should return None when file_obj has no readable data."""
         file_obj = SimpleNamespace()
-        result = await pipe_instance_async._file_gateway.read_file_record_base64(
-            file_obj, chunk_size=1024, max_bytes=1024 * 1024
-        )
+        result = await pipe_instance_async._file_gateway.read_file_record_media(file_obj)
         assert result is None
-
-    @pytest.mark.asyncio
-    async def test_raises_when_raw_bytes_exceed_limit(self, pipe_instance_async):
-        """Should raise when raw bytes exceed max_bytes."""
-        raw_bytes = b"X" * 1000
-        file_obj = SimpleNamespace(content=raw_bytes)
-
-        with pytest.raises(ValueError, match="File exceeds BASE64_MAX_SIZE_MB limit"):
-            await pipe_instance_async._file_gateway.read_file_record_base64(
-                file_obj, chunk_size=1024, max_bytes=100
-            )
 
     @pytest.mark.asyncio
     async def test_skips_nonexistent_path(self, pipe_instance_async):
@@ -581,25 +531,8 @@ class TestReadFileRecordBase64:
             path="/nonexistent/path/file.bin",
             content=b"fallback content"
         )
-        result = await pipe_instance_async._file_gateway.read_file_record_base64(
-            file_obj, chunk_size=1024, max_bytes=1024 * 1024
-        )
-        assert result == base64.b64encode(b"fallback content").decode("ascii")
-
-
-class TestEncodeFilePathBase64:
-    """Tests for file path encoding to base64."""
-
-    @pytest.mark.asyncio
-    async def test_raises_when_file_exceeds_limit(self, pipe_instance_async, tmp_path):
-        """Should raise ValueError when file exceeds max_bytes during encoding."""
-        test_file = tmp_path / "large.bin"
-        test_file.write_bytes(b"X" * 1000)
-
-        with pytest.raises(ValueError, match="File exceeds BASE64_MAX_SIZE_MB limit"):
-            await owui_files_module.encode_file_path_base64(
-                test_file, chunk_size=64, max_bytes=100
-            )
+        result = await pipe_instance_async._file_gateway.read_file_record_media(file_obj)
+        assert _slot_base64(result) == base64.b64encode(b"fallback content").decode("ascii")
 
 
 class TestInlineOwuiFileId:
@@ -609,7 +542,7 @@ class TestInlineOwuiFileId:
     async def test_returns_none_for_empty_file_id(self, pipe_instance_async):
         """Should return None for empty file ID."""
         result = await pipe_instance_async._file_gateway.inline_owui_file_id(
-            "", chunk_size=1024, max_bytes=1024 * 1024
+            ""
         )
         assert result is None
 
@@ -617,7 +550,7 @@ class TestInlineOwuiFileId:
     async def test_returns_none_for_whitespace_file_id(self, pipe_instance_async):
         """Should return None for whitespace-only file ID."""
         result = await pipe_instance_async._file_gateway.inline_owui_file_id(
-            "   ", chunk_size=1024, max_bytes=1024 * 1024
+            "   "
         )
         assert result is None
 
@@ -626,7 +559,7 @@ class TestInlineOwuiFileId:
         """Should return None when file lookup returns None."""
         monkeypatch.setattr(owui_files_module, "get_file_by_id", AsyncMock(return_value=None))
         result = await pipe_instance_async._file_gateway.inline_owui_file_id(
-            "nonexistent", chunk_size=1024, max_bytes=1024 * 1024
+            "nonexistent"
         )
         assert result is None
 
@@ -645,32 +578,13 @@ class TestInlineOwuiFileId:
         monkeypatch.setattr(owui_files_module, "get_file_by_id", AsyncMock(return_value=file_obj))
 
         result = await pipe_instance_async._file_gateway.inline_owui_file_id(
-            "file123", chunk_size=1024, max_bytes=1024 * 1024
+            "file123"
         )
 
-        expected_b64 = base64.b64encode(test_content).decode("ascii")
-        assert result == InlinedFile(data_url=f"data:image/png;base64,{expected_b64}", filename="test.png")
-
-    @pytest.mark.asyncio
-    async def test_returns_none_when_read_fails(self, pipe_instance_async, monkeypatch):
-        """A NON-SIZE read failure from the record yields None.
-
-        A size failure no longer lands here: it raises `InlineFileTooLargeError` so the
-        caller can say "too large" instead of "no longer available", and the over-limit
-        rows live in test_an_oversized_stored_picture_is_skipped_not_reported_missing.py.
-        """
-        file_obj = SimpleNamespace(meta={"content_type": "image/png"})
-        monkeypatch.setattr(owui_files_module, "get_file_by_id", AsyncMock(return_value=file_obj))
-        monkeypatch.setattr(
-            pipe_instance_async._file_gateway,
-            "read_file_record_base64",
-            AsyncMock(side_effect=ValueError("the record could not be decoded")),
-        )
-
-        result = await pipe_instance_async._file_gateway.inline_owui_file_id(
-            "file123", chunk_size=1024, max_bytes=1024 * 1024
-        )
-        assert result is None
+        assert result is not None
+        assert result.filename == "test.png"
+        assert (result.media.kind, result.media.mime) == ("data_url", "image/png")
+        assert _slot_base64(result.media) == base64.b64encode(test_content).decode("ascii")
 
     @pytest.mark.asyncio
     async def test_returns_none_when_b64_is_none(self, pipe_instance_async, monkeypatch):
@@ -679,7 +593,7 @@ class TestInlineOwuiFileId:
         monkeypatch.setattr(owui_files_module, "get_file_by_id", AsyncMock(return_value=file_obj))
 
         result = await pipe_instance_async._file_gateway.inline_owui_file_id(
-            "file123", chunk_size=1024, max_bytes=1024 * 1024
+            "file123"
         )
         assert result is None
 
@@ -692,8 +606,6 @@ class TestInlineInternalFileUrl:
         """Should return None for external URLs."""
         result = await pipe_instance_async._file_gateway.inline_internal_file_url(
             "https://example.com/image.png",
-            chunk_size=1024,
-            max_bytes=1024 * 1024,
         )
         assert result is None
 
@@ -713,12 +625,12 @@ class TestInlineInternalFileUrl:
 
         result = await pipe_instance_async._file_gateway.inline_internal_file_url(
             "http://localhost/api/v1/files/abc123/content",
-            chunk_size=1024,
-            max_bytes=1024 * 1024,
         )
 
-        expected_b64 = base64.b64encode(test_content).decode("ascii")
-        assert result == InlinedFile(data_url=f"data:application/octet-stream;base64,{expected_b64}", filename="test.bin")
+        assert result is not None
+        assert result.filename == "test.bin"
+        assert (result.media.kind, result.media.mime) == ("data_url", "application/octet-stream")
+        assert _slot_base64(result.media) == base64.b64encode(test_content).decode("ascii")
 
 
 class TestInlineInternalResponsesInputFilesInplace:
@@ -729,7 +641,7 @@ class TestInlineInternalResponsesInputFilesInplace:
         """Should do nothing when input is empty."""
         body = {"input": []}
         await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
-            body, chunk_size=1024, max_bytes=1024 * 1024
+            body
         )
         assert body == {"input": []}
 
@@ -738,7 +650,7 @@ class TestInlineInternalResponsesInputFilesInplace:
         """Should do nothing when input is not a list."""
         body = {"input": "not a list"}
         await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
-            body, chunk_size=1024, max_bytes=1024 * 1024
+            body
         )
         assert body == {"input": "not a list"}
 
@@ -747,7 +659,7 @@ class TestInlineInternalResponsesInputFilesInplace:
         """Should skip non-dict items in input."""
         body = {"input": ["string item", 123]}
         await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
-            body, chunk_size=1024, max_bytes=1024 * 1024
+            body
         )
         assert body == {"input": ["string item", 123]}
 
@@ -756,7 +668,7 @@ class TestInlineInternalResponsesInputFilesInplace:
         """Should skip items without content."""
         body = {"input": [{"role": "user"}]}
         await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
-            body, chunk_size=1024, max_bytes=1024 * 1024
+            body
         )
         assert body == {"input": [{"role": "user"}]}
 
@@ -769,7 +681,7 @@ class TestInlineInternalResponsesInputFilesInplace:
             }]
         }
         await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
-            body, chunk_size=1024, max_bytes=1024 * 1024
+            body
         )
         assert body["input"][0]["content"][0]["type"] == "text"
 
@@ -785,7 +697,7 @@ class TestInlineInternalResponsesInputFilesInplace:
             }]
         }
         await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
-            body, chunk_size=1024, max_bytes=1024 * 1024
+            body
         )
         assert body["input"][0]["content"][0]["file_id"] == "file-abc123"
 
@@ -802,7 +714,7 @@ class TestInlineInternalResponsesInputFilesInplace:
         }
 
         await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
-            body, chunk_size=1024, max_bytes=1024 * 1024
+            body
         )
 
         assert body["input"][0]["content"][0]["file_url"] == "https://example.com/external-file.pdf"
@@ -830,14 +742,14 @@ class TestInlineInternalResponsesInputFilesInplace:
         }
 
         sent = await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
-            body, chunk_size=1024, max_bytes=1024 * 1024
+            body
         )
 
         expected_b64 = base64.b64encode(test_content).decode("ascii")
-        expected_data_url = f"data:application/pdf;base64,{expected_b64}"
 
         block = sent["input"][0]["content"][0]
-        assert block["file_data"] == expected_data_url
+        assert (block["file_data"].kind, block["file_data"].mime) == ("data_url", "application/pdf")
+        assert _slot_base64(block["file_data"]) == expected_b64
         assert "file_id" not in block
 
     @pytest.mark.asyncio
@@ -863,11 +775,11 @@ class TestInlineInternalResponsesInputFilesInplace:
         }
 
         sent = await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
-            body, chunk_size=1024, max_bytes=1024 * 1024
+            body
         )
 
         block = sent["input"][0]["content"][0]
-        assert block["file_data"].startswith("data:")
+        assert (block["file_data"].kind, block["file_data"].mime) == ("data_url", "application/pdf")
 
     @pytest.mark.asyncio
     async def test_inlines_internal_file_url(self, pipe_instance_async, tmp_path, monkeypatch):
@@ -892,11 +804,11 @@ class TestInlineInternalResponsesInputFilesInplace:
         }
 
         sent = await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
-            body, chunk_size=1024, max_bytes=1024 * 1024
+            body
         )
 
         block = sent["input"][0]["content"][0]
-        assert block["file_data"].startswith("data:")
+        assert (block["file_data"].kind, block["file_data"].mime) == ("data_url", "application/pdf")
         assert "file_url" not in block
 
     @pytest.mark.asyncio
@@ -924,7 +836,7 @@ class TestInlineInternalResponsesInputFilesInplace:
             match=r"\AA referenced file is no longer available in Open WebUI storage\.\Z",
         ) as raised:
             await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
-                body, chunk_size=1024, max_bytes=1024 * 1024
+                body
             )
 
         assert "owui-file-123" not in str(raised.value), (
@@ -940,7 +852,7 @@ class TestInlineInternalResponsesInputFilesInplace:
             }]
         }
         await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
-            body, chunk_size=1024, max_bytes=1024 * 1024
+            body
         )
         assert body["input"][0]["content"] == "not a list"
 
@@ -953,7 +865,7 @@ class TestInlineInternalResponsesInputFilesInplace:
             }]
         }
         await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
-            body, chunk_size=1024, max_bytes=1024 * 1024
+            body
         )
         assert body["input"][0]["content"] == ["string block", 123, None]
 
@@ -1731,25 +1643,6 @@ class TestIsYoutubeUrl:
         assert pipe_instance._multimodal_handler._is_youtube_url("https://vimeo.com/123456") is False
 
 
-class TestValidateBase64Size:
-    """Tests for base64 size validation."""
-
-    def test_returns_true_for_empty_string(self, pipe_instance):
-        """Should return True for empty string."""
-        assert pipe_instance._file_gateway.validate_base64_size("") is True
-
-    def test_returns_true_for_small_data(self, pipe_instance):
-        """Should return True for data within limits."""
-        small_b64 = base64.b64encode(b"small data").decode("ascii")
-        assert pipe_instance._file_gateway.validate_base64_size(small_b64) is True
-
-    def test_returns_false_for_large_data(self, pipe_instance):
-        """Should return False for data exceeding limits."""
-        pipe_instance.valves.BASE64_MAX_SIZE_MB = 0.00001
-        large_b64 = "A" * 100000
-        assert pipe_instance._file_gateway.validate_base64_size(large_b64) is False
-
-
 class TestParseDataUrl:
     """Tests for _parse_data_url."""
 
@@ -2420,29 +2313,6 @@ class TestDataURLParsing:
 class TestImageTransformations:
     """Tests focused on user image block transformations."""
 
-class TestFileEncoding:
-    """Tests covering file path base64 encoding helpers."""
-
-    @pytest.mark.asyncio
-    async def test_encode_file_path_base64_matches_standard_encoder(
-        self, pipe_instance, tmp_path
-    ):
-        """Chunked base64 encoding should match the standard encoder output."""
-
-        data = os.urandom(100_000)
-        file_path = tmp_path / "blob.bin"
-        file_path.write_bytes(data)
-
-        expected = base64.b64encode(data).decode("ascii")
-        result = await owui_files_module.encode_file_path_base64(
-            file_path,
-            chunk_size=64 * 1024,
-            max_bytes=len(data) + 1024,
-        )
-
-        assert result == expected
-
-
 class TestRemoteURLDownloading:
     """Tests for the streaming downloader the pipe downloads media through."""
 
@@ -2766,16 +2636,16 @@ class TestImageTransformer:
         monkeypatch,
     ):
         """Explicit detail selection should survive transformation."""
-        async def fake_inline(file_id, *, chunk_size, max_bytes, user=None):  # type: ignore[no-untyped-def]
+        async def fake_inline(file_id, *, user=None):  # type: ignore[no-untyped-def]
             assert file_id == "abc"
-            return InlinedFile(data_url="data:image/png;base64,abc", filename="test.png")
+            return InlinedFile(media=MediaSlot(mime="image/png", text="abc"), filename="test.png")
 
         monkeypatch.setattr(pipe_instance._file_gateway, "inline_owui_file_id", fake_inline)
         block = {"type": "image_url", "image_url": {"url": "/api/v1/files/abc", "detail": "low"}}
         image_block = await _transform_single_block(pipe_instance, block, mock_user)
         assert image_block is not None
         assert image_block["detail"] == "low"
-        assert image_block["image_url"] == "data:image/png;base64,abc"
+        assert image_block["image_url"] == MediaSlot(mime="image/png", text="abc")
 
     @pytest.mark.asyncio
     async def test_internal_file_url_inlined_to_data_url(
@@ -2800,7 +2670,7 @@ class TestImageTransformer:
         block = {"type": "image_url", "image_url": {"url": "/api/v1/files/inline/content"}}
         image_block = await _transform_single_block(pipe_instance, block, mock_user)
         assert image_block is not None
-        assert image_block["image_url"].startswith("data:image/png;base64,")
+        assert (image_block["image_url"].kind, image_block["image_url"].mime) == ("data_url", "image/png")
 
     @pytest.mark.asyncio
     async def test_internal_file_url_missing_is_dropped(
@@ -2812,7 +2682,7 @@ class TestImageTransformer:
         """Missing required OWUI file ids must abort, never forwarding the internal URL."""
         from open_webui_openrouter_pipe.core.errors import RequiredInternalFileError
 
-        async def fake_inline(_file_id, *, chunk_size, max_bytes, user=None):  # type: ignore[no-untyped-def]
+        async def fake_inline(_file_id, *, user=None):  # type: ignore[no-untyped-def]
             return None
 
         monkeypatch.setattr(pipe_instance._file_gateway, "inline_owui_file_id", fake_inline)
@@ -3224,7 +3094,7 @@ class TestMultimodalIntegration:
             return_value={"data": b"%PDF-1.7", "mime_type": "application/pdf", "url": remote_file_url}
         )
         upload_mock = AsyncMock(side_effect=["img123", "file123"])
-        inline_mock = AsyncMock(return_value=InlinedFile(data_url="data:image/png;base64,INLINE", filename="test.png"))
+        inline_mock = AsyncMock(return_value=InlinedFile(media=MediaSlot(mime="image/png", text="INLINE"), filename="test.png"))
         monkeypatch.setattr(pipe_instance._multimodal_handler, "_download_remote_url_streaming", download_mock)
         monkeypatch.setattr(pipe_instance._file_gateway, "upload_to_owui_storage", upload_mock)
         monkeypatch.setattr(pipe_instance._file_gateway, "inline_owui_file_id", inline_mock)
@@ -3271,7 +3141,7 @@ class TestMultimodalIntegration:
     ) -> None:
         """Should handle message with text, audio, and image."""
         upload_mock = AsyncMock(return_value="img999")
-        inline_mock = AsyncMock(return_value=InlinedFile(data_url="data:image/png;base64,INLINE", filename="test.png"))
+        inline_mock = AsyncMock(return_value=InlinedFile(media=MediaSlot(mime="image/png", text="INLINE"), filename="test.png"))
         monkeypatch.setattr(pipe_instance._file_gateway, "upload_to_owui_storage", upload_mock)
         monkeypatch.setattr(pipe_instance._file_gateway, "inline_owui_file_id", inline_mock)
 
@@ -3311,8 +3181,8 @@ class TestMultimodalIntegration:
         """Should handle multiple images in single message."""
         upload_mock = AsyncMock(side_effect=["img1", "img2"])
         inline_mock = AsyncMock(side_effect=[
-            InlinedFile(data_url="data:image/png;base64,img1", filename="test.png"),
-            InlinedFile(data_url="data:image/png;base64,img2", filename="test.png"),
+            InlinedFile(media=MediaSlot(mime="image/png", text="img1"), filename="test.png"),
+            InlinedFile(media=MediaSlot(mime="image/png", text="img2"), filename="test.png"),
         ])
         monkeypatch.setattr(pipe_instance._file_gateway, "upload_to_owui_storage", upload_mock)
         monkeypatch.setattr(pipe_instance._file_gateway, "inline_owui_file_id", inline_mock)

@@ -29,6 +29,7 @@ Remaining uncovered paths (23 lines):
 # pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 from __future__ import annotations
 
+from tests.posted_body import posted_json
 import asyncio
 import contextlib
 import json
@@ -2535,7 +2536,7 @@ async def test_responses_streaming_injects_anthropic_toplevel_cache_control(pipe
             pass
         await session.close()
 
-    assert captured.get("json", {}).get("cache_control") == {"type": "ephemeral"}
+    assert posted_json(captured, {}).get("cache_control") == {"type": "ephemeral"}
     assert "interleaved-thinking-2025-05-14" in (captured.get("headers", {}) or {}).get("x-anthropic-beta", "")
 
 
@@ -2575,7 +2576,7 @@ async def test_responses_nonstreaming_injects_anthropic_toplevel_cache_control(p
             base_url="https://openrouter.ai/api/v1",        )
         await session.close()
 
-    assert captured.get("json", {}).get("cache_control") == {"type": "ephemeral", "ttl": "1h"}
+    assert posted_json(captured, {}).get("cache_control") == {"type": "ephemeral", "ttl": "1h"}
     assert "interleaved-thinking-2025-05-14" in (captured.get("headers", {}) or {}).get("x-anthropic-beta", "")
 
 
@@ -2607,7 +2608,7 @@ async def test_responses_no_toplevel_cache_control_for_non_anthropic(pipe_instan
             pass
         await session.close()
 
-    assert "cache_control" not in captured.get("json", {})
+    assert "cache_control" not in posted_json(captured, {})
 
 
 @pytest.mark.parametrize(

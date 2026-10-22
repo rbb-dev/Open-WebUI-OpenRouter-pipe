@@ -16,6 +16,7 @@ from ..core.config import (
 )
 from ..core.costs import chat_usage_to_responses_usage
 from ..core.errors import UpstreamBodyUnreadable, _build_openrouter_api_error
+from ..core.request_body import StreamedJSONPayload
 from ..core.utils import (
     _DEFAULT_VALVES,
     IMAGE_NO_IMAGES_REASON,
@@ -446,7 +447,9 @@ class OpenRouterImageClient:
         url = f"{self._base_url}/images"
         headers = self._headers()
         _debug_print_request(headers, {"method": "POST", "url": url, "json": payload}, logger=self._logger)
-        async with self._session.post(url, headers=headers, json=payload, **self._timeout_kwargs()) as resp:
+        async with self._session.post(
+            url, headers=headers, data=StreamedJSONPayload(payload), **self._timeout_kwargs()
+        ) as resp:
             if resp.status >= 400:
                 body = await _debug_print_error_response(resp, logger=self._logger)
                 raise _build_openrouter_api_error(

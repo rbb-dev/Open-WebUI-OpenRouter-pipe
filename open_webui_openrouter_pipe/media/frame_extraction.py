@@ -40,7 +40,6 @@ _RETRYABLE_FFMPEG_EXITS = frozenset({69})
 _TRACK_LENGTH_TOLERANCE_S = 0.5
 _MAX_SEEK_SECONDS = 1e12
 _FRAME_READ_CHUNK_BYTES = 64 * 1024
-_FRAME_READ_SLACK_BYTES = 256 * 1024
 _VIDEO_HEAD = re.compile(r"Video:")
 _ABSOLUTE_PATH_RUN = re.compile(r"(?<![A-Za-z0-9_.])/(?:[^\s'\"]+/)*[^\s'\"]*")
 _STREAM_INDEX = re.compile(r"Stream #\d+:(\d+)")
@@ -227,12 +226,11 @@ def _without_paths(text: str, limit: int = 200) -> str:
 class FrameExtractionError(Exception):
     def __init__(self, message: str, *, no_frame: bool = False,
                  returncode: int | None = None, pixel_cap: bool = False,
-                 byte_budget: bool = False, timed_out: bool = False) -> None:
+                 timed_out: bool = False) -> None:
         super().__init__(message)
         self.no_frame = no_frame
         self.returncode = returncode
         self.pixel_cap = pixel_cap
-        self.byte_budget = byte_budget
         self.timed_out = timed_out
 
 
@@ -641,15 +639,6 @@ async def _pictures_own_length(meta: VideoMetadata, path: Path) -> float:
     return video_s
 
 
-def _check_frame_bytes(data: bytes, max_frame_bytes: int) -> None:
-    if 0 < max_frame_bytes < len(data):
-        raise FrameExtractionError(
-            f"frame too large: {len(data)} bytes exceeds the {max_frame_bytes} byte "
-            f"frame budget",
-            byte_budget=True,
-        )
-
-
 def _normalise_png_mode(img: Image.Image) -> bytes:
     if img.mode != "RGB":
         img = composite_on_white(img)
@@ -693,26 +682,12 @@ def _scaled_frame_size(width: int, height: int) -> tuple[int, int]:
             max(2, int(int(height * factor + 0.5) / 2.0 + 0.5) * 2))
 
 
-def _read_cap(max_frame_bytes: int) -> int:
-    if max_frame_bytes <= 0:
-        return 0
-    return max_frame_bytes + _FRAME_READ_SLACK_BYTES
-
-
-async def _read_bounded(stream: Any, cap: int, budget: int) -> bytes:
+async def _read_stream(stream: Any) -> bytes:
     chunks: list[bytes] = []
-    total = 0
     while True:
         chunk = await stream.read(_FRAME_READ_CHUNK_BYTES)
         if not chunk:
             return b"".join(chunks)
-        total += len(chunk)
-        if 0 < cap < total:
-            raise FrameExtractionError(
-                f"frame too large: past the {cap} byte read cap on the way over "
-                f"the {budget} byte frame budget ({total} bytes read)",
-                byte_budget=True,
-            )
         chunks.append(chunk)
 
 
@@ -819,7 +794,7 @@ def _extract_frame_imageio_sync(
 async def _extract_frame_ffmpeg(
     path: Path, *, timestamp_seconds: float, logger: logging.Logger,
     from_end: bool = False, saw_damage: list[bool] | None = None,
-    max_frame_bytes: int = 0, hop_index: list[int] | None = None,
+    hop_index: list[int] | None = None,
 ) -> tuple[bytes, int, int]:
     del logger
     path_str = str(path)
@@ -876,9 +851,7 @@ async def _extract_frame_ffmpeg(
             stderr_task = asyncio.create_task(proc.stderr.read())
             try:
                 stdout = await asyncio.wait_for(
-                    _read_bounded(
-                        stdout_stream, _read_cap(max_frame_bytes), max_frame_bytes,
-                    ),
+                    _read_stream(stdout_stream),
                     timeout=rung_timeout,
                 )
             except TimeoutError:
@@ -978,7 +951,7 @@ def _give_up_note(damage_seen: bool, timed_out: bool = False) -> str:
 
 async def _imageio_last_resort(
     path: Path, *, requested_ts: float | None,
-    downgrade_note: str, logger: logging.Logger, max_frame_bytes: int = 0,
+    downgrade_note: str, logger: logging.Logger,
     declared_size: tuple[int, int] | None = None,
     damage_seen: bool = False, timed_out: bool = False,
 ) -> ExtractedFrame:
@@ -990,7 +963,6 @@ async def _imageio_last_resort(
     if not downgrade_note:
         downgrade_note = _give_up_note(damage_seen, timed_out)
     logger.debug("ffmpeg produced no frame; the file's first frame is the last resort")
-    _check_frame_bytes(png_bytes, max_frame_bytes)
     return ExtractedFrame(
         image_bytes=png_bytes, width=w, height=h,
         actual_timestamp_seconds=0.0,
@@ -1014,32 +986,6 @@ async def extract_frame(
     fallback_to_last_on_overshoot: bool = True,
     reused_frame_index: Literal["first", "last"] = "last",
     logger: logging.Logger | None = None,
-    max_frame_bytes: int = 0,
-    meta: VideoMetadata | None = None,
-    probe_failed: bool = False,
-) -> ExtractedFrame:
-    return await _extract_frame_with_budget(
-        path,
-        target=target,
-        timestamp_seconds=timestamp_seconds,
-        fallback_to_last_on_overshoot=fallback_to_last_on_overshoot,
-        reused_frame_index=reused_frame_index,
-        logger=logger,
-        max_frame_bytes=max_frame_bytes,
-        meta=meta,
-        probe_failed=probe_failed,
-    )
-
-
-async def _extract_frame_with_budget(
-    path: Path,
-    *,
-    target: Literal["first_frame", "last_frame", "at_timestamp"],
-    timestamp_seconds: float | None = None,
-    fallback_to_last_on_overshoot: bool = True,
-    reused_frame_index: Literal["first", "last"] = "last",
-    logger: logging.Logger | None = None,
-    max_frame_bytes: int = 0,
     meta: VideoMetadata | None = None,
     probe_failed: bool = False,
 ) -> ExtractedFrame:
@@ -1125,7 +1071,6 @@ async def _extract_frame_with_budget(
                 logger.debug("imageio first_frame failed; falling through to ffmpeg: %s", exc)
             if first_frame is not None:
                 first_frame_bytes, w, h = first_frame
-                _check_frame_bytes(first_frame_bytes, max_frame_bytes)
                 return ExtractedFrame(
                     image_bytes=first_frame_bytes, width=w, height=h,
                     actual_timestamp_seconds=0.0,
@@ -1139,8 +1084,7 @@ async def _extract_frame_with_budget(
         try:
             png_bytes, w, h = await _extract_frame_ffmpeg(
                 path, timestamp_seconds=actual_ts, logger=logger, from_end=use_end_seek,
-                saw_damage=direct_saw_damage, max_frame_bytes=max_frame_bytes,
-                hop_index=direct_hop,
+                saw_damage=direct_saw_damage, hop_index=direct_hop,
             )
             walked_past_first_hop = bool(direct_hop and direct_hop[0] > 0)
             if (
@@ -1158,7 +1102,7 @@ async def _extract_frame_with_budget(
             if use_end_seek and (exc.no_frame or exc.returncode in _RETRYABLE_FFMPEG_EXITS):
                 return await _imageio_last_resort(
                     path, requested_ts=requested_ts, downgrade_note=downgrade_note,
-                    logger=logger, max_frame_bytes=max_frame_bytes,
+                    logger=logger,
                     declared_size=(
                         (probed_meta.width, probed_meta.height)
                         if probed_meta is not None else None
@@ -1182,7 +1126,6 @@ async def _extract_frame_with_budget(
                 png_bytes, w, h = await _extract_frame_ffmpeg(
                     path, timestamp_seconds=0.0, logger=logger,
                     from_end=not rescue_first, saw_damage=ladder_saw_damage,
-                    max_frame_bytes=max_frame_bytes,
                 )
             except FrameExtractionError as ladder_exc:
                 if (
@@ -1204,12 +1147,10 @@ async def _extract_frame_with_budget(
                         png_bytes, w, h = await _extract_frame_ffmpeg(
                             path, timestamp_seconds=last_index_end,
                             logger=logger, from_end=False,
-                            max_frame_bytes=max_frame_bytes,
                         )
                     except FrameExtractionError:
                         pass
                     else:
-                        _check_frame_bytes(png_bytes, max_frame_bytes)
                         walked_past_damage = bool(
                             (direct_saw_damage and direct_saw_damage[0])
                             or (ladder_saw_damage and ladder_saw_damage[0])
@@ -1233,7 +1174,6 @@ async def _extract_frame_with_budget(
                         if probed_meta is not None else None
                     ),
                 )
-                _check_frame_bytes(png_bytes, max_frame_bytes)
                 actual_ts = 0.0
                 if not downgrade_note:
                     downgrade_note = _give_up_note(
@@ -1273,7 +1213,6 @@ async def _extract_frame_with_budget(
             elif not downgrade_note and target == "at_timestamp":
                 downgrade_note = ("frame_seek_failed_used_first_frame" if rescue_first
                                  else "frame_seek_failed_used_last_frame")
-        _check_frame_bytes(png_bytes, max_frame_bytes)
         return ExtractedFrame(
             image_bytes=png_bytes, width=w, height=h,
             actual_timestamp_seconds=actual_ts,

@@ -8,6 +8,8 @@ mocking only external boundaries (HTTP via aioresponses, file I/O).
 
 from __future__ import annotations
 
+from open_webui_openrouter_pipe.core.media_slot import MediaSlot
+from tests.posted_body import posted_json
 import asyncio
 import contextlib
 import json
@@ -5067,8 +5069,8 @@ async def test_task_reasoning_valve_applies_only_for_owned_models(monkeypatch):
         captured_body: dict[str, Any] = {}
 
         def capture_request(url, **kwargs):
-            if "json" in kwargs:
-                captured_body.update(kwargs["json"])
+            if "data" in kwargs:
+                captured_body.update(posted_json(kwargs))
 
         with aioresponses() as mock_http:
             # Mock model catalog
@@ -5170,8 +5172,8 @@ async def test_task_reasoning_valve_skips_unowned_models(monkeypatch):
         captured_body: dict[str, Any] = {}
 
         def capture_request(url, **kwargs):
-            if "json" in kwargs:
-                captured_body.update(kwargs["json"])
+            if "data" in kwargs:
+                captured_body.update(posted_json(kwargs))
 
         with aioresponses() as mock_http:
             # Mock catalog with DIFFERENT model
@@ -5354,8 +5356,8 @@ async def test_task_models_apply_identifier_valves_to_payload(monkeypatch):
     captured: dict[str, Any] = {}
 
     def capture_request(url, **kwargs):
-        if "json" in kwargs:
-            captured["request_params"] = kwargs["json"]
+        if "data" in kwargs:
+            captured["request_params"] = posted_json(kwargs)
 
     with aioresponses() as mock_http:
         # Mock model catalog
@@ -7651,16 +7653,14 @@ async def test_inline_owui_file_id_uses_get_file_by_id_module_func(monkeypatch):
         monkeypatch.setattr(owui_files, "infer_file_mime_type", Mock(return_value="text/plain"))
         monkeypatch.setattr(
             pipe._file_gateway,
-            "read_file_record_base64",
-            AsyncMock(return_value="QkFTRTY0"),
+            "read_file_record_media",
+            AsyncMock(return_value=MediaSlot(mime="", kind="bare", text="QkFTRTY0")),
         )
 
-        result = await pipe._file_gateway.inline_owui_file_id(
-            "file123", chunk_size=1024, max_bytes=1024, user=None
-        )
+        result = await pipe._file_gateway.inline_owui_file_id("file123", user=None)
 
         assert result is not None
-        assert result.data_url == "data:text/plain;base64,QkFTRTY0"
+        assert result.media == MediaSlot(mime="text/plain", text="QkFTRTY0")
         get_file_mock.assert_awaited_once_with("file123", pipe._file_gateway.logger)
     finally:
         await pipe.close()

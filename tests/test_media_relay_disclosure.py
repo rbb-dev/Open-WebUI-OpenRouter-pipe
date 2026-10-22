@@ -16,6 +16,7 @@ reload can recover. Asserting the toast went out measures the channel, not the r
 """
 from __future__ import annotations
 
+from tests.media_slots import bare_slot
 import ast
 import base64
 import io
@@ -81,10 +82,10 @@ class _Publisher:
         self.emitter = emitter
         self.count = count
 
-        async def _read(_file_obj, _chunk, _cap, user=None):
-            return base64.b64encode(MP4).decode()
+        async def _read(_file_obj, *, user=None):
+            return bare_slot(base64.b64encode(MP4).decode())
 
-        self.pipe._file_gateway.read_file_record_base64 = _read
+        self.pipe._file_gateway.read_file_record_media = _read
         self.adapter = VideoGenerationAdapter(pipe=self.pipe, logger=self.pipe.logger)
 
     def _wire(self, url, **_kwargs):
@@ -606,8 +607,8 @@ async def test_a_chat_that_cannot_be_warned_gets_no_upload():
     publisher = _Publisher(emitter=handler._wrap_safe_event_emitter(_dead_socket))
     publisher.pipe._event_emitter_handler = handler
     publisher.adapter = VideoGenerationAdapter(pipe=publisher.pipe, logger=pipe.logger)
-    publisher.pipe._file_gateway.read_file_record_base64 = AsyncMock(
-        return_value=base64.b64encode(MP4).decode()
+    publisher.pipe._file_gateway.read_file_record_media = AsyncMock(
+        return_value=bare_slot(base64.b64encode(MP4).decode())
     )
 
     with pytest.raises(VideoGenerationError) as refused:

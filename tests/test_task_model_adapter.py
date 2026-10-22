@@ -16,6 +16,7 @@ Missing lines to cover:
 
 from __future__ import annotations
 
+from tests.posted_body import posted_json
 import asyncio
 import json
 import logging
@@ -59,7 +60,7 @@ def _make_callback(
     """Create a callback for aioresponses that captures payloads."""
 
     def callback(url, **kwargs):
-        payload = kwargs.get("json", {})
+        payload = posted_json(kwargs, {})
         captured_payloads.append(payload)
 
         if error_response is not None or status >= 400:
@@ -954,7 +955,7 @@ async def _t379_run(
     def _record(url, **kwargs):
         endpoint = "chat/completions" if str(url).endswith("/chat/completions") else "responses"
         endpoints.append(endpoint)
-        bodies.append(dict(kwargs.get("json") or {}))
+        bodies.append(dict(posted_json(kwargs) or {}))
         if reject_responses_with is not None and endpoint == "responses":
             return _t379_rejection(reject_responses_with)
         if reject_responses and endpoint == "responses":

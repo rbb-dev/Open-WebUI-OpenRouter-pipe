@@ -8,6 +8,8 @@ Audio files can be routed to /responses or /chat/completions based on format all
 # pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 from __future__ import annotations
 
+from tests.media_slots import bare_slot, inlined_file
+from tests.posted_body import posted_json
 import ast
 import base64
 import json
@@ -82,7 +84,7 @@ async def test_direct_uploads_audio_with_allowlisted_format_routes_to_responses(
         chat_called = []
 
         def responses_callback(url, **kwargs):
-            payload = kwargs.get("json", {})
+            payload = posted_json(kwargs, {})
             responses_called.append(payload)
             is_streaming = payload.get("stream", False)
             if is_streaming:
@@ -99,7 +101,7 @@ async def test_direct_uploads_audio_with_allowlisted_format_routes_to_responses(
                 )
 
         def chat_callback(url, **kwargs):
-            payload = kwargs.get("json", {})
+            payload = posted_json(kwargs, {})
             chat_called.append(payload)
             is_streaming = payload.get("stream", False)
             if is_streaming:
@@ -124,8 +126,8 @@ async def test_direct_uploads_audio_with_allowlisted_format_routes_to_responses(
         mock_file_obj.id = "file_audio_1"
         mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
-        # 2. _read_file_record_base64 returns the raw base64 data (NOT a data URL)
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_mp3_like_base64())
+        # 2. read_file_record_media returns the raw base64 data (NOT a data URL)
+        pipe._file_gateway.read_file_record_media = AsyncMock(return_value=bare_slot(_mp3_like_base64()))
 
         with aioresponses() as mock_http:
             mock_http.post(
@@ -222,7 +224,7 @@ async def test_direct_uploads_audio_without_allowlisted_format_forces_chat_compl
         chat_called = []
 
         def responses_callback(url, **kwargs):
-            payload = kwargs.get("json", {})
+            payload = posted_json(kwargs, {})
             responses_called.append(payload)
             is_streaming = payload.get("stream", False)
             if is_streaming:
@@ -239,7 +241,7 @@ async def test_direct_uploads_audio_without_allowlisted_format_forces_chat_compl
                 )
 
         def chat_callback(url, **kwargs):
-            payload = kwargs.get("json", {})
+            payload = posted_json(kwargs, {})
             chat_called.append(payload)
             is_streaming = payload.get("stream", False)
             if is_streaming:
@@ -264,9 +266,9 @@ async def test_direct_uploads_audio_without_allowlisted_format_forces_chat_compl
         mock_file_obj.id = "file_audio_1"
         mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
-        # 2. _read_file_record_base64 returns the raw base64 data (NOT a data URL)
+        # 2. read_file_record_media returns the raw base64 data (NOT a data URL)
         # Using m4a signature even though allowlist is "mp3,wav" - should force chat_completions
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_m4a_like_base64())
+        pipe._file_gateway.read_file_record_media = AsyncMock(return_value=bare_slot(_m4a_like_base64()))
 
         with aioresponses() as mock_http:
             mock_http.post(
@@ -364,7 +366,7 @@ async def test_direct_uploads_audio_injects_audio_blocks(monkeypatch):
         captured_urls: list[str] = []
 
         def capture_callback(url, **kwargs):
-            payload = kwargs.get("json", {})
+            payload = posted_json(kwargs, {})
             captured_payloads.append(payload)
             captured_urls.append(str(url))
             is_streaming = payload.get("stream", False)
@@ -406,8 +408,8 @@ async def test_direct_uploads_audio_injects_audio_blocks(monkeypatch):
         mock_file_obj.id = "file_audio_1"
         mock_file_obj.meta = {"size": 4096}
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
-        # 2. _read_file_record_base64 returns the raw base64 data (NOT a data URL)
-        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_mp3_like_base64())
+        # 2. read_file_record_media returns the raw base64 data (NOT a data URL)
+        pipe._file_gateway.read_file_record_media = AsyncMock(return_value=bare_slot(_mp3_like_base64()))
 
         with aioresponses() as mock_http:
             mock_http.post(
@@ -552,7 +554,7 @@ def _make_chat_json_response(content: str = "Generated Title") -> dict:
 def _smart_callback(captured_payloads: list[dict], content: str = "OK"):
     """Create a callback that returns JSON for non-streaming, SSE for streaming."""
     def callback(url, **kwargs):
-        payload = kwargs.get("json", {})
+        payload = posted_json(kwargs, {})
         captured_payloads.append(payload)
 
         is_streaming = payload.get("stream", False)
@@ -726,7 +728,7 @@ async def test_moa_requests_inject_direct_uploads_like_chat():
             pass
 
         pipe._file_gateway.inline_owui_file_id = AsyncMock(
-            return_value=InlinedFile(data_url="data:application/pdf;base64,SGVsbG8gV29ybGQ=", filename="document.pdf")
+            return_value=inlined_file("data:application/pdf;base64,SGVsbG8gV29ybGQ=", "document.pdf")
         )
 
         with aioresponses() as mock_http:
@@ -818,7 +820,7 @@ async def test_task_first_preserves_direct_uploads_for_chat():
         current_capture_target = [task_payloads]  # Use list to allow mutation in closure
 
         def smart_callback(url, **kwargs):
-            payload = kwargs.get("json", {})
+            payload = posted_json(kwargs, {})
             current_capture_target[0].append(payload)
 
             is_streaming = payload.get("stream", False)
@@ -910,7 +912,7 @@ async def test_task_first_preserves_direct_uploads_for_chat():
             # Mock file inlining at the multimodal handler level
             # Returns an InlinedFile for the file
             pipe._file_gateway.inline_owui_file_id = AsyncMock(
-                return_value=InlinedFile(data_url="data:application/pdf;base64,SGVsbG8gV29ybGQ=", filename="document.pdf")
+                return_value=inlined_file("data:application/pdf;base64,SGVsbG8gV29ybGQ=", "document.pdf")
             )
 
             result = await pipe.pipe(
@@ -996,7 +998,7 @@ async def test_direct_uploads_injected_into_chat_request_payload():
 
         # Mock file inlining at the multimodal handler level
         pipe._file_gateway.inline_owui_file_id = AsyncMock(
-            return_value=InlinedFile(data_url="data:application/pdf;base64,SGVsbG8gV29ybGQ=", filename="document.pdf")
+            return_value=inlined_file("data:application/pdf;base64,SGVsbG8gV29ybGQ=", "document.pdf")
         )
 
         with aioresponses() as mock_http:
@@ -1560,7 +1562,6 @@ def test_direct_uploads_filter_bypasses_owui_file_context_via_metadata_files():
         {
             "id": "file_1",
             "name": "example.pdf",
-            "size": 123,
             "content_type": "application/pdf",
         }
     ]

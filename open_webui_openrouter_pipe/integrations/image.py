@@ -28,12 +28,13 @@ from ..core.errors import (
     is_sign_in_failure,
 )
 from ..core.logging_system import SessionLogger
-from ..core.utils import clamp_text, summarise_names
+from ..core.media_slot import MediaSlot
+from ..core.utils import clamp_text, closing_status_descriptions, summarise_names
 from ..core.warn_latch import warn_level
 from ..filters.image_filter_renderer import IMAGE_KNOB_TITLES
 from ..models.registry import _contract_target, _fingerprint
 from ..requests.fusion_engine import latest_user_text
-from ..requests.orchestrator import _is_api_caller
+from ..requests.orchestrator import _closing_notices, _is_api_caller
 from ..storage.multimodal import (
     _NO_VERDICT,
     _PAYLOAD_ALLOWLIST_REFUSAL,
@@ -855,7 +856,7 @@ class ImageGenerationAdapter:
                 url = part.get("image_url")
                 if isinstance(url, dict):
                     url = url.get("url")
-                if part.get("type") in ("input_image", "image_url") and isinstance(url, str) and url:
+                if part.get("type") in ("input_image", "image_url") and isinstance(url, (str, MediaSlot)) and url:
                     refs.append({"type": "image_url", "image_url": {"url": url}})
         return refs
 
@@ -978,6 +979,9 @@ class ImageGenerationAdapter:
                 break
             payload = reference.get("image_url")
             url = payload.get("url") if isinstance(payload, dict) else None
+            if isinstance(url, MediaSlot):
+                kept.append(reference)
+                continue
             verdict = await self._fetchable(url, seen, deadline) if isinstance(url, str) else False
             if verdict:
                 kept.append(reference)
@@ -1201,9 +1205,14 @@ class ImageGenerationAdapter:
             task=None,
         )
 
-    async def _close_status(self, event_emitter: Any) -> None:
+    async def _close_status(
+        self, event_emitter: Any, end_notices: list[str] | None = None
+    ) -> None:
         if event_emitter:
-            await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
+            for closing_line in closing_status_descriptions("", end_notices or (), join=False):
+                await self._pipe._event_emitter_handler._emit_status(
+                    event_emitter, closing_line, done=True
+                )
 
     async def _emit_failure(self, event_emitter: Any, reason: str) -> str:
         content = f"### Image generation failed\n\n{reason}"
@@ -1233,6 +1242,7 @@ class ImageGenerationAdapter:
         breaker_key: str | None = None,
     ) -> str | StreamingResponse:
         outcome: _Outcome = {"usage": None, "reported": False, "costed": False, "sent": False, "delivered": False, "degraded": False, "provider_document": True}
+        end_notices = _closing_notices(responses_body, metadata)
         try:
             content = await self._generate(
                 body=body,
@@ -1247,6 +1257,7 @@ class ImageGenerationAdapter:
                 normalized_model_id=normalized_model_id,
                 api_model_id=api_model_id,
                 outcome=outcome,
+                end_notices=end_notices,
             )
         except asyncio.CancelledError:
             await asyncio.shield(
@@ -1275,6 +1286,7 @@ class ImageGenerationAdapter:
                     event_emitter=event_emitter,
                     normalized_model_id=normalized_model_id,
                     api_model_id=api_model_id,
+                    end_notices=end_notices,
                 )
         except UpstreamBodyUnreadable as exc:
             outcome["provider_document"] = False
@@ -1300,10 +1312,11 @@ class ImageGenerationAdapter:
                                "reason": exc.summary(), "body_excerpt": exc.body_excerpt_block()},
                     log_message=(f"Image generation body was not an OpenRouter document: {exc} "
                                  f"(Content-Type: {exc.content_type}): {exc.body_excerpt[:200]}"),
+                    end_notices=end_notices,
                 )
         except ImageGenerationError as exc:
             self._logger.warning("Image generation failed for %r: %s", api_model_id, exc)
-            await self._close_status(event_emitter)
+            await self._close_status(event_emitter, end_notices)
             outcome["usage"] = outcome["usage"] or getattr(exc, "usage", None) or None
             await self._settle(outcome, valves, user, metadata, user_obj, api_model_id)
             content = await self._emit_failure(
@@ -1311,7 +1324,7 @@ class ImageGenerationAdapter:
             )
         except Exception as exc:
             self._logger.exception("Image generation failed for %r", api_model_id)
-            await self._close_status(event_emitter)
+            await self._close_status(event_emitter, end_notices)
             await self._settle(outcome, valves, user, metadata, user_obj, api_model_id)
             machine_envelope = (
                 _admission_error_response(500, "Image generation failed.", request=request)
@@ -1371,6 +1384,7 @@ class ImageGenerationAdapter:
         normalized_model_id: str,
         api_model_id: str,
         outcome: _Outcome,
+        end_notices: list[str],
     ) -> str:
         responses_input = getattr(responses_body, "input", None)
         body_messages = body.get("messages") if isinstance(body, dict) else None
@@ -1556,7 +1570,7 @@ class ImageGenerationAdapter:
             snippets.append(f"_{result.warning}_")
 
         if not snippets:
-            await self._close_status(event_emitter)
+            await self._close_status(event_emitter, end_notices)
             outcome["reported"] = True
             await self._report_generation(result.usage, "failed", metadata)
             return await self._emit_failure(
@@ -1572,13 +1586,16 @@ class ImageGenerationAdapter:
         outcome["reported"] = True
         await self._report_generation(result.usage, "ok", metadata)
         if event_emitter:
-            await self._pipe._event_emitter_handler._emit_status(
-                event_emitter,
+            for closing_line in closing_status_descriptions(
                 self._final_status(
                     elapsed=time.monotonic() - started_at, usage=result.usage, valves=valves
                 ),
-                done=True,
-            )
+                end_notices,
+                join=bool(valves.SHOW_FINAL_USAGE_STATUS),
+            ):
+                await self._pipe._event_emitter_handler._emit_status(
+                    event_emitter, closing_line, done=True
+                )
             await self._pipe._event_emitter_handler._emit_unstreamed_answer(
                 event_emitter, content=content, usage=result.usage or None
             )

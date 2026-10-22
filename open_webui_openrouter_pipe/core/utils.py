@@ -12,7 +12,7 @@ import logging
 import math
 import re
 import uuid
-from collections.abc import Awaitable, Iterator
+from collections.abc import Awaitable, Iterable, Iterator
 from contextvars import ContextVar
 from typing import Any, TypeVar, cast
 
@@ -24,6 +24,7 @@ from .config import (
     ULID_LENGTH,
     _application_secret,
 )
+from .media_slot import MediaSlot
 from .url_scheme import (
     _BASE64_FOLD_SLICE,
     _BASE64_FOLDED_TABLE,
@@ -1291,6 +1292,9 @@ def _redact_payload_blobs(value: Any, *, max_chars: int = 256) -> Any:
             return [_walk(v, key, False) for v in obj]
         if isinstance(obj, tuple):
             return tuple(_walk(v, key, False) for v in obj)
+        if isinstance(obj, MediaSlot):
+            lead = f"data:{obj.mime};base64," if obj.kind == "data_url" else ""
+            return f"{lead}…{_REDACTED_DATA_URL_MARKER}({obj.b64_len} chars)…"
         if isinstance(obj, str):
             if _payload_key(key) in _MEDIA_KEY_STEMS and not (
                 citation and _payload_key(key) == "url"
@@ -1701,6 +1705,39 @@ def summarise_names(names: list[str], limit: int = 4, width: int = _TEXT_LIMIT) 
 
 
 CONTINUED_REPLY: ContextVar[str | None] = ContextVar("continued_reply", default=None)
+
+ATTACHMENT_NOTICES: ContextVar[list[str] | None] = ContextVar("attachment_notices", default=None)
+
+
+def note_for_the_end(notice: str) -> bool:
+    collector = ATTACHMENT_NOTICES.get()
+    if collector is None:
+        return False
+    collector.append(notice)
+    return True
+
+
+def closing_status_descriptions(
+    description: str | None, notices: Iterable[str], *, join: bool
+) -> list[str]:
+    end_notice = " ".join(dict.fromkeys(notices))
+    if not end_notice:
+        return [] if description is None else [description]
+    if not description:
+        return [end_notice]
+    if join:
+        return [f"{description} | {end_notice}"]
+    return [description, end_notice]
+
+
+def take_closing_notices(body: Any, *, silenced: bool = False) -> list[str]:
+    notices = getattr(body, "_attachment_notices", None)
+    if silenced or not isinstance(notices, list) or not notices:
+        return []
+    if getattr(body, "_attachment_notices_shown", False):
+        return []
+    body._attachment_notices_shown = True
+    return list(notices)
 
 
 def continued_reply_text(body: Any, metadata: Any) -> str | None:

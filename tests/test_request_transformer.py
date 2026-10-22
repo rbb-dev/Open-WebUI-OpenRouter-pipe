@@ -14,12 +14,14 @@ HTTPS-only defaults apply to SSRF-related URL handling; HTTP is allowlisted only
 
 from __future__ import annotations
 
+from tests.media_slots import inlined_file, slot_base64, wire_default, wire_form
 import asyncio
 import ast
 import base64
 import datetime
 import inspect
 import json
+import re
 import struct
 import zlib
 from types import SimpleNamespace
@@ -53,9 +55,6 @@ from open_webui_openrouter_pipe.requests.transformer import (
     _TOOL_OUTPUT_PRUNE_HEAD_CHARS,
     _TOOL_OUTPUT_PRUNE_TAIL_CHARS,
 )
-
-_INLINE_CAP_BYTES = 50 * 1024 * 1024
-
 
 def _refuses_cleartext(_url: str) -> bool:
     return False
@@ -1171,7 +1170,7 @@ class TestToolTurnsToRemember:
         items = await transform_messages_to_input(pipe_instance, _chat_with_tool_turns(16))
 
         chat = await _responses_input_to_chat_messages(
-            items, max_inline_bytes=_INLINE_CAP_BYTES, allow_insecure=_refuses_cleartext
+            items, allow_insecure=_refuses_cleartext
         )
 
         kept = [f"call-{turn}" for turn in range(10, 16)]
@@ -1451,7 +1450,7 @@ class TestImageHandling:
 
             # Mock the image processing to return simple results
             async def mock_inline(file_id, *args, **kwargs):
-                return InlinedFile(data_url=f"data:image/png;base64,{file_id}", filename=f"{file_id}.png")
+                return inlined_file(f"data:image/png;base64,{file_id}", f"{file_id}.png")
 
             pipe_instance._file_gateway.inline_owui_file_id = mock_inline
 
@@ -1468,7 +1467,7 @@ class TestImageHandling:
 
             # Should have text + 2 images (limit is 2)
             image_blocks = [b for b in result[0]["content"] if b.get("type") == "input_image"]
-            sent_urls = [b["image_url"].rsplit("base64,", 1)[-1] for b in image_blocks]
+            sent_urls = [wire_form(b["image_url"]).rsplit("base64,", 1)[-1] for b in image_blocks]
             assert len(image_blocks) == 2, (
                 f"the cap of 2 was not enforced on the wire: {sent_urls}"
             )
@@ -1487,7 +1486,7 @@ class TestImageHandling:
             mock_family.supports.return_value = True
 
             async def mock_inline(file_id, *args, **kwargs):
-                return InlinedFile(data_url=f"data:image/png;base64,{file_id}", filename=f"{file_id}.png")
+                return inlined_file(f"data:image/png;base64,{file_id}", f"{file_id}.png")
 
             pipe_instance._file_gateway.inline_owui_file_id = mock_inline
 
@@ -1519,7 +1518,7 @@ class TestImageHandling:
             assert len(latest_image_blocks) == 1, (
                 f"the latest message's own picture did not travel alone: {latest_user['content']!r}"
             )
-            assert latest_image_blocks[0]["image_url"].endswith("new-img"), (
+            assert wire_form(latest_image_blocks[0]["image_url"]).endswith("new-img"), (
                 f"the picture that travelled is not the one attached to the latest message: "
                 f"{latest_image_blocks[0]['image_url']!r}"
             )
@@ -1752,25 +1751,6 @@ class TestVideoHandling:
         assert _forwarded_block(result, "video_url") is None
         assert _only_block(result)["type"] == "input_text"
 
-    @pytest.mark.asyncio
-    async def test_video_data_url_size_check(self, pipe_instance):
-        """Large video data URLs are rejected based on size limit."""
-        # Create a large base64 string that exceeds the default limit
-        pipe_instance.valves.VIDEO_MAX_SIZE_MB = 1  # 1MB limit for test
-        large_b64 = "A" * (2 * 1024 * 1024)  # ~1.5MB decoded estimate
-        data_url = f"data:video/mp4;base64,{large_b64}"
-
-        messages = [
-            {"role": "user", "content": [
-                {"type": "video_url", "video_url": {"url": data_url}}
-            ]}
-        ]
-
-        result = await transform_messages_to_input(pipe_instance, messages)
-
-        # Rejected by size, so no video block is forwarded at all.
-        assert _forwarded_block(result, "video_url") is None
-
 # =============================================================================
 # File Handling Tests
 # =============================================================================
@@ -1859,7 +1839,7 @@ class TestImageSelection:
             mock_family.supports.return_value = True
 
             async def mock_inline(*args, **kwargs):
-                return InlinedFile(data_url="data:image/png;base64,test", filename="test.png")
+                return inlined_file("data:image/png;base64,test", "test.png")
 
             async def mock_download(*args, **kwargs):
                 return None
@@ -1902,7 +1882,7 @@ class TestImageSelection:
 
             async def mock_inline(file_id, *args, **kwargs):
                 inlined.append(file_id)
-                return InlinedFile(data_url="data:image/png;base64,frog", filename="frog.png")
+                return inlined_file("data:image/png;base64,frog", "frog.png")
 
             async def mock_download(*args, **kwargs):
                 return None
@@ -1952,8 +1932,6 @@ class TestValvesOverride:
             IMAGE_INPUT_SELECTION="user_only",
             IMAGE_REUSE_MAX_TURNS=3,
             IMAGE_UPLOAD_CHUNK_BYTES=1024,
-            BASE64_MAX_SIZE_MB=10,
-            VIDEO_MAX_SIZE_MB=100,
             ENABLE_ANTHROPIC_PROMPT_CACHING=False,
         )
 
@@ -3143,7 +3121,7 @@ class TestImageProcessing:
             mock_family.supports.return_value = True
 
             async def mock_inline(*args, **kwargs):
-                return InlinedFile(data_url="data:image/png;base64,test", filename="test.png")
+                return inlined_file("data:image/png;base64,test", "test.png")
 
             pipe_instance._file_gateway.inline_owui_file_id = mock_inline
 
@@ -3166,7 +3144,7 @@ class TestImageProcessing:
             mock_family.supports.return_value = True
 
             async def mock_inline(*args, **kwargs):
-                return InlinedFile(data_url="data:image/png;base64,test", filename="test.png")
+                return inlined_file("data:image/png;base64,test", "test.png")
 
             pipe_instance._file_gateway.inline_owui_file_id = mock_inline
 
@@ -3189,7 +3167,7 @@ class TestImageProcessing:
             mock_family.supports.return_value = True
 
             async def mock_inline(*args, **kwargs):
-                return InlinedFile(data_url="data:image/png;base64,test", filename="test.png")
+                return inlined_file("data:image/png;base64,test", "test.png")
 
             pipe_instance._file_gateway.inline_owui_file_id = mock_inline
 
@@ -3455,7 +3433,7 @@ class TestBlockTypeVariations:
             mock_family.supports.return_value = True
 
             async def mock_inline(*args, **kwargs):
-                return InlinedFile(data_url=f"data:image/png;base64,{sample_image_base64}", filename="test.png")
+                return inlined_file(f"data:image/png;base64,{sample_image_base64}", "test.png")
 
             pipe_instance._file_gateway.inline_owui_file_id = mock_inline
 
@@ -4074,21 +4052,18 @@ class TestFileProcessingException:
             ]}
         ]
 
-        statuses: list[str] = []
+        notices: list[str] = []
 
-        async def capture_status(emitter, msg, done=False):
-            statuses.append(msg)
-
-        pipe_instance._event_emitter_handler._emit_status = capture_status
-
-        result = await transform_messages_to_input(pipe_instance, messages)
+        result = await transform_messages_to_input(
+            pipe_instance, messages, attachment_notices=notices
+        )
 
         blocks = result[0]["content"]
         assert blocks, "the turn shipped nothing at all"
         assert not [part for part in blocks if part.get("type") == "input_file"], (
             f"the stub was still forwarded after the failure: {blocks!r}"
         )
-        assert statuses == ["Files: skipped 1 (has no readable source)."], statuses
+        assert notices == ["Files: skipped 1 (has no readable source)."], notices
 
 
 class TestAudioProcessingEdgeCasesExtended:
@@ -4126,32 +4101,6 @@ class TestAudioProcessingEdgeCasesExtended:
         # Non-audio mime is rejected, so no audio block is forwarded.
         assert _forwarded_block(result, "input_audio") is None
         assert _only_block(result)["type"] == "input_text"
-
-    @pytest.mark.asyncio
-    async def test_audio_data_url_size_validation_fails(self, pipe_instance):
-        """An over-limit audio data URL is dropped by the real `BASE64_MAX_SIZE_MB` gate.
-
-        This row used to mock `pipe_instance._file_gateway.validate_base64_size` -- a
-        hook audio no longer routes through -- and used a 60 MB payload that was over
-        both the old hardcoded 1 MiB and the 50 MB default, so it passed by accident.
-        The gate is the transformer's `max_inline_bytes` comparison, and an over-limit
-        block is dropped from the turn entirely rather than emptied in place.
-        """
-        pipe_instance.valves.BASE64_MAX_SIZE_MB = 1
-        payload = base64.b64encode(b"\x00" * (2 * 1024 * 1024)).decode()
-        data_url = f"data:audio/mp3;base64,{payload}"
-
-        messages = [
-            {"role": "user", "content": [
-                {"type": "input_audio", "input_audio": data_url}
-            ]}
-        ]
-
-        result = await transform_messages_to_input(pipe_instance, messages)
-
-        audio_blocks = [b for b in result[0]["content"] if b.get("type") == "input_audio"]
-        assert not audio_blocks, f"the over-limit audio block was sent: {result!r}"
-
 
 class TestVideoSSRFProtection:
     """Tests for video SSRF protection (lines 1057-1064)."""
@@ -4243,12 +4192,6 @@ class TestBlockTransformationException:
 
             pipe_instance._ensure_error_formatter()._emit_error = failing_emit
 
-            # Mock _validate_base64_size to raise
-            original_validate = pipe_instance._file_gateway.validate_base64_size
-            def raise_on_validate(data):
-                raise RuntimeError("Validation error")
-            pipe_instance._file_gateway.validate_base64_size = raise_on_validate
-
             messages = [
                 {"role": "user", "content": [
                     {"type": "text", "text": "Text block"},
@@ -4256,12 +4199,15 @@ class TestBlockTransformationException:
                 ]}
             ]
 
-            result = await transform_messages_to_input(pipe_instance, messages)
+            with patch(
+                "open_webui_openrouter_pipe.requests.transformer._is_well_formed_base64",
+                side_effect=RuntimeError("Validation error"),
+            ) as validator:
+                result = await transform_messages_to_input(pipe_instance, messages)
 
+            validator.assert_called()
             # Should have both blocks - text converted, audio preserved on error
             assert len(result[0]["content"]) >= 1
-
-            pipe_instance._file_gateway.validate_base64_size = original_validate
 
 
 class TestAssistantImageFallbackException:
@@ -4306,34 +4252,31 @@ class TestVisionWarningAfterSkip:
 
     @pytest.mark.asyncio
     async def test_vision_warning_emitted_after_skipping(self, pipe_instance):
-        """Vision warning is emitted after skipping all images (lines 1194-1204)."""
+        """The notice counts every picture a model without vision left out."""
         with patch("open_webui_openrouter_pipe.requests.transformer.ModelFamily") as mock_family:
             mock_family.supports.return_value = False  # No vision support
 
-            status_messages = []
-            async def capture_status(emitter, msg, done=False):
-                status_messages.append(msg)
-
-            pipe_instance._event_emitter_handler._emit_status = capture_status
+            notices: list[str] = []
 
             messages = [
                 {"role": "user", "content": [
-                    {"type": "text", "text": "Look at this image"},
-                    {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}}
+                    {"type": "text", "text": "Look at these images"},
+                    *(
+                        {"type": "image_url", "image_url": {"url": f"https://example.com/img{n}.png"}}
+                        for n in range(3)
+                    ),
                 ]}
             ]
-
-            event_emitter = MagicMock()
 
             result = await transform_messages_to_input(
                 pipe_instance,
                 messages,
                 model_id="text-only-model",
-                event_emitter=event_emitter
+                attachment_notices=notices,
             )
 
-            # Warning should have been emitted
-            assert any("does not accept image inputs" in msg for msg in status_messages)
+            assert len(notices) == 1
+            assert [int(found) for found in re.findall(r"\d+", notices[0])] == [3]
 
 
 class TestImageInliningFailure:
@@ -4471,7 +4414,6 @@ class TestVideoBase64StatusEmission:
             status_messages.append(msg)
 
         pipe_instance._event_emitter_handler._emit_status = mock_emit_status
-        pipe_instance.valves.VIDEO_MAX_SIZE_MB = 10  # Large limit
 
         event_emitter = MagicMock()
 
@@ -4565,17 +4507,6 @@ class TestFileOuterException:
         assert blocks[0] == {"type": "input_text", "text": "text block"}, blocks
 
 
-class TestAudioBase64SizeValidation:
-    """The audio size gate, and where it lives.
-
-    It used to sit inside the synchronous `_normalize_base64`, which could only answer
-    "undecodable" and logged an unlatched second warning on the way. It now sits before
-    the normaliser, at each of the three audio entry points, and an over-limit payload
-    drops its block and names the limit. The full matrix is in
-    test_an_oversized_inline_audio_is_refused_by_size_not_by_encoding.py; this node keeps
-    the seam in this suite honest about which shape it drives.
-    """
-
 class TestBlockTransformExceptionNonImage:
     """Tests for a non-image block whose conversion raised being dropped, not forwarded."""
 
@@ -4591,13 +4522,7 @@ class TestVisionWarningLatestUserMessage:
             # Set image limit to 0 so include_user_images is False
             pipe_instance.valves.MAX_INPUT_IMAGES_PER_REQUEST = 0
 
-            status_messages = []
-            async def capture_status(emitter, msg, done=False):
-                status_messages.append(msg)
-
-            pipe_instance._event_emitter_handler._emit_status = capture_status
-
-            event_emitter = MagicMock()
+            notices: list[str] = []
 
             messages = [
                 {"role": "user", "content": [
@@ -4610,11 +4535,10 @@ class TestVisionWarningLatestUserMessage:
                 pipe_instance,
                 messages,
                 model_id="no-vision-model",
-                event_emitter=event_emitter
+                attachment_notices=notices,
             )
 
-            # Vision warning should be emitted
-            assert any("does not accept image" in msg for msg in status_messages)
+            assert len(notices) == 1
 
 
 
@@ -4652,7 +4576,7 @@ class TestImageReuseRegister:
         for block in latest["content"]:
             if isinstance(block, dict) and block.get("type") == "input_image":
                 url = block.get("image_url")
-                out.append(url.get("url") if isinstance(url, dict) else url)
+                out.append(wire_form(url.get("url") if isinstance(url, dict) else url))
         return out
 
     @staticmethod
@@ -4670,7 +4594,7 @@ class TestImageReuseRegister:
 
     @staticmethod
     async def _run(pipe_instance, messages, *, emitter=None, gateway=None, downloader=None,
-                   chat_id="chat-1", safe_url=True):
+                   chat_id="chat-1", safe_url=True, notices=None):
         with patch("open_webui_openrouter_pipe.requests.transformer.ModelFamily") as mock_family:
             mock_family.supports.return_value = True
 
@@ -4687,101 +4611,37 @@ class TestImageReuseRegister:
             pipe_instance._multimodal_handler._is_safe_url = permit if safe_url else deny
             pipe_instance._multimodal_handler._download_remote_url_streaming = _as_streaming(downloader) or none
             return await transform_messages_to_input(
-                pipe_instance, messages, chat_id=chat_id, event_emitter=emitter
+                pipe_instance, messages, chat_id=chat_id, event_emitter=emitter,
+                attachment_notices=notices,
             )
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        ("cause", "phrase", "banner"),
-        [
-            ("insecure_http", "ALLOW_INSECURE_HTTP_HOSTS", False),
-            ("oversized_remote", "limit", False),
-        ],
-    )
-    async def test_a_refused_attachment_tells_the_user_which_way_it_failed(
-        self, pipe_instance, cause, phrase, banner
-    ):
+    async def test_a_refused_attachment_tells_the_user_which_way_it_failed(self, pipe_instance):
         """Dropping the user's own picture silently is the whole failure this prevents.
 
-        Nothing in the suite asserted any of it. A refusal reached the user as a status
-        line the pipe's own later statuses hid -- Open WebUI appends every status to
-        `message.statusHistory` and `StatusHistory.svelte` shows only the last unless the
-        reader expands it, and `ResponseMessage.svelte` passes no `expand` -- and the
-        security refusal had lost both valve names needed to act on it. Three rows with
-        distinct expectations, so an unconditional "an image was skipped" emitted from
-        anywhere satisfies none of them.
-
-        **The `insecure_http` row's banner expectation was `True` here and is now
-        `False`.** It was withdrawn by an operator decision (OD1), not because the
-        behaviour was a defect: `severity="error"` routed the plain-HTTP picture refusal
-        to a red error event instead of the `Images: skipped 1 (served over plain HTTP,
-        ...)` status every other picture refusal produces, and one person's picture then
-        reddened the turn of whoever else was reading the chat. The refusal now arrives
-        as a status like every other, still naming both valves, so the user can undo it.
-        The `banner` parameter stays so a future site can genuinely need the severity
-        split back; only this row changed.
+        A refusal reaches the user as a status line, and it still names both valves
+        needed to undo it: the plain-HTTP picture refusal says which two settings allow
+        the host.
         """
-        pipe_instance.valves.BASE64_MAX_SIZE_MB = 1
-        events: list[dict] = []
-
-        async def emitter(event):
-            events.append(event)
-
-        async def oversized_download(_url, **_kwargs):
-            return {"data": b"x" * 4_000_000, "mime_type": "image/png"}
-
-        url = {
-            "insecure_http": "http://insecure.test/a.png",
-            "oversized_inline": "data:image/png;base64," + "A" * 4_000_000,
-            "oversized_remote": "https://example.test/big.png",
-        }[cause]
-        downloader = oversized_download if cause == "oversized_remote" else None
+        notices: list[str] = []
 
         messages = [
             {
                 "role": "user",
                 "content": [
                     {"type": "text", "text": "what is this"},
-                    {"type": "image_url", "image_url": {"url": url}},
+                    {"type": "image_url", "image_url": {"url": "http://insecure.test/a.png"}},
                 ],
             }
         ]
 
-        result = await self._run(
-            pipe_instance, messages, emitter=emitter, downloader=downloader
-        )
+        result = await self._run(pipe_instance, messages, notices=notices)
 
         assert self._blocks(result) == [], "a refused attachment was sent anyway"
-        errors = [
-            e for e in events
-            if isinstance(e, dict) and isinstance(e.get("data"), dict) and e["data"].get("error")
-        ]
-        statuses = [
-            e for e in events
-            if isinstance(e, dict) and e.get("type") == "status"
-        ]
-        surfaced = errors if banner else statuses
-        assert surfaced, (
-            f"a {cause} refusal produced no {'error' if banner else 'status'} event, so the "
-            "user's picture vanished with no way to tell why"
+        assert len(notices) == 1, (
+            "a plain-HTTP refusal was not reported once, so the user's picture "
+            "vanished with no way to tell why"
         )
-        assert any(phrase in json.dumps(e) for e in surfaced), (
-            f"the {cause} refusal never mentioned {phrase!r}, so the user cannot act on it"
-        )
-        if banner:
-            # A security refusal disclosed as an error card is also counted in the
-            # turn's own image tally, so a picture the model never saw is counted
-            # where the user reads the count. The card is the load-bearing
-            # disclosure; the status repeats the reason because the tally names it.
-            # What must hold is that the card is there, and that the refusal is counted.
-            assert any(phrase in json.dumps(e) for e in errors), (
-                "the actionable valve names reached only the status line, which the next "
-                "status hides behind a click"
-            )
-            assert any("Images: skipped" in json.dumps(e) for e in statuses), (
-                "a security refusal no longer appears in the turn's own image tally, so "
-                "a picture the model never saw is missing from the count the user reads"
-            )
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("user_uploads_last", [False, True])
@@ -4901,8 +4761,8 @@ class TestImageReuseRegister:
 
     @staticmethod
     async def _inlined(*_a, **_k):
-        return InlinedFile(data_url="data:image/png;base64," + base64.b64encode(
-            b"\x89PNG\r\n\x1a\n" + b"g" * 40).decode(), filename="ok.png")
+        return inlined_file("data:image/png;base64," + base64.b64encode(
+            b"\x89PNG\r\n\x1a\n" + b"g" * 40).decode(), "ok.png")
 
     @pytest.mark.asyncio
     async def test_a_failed_reuse_cannot_end_the_turn(self, pipe_instance):
@@ -4937,10 +4797,10 @@ class TestImageReuseRegister:
     @pytest.mark.parametrize(
         "attachment",
         [
-            "data:image/png;base64," + ("A" * 3_000_000),
-            "https://e.test/TOO-BIG.png",
+            "data:image/png;base64,!!!!not-base64!!!!",
+            "http://insecure.test/a.png",
         ],
-        ids=["oversized-data-url", "oversized-remote"],
+        ids=["undecodable-data-url", "plain-http-link"],
     )
     @pytest.mark.asyncio
     async def test_a_refused_attachment_is_not_replaced_by_an_older_picture(
@@ -4949,21 +4809,17 @@ class TestImageReuseRegister:
         """Refusing the user's own image must not silently substitute someone else's.
 
         The reuse fallback fired on `user_images_used == 0`, which is true both when
-        the user attached nothing and when what they attached failed to convert. So an
-        over-limit photo was dropped and a picture the model generated turns earlier
+        the user attached nothing and when what they attached failed to convert. So a
+        refused photo was dropped and a picture the model generated turns earlier
         was sent in its place -- the model then described or edited the wrong image,
         with nothing in the response to say so. The gate is "the user attached
         nothing", not "nothing survived".
         """
         pipe_instance.valves.IMAGE_INPUT_SELECTION = "user_then_assistant"
         pipe_instance.valves.MAX_INPUT_IMAGES_PER_REQUEST = 5
-        pipe_instance.valves.BASE64_MAX_SIZE_MB = 1
-
-        async def oversized(*_a, **_k):
-            return {"data": b"\x89PNG\r\n\x1a\x0a" + b"A" * (2 * 1024 * 1024), "mime_type": "image/png"}
 
         async def frog_inlines_fine(*_a, **_k):
-            return InlinedFile(data_url="data:image/png;base64,FROG", filename="frog.png")
+            return inlined_file("data:image/png;base64,FROG", "frog.png")
 
         messages = [
             {"role": "user", "content": "draw a frog"},
@@ -4974,9 +4830,7 @@ class TestImageReuseRegister:
             ]},
         ]
 
-        result = await self._run(
-            pipe_instance, messages, downloader=oversized, gateway=frog_inlines_fine
-        )
+        result = await self._run(pipe_instance, messages, gateway=frog_inlines_fine)
 
         assert self._blocks(result) == [], (
             f"a refused attachment was replaced by {self._blocks(result)} -- the model "
@@ -4994,11 +4848,7 @@ class TestImageReuseRegister:
         can precede a drop in the same turn -- this drives both at once.
         """
         pipe_instance.valves.MAX_INPUT_IMAGES_PER_REQUEST = 1
-        pipe_instance.valves.BASE64_MAX_SIZE_MB = 1
-        events: list[dict] = []
-
-        async def emitter(event):
-            events.append(event)
+        notices: list[str] = []
 
         good = "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\x0a" + b"0" * 40).decode()
         messages = [
@@ -5009,20 +4859,13 @@ class TestImageReuseRegister:
             ]}
         ]
 
-        await self._run(pipe_instance, messages, emitter=emitter)
+        await self._run(pipe_instance, messages, notices=notices)
 
-        statuses = [
-            e["data"]["description"]
-            for e in events
-            if e.get("type") == "status" and isinstance(e.get("data"), dict)
-            and "description" in e["data"]
-        ]
-        assert statuses, "the turn refused and dropped images and said nothing"
-        last = statuses[-1]
-        assert "skipped" in last and "dropped" in last, (
-            "the refusal and the drop went out as separate statuses, so the earlier one "
-            f"is hidden behind a click: {statuses}"
+        assert len(notices) == 1, (
+            "the refusal and the drop were not collected as one notice, so the earlier "
+            f"one is hidden behind a click: {notices}"
         )
+        assert "skipped" in notices[0] and "dropped" in notices[0], notices
 
     @pytest.mark.parametrize(
         ("url", "phrase", "absent"),
@@ -5044,20 +4887,16 @@ class TestImageReuseRegister:
         merely percent-encoded rather than base64. Each row asserts its own phrase *and*
         the absence of another row's, so one constant string cannot satisfy the set.
         """
-        pipe_instance.valves.BASE64_MAX_SIZE_MB = 1
-        events: list[dict] = []
-
-        async def emitter(event):
-            events.append(event)
+        notices: list[str] = []
 
         messages = [
             {"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}
         ]
 
-        result = await self._run(pipe_instance, messages, emitter=emitter)
+        result = await self._run(pipe_instance, messages, notices=notices)
 
         assert self._blocks(result) == []
-        said = json.dumps(events)
+        said = json.dumps(notices)
         assert phrase in said, f"the refusal never mentioned {phrase!r}: {said}"
         assert absent not in said, (
             f"the refusal also claimed {absent!r}, so it is one string covering causes "
@@ -5081,7 +4920,7 @@ class TestImageReuseRegister:
         async def gateway(file_id, *_a, **_k):
             if "mine" in str(file_id):
                 raise RuntimeError("transient storage fault")
-            return InlinedFile(data_url="data:image/png;base64,FROG", filename="frog.png")
+            return inlined_file("data:image/png;base64,FROG", "frog.png")
 
         messages = [
             {"role": "user", "content": "draw a frog"},
@@ -5231,7 +5070,7 @@ class TestImageReuseRegister:
             return {"data": payload + b"\x00" * 32, "mime_type": declared}
 
         async def _inline(*_a, **_k):
-            return InlinedFile(data_url=data_url, filename="reused.png")
+            return inlined_file(data_url, "reused.png")
 
         src, downloader, gateway = {
             "data-url": (data_url, None, None),
@@ -5461,9 +5300,7 @@ class TestImageReuseRegister:
         downloads: list[str] = []
 
         async def archived_inline(*_a, **_k):
-            return InlinedFile(
-                data_url="data:image/png;base64,iVBORw0KGgo=", filename="a.png"
-            )
+            return inlined_file("data:image/png;base64,iVBORw0KGgo=", "a.png")
 
         async def counting_download(url, *_a, **_k):
             downloads.append(url)
@@ -5516,9 +5353,9 @@ class TestImageReuseRegister:
         on "this download would push the total over the cap", the store on "this download
         fits under the cap by itself". An image between the two -- larger than the cap --
         satisfied the first and failed the second, so it wiped every cached image and
-        cached nothing in their place. With the cap at 8 MiB and BASE64_MAX_SIZE_MB
-        defaulting to 50, any reused image in that band did this on every turn, forcing a
-        fresh download of every other reused image in the chat.
+        cached nothing in their place. With the cap at 8 MiB, any reused image
+        larger than it did this on every turn, forcing a fresh download of every other
+        reused image in the chat.
 
         The two rows disagree, so neither "always evict" nor "never evict" satisfies both:
         an intruder that fits legitimately pushes the small image out (the bound is real
@@ -5540,9 +5377,7 @@ class TestImageReuseRegister:
             return {"data": payloads[url], "mime_type": "image/png"}
 
         async def archived_inline(*_a, **_k):
-            return InlinedFile(
-                data_url="data:image/png;base64,iVBORw0KGgo=", filename="a.png"
-            )
+            return inlined_file("data:image/png;base64,iVBORw0KGgo=", "a.png")
 
         async def turn(url):
             await self._run(
@@ -5702,7 +5537,7 @@ async def test_one_chat_s_download_is_not_handed_to_another(pipe_instance):
         result: Any = None
         for _ in range(3):
             result = await transform_messages_to_input(pipe_instance, messages, chat_id=chat)
-        shipped[chat] = json.dumps(result)
+        shipped[chat] = json.dumps(result, default=wire_default)
 
     assert len(downloads) == 2, (
         f"two chats naming the same URL performed {len(downloads)} downloads across six "

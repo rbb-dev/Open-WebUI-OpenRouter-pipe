@@ -8,6 +8,7 @@ to ensure we test the ACTUAL code that gets deployed, not static backup copies.
 # pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 from __future__ import annotations
 
+from tests.media_slots import inlined_file
 import contextlib
 import inspect
 import json
@@ -97,10 +98,6 @@ def test_filter_initializes_with_default_valves():
     assert hasattr(filt, 'valves')
     assert isinstance(filt.valves, Filter.Valves)
     assert filt.valves.priority == 0
-    assert filt.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB == 50
-    assert filt.valves.DIRECT_FILE_MAX_UPLOAD_SIZE_MB == 50
-    assert filt.valves.DIRECT_AUDIO_MAX_UPLOAD_SIZE_MB == 25
-    assert filt.valves.DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB == 20
 
 
 def test_filter_user_valves_defaults():
@@ -125,55 +122,6 @@ def test_filter_user_valves_has_pdf_parser():
 
     user_valves_ocr = Filter.UserValves(DIRECT_PDF_PARSER="Mistral OCR")
     assert user_valves_ocr.DIRECT_PDF_PARSER == "Mistral OCR"
-
-
-def test_to_int_with_none():
-    """Test _to_int returns None for None input."""
-    assert Filter._to_int(None) is None
-
-
-def test_to_int_with_bool():
-    """Test _to_int returns None for boolean input."""
-    assert Filter._to_int(True) is None
-    assert Filter._to_int(False) is None
-
-
-def test_to_int_with_int():
-    """Test _to_int passes through integers."""
-    assert Filter._to_int(42) == 42
-    assert Filter._to_int(0) == 0
-    assert Filter._to_int(-5) == -5
-
-
-def test_to_int_with_float():
-    """Test _to_int converts floats to int."""
-    assert Filter._to_int(3.7) == 3
-    assert Filter._to_int(10.0) == 10
-
-
-def test_to_int_with_valid_string():
-    """Test _to_int converts valid numeric strings."""
-    assert Filter._to_int("123") == 123
-    assert Filter._to_int("  456  ") == 456
-    assert Filter._to_int("-789") == -789
-
-
-def test_to_int_with_empty_string():
-    """Test _to_int returns None for empty string."""
-    assert Filter._to_int("") is None
-    assert Filter._to_int("   ") is None
-
-
-def test_to_int_with_invalid_string():
-    """Test _to_int returns None for non-numeric strings."""
-    assert Filter._to_int("abc") is None
-    assert Filter._to_int("12.34") is None
-
-
-def test_to_int_with_other_types():
-    """Test _to_int returns None for unsupported types."""
-    assert Filter._to_int([1, 2, 3]) is None
-    assert Filter._to_int({"value": 42}) is None
 
 
 def test_csv_set_with_valid_csv():
@@ -1312,10 +1260,7 @@ async def test_filter_integration_with_pipe_direct_uploads(pipe_instance_async, 
     from open_webui_openrouter_pipe.storage.owui_files import InlinedFile
 
     pipe._file_gateway.inline_owui_file_id = AsyncMock(
-        return_value=InlinedFile(
-            data_url="data:application/pdf;base64,JVBERi0xLjQK",
-            filename="document.pdf",
-        )
+        return_value=inlined_file("data:application/pdf;base64,JVBERi0xLjQK", "document.pdf")
     )
 
     with aioresponses() as mock_http:

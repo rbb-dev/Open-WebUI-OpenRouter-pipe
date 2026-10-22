@@ -458,31 +458,6 @@ async def test_a_failing_video_download_retries_only_what_is_worth_retrying(
         )
 
 
-def test_the_admin_is_sent_to_the_valves_that_really_bound_an_attachment():
-    """The other half of the same property, in the surface an administrator reads.
-
-    Split from the behavioural test above so that one keeps running in the bundles
-    built without plugins, where the configuration screen's metadata does not exist.
-    """
-    pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
-    from open_webui_openrouter_pipe.plugins.pipe_dashboard.config_meta import CONFIG_META
-
-    host_detail = CONFIG_META["MEDIA_FILE_HOST_MAX_SIZE_MB"]["detail"]
-    assert CONFIG_META["VIDEO_FRAME_IMAGE_MAX_BYTES"]["title"] in host_detail, (
-        "VIDEO_FRAME_IMAGE_MAX_BYTES is what really bounds a reference picture and the admin "
-        f"is not sent to it: {host_detail}"
-    )
-    base64_detail = CONFIG_META["BASE64_MAX_SIZE_MB"]["detail"]
-    assert "per-item receive ceiling" in base64_detail, (
-        "the received-media ceiling is where a generated clip's size is decided, and the "
-        "admin is not sent there from the attachment valves"
-    )
-    assert CONFIG_META["MEDIA_FILE_HOST_MAX_SIZE_MB"]["title"] in base64_detail, (
-        "the file-host cap is what bounds a large attachment on the send, and the inline "
-        f"limit's entry does not say so: {base64_detail}"
-    )
-
-
 def _ftyp(major: bytes, compatible: bytes = b"") -> bytes:
     body = b"ftyp" + major + bytes([0, 0, 2, 0]) + compatible
     return bytes([0, 0, 0, len(body) + 4]) + body + bytes(32)

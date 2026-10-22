@@ -1,6 +1,7 @@
 # pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 from __future__ import annotations
 
+from tests.media_slots import inlined_file, wire_form
 import asyncio
 import json
 
@@ -147,14 +148,10 @@ def _reset_model_specs():
 @pytest.mark.asyncio
 async def test_transform_limits_user_images(monkeypatch, pipe_instance_async):
     pipe = pipe_instance_async
-    captured_status: list[str] = []
+    notices: list[str] = []
 
-    async def fake_emitter(event):
-        if event.get("type") == "status":
-            captured_status.append(event["data"]["description"])
-
-    async def fake_inline(file_id, *, chunk_size=None, max_bytes=None, user=None):
-        return InlinedFile(data_url=f"data:image/png;base64,{file_id}", filename=f"{file_id}.png")
+    async def fake_inline(file_id, *, user=None):
+        return inlined_file(f"data:image/png;base64,{file_id}", f"{file_id}.png")
 
     monkeypatch.setattr(pipe._file_gateway, "inline_owui_file_id", fake_inline)
     ModelFamily.set_dynamic_specs({"vision-model": {"features": {"vision"}}})
@@ -171,22 +168,20 @@ async def test_transform_limits_user_images(monkeypatch, pipe_instance_async):
     transformed = await transform_messages_to_input(pipe,
         messages,
         model_id="vision-model",
-        event_emitter=fake_emitter,
+        attachment_notices=notices,
         valves=valves,
     )
     content = transformed[0]["content"]
     assert len(content) == 1
-    assert content[0]["image_url"].endswith("img-a")
-    assert any("dropped 1" in status.lower() for status in captured_status), (
-        f"the turn dropped an image over the limit and never said so: {captured_status}"
-    )
+    assert wire_form(content[0]["image_url"]).endswith("img-a")
+    assert len(notices) == 1, "the turn dropped an image over the limit and did not say so once"
 
 
 @pytest.mark.asyncio
 async def test_transform_falls_back_to_assistant_images(monkeypatch, pipe_instance_async):
     pipe = pipe_instance_async
-    async def fake_inline(file_id, *, chunk_size=None, max_bytes=None, user=None):
-        return InlinedFile(data_url=f"data:image/png;base64,{file_id}", filename=f"{file_id}.png")
+    async def fake_inline(file_id, *, user=None):
+        return inlined_file(f"data:image/png;base64,{file_id}", f"{file_id}.png")
     monkeypatch.setattr(pipe._file_gateway, "inline_owui_file_id", fake_inline)
     ModelFamily.set_dynamic_specs({"vision-model": {"features": {"vision"}}})
     messages = [
@@ -207,7 +202,7 @@ async def test_transform_falls_back_to_assistant_images(monkeypatch, pipe_instan
     content = transformed[-1]["content"]
     assert any(
         block.get("type") == "input_image"
-        and block.get("image_url", "").endswith("assistant-img")
+        and wire_form(block.get("image_url", "")).endswith("assistant-img")
         for block in content
     )
 
@@ -216,10 +211,10 @@ async def test_transform_falls_back_to_assistant_images(monkeypatch, pipe_instan
 async def test_transform_rehydration_drops_uninlineable_assistant_images(monkeypatch, pipe_instance_async):
     pipe = pipe_instance_async
 
-    async def fake_inline(file_id, *, chunk_size=None, max_bytes=None, user=None):
+    async def fake_inline(file_id, *, user=None):
         if file_id == "missing-img":
             return None
-        return InlinedFile(data_url=f"data:image/png;base64,{file_id}", filename=f"{file_id}.png")
+        return inlined_file(f"data:image/png;base64,{file_id}", f"{file_id}.png")
 
     monkeypatch.setattr(pipe._file_gateway, "inline_owui_file_id", fake_inline)
     ModelFamily.set_dynamic_specs({"vision-model": {"features": {"vision"}}})
@@ -247,15 +242,15 @@ async def test_transform_rehydration_drops_uninlineable_assistant_images(monkeyp
     content = transformed[-1]["content"]
     images = [b for b in content if isinstance(b, dict) and b.get("type") == "input_image"]
     assert len(images) == 1
-    assert images[0].get("image_url", "").startswith("data:image/png;base64,ok-img")
+    assert wire_form(images[0].get("image_url", "")).startswith("data:image/png;base64,ok-img")
 
 
 @pytest.mark.asyncio
 async def test_transform_respects_user_turn_only_selection(monkeypatch, pipe_instance_async):
     pipe = pipe_instance_async
 
-    async def fake_inline(file_id, *, chunk_size=None, max_bytes=None, user=None):
-        return InlinedFile(data_url=f"data:image/png;base64,{file_id}", filename=f"{file_id}.png")
+    async def fake_inline(file_id, *, user=None):
+        return inlined_file(f"data:image/png;base64,{file_id}", f"{file_id}.png")
 
     monkeypatch.setattr(pipe._file_gateway, "inline_owui_file_id", fake_inline)
     ModelFamily.set_dynamic_specs({"vision-model": {"features": {"vision"}}})
@@ -282,14 +277,10 @@ async def test_transform_respects_user_turn_only_selection(monkeypatch, pipe_ins
 @pytest.mark.asyncio
 async def test_transform_skips_images_when_model_lacks_vision(monkeypatch, pipe_instance_async):
     pipe = pipe_instance_async
-    captured_status: list[str] = []
+    notices: list[str] = []
 
-    async def fake_emitter(event):
-        if event.get("type") == "status":
-            captured_status.append(event["data"]["description"])
-
-    async def fake_inline(_file_id, *, chunk_size=None, max_bytes=None, user=None):
-        return InlinedFile(data_url="data:image/png;base64,test", filename="test.png")
+    async def fake_inline(_file_id, *, user=None):
+        return inlined_file("data:image/png;base64,test", "test.png")
 
     monkeypatch.setattr(pipe._file_gateway, "inline_owui_file_id", fake_inline)
     ModelFamily.set_dynamic_specs({"text-only": {"features": set()}})
@@ -302,12 +293,12 @@ async def test_transform_skips_images_when_model_lacks_vision(monkeypatch, pipe_
     transformed = await transform_messages_to_input(pipe,
         messages,
         model_id="text-only",
-        event_emitter=fake_emitter,
+        attachment_notices=notices,
     valves=pipe.valves,
     )
     content = transformed[0]["content"]
     assert all(block.get("type") != "input_image" for block in content)
-    assert any("does not accept image inputs" in status for status in captured_status)
+    assert len(notices) == 1
 
 
 @pytest.mark.asyncio

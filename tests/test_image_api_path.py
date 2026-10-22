@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from tests.posted_body import posted_json
 import asyncio
 import base64
 import json
@@ -198,7 +199,7 @@ async def _posted(
         gateway = cast(Any, adapter._pipe)._file_gateway
         statuses = getattr(event_emitter, "statuses", [])
         return _Posted(
-            posts[0].kwargs["json"],
+            posted_json(posts[0].kwargs),
             content,
             list(getattr(gateway, "calls", [])),
             [str(_event_data(item).get("description", "")) for item in statuses],
@@ -214,12 +215,11 @@ async def _posted_payload(adapter, **kwargs) -> dict[str, Any]:
 
 
 class _StubValves:
-    def __init__(self, key, base64_max_size_mb: int = 50, show_usage: bool = True):
+    def __init__(self, key, show_usage: bool = True):
         self.key = key
         self.BASE_URL = BASE
         self.HTTP_REFERER_OVERRIDE = ""
         self.MODEL_CATALOG_REFRESH_SECONDS = 3600
-        self.BASE64_MAX_SIZE_MB = base64_max_size_mb
         self.SHOW_FINAL_USAGE_STATUS = show_usage
         self.FINAL_USAGE_STATUS_STYLE = "text"
         self.USAGE_STATUS_ICON_SET = ""

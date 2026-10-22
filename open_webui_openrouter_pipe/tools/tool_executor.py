@@ -24,6 +24,7 @@ from ..core.url_scheme import (
 )
 from ..core.utils import (
     TOOL_CALL_STATUSES,
+    note_for_the_end,
     parse_tool_arguments,
     picture_output,
 )
@@ -1063,7 +1064,6 @@ class ToolExecutor:
         )
 
         pipe = self._pipe
-        max_inline_bytes = pipe.valves.BASE64_MAX_SIZE_MB * 1024 * 1024
         candidates: list[str] = []
         shown: list[dict[str, Any]] = []
         unfiled: str | None = None
@@ -1087,7 +1087,7 @@ class ToolExecutor:
         seen, budget = _request_address_budget(context)
         try:
             pictures, refused = await _tool_picture_gate_with_address(
-                pipe, candidates, max_inline_bytes=max_inline_bytes,
+                pipe, candidates,
                 seen=seen, budget=budget,
             )
         except Exception:
@@ -1101,9 +1101,11 @@ class ToolExecutor:
                 loggable_link(refused_url), reason, cause,
             )
         if refused:
-            await pipe._event_emitter_handler._emit_status(
-                context.event_emitter, _tool_picture_notice(refused), done=False,
-            )
+            notice = _tool_picture_notice(refused)
+            if not note_for_the_end(notice):
+                await pipe._event_emitter_handler._emit_status(
+                    context.event_emitter, notice, done=False,
+                )
         if unfiled:
             await self._notify_unfiled_tool_file_safe(context, unfiled, tool_name)
         return pictures, shown
