@@ -3815,6 +3815,46 @@ async def test_pipe_queue_full_returns_503(monkeypatch, pipe_instance_async) -> 
 
 
 @pytest.mark.asyncio
+async def test_a_refused_automation_reply_records_why_on_its_chat_message(monkeypatch, pipe_instance_async) -> None:
+    from open_webui_openrouter_pipe.streaming import streaming_core
+
+    pipe = pipe_instance_async
+    pipe._request_queue = asyncio.Queue()
+
+    async def _noop(_valves):
+        return None
+
+    monkeypatch.setattr(pipe, "_ensure_concurrency_controls", _noop)
+    monkeypatch.setattr(pipe, "_enqueue_job", lambda _job: False)
+
+    async def _emit_error(_emitter, _error_obj, **_kwargs):
+        return None
+
+    monkeypatch.setattr(pipe._ensure_error_formatter(), "_emit_error", _emit_error)
+
+    written: list[tuple[str, str, dict[str, Any]]] = []
+
+    class _RecordingChats:
+        @staticmethod
+        async def upsert_message_to_chat_by_id_and_message_id(chat_id, message_id, payload, **_kwargs):
+            written.append((chat_id, message_id, payload))
+
+    monkeypatch.setattr(streaming_core, "Chats", _RecordingChats)
+
+    chat_metadata = {"chat_id": "chat-1", "message_id": "msg-1", "user_id": "user-1"}
+    answers = []
+    for metadata in ({**chat_metadata, "automation_id": "automation-1"}, chat_metadata):
+        answers.append(await pipe.pipe({"stream": False}, {}, None, object(), None, metadata, None))
+
+    assert all(isinstance(answer, str) for answer in answers)
+    assert [(chat_id, message_id, set(payload)) for chat_id, message_id, payload in written] == [
+        ("chat-1", "msg-1", {"error"})
+    ]
+    reason = written[0][2]["error"]["content"]
+    assert reason and all(reason in answer for answer in answers)
+
+
+@pytest.mark.asyncio
 async def test_pipe_breaker_blocks_request(monkeypatch, pipe_instance_async) -> None:
     pipe = pipe_instance_async
     pipe._request_queue = asyncio.Queue()

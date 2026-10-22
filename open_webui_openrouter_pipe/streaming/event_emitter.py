@@ -444,7 +444,7 @@ class EventEmitterHandler:
         output:   list[dict[str, Any]] | None = None,
         title:   str | None = None,
         usage:   dict[str, Any] | None = None,
-        error:   dict[str, Any] | None = None,
+        error:   dict[str, Any] | str | None = None,
         done:    bool = True,
     ) -> None:
         if event_emitter is None:
@@ -735,7 +735,7 @@ class EventEmitterHandler:
                         published = False
 
                 error = data.get("error")
-                if isinstance(error, dict) and error:
+                if isinstance(error, (dict, str)) and error:
                     carried = True
                     published = (
                         await self._put_middleware_stream_terminal(

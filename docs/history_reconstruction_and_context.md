@@ -513,12 +513,6 @@ OpenAI-compatible gateway, where the caller supplies its own messages; on a save
 byte-identical to the concatenation of the streamed `reasoning.text` deltas plus every `reasoning.summary` fragment the provider sent for each of its keys: never that run plus the terminal
 `message.reasoning_details` echo a provider may close the stream with, which carries the same bytes a second time.
 
-The `Chats` write at the end of a turn reads `annotations` and `reasoning_details` off **every** round of the
-turn, in round order, and not off the round the loop happened to end on. A turn whose middle rounds reasoned and
-whose last round did not would otherwise store neither field at all, and a turn that ran three reasoning rounds
-would store only the third. The per-round scan sits on the path that completes a round, so an attempt handed back
-for a retry never fills it and still writes nothing over the winning attempt's message.
-
 The anchors are internal ordering metadata, and they are stripped from every item the pipe sends — including a
 turn-opener, not only reasoning — so none of the keys in `REASONING_ANCHOR_KEYS` is ever part of a
 request.
@@ -567,21 +561,12 @@ they are, which is also the shape providers reject. What makes this a display qu
 that the pipe sends the reasoning to the model unchanged and mints a display id only for the block it publishes;
 the offsets above govern what is sent, and this governs only what the person is shown.
 
-The message's `sources`, `annotations` and `reasoning_details` accumulate the same way, and the pipe's
-end-of-turn write is the reason they do. Open WebUI maintains `sources` by its own read-modify-write — its socket
-handler appends every `source` frame it receives (the `source`/`citation` arm of `__event_emitter__` in `socket/main.py`) — and the pipe's write was the only
-*replacing* writer, built from one request's accumulated citations, so it removed whatever was on the message that
-this request did not itself produce. The stored value of each field is now the union: the entries already on the
-message followed by this turn's entries whose identity is not among them, with the stored copy of a repeat kept so
-a chip the person already saw does not change underneath them. The union is unconditional. Gating it on a Continue
-would be an inference from a client-supplied key (`assistant_message_id`), and the clobber it would leave is the
-ordinary one: a builtin tool's citation is emitted as a `source` frame without being accumulated by the pipe, so on
-a plain RAG turn the message already holds a source this request knows nothing about. `annotations` and
-`reasoning_details` are read from the message's entry in the chat's own JSON (that one message, not the whole chat)
-for the same reason — `chat_message` has no column for either, so a read of its rows would merge the citations and
-silently drop the other two. See
+The message's `sources` accumulate across generations, and Open WebUI does it: its socket handler appends every
+`source` frame it receives (the `source`/`citation` arm of `__event_emitter__` in `socket/main.py`) to the
+citations the message already holds, so a Continue ends holding the citations of both generations, a builtin
+tool's among them. The pipe writes no `sources`, `annotations` or `reasoning_details` onto the message. See
 [Streaming pipeline and emitters](streaming_pipeline_and_emitters.md#41-the-stored-output-array-and-who-owns-it)
-for how many times that write happens.
+for the one chat-message write the pipe makes.
 
 The continuation's first output also has to bring its own line break. Open WebUI joins that output onto the
 stored reply's last line. A hidden marker line that gains text after it is no longer a marker: its row stops

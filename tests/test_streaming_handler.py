@@ -3404,6 +3404,100 @@ class TestLoopLimitAndFunctionExecution:
         assert "Based on what I gathered" in result
 
     @pytest.mark.asyncio
+    async def test_the_limit_note_rides_the_closing_frame_only_in_a_saved_chat(self, monkeypatch, pipe_instance_async):
+        pipe = pipe_instance_async
+        valves = pipe.valves.model_copy(update={
+            "TOOL_EXECUTION_MODE": "Pipeline",
+            "MAX_FUNCTION_CALL_LOOPS": 1,
+        })
+
+        async def mock_tool(**kwargs):
+            return json.dumps({"result": "tool_output"})
+
+        tool_registry = {
+            "get_weather": {"callable": mock_tool, "spec": {"name": "get_weather"}},
+        }
+        call_count = [0]
+
+        async def always_calling(self, session, request_body, **_kwargs):
+            call_count[0] += 1
+            yield {
+                "type": "response.completed",
+                "response": {
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": f"call-{call_count[0]}",
+                            "name": "get_weather",
+                            "arguments": '{"city":"NYC"}',
+                        }
+                    ],
+                    "usage": {},
+                },
+            }
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", always_calling)
+        monkeypatch.setattr(Pipe, "send_openrouter_nonstreaming_request_as_events", always_calling)
+
+        async def run(metadata, streamed=True):
+            emitted: list[dict] = []
+
+            async def emitter(event):
+                emitted.append(event)
+
+            context = _ToolExecutionContext(
+                queue=asyncio.Queue(),
+                per_request_semaphore=asyncio.Semaphore(1),
+                global_semaphore=None,
+                timeout=5.0,
+                batch_timeout=None,
+                idle_timeout=None,
+                user_id="user-123",
+                event_emitter=emitter,
+            )
+            worker = asyncio.create_task(pipe._ensure_tool_executor()._tool_worker_loop(context))
+            context.workers.append(worker)
+            token = pipe._TOOL_CONTEXT.set(context)
+            handler = pipe._streaming_handler
+            try:
+                result = await (handler._run_streaming_loop if streamed else handler._run_nonstreaming_loop)(
+                    ResponsesBody(model="test/model", input=[], stream=streamed),
+                    valves,
+                    emitter,
+                    metadata=metadata,
+                    tools=tool_registry,
+                    session=cast(Any, object()),
+                    user_id="user-123",
+                )
+            finally:
+                pipe._TOOL_CONTEXT.reset(token)
+                worker.cancel()
+                await asyncio.gather(worker, return_exceptions=True)
+            errors = [
+                event["data"]["error"]
+                for event in _collect_events_of_type(emitted, "chat:completion")
+                if event["data"].get("error")
+            ]
+            streamed_text = "".join(
+                event["data"]["content"] for event in _collect_events_of_type(emitted, "chat:message:delta")
+            )
+            return result, errors, streamed_text
+
+        saved_chat = {"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"}
+        saved_result, saved_errors, saved_text = await run(saved_chat)
+        bare_result, bare_errors, bare_text = await run({"model": {"id": "test"}})
+        whole_result, whole_errors, _ = await run(saved_chat, streamed=False)
+
+        assert call_count[0] == 9, "the model was not asked for a tool through to the last turn on all three calls"
+        assert len(saved_errors) == 1 and isinstance(saved_errors[0], str) and saved_errors[0]
+        note = saved_errors[0]
+        assert note not in saved_result and note not in saved_text
+        assert bare_errors == []
+        assert note in bare_result and note in bare_text
+        assert whole_errors == []
+        assert whole_result.endswith(note)
+
+    @pytest.mark.asyncio
     async def test_function_execution_with_persist_tools(self, monkeypatch, pipe_instance_async):
         """Test function execution with PERSIST_TOOL_RESULTS enabled."""
         pipe = pipe_instance_async
@@ -8163,162 +8257,7 @@ class TestStreamingCoreAdditionalCoverage:
         assert call_count[0] == 1
 
     @pytest.mark.asyncio
-    async def test_chats_citation_persistence_exception(self, monkeypatch, pipe_instance_async, caplog):
-        """Test Chats citation persistence exception (lines 1745-1751)."""
-        pipe = pipe_instance_async
-        body = ResponsesBody(model="test/model", input=[], stream=True)
-
-        events = [
-            {
-                "type": "response.output_text.annotation.added",
-                "annotation": {
-                    "type": "url_citation",
-                    "url": "https://example.com/citation",
-                    "title": "Example",
-                },
-            },
-            {"type": "response.output_text.delta", "delta": "Hello"},
-            {"type": "response.completed", "response": {"output": [], "usage": {}}},
-        ]
-
-        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
-
-        # Mock Chats to raise exception
-        from open_webui.models.chats import Chats
-        original_upsert = Chats.upsert_message_to_chat_by_id_and_message_id
-        async def raising_upsert(*args, **kwargs):
-            raise Exception("DB error")
-
-        monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", raising_upsert)
-
-        emitted: list[dict] = []
-        async def emitter(event):
-            emitted.append(event)
-
-        import logging
-        with caplog.at_level(logging.WARNING):
-            result = await pipe._streaming_handler._run_streaming_loop(
-                body,
-                pipe.valves,
-                emitter,
-                metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
-                tools={},
-                session=cast(Any, object()),
-                user_id="user-123",
-            )
-
-        assert result == "Hello"
-        monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", original_upsert)
-
-    @pytest.mark.asyncio
-    async def test_assistant_annotations_persistence(self, monkeypatch, pipe_instance_async):
-        """Test assistant annotations extraction and persistence (lines 1756-1777)."""
-        pipe = pipe_instance_async
-        body = ResponsesBody(model="test/model", input=[], stream=True)
-
-        events = [
-            {"type": "response.output_text.delta", "delta": "Hello"},
-            {
-                "type": "response.completed",
-                "response": {
-                    "output": [
-                        {
-                            "type": "message",
-                            "role": "assistant",
-                            "annotations": [
-                                {"type": "file_reference", "file_id": "file-123"}
-                            ],
-                        },
-                    ],
-                    "usage": {},
-                },
-            },
-        ]
-
-        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
-
-        persisted_data: list[dict] = []
-        from open_webui.models.chats import Chats
-        original_upsert = Chats.upsert_message_to_chat_by_id_and_message_id
-        async def capturing_upsert(chat_id, message_id, data, **_kwargs):
-            persisted_data.append({"chat_id": chat_id, "message_id": message_id, "data": data})
-
-        monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", capturing_upsert)
-
-        emitted: list[dict] = []
-        async def emitter(event):
-            emitted.append(event)
-
-        result = await pipe._streaming_handler._run_streaming_loop(
-            body,
-            pipe.valves,
-            emitter,
-            metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
-            tools={},
-            session=cast(Any, object()),
-            user_id="user-123",
-        )
-
-        assert result == "Hello"
-        monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", original_upsert)
-
-    @pytest.mark.asyncio
-    async def test_assistant_reasoning_details_persistence(self, monkeypatch, pipe_instance_async):
-        """Test reasoning_details extraction and persistence (lines 1783-1809)."""
-        pipe = pipe_instance_async
-        body = ResponsesBody(model="test/model", input=[], stream=True)
-
-        events = [
-            {"type": "response.output_text.delta", "delta": "Hello"},
-            {
-                "type": "response.completed",
-                "response": {
-                    "output": [
-                        {
-                            "type": "message",
-                            "role": "assistant",
-                            "reasoning_details": [
-                                {"step": 1, "thought": "First thought"},
-                                {"step": 2, "thought": "Second thought"},
-                            ],
-                        },
-                    ],
-                    "usage": {},
-                },
-            },
-        ]
-
-        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
-
-        persisted_data: list[dict] = []
-        from open_webui.models.chats import Chats
-        original_upsert = Chats.upsert_message_to_chat_by_id_and_message_id
-        async def capturing_upsert(chat_id, message_id, data, **_kwargs):
-            persisted_data.append({"chat_id": chat_id, "message_id": message_id, "data": data})
-
-        monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", capturing_upsert)
-
-        emitted: list[dict] = []
-        async def emitter(event):
-            emitted.append(event)
-
-        result = await pipe._streaming_handler._run_streaming_loop(
-            body,
-            pipe.valves,
-            emitter,
-            metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
-            tools={},
-            session=cast(Any, object()),
-            user_id="user-123",
-        )
-
-        assert result == "Hello"
-        monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", original_upsert)
-
-    @pytest.mark.asyncio
-    async def test_a_turns_stored_fields_are_merged_without_reading_the_whole_chat(
-        self, monkeypatch, pipe_instance_async
-    ):
+    async def test_a_chats_owner_is_read_without_reading_the_whole_chat(self, monkeypatch):
         import contextlib
         import sys
         import types
@@ -8329,20 +8268,9 @@ class TestStreamingCoreAdditionalCoverage:
         from sqlalchemy.pool import StaticPool
 
         from open_webui_openrouter_pipe.storage import owui_chats
-        from open_webui_openrouter_pipe.streaming import streaming_core
 
         one_mebibyte = 1024 * 1024
-        owner, chat_id, target, odd_target = "user-invented-1", "chat-invented-1", "msg-7", "msg,7"
-        prior = {
-            "sources": [{"source": {"url": "https://example.com/earlier"}, "document": ["invented earlier text"]}],
-            "annotations": [{"type": "url_citation", "url": "https://example.org/earlier", "title": "invented earlier"}],
-            "reasoning_details": [{"type": "reasoning.text", "text": "invented earlier reasoning"}],
-        }
-        fresh = {
-            "sources": [{"source": {"url": "https://example.com/fresh"}, "document": ["invented fresh text"]}],
-            "annotations": [{"type": "url_citation", "url": "https://example.net/fresh", "title": "invented fresh"}],
-            "reasoning_details": [{"type": "reasoning.text", "text": "invented fresh reasoning"}],
-        }
+        owner, chat_id = "user-invented-1", "chat-invented-1"
         base = declarative_base()
 
         class Chat(base):
@@ -8351,11 +8279,8 @@ class TestStreamingCoreAdditionalCoverage:
             user_id = Column(String)
             chat = Column(JSON)
 
-        def message(index: int, with_prior: bool) -> dict:
-            body = {"id": f"msg-{index}", "role": "assistant", "content": "invented sentence for the filler text. " * 13000}
-            if with_prior:
-                body.update({field: [dict(entry) for entry in entries] for field, entries in prior.items()})
-            return body
+        def message(index: int) -> dict:
+            return {"id": f"msg-{index}", "role": "assistant", "content": "invented sentence for the filler text. " * 13000}
 
         decoded: list[int] = []
 
@@ -8367,8 +8292,7 @@ class TestStreamingCoreAdditionalCoverage:
         async with engine.begin() as connection:
             await connection.run_sync(base.metadata.create_all)
         sessions = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-        messages = {f"msg-{i}": message(i, f"msg-{i}" == target) for i in range(20)}
-        messages[odd_target] = message(99, True)
+        messages = {f"msg-{i}": message(i) for i in range(20)}
         async with sessions() as session:
             session.add(Chat(id=chat_id, user_id=owner, chat={"history": {"messages": messages}}))
             session.add(Chat(id="chat-without-owner", user_id=None, chat={"history": {"messages": {}}}))
@@ -8387,30 +8311,14 @@ class TestStreamingCoreAdditionalCoverage:
         monkeypatch.setitem(sys.modules, "open_webui.internal.db", db_module)
         chats_module = sys.modules["open_webui.models.chats"]
         monkeypatch.setattr(chats_module, "Chat", Chat, raising=False)
-        monkeypatch.setattr(chats_module.Chats, "_clean_null_bytes", staticmethod(lambda value: value), raising=False)
 
         async def whole_chat(requested_id):
             async with sessions() as session:
                 return await session.get(Chat, requested_id)
 
-        written: list[dict] = []
-
-        async def upsert(requested_id, message_id, payload, user_id):
-            written.append(payload)
-
-        monkeypatch.setattr(streaming_core, "_chats_chat", whole_chat)
-        monkeypatch.setattr(streaming_core, "_chats_upsert", upsert)
-        handler = pipe_instance_async._streaming_handler
-
         decoded.clear()
         await whole_chat(chat_id)
         whole_bytes = sum(decoded)
-        read_bytes = {}
-        for message_id in (target, odd_target):
-            decoded.clear()
-            payload = {field: [dict(entry) for entry in entries] for field, entries in fresh.items()}
-            await handler._store_turn_fields(chat_id, message_id, payload, owner, None, None)
-            read_bytes[message_id] = sum(decoded)
 
         decoded.clear()
         found = await owui_chats.read_chat_owner_id(chat_id, whole_chat)
@@ -8420,77 +8328,214 @@ class TestStreamingCoreAdditionalCoverage:
         await engine.dispose()
 
         assert whole_bytes > 8 * one_mebibyte
-        assert read_bytes[target] <= one_mebibyte
-        assert read_bytes[odd_target] > 8 * one_mebibyte
-        for merged in written:
-            assert [entry["source"]["url"] for entry in merged["sources"]] == [
-                "https://example.com/earlier",
-                "https://example.com/fresh",
-            ]
-            assert [entry["url"] for entry in merged["annotations"]] == [
-                "https://example.org/earlier",
-                "https://example.net/fresh",
-            ]
-            assert [entry["text"] for entry in merged["reasoning_details"]] == [
-                "invented earlier reasoning",
-                "invented fresh reasoning",
-            ]
-        assert len(written) == 2
         assert (found, absent, unowned, owner_bytes) == (owner, None, None, 0)
 
     @pytest.mark.asyncio
-    async def test_reasoning_details_persistence_exception(self, monkeypatch, pipe_instance_async, caplog):
-        """Test reasoning_details persistence exception handling (lines 1798-1809)."""
+    async def test_a_message_row_that_fails_or_belongs_to_another_chat_is_read_through_the_whole_chat_getter(
+        self, monkeypatch
+    ):
+        import sys
+        import types
+
+        from open_webui_openrouter_pipe.storage import owui_chats
+
+        rows: list[Any] = [
+            RuntimeError("the row cannot be read"),
+            types.SimpleNamespace(chat_id="chat-other", model_dump=lambda: {"output": []}),
+        ]
+
+        class _ChatMessageRows:
+            @staticmethod
+            async def get_message_by_id(composite_id):
+                row = rows.pop(0)
+                if isinstance(row, Exception):
+                    raise row
+                return row
+
+        chat_messages_module = types.ModuleType("open_webui.models.chat_messages")
+        chat_messages_module.ChatMessages = _ChatMessageRows
+        monkeypatch.setitem(sys.modules, "open_webui.models.chat_messages", chat_messages_module)
+
+        asked: list[tuple[str, str]] = []
+
+        async def whole_chat_getter(chat_id, message_id):
+            asked.append((chat_id, message_id))
+            return {"output": [{"type": "message"}]}
+
+        failed = await owui_chats.read_chat_message("chat-1", "msg-1", whole_chat_getter)
+        foreign = await owui_chats.read_chat_message("chat-1", "msg-1", whole_chat_getter)
+
+        assert failed == foreign == {"output": [{"type": "message"}]}
+        assert asked == [("chat-1", "msg-1")] * 2
+
+    @pytest.mark.asyncio
+    async def test_a_message_row_of_this_chat_comes_back_with_its_fields_and_the_whole_chat_getter_is_not_asked(
+        self, monkeypatch
+    ):
+        import sys
+        import types
+
+        from open_webui_openrouter_pipe.storage import owui_chats
+
+        output = [{"type": "message", "id": "item-1"}]
+        status_history = [{"action": "web_search", "done": True}]
+
+        class _ChatMessageRows:
+            DB_TO_JSON_KEY_MAP = {
+                "parent_id": "parentId",
+                "model_id": "model",
+                "status_history": "statusHistory",
+                "context_summary": "contextSummary",
+                "created_at": "timestamp",
+            }
+
+            @staticmethod
+            async def get_message_by_id(composite_id):
+                return types.SimpleNamespace(
+                    chat_id="chat-1",
+                    model_dump=lambda: {
+                        "id": composite_id,
+                        "chat_id": "chat-1",
+                        "updated_at": 1700000000,
+                        "output": output,
+                        "status_history": status_history,
+                        "embeds": None,
+                    },
+                )
+
+        chat_messages_module = types.ModuleType("open_webui.models.chat_messages")
+        chat_messages_module.ChatMessages = _ChatMessageRows
+        monkeypatch.setitem(sys.modules, "open_webui.models.chat_messages", chat_messages_module)
+
+        asked: list[tuple[str, str]] = []
+
+        async def whole_chat_getter(chat_id, message_id):
+            asked.append((chat_id, message_id))
+            return {"output": []}
+
+        found = await owui_chats.read_chat_message("chat-1", "msg-1", whole_chat_getter)
+
+        assert found == {"output": output, "statusHistory": status_history}
+        assert asked == []
+
+    @pytest.mark.asyncio
+    async def test_a_completed_reply_writes_nothing_into_the_saved_chat(self, monkeypatch, pipe_instance_async):
+        import sys
+        import types
+
+        from open_webui_openrouter_pipe.streaming import streaming_core
+
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
-
+        reasoning_item = {
+            "id": "rs-1",
+            "type": "reasoning",
+            "status": "completed",
+            "summary": [{"type": "summary_text", "text": "Think"}],
+        }
+        answer_item = {
+            "id": "msg-final",
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "output_text",
+                    "text": "Answer",
+                    "annotations": [{"type": "file_citation", "file_id": "file-1"}],
+                }
+            ],
+            "reasoning_details": [{"type": "reasoning.text", "text": "Think"}],
+        }
         events = [
-            {"type": "response.output_text.delta", "delta": "Hello"},
+            {
+                "type": "response.output_text.annotation.added",
+                "annotation": {
+                    "type": "url_citation",
+                    "url": "https://example.com/source",
+                    "title": "Source",
+                },
+            },
+            {"type": "response.output_text.delta", "delta": "Answer"},
+            {"type": "response.output_item.done", "item": reasoning_item},
+            {"type": "response.output_item.done", "item": answer_item},
             {
                 "type": "response.completed",
                 "response": {
-                    "output": [
-                        {
-                            "type": "message",
-                            "role": "assistant",
-                            "reasoning_details": [{"step": 1}],
-                        },
-                    ],
-                    "usage": {},
+                    "output": [reasoning_item, answer_item],
+                    "usage": {"input_tokens": 3, "output_tokens": 4, "total_tokens": 7},
                 },
             },
         ]
-
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        call_count = [0]
-        from open_webui.models.chats import Chats
-        original_upsert = Chats.upsert_message_to_chat_by_id_and_message_id
-        async def raising_upsert(*args, **kwargs):
-            call_count[0] += 1
-            if call_count[0] > 1:
-                raise Exception("DB error on reasoning_details")
+        class _RecordingChats:
+            def __init__(self):
+                self.calls: list[str] = []
 
-        monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", raising_upsert)
+            def __getattr__(self, name):
+                async def recorded(*_args, **_kwargs):
+                    self.calls.append(name)
+
+                return recorded
+
+        chats = _RecordingChats()
+        monkeypatch.setattr(streaming_core, "Chats", chats)
+
+        message_rows: list[str] = []
+
+        class _ChatMessageRows:
+            @staticmethod
+            async def get_message_by_id(composite_id):
+                message_rows.append(composite_id)
+                return types.SimpleNamespace(
+                    chat_id="chat-1",
+                    model_dump=lambda: {"id": composite_id, "chat_id": "chat-1", "role": "assistant", "output": None},
+                )
+
+        chat_messages_module = types.ModuleType("open_webui.models.chat_messages")
+        chat_messages_module.ChatMessages = _ChatMessageRows
+        monkeypatch.setitem(sys.modules, "open_webui.models.chat_messages", chat_messages_module)
+
+        persisted_rows: list[dict] = []
+
+        async def fake_db_persist(rows):
+            persisted_rows.extend(rows)
+            return [f"01HZX3J7M9X2Y4K5N6P7Q8R9S{index}" for index, _row in enumerate(rows)]
+
+        monkeypatch.setattr(
+            pipe._artifact_store,
+            "_make_db_row",
+            lambda _chat_id, _message_id, _model_id, payload: {"item_type": payload.get("type"), "payload": payload},
+        )
+        monkeypatch.setattr(pipe._artifact_store, "_db_persist", fake_db_persist)
 
         emitted: list[dict] = []
+
         async def emitter(event):
             emitted.append(event)
 
-        import logging
-        with caplog.at_level(logging.WARNING):
-            result = await pipe._streaming_handler._run_streaming_loop(
-                body,
-                pipe.valves,
-                emitter,
-                metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
-                tools={},
-                session=cast(Any, object()),
-                user_id="user-123",
-            )
+        await pipe._streaming_handler._run_streaming_loop(
+            body,
+            pipe.valves,
+            emitter,
+            metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
+            tools={},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
 
-        assert result == "Hello"
-        monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", original_upsert)
+        assert chats.calls == [], (
+            f"the reply wrote into the saved chat or read it through the whole-chat getter: {chats.calls}"
+        )
+        assert set(message_rows) == {"chat-1-msg-1"}
+        assert [event["data"]["source"]["url"] for event in _collect_events_of_type(emitted, "source")] == [
+            "https://example.com/source"
+        ]
+        assert [row["item_type"] for row in persisted_rows] == ["reasoning"]
+        final_frame = [
+            event for event in _collect_events_of_type(emitted, "chat:completion") if event["data"].get("done")
+        ][-1]
+        assert final_frame["data"]["usage"]["total_tokens"] == 7
 
     @pytest.mark.parametrize("failure_saying", _A_FAILURE_SAYING)
     def test_looks_like_responses_unsupported_non_api_error_chat_completions(self, failure_saying):
@@ -8705,164 +8750,6 @@ class TestStreamingCoreAdditionalCoverage:
         assert _collect_events_of_type(emitted, "chat:completion"), "the round still completes"
 
     @pytest.mark.asyncio
-    async def test_annotations_persistence_skips_wrong_role(self, monkeypatch, pipe_instance_async):
-        """Test annotations are not extracted from non-assistant messages (lines 1759-1760)."""
-        pipe = pipe_instance_async
-        body = ResponsesBody(model="test/model", input=[], stream=True)
-
-        events = [
-            {"type": "response.output_text.delta", "delta": "Hello"},
-            {
-                "type": "response.completed",
-                "response": {
-                    "output": [
-                        {
-                            "type": "message",
-                            "role": "user",
-                            "annotations": [{"type": "file_ref"}],
-                        },
-                        {
-                            "type": "message",
-                            "role": "system",
-                            "annotations": [{"type": "file_ref2"}],
-                        },
-                    ],
-                    "usage": {},
-                },
-            },
-        ]
-
-        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
-
-        persisted_data: list[dict] = []
-        from open_webui.models.chats import Chats
-        original_upsert = Chats.upsert_message_to_chat_by_id_and_message_id
-        async def capturing_upsert(chat_id, message_id, data, **_kwargs):
-            persisted_data.append({"chat_id": chat_id, "message_id": message_id, "data": data})
-
-        monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", capturing_upsert)
-
-        result = await pipe._streaming_handler._run_streaming_loop(
-            body,
-            pipe.valves,
-            None,
-            metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
-            tools={},
-            session=cast(Any, object()),
-            user_id="user-123",
-        )
-
-        assert result == "Hello"
-        monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", original_upsert)
-        assert not any("annotations" in str(d.get("data", {})) for d in persisted_data)
-
-    @pytest.mark.asyncio
-    async def test_annotations_persistence_skips_wrong_type(self, monkeypatch, pipe_instance_async):
-        """Test annotations extraction skips non-message type items (line 1757-1758)."""
-        pipe = pipe_instance_async
-        body = ResponsesBody(model="test/model", input=[], stream=True)
-
-        events = [
-            {"type": "response.output_text.delta", "delta": "Hello"},
-            {
-                "type": "response.completed",
-                "response": {
-                    "output": [
-                        {
-                            "type": "function_call",
-                            "role": "assistant",
-                            "annotations": [{"type": "file_ref"}],
-                        },
-                    ],
-                    "usage": {},
-                },
-            },
-        ]
-
-        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
-
-        result = await pipe._streaming_handler._run_streaming_loop(
-            body,
-            pipe.valves,
-            None,
-            metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
-            tools={},
-            session=cast(Any, object()),
-            user_id="user-123",
-        )
-
-        assert result == "Hello"
-
-    @pytest.mark.asyncio
-    async def test_reasoning_details_skips_non_dict_items(self, monkeypatch, pipe_instance_async):
-        """The assistant item's reasoning_details survive non-dict siblings in the same list.
-
-        Asserting only the returned text let this pass while the whole continuation block
-        was aborted by an `AttributeError` on the first string in the list, so nothing was
-        read off the assistant item at all.
-        """
-        pipe = pipe_instance_async
-        body = ResponsesBody(model="test/model", input=[], stream=True)
-        sink: dict[str, Any] = {}
-
-        events = [
-            {"type": "response.output_text.delta", "delta": "Hello"},
-            {
-                "type": "response.completed",
-                "response": {
-                    "output": [
-                        "string_item",
-                        None,
-                        123,
-                        {
-                            "type": "message",
-                            "role": "assistant",
-                            "reasoning_details": [{"step": 1}],
-                        },
-                    ],
-                    "usage": {},
-                },
-            },
-        ]
-
-        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
-
-        persisted_data: list[dict] = []
-        from open_webui.models.chats import Chats
-        original_upsert = Chats.upsert_message_to_chat_by_id_and_message_id
-        async def capturing_upsert(chat_id, message_id, data, **_kwargs):
-            persisted_data.append({"chat_id": chat_id, "message_id": message_id, "data": data})
-
-        monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", capturing_upsert)
-
-        result = await pipe._streaming_handler._run_streaming_loop(
-            body,
-            pipe.valves,
-            None,
-            metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
-            tools={},
-            session=cast(Any, object()),
-            user_id="user-123",
-            outcome_sink=sink,
-        )
-
-        assert sink["error_occurred"] is False, (
-            "a string in the output list took the whole turn through the error handler; "
-            f"the loop walked into it instead of skipping it. sink={sink!r}"
-        )
-        assert result == "Hello"
-        persisted_reasoning = [
-            entry for entry in persisted_data if "reasoning_details" in (entry.get("data") or {})
-        ]
-        assert persisted_reasoning and persisted_reasoning[-1]["data"]["reasoning_details"] == [
-            {"step": 1}
-        ], (
-            "the assistant item sat behind three non-dict siblings; its reasoning_details "
-            f"never reached the chat row. persisted={persisted_data!r}"
-        )
-        monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", original_upsert)
-
-    @pytest.mark.asyncio
     async def test_select_llm_endpoint_with_force_chat_completions(self, pipe_instance_async):
         """Test endpoint selection forces chat_completions for matching model (line 1949)."""
         pipe = pipe_instance_async
@@ -8993,190 +8880,6 @@ class TestStreamingCoreAdditionalCoverage:
         # Clean up
         SessionLogger.request_id.set(None)
         SessionLogger.logs.pop(request_id, None)
-
-    @pytest.mark.asyncio
-    async def test_annotations_with_list_and_upsert_call(self, monkeypatch, pipe_instance_async):
-        """Test annotations persistence actually calls upsert (lines 1762-1770)."""
-        pipe = pipe_instance_async
-        body = ResponsesBody(model="test/model", input=[], stream=True)
-
-        events = [
-            {"type": "response.output_text.delta", "delta": "Hello"},
-            {
-                "type": "response.completed",
-                "response": {
-                    "output": [
-                        {
-                            "type": "message",
-                            "role": "assistant",
-                            "annotations": [
-                                {
-                                    "type": "file_citation",
-                                    "file_id": "file-1",
-                                    "filename": "doc1.pdf",
-                                    "index": 0,
-                                },
-                                {
-                                    "type": "file_citation",
-                                    "file_id": "file-2",
-                                    "filename": "doc2.pdf",
-                                    "index": 1,
-                                },
-                            ],
-                        },
-                    ],
-                    "usage": {},
-                },
-            },
-        ]
-
-        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
-
-        upsert_calls: list[tuple] = []
-        from open_webui.models.chats import Chats
-        original_upsert_fn = Chats.upsert_message_to_chat_by_id_and_message_id
-        async def tracking_upsert(chat_id, message_id, data, **_kwargs):
-            upsert_calls.append((chat_id, message_id, data))
-
-        monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", tracking_upsert)
-
-        emitted: list[dict] = []
-        async def emitter(event):
-            emitted.append(event)
-
-        result = await pipe._streaming_handler._run_streaming_loop(
-            body,
-            pipe.valves,
-            emitter,
-            metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
-            tools={},
-            session=cast(Any, object()),
-            user_id="user-123",
-        )
-
-        assert result == "Hello"
-        annotation_calls = [c for c in upsert_calls if "annotations" in c[2]]
-        expected_annotations = [
-            {
-                "type": "file_citation",
-                "file_id": "file-1",
-                "filename": "doc1.pdf",
-                "index": 0,
-            },
-            {
-                "type": "file_citation",
-                "file_id": "file-2",
-                "filename": "doc2.pdf",
-                "index": 1,
-            },
-        ]
-        assert any(call[2]["annotations"] == expected_annotations for call in annotation_calls)
-
-        monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", original_upsert_fn)
-
-    @pytest.mark.asyncio
-    async def test_annotations_persistence_with_exception_emits_notification(self, monkeypatch, pipe_instance_async):
-        """Test annotations persistence exception emits notification (lines 1771-1777)."""
-        pipe = pipe_instance_async
-        body = ResponsesBody(model="test/model", input=[], stream=True)
-
-        events = [
-            {"type": "response.output_text.delta", "delta": "Hello"},
-            {
-                "type": "response.completed",
-                "response": {
-                    "output": [
-                        {
-                            "type": "message",
-                            "role": "assistant",
-                            "annotations": [{"type": "file_ref", "file_id": "file-1"}],
-                        },
-                    ],
-                    "usage": {},
-                },
-            },
-        ]
-
-        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
-
-        # Make upsert fail for annotations
-        from open_webui.models.chats import Chats
-        original_upsert_for_annotations = Chats.upsert_message_to_chat_by_id_and_message_id
-        async def failing_upsert(chat_id, message_id, data, **_kwargs):
-            if "annotations" in data:
-                raise Exception("Annotations persistence failed")
-
-        monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", failing_upsert)
-
-        emitted: list[dict] = []
-        async def emitter(event):
-            emitted.append(event)
-
-        result = await pipe._streaming_handler._run_streaming_loop(
-            body,
-            pipe.valves,
-            emitter,
-            metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
-            tools={},
-            session=cast(Any, object()),
-            user_id="user-123",
-        )
-
-        assert result == "Hello"
-        # Check notification was emitted
-        notifications = _collect_events_of_type(emitted, "notification")
-        monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", original_upsert_for_annotations)
-
-    @pytest.mark.asyncio
-    async def test_reasoning_details_persistence_with_exception_emits_notification(self, monkeypatch, pipe_instance_async):
-        """Test reasoning_details persistence exception emits notification (lines 1798-1809)."""
-        pipe = pipe_instance_async
-        body = ResponsesBody(model="test/model", input=[], stream=True)
-
-        events = [
-            {"type": "response.output_text.delta", "delta": "Hello"},
-            {
-                "type": "response.completed",
-                "response": {
-                    "output": [
-                        {
-                            "type": "message",
-                            "role": "assistant",
-                            "reasoning_details": [{"step": 1, "thought": "Test thought"}],
-                        },
-                    ],
-                    "usage": {},
-                },
-            },
-        ]
-
-        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
-
-        from open_webui.models.chats import Chats
-        original_upsert_for_reasoning = Chats.upsert_message_to_chat_by_id_and_message_id
-        async def failing_upsert(chat_id, message_id, data, **_kwargs):
-            if "reasoning_details" in data:
-                raise Exception("Reasoning details persistence failed")
-
-        monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", failing_upsert)
-
-        emitted: list[dict] = []
-        async def emitter(event):
-            emitted.append(event)
-
-        result = await pipe._streaming_handler._run_streaming_loop(
-            body,
-            pipe.valves,
-            emitter,
-            metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
-            tools={},
-            session=cast(Any, object()),
-            user_id="user-123",
-        )
-
-        assert result == "Hello"
-        # Exception path exercised
-        monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", original_upsert_for_reasoning)
 
     @pytest.mark.parametrize("failure_saying", _A_FAILURE_SAYING)
     def test_looks_like_responses_unsupported_with_not_supported_pattern(self, failure_saying):
@@ -10021,8 +9724,8 @@ class TestReasoningStatusReturnEarly:
         assert not any(s.strip() == "" for s in reasoning_status_texts if s)
 
 
-class TestAnnotationsAndReasoningDetailsExtraction:
-    """Tests for annotations and reasoning_details extraction (lines 1756, 1760, 1783, 1787)."""
+class TestAnnotationsExtraction:
+    """Tests for annotations extraction from a round's output."""
 
     @pytest.mark.asyncio
     async def test_final_response_skips_non_dict_items(self, monkeypatch, pipe_instance_async):
@@ -10050,7 +9753,6 @@ class TestAnnotationsAndReasoningDetailsExtraction:
                             "type": "message",
                             "role": "assistant",
                             "annotations": [{"type": "file_ref"}],
-                            "reasoning_details": [{"step": 1}],
                         },
                     ],
                     "usage": {},
@@ -10086,8 +9788,8 @@ class TestPhaseMarkerPersistence:
     """Tests for hidden phase markers riding the assistant delta stream."""
 
     @pytest.mark.asyncio
-    async def test_phase_markers_append_to_assistant_deltas_and_metadata_aggregate(self, monkeypatch, pipe_instance_async):
-        """Assistant phase markers are appended via chat deltas while metadata still aggregates."""
+    async def test_phase_markers_append_to_assistant_deltas(self, monkeypatch, pipe_instance_async):
+        """Assistant phase markers are appended via chat deltas."""
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
         commentary_item = {
@@ -10096,8 +9798,6 @@ class TestPhaseMarkerPersistence:
             "role": "assistant",
             "phase": "commentary",
             "content": [{"type": "output_text", "text": "Working..."}],
-            "annotations": [{"type": "file_reference", "file_id": "file-1"}],
-            "reasoning_details": [{"type": "summary_text", "text": "First"}],
         }
         null_phase_item = {
             "id": "msg-null",
@@ -10105,16 +9805,12 @@ class TestPhaseMarkerPersistence:
             "role": "assistant",
             "phase": None,
             "content": [{"type": "output_text", "text": "Done."}],
-            "annotations": [{"type": "file_reference", "file_id": "file-2"}],
-            "reasoning_details": [{"type": "summary_text", "text": "Second"}],
         }
         no_phase_item = {
             "id": "msg-no-phase",
             "type": "message",
             "role": "assistant",
             "content": [{"type": "output_text", "text": "No phase"}],
-            "annotations": [{"type": "file_reference", "file_id": "file-3"}],
-            "reasoning_details": [{"type": "summary_text", "text": "Third"}],
         }
 
         events = [
@@ -10138,14 +9834,6 @@ class TestPhaseMarkerPersistence:
         ]
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
-
-        upsert_calls: list[tuple[str, str, dict[str, Any]]] = []
-        from open_webui.models.chats import Chats
-
-        async def tracking_upsert(chat_id, message_id, data, **_kwargs):
-            upsert_calls.append((chat_id, message_id, data))
-
-        monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", tracking_upsert)
 
         emitted: list[dict] = []
 
@@ -10175,20 +9863,6 @@ class TestPhaseMarkerPersistence:
             "\n\n[P:commentary]: #\n",
             "\n\n[P:null]: #\n",
         ]
-        annotation_call = next(call for call in upsert_calls if "annotations" in call[2])
-        reasoning_call = next(call for call in upsert_calls if "reasoning_details" in call[2])
-        assert annotation_call[2]["annotations"] == [
-            {"type": "file_reference", "file_id": "file-1"},
-            {"type": "file_reference", "file_id": "file-3"},
-            {"type": "file_reference", "file_id": "file-2"},
-        ]
-        assert reasoning_call[2]["reasoning_details"] == [
-            {"type": "summary_text", "text": "First"},
-            {"type": "summary_text", "text": "Third"},
-            {"type": "summary_text", "text": "Second"},
-        ]
-        assert not any("phase_items" in call[2] for call in upsert_calls)
-        assert not any("output" in call[2] for call in upsert_calls)
 
     @pytest.mark.asyncio
     async def test_ulid_tail_markers_append_to_final_assistant_delta(self, monkeypatch, pipe_instance_async):

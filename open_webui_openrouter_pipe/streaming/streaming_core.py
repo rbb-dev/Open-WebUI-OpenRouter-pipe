@@ -103,7 +103,6 @@ from ..core.utils import (
     tool_output_text_and_pictures,
     wrap_code_block,
 )
-from ..core.warn_latch import warn_level
 from ..core.web_fetch_record import bound_fetch_record
 from ..core.web_search_record import (
     attribute_search_citations,
@@ -195,7 +194,7 @@ from ..storage.multimodal import (
     image_extension_for_mime,
     resolve_download_type,
 )
-from ..storage.owui_chats import read_stored_message
+from ..storage.owui_chats import read_chat_message
 from ..storage.owui_files import (
     caller_may_write_chat,
     is_channel_chat,
@@ -264,7 +263,7 @@ except Exception:
 async def _chats_message(chat_id: Any, message_id: Any) -> dict[str, Any] | None:
     if Chats is None or not is_linkable_chat(chat_id):
         return None
-    return await Chats.get_message_by_id_and_message_id(str(chat_id), str(message_id))
+    return await read_chat_message(chat_id, message_id, Chats.get_message_by_id_and_message_id)
 
 
 async def _chats_upsert(
@@ -275,12 +274,6 @@ async def _chats_upsert(
     if not await caller_may_write_chat(chat_id, user_id):
         return
     await Chats.upsert_message_to_chat_by_id_and_message_id(str(chat_id), str(message_id), payload)
-
-
-async def _chats_chat(chat_id: Any) -> Any:
-    if Chats is None or not is_linkable_chat(chat_id):
-        return None
-    return await Chats.get_chat_by_id(str(chat_id))
 
 
 try:
@@ -433,47 +426,6 @@ def _tool_result_for_log(output: dict[str, Any]) -> str:
     return wrap_code_block(_data_url_log_subject(text))
 
 
-def _stored_citation_identity(entry: Any) -> str:
-    if isinstance(entry, dict):
-        source = entry.get("source")
-        if isinstance(source, dict):
-            url = source.get("url")
-            if isinstance(url, str) and url:
-                return url
-    return json.dumps(entry, sort_keys=True, default=str)
-
-
-def _stored_entry_identity(entry: Any) -> str:
-    return json.dumps(entry, sort_keys=True, default=str)
-
-
-def _merge_stored_field(stored: Any, fresh: Any, *, key_fn: Any) -> list[Any]:
-    merged: list[Any] = list(stored) if isinstance(stored, list) else []
-    seen = {key_fn(entry) for entry in merged}
-    for entry in fresh:
-        identity = key_fn(entry)
-        if identity in seen:
-            continue
-        seen.add(identity)
-        merged.append(entry)
-    return merged
-
-
-_warned_turn_field_read: set[str] = set()
-
-_TURN_METADATA_FIELDS: tuple[tuple[str, str, str, Any], ...] = (
-    ("sources", "citations", "citations", _stored_citation_identity),
-    ("annotations", "annotations", "file annotations", _stored_entry_identity),
-    ("reasoning_details", "reasoning_details", "reasoning details", _stored_entry_identity),
-)
-
-
-def _joined_labels(labels: list[str]) -> str:
-    if len(labels) < 2:
-        return labels[0] if labels else ""
-    return ", ".join(labels[:-1]) + " or " + labels[-1]
-
-
 async def _aclose_quietly(it: AsyncGenerator[dict[str, Any], None]) -> None:
     await it.aclose()
 
@@ -572,68 +524,6 @@ class StreamingHandler:
                 "Tool card(s) emitted without matching function_call_output: %s",
                 sorted(unmatched),
             )
-
-    async def _store_turn_fields(
-        self,
-        chat_id: Any,
-        message_id: Any,
-        payload: dict[str, Any],
-        user_id: Any,
-        event_emitter: EventEmitter | None,
-        cancelled: BaseException | None,
-    ) -> BaseException | None:
-        stored_message: Any = {}
-        try:
-            if Chats is not None:
-                stored_message = await read_stored_message(chat_id, message_id, _chats_chat)
-        except (asyncio.CancelledError, Exception) as exc:
-            if isinstance(exc, asyncio.CancelledError):
-                cancelled = cancelled or exc
-            level = warn_level(_warned_turn_field_read, type(exc).__name__)
-            self.logger.log(
-                level,
-                "Could not read the stored message to merge this turn's fields into "
-                "(chat_id=%s message_id=%s)",
-                chat_id, message_id,
-                exc_info=True,
-            )
-            stored_message = {}
-        if not isinstance(stored_message, dict):
-            self.logger.debug(
-                "Stored message for chat_id=%s message_id=%s is not an object; "
-                "writing this turn's own values",
-                chat_id, message_id,
-            )
-            stored_message = {}
-        for turn_field, _log_label, _notify_label, key_fn in _TURN_METADATA_FIELDS:
-            if turn_field in payload:
-                payload[turn_field] = _merge_stored_field(
-                    stored_message.get(turn_field), payload[turn_field], key_fn=key_fn
-                )
-        try:
-            await _chats_upsert(chat_id, message_id, payload, user_id)
-        except (asyncio.CancelledError, Exception) as exc:
-            if isinstance(exc, asyncio.CancelledError):
-                cancelled = exc
-            self.logger.warning(
-                "Failed to persist %s for chat_id=%s message_id=%s: %s",
-                _joined_labels([log for _f, log, _n, _k in _TURN_METADATA_FIELDS if _f in payload]),
-                chat_id, message_id, exc,
-                exc_info=True,
-            )
-            try:
-                await self._pipe._event_emitter_handler._emit_notification(
-                    event_emitter,
-                    f"Unable to save {_joined_labels([n for _f, _l, n, _k in _TURN_METADATA_FIELDS if _f in payload])} for this response. Output was delivered successfully.",
-                    level="warning",
-                )
-            except (asyncio.CancelledError, Exception) as notify_exc:
-                if isinstance(notify_exc, asyncio.CancelledError):
-                    cancelled = notify_exc
-                self.logger.debug(
-                    "Notifying about a failed turn-field write failed", exc_info=True
-                )
-        return cancelled
 
     @timed
     async def _run_streaming_loop(  # pyright: ignore[reportGeneralTypeIssues]
@@ -879,7 +769,6 @@ class StreamingHandler:
         named_tool_call = False
         deferred_reasoning_keys: dict[str, int] = {}
         ordinal_by_url: dict[str, int] = {}
-        emitted_citations: list[dict] = []
         citation_excerpt_max = 1000
         unhandled_citation_notified = False
         chat_id = metadata.get("chat_id")
@@ -1038,7 +927,6 @@ class StreamingHandler:
                         await self._pipe._event_emitter_handler._emit_citation(event_emitter, citation)
                     except Exception as exc:
                         self.logger.debug("Failed to emit fusion source citation: %s", exc, exc_info=True)
-                    emitted_citations.append(citation)
 
             async def _maybe_emit_reasoning_status(delta_text: str, *, force: bool = False) -> None:
                 if not thinking_status_enabled or not event_emitter:
@@ -1601,6 +1489,15 @@ class StreamingHandler:
                 published = await event_emitter(event)
                 if body.stream and published is not False:
                     retry_barrier_crossed = True
+
+            async def _append_answer_block(block: str) -> None:
+                nonlocal assistant_message
+                joined = join_answer_and_card(assistant_message, block)
+                delta = joined[len(assistant_message):]
+                assistant_message = joined
+                if event_emitter:
+                    await _open_message()
+                    await event_emitter({"type": "chat:message:delta", "data": {"content": delta}})
 
             def _shows_a_file_inline(name: str) -> bool:
                 context = self._pipe._TOOL_CONTEXT.get()
@@ -2290,7 +2187,6 @@ class StreamingHandler:
                         await self._pipe._event_emitter_handler._emit_citation(event_emitter, citation)
                     except Exception as exc:
                         self.logger.debug("Failed to emit annotation citation (final): %s", exc, exc_info=True)
-                    emitted_citations.append(citation)
 
             request_started_at = perf_counter()
 
@@ -2300,19 +2196,17 @@ class StreamingHandler:
             reply_ended_without_an_answer = False
             loop_limit_reached = False
             loop_limit_announced = False
+            tool_call_limit_error: str | None = None
             ran_out = False
             last_round_had_calls = False
             retry_barrier_crossed = False
             handed_back_for_retry = False
             content_handed_back = False
 
-            def _round_annotations_and_reasoning(
-                response: dict[str, Any] | None,
-            ) -> tuple[list[Any], list[Any]]:
+            def _round_annotations(response: dict[str, Any] | None) -> list[Any]:
                 out_annotations: list[Any] = []
-                out_reasoning_details: list[Any] = []
                 if not response or not isinstance(response.get("output"), list):
-                    return out_annotations, out_reasoning_details
+                    return out_annotations
                 for item in response.get("output") or []:
                     if not isinstance(item, dict):
                         continue
@@ -2331,10 +2225,7 @@ class StreamingHandler:
                     raw_annotations = item.get("annotations")
                     if isinstance(raw_annotations, list) and raw_annotations:
                         out_annotations.extend(raw_annotations)
-                    raw_reasoning_details = item.get("reasoning_details")
-                    if isinstance(raw_reasoning_details, list) and raw_reasoning_details:
-                        out_reasoning_details.extend(raw_reasoning_details)
-                return out_annotations, out_reasoning_details
+                return out_annotations
 
             async def _hold_search_round(
                 call_id: str, item: dict[str, Any], *, args_text: str, result_text: str, status: str,
@@ -2417,7 +2308,6 @@ class StreamingHandler:
             final_response: dict[str, Any] | None = None
             _finalise_cancelled: BaseException | None = None
             round_annotations: list[Any] = []
-            round_reasoning_details: list[Any] = []
             dispatched_metered_chars: int | None = None
             dispatched_model_id: str = ""
             _release_armed = False
@@ -2988,7 +2878,6 @@ class StreamingHandler:
                                 await self._pipe._event_emitter_handler._emit_citation(event_emitter, citation)
                             except Exception as exc:
                                 self.logger.debug("Failed to emit annotation citation: %s", exc, exc_info=True)
-                            emitted_citations.append(citation)
 
                         continue
 
@@ -3651,11 +3540,7 @@ class StreamingHandler:
                             if isinstance(_terminal_response, dict) and _terminal_response
                             else None
                         )
-                        _round_annotations, _round_reasoning_details = (
-                            _round_annotations_and_reasoning(final_response)
-                        )
-                        round_annotations.extend(_round_annotations)
-                        round_reasoning_details.extend(_round_reasoning_details)
+                        round_annotations.extend(_round_annotations(final_response))
                         response_completed_at = perf_counter()
                         if generation_started_at is not None:
                             generation_last_event_at = response_completed_at
@@ -4523,8 +4408,6 @@ class StreamingHandler:
                                         tool_id=cid,
                                     )
                                     for source in citations:
-                                        if isinstance(source, dict):
-                                            emitted_citations.append(source)
                                         if event_emitter:
                                             await self._pipe._event_emitter_handler._emit_citation(event_emitter, source)
                                             self.logger.debug(
@@ -4547,7 +4430,6 @@ class StreamingHandler:
                                             "date_accessed": citation_access_stamp(),
                                         }],
                                     }
-                                    emitted_citations.append(citation)
                                     if event_emitter:
                                         await self._pipe._event_emitter_handler._emit_citation(event_emitter, citation)
                                         self.logger.debug(
@@ -4663,18 +4545,14 @@ class StreamingHandler:
 
             if ran_out and tool_loops_executed and last_round_had_calls:
                 limit_note = f"Tool-call limit reached ({max_loops} iterations)."
-                if not emitter_supplied:
-                    assistant_message = join_answer_and_card(assistant_message, limit_note)
-                else:
+                if emitter_supplied:
                     await self._pipe._event_emitter_handler._emit_notification(
                         event_emitter, limit_note, level="warning"
                     )
-                    if (not was_cancelled) and chat_id and message_id:
-                        with contextlib.suppress(Exception):
-                            await _chats_upsert(
-                                chat_id, message_id, {"error": {"content": limit_note}},
-                                user_id or metadata.get("user_id") or "",
-                            )
+                if emitter_supplied and body.stream and chat_id and message_id:
+                    tool_call_limit_error = limit_note
+                else:
+                    await _append_answer_block(limit_note)
 
             if (
                 tool_loops_executed
@@ -4686,18 +4564,7 @@ class StreamingHandler:
                     "No assistant content was produced after tool execution; sending fallback guidance.",
                     level="warning",
                 )
-                fallback = NO_CONTENT_AFTER_TOOLS_FALLBACK
-                joined = join_answer_and_card(assistant_message, fallback)
-                delta = joined[len(assistant_message):]
-                assistant_message = joined
-                if event_emitter:
-                    await _open_message()
-                    await event_emitter(
-                        {
-                            "type": "chat:message:delta",
-                            "data": {"content": delta},
-                        }
-                    )
+                await _append_answer_block(NO_CONTENT_AFTER_TOOLS_FALLBACK)
 
         except asyncio.CancelledError:
             was_cancelled = True
@@ -4908,8 +4775,8 @@ class StreamingHandler:
                     if isinstance(_exc, asyncio.CancelledError):
                         _finalise_cancelled = _exc
                     self.logger.warning(
-                        "Could not finish the turn's committed artifact rows; the turn's stored "
-                        "record and its terminal publications still run",
+                        "Could not finish the turn's committed artifact rows; the turn's "
+                        "terminal publications still run",
                         exc_info=True,
                     )
             if (not error_occurred) and (not was_cancelled) and event_emitter:
@@ -5093,10 +4960,9 @@ class StreamingHandler:
                         _fusion_html = build_fusion_embed_html(
                             fusion_state, _fusion_model_names(), final=True
                         )
-                        _content = assistant_message
 
-                        async def _persist_fusion_snapshot() -> None:
-                            _kept: list[object] = []
+                        async def _emit_final_fusion_embed() -> None:
+                            _kept: list[Any] = []
                             _existing = await _chats_message(
                                 resolved_chat_id, resolved_message_id
                             )
@@ -5107,19 +4973,15 @@ class StreamingHandler:
                                     if not (isinstance(e, str) and "<title>OpenRouter Fusion" in e)
                                 ]
                             _kept.append(_fusion_html)
-                            _payload: dict[str, object] = {"embeds": _kept}
-                            if _content and not open_webui_keeps_stored_output:
-                                _payload["content"] = _content
-                            await _chats_upsert(
-                                resolved_chat_id, resolved_message_id, _payload,
-                                user_id or metadata.get("user_id") or "",
+                            await self._pipe._event_emitter_handler._emit_embeds(
+                                event_emitter, _kept, replace=True
                             )
 
-                        await asyncio.shield(_persist_fusion_snapshot())
+                        await asyncio.shield(_emit_final_fusion_embed())
                 except (asyncio.CancelledError, Exception) as _exc:
                     if isinstance(_exc, asyncio.CancelledError):
                         _finalise_cancelled = _finalise_cancelled or _exc
-                    self.logger.warning("Failed to persist terminal fusion snapshot", exc_info=True)
+                    self.logger.warning("Failed to emit the final Fusion panel", exc_info=True)
 
             if was_cancelled or handed_back_for_retry:
                 if was_cancelled:
@@ -5153,8 +5015,8 @@ class StreamingHandler:
                     if isinstance(_exc, asyncio.CancelledError):
                         _finalise_cancelled = _exc
                     self.logger.warning(
-                        "Could not finish the turn's committed artifact rows; the turn's stored "
-                        "record and its terminal publications still run",
+                        "Could not finish the turn's committed artifact rows; the turn's "
+                        "terminal publications still run",
                         exc_info=True,
                     )
 
@@ -5254,7 +5116,8 @@ class StreamingHandler:
                             content=final_content,
                             output=final_output,
                             usage=_handover_usage(total_usage, last_round_usage),
-                            error=(
+                            error=tool_call_limit_error
+                            or (
                                 self._pipe._event_emitter_handler._automation_error(
                                     "The model returned no content."
                                 )
@@ -5274,42 +5137,13 @@ class StreamingHandler:
                     if isinstance(_exc, asyncio.CancelledError):
                         _finalise_cancelled = _exc
                     self.logger.warning(
-                        "Could not publish the terminal chat:completion frame; this turn's "
-                        "stored record is still written",
+                        "Could not publish the terminal chat:completion frame",
                         exc_info=True,
                     )
 
             if request_id:
                 SessionLogger.release(request_id)
             SessionLogger.cleanup()
-
-            chat_id = metadata.get("chat_id")
-            message_id = metadata.get("message_id")
-
-            turn_values = {
-                "sources": emitted_citations,
-                "annotations": round_annotations,
-                "reasoning_details": (
-                    round_reasoning_details
-                    if valves.PERSIST_REASONING_TOKENS in {"next_reply", "conversation"}
-                    else []
-                ),
-            }
-            payload: dict[str, Any] = {
-                field: turn_values[field]
-                for field, _log_label, _notify_label, _key_fn in _TURN_METADATA_FIELDS
-                if turn_values[field]
-            }
-            if (not was_cancelled) and (not handed_back_for_retry) and chat_id and message_id \
-                    and payload and is_linkable_chat(chat_id):
-                _finalise_cancelled = await self._store_turn_fields(
-                    chat_id,
-                    message_id,
-                    payload,
-                    user_id or metadata.get("user_id") or "",
-                    event_emitter,
-                    _finalise_cancelled,
-                )
 
         _record_outcome()
         if _finalise_cancelled is not None:

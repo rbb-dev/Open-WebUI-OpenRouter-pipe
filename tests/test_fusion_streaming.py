@@ -378,32 +378,17 @@ async def test_fusion_errored_run_emits_no_native_message_item(monkeypatch, pipe
 
 
 @pytest.mark.asyncio
-async def test_fusion_missing_analysis_synthesizes_completed_in_persisted_snapshot(monkeypatch, pipe_instance_async):
+async def test_fusion_missing_analysis_synthesizes_completed_in_the_final_panel(monkeypatch, pipe_instance_async):
     import json
-
-    import open_webui_openrouter_pipe.streaming.streaming_core as sc
 
     events = [e for e in FUSION_EVENTS if e.get("type") != "response.fusion_call.analysis.completed"]
     monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _fake_stream(events))
 
-    captured: dict = {}
-
-    class _CapturingChats:
-        @staticmethod
-        async def get_message_by_id_and_message_id(*_a, **_k):
-            return None
-
-        @staticmethod
-        async def upsert_message_to_chat_by_id_and_message_id(_chat_id, _message_id, payload, *_a, **_k):
-            captured["payload"] = payload
-            return None
-
-    monkeypatch.setattr(sc, "Chats", _CapturingChats)
-
     body = ResponsesBody(model="openrouter/fusion", input=[], stream=True)
+    emitted: list[dict] = []
 
-    async def emitter(_event):
-        return None
+    async def emitter(event):
+        emitted.append(event)
 
     await pipe_instance_async._streaming_handler._run_streaming_loop(
         body, pipe_instance_async.valves, emitter,
@@ -411,9 +396,10 @@ async def test_fusion_missing_analysis_synthesizes_completed_in_persisted_snapsh
         session=cast(Any, object()), user_id="u", fusion_live_enabled=True,
     )
 
-    embeds = (captured.get("payload") or {}).get("embeds") or []
+    final_panels = [e for e in emitted if e.get("type") == "embeds" and e["data"].get("replace")]
+    embeds = final_panels[-1]["data"]["embeds"] if final_panels else []
     html = next((e for e in embeds if isinstance(e, str) and "OpenRouter Fusion" in e), "")
-    assert html, "no persisted fusion embed captured"
+    assert html, "no final fusion panel was emitted"
 
     marker = "var EVENTS = "
     decoded, _ = json.JSONDecoder().raw_decode(html, html.index(marker) + len(marker))
@@ -683,9 +669,7 @@ async def test_fusion_output_item_done_synthesizes_analysis_and_emits_sources(mo
 
 
 @pytest.mark.asyncio
-async def test_fusion_sources_dedup_and_persist_to_sources_field(monkeypatch, pipe_instance_async):
-    import open_webui_openrouter_pipe.streaming.streaming_core as sc
-
+async def test_fusion_sources_are_emitted_once_per_url(monkeypatch, pipe_instance_async):
     dup_url = "https://repo.example.org/acme/widgets"
     events = [
         {"type": "response.created", "response": {"model": "anthropic/claude-opus"}},
@@ -707,20 +691,6 @@ async def test_fusion_sources_dedup_and_persist_to_sources_field(monkeypatch, pi
     ]
     monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _fake_stream(events))
 
-    persisted: list[dict] = []
-
-    class _CollectingChats:
-        @staticmethod
-        async def get_message_by_id_and_message_id(*_a, **_k):
-            return None
-
-        @staticmethod
-        async def upsert_message_to_chat_by_id_and_message_id(_chat_id, _message_id, payload, *_a, **_k):
-            persisted.append(payload)
-            return None
-
-    monkeypatch.setattr(sc, "Chats", _CollectingChats)
-
     body = ResponsesBody(model="openrouter/fusion", input=[], stream=True)
     emitted: list[dict] = []
 
@@ -736,14 +706,6 @@ async def test_fusion_sources_dedup_and_persist_to_sources_field(monkeypatch, pi
     source_urls = [e["data"]["source"]["url"] for e in _source_events(emitted)]
     assert source_urls.count(dup_url) == 1, "duplicate source URL must be emitted once"
     assert set(source_urls) == {dup_url, "https://docs.example.org/"}
-
-    sources_payload = next(
-        (p["sources"] for p in persisted if isinstance(p.get("sources"), list) and p["sources"]),
-        None,
-    )
-    assert sources_payload is not None, "fusion sources must persist to the message 'sources' field"
-    persisted_urls = {s["source"]["url"] for s in sources_payload}
-    assert persisted_urls == {dup_url, "https://docs.example.org/"}
 
 
 @pytest.mark.asyncio
@@ -1105,32 +1067,26 @@ class TestStageFeedbackStreaming:
 
 
 @pytest.mark.asyncio
-async def test_fusion_snapshot_read_failure_does_not_clobber_embeds(monkeypatch, pipe_instance_async):
+async def test_fusion_final_panel_read_failure_does_not_clobber_embeds(monkeypatch, pipe_instance_async):
     """A transient DB error while reading existing embeds must abort the
-    snapshot persist entirely — falling through to the upsert would replace
+    final panel emission entirely — emitting a replacing panel anyway would replace
     the message's embeds array and destroy every non-fusion embed."""
     import open_webui_openrouter_pipe.streaming.streaming_core as sc
 
     monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _fake_stream(FUSION_EVENTS))
-
-    upserts: list = []
 
     class _FailingReadChats:
         @staticmethod
         async def get_message_by_id_and_message_id(*_a, **_k):
             raise RuntimeError("transient db error")
 
-        @staticmethod
-        async def upsert_message_to_chat_by_id_and_message_id(_chat_id, _message_id, payload, *_a, **_k):
-            upserts.append(payload)
-            return None
-
     monkeypatch.setattr(sc, "Chats", _FailingReadChats)
 
     body = ResponsesBody(model="openrouter/fusion", input=[], stream=True)
+    emitted: list[dict] = []
 
-    async def emitter(_event):
-        return None
+    async def emitter(event):
+        emitted.append(event)
 
     await pipe_instance_async._streaming_handler._run_streaming_loop(
         body, pipe_instance_async.valves, emitter,
@@ -1138,4 +1094,5 @@ async def test_fusion_snapshot_read_failure_does_not_clobber_embeds(monkeypatch,
         session=cast(Any, object()), user_id="u", fusion_live_enabled=True,
     )
 
-    assert upserts == [], "snapshot upsert ran despite embed read failure (would clobber embeds)"
+    replacing = [e for e in emitted if e.get("type") == "embeds" and e["data"].get("replace")]
+    assert replacing == [], "a replacing panel was emitted despite the embed read failure (would clobber embeds)"

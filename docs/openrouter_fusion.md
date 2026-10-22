@@ -262,7 +262,7 @@ Every `openrouter/fusion` chat automatically renders the deliberation — preamb
 judge's analysis, the final answer, and cost — as a live, theme-aware HTML panel. A message carries one Fusion card,
 updated in place: each deliberation event is pushed over Open WebUI's own socket as a custom `fusion:event`
 that the panel's same-origin socket connection consumes (no iframe reload → no flashing). The
-final answer streams **into** the panel and is also written to the message as a **collapsed `<details>`** — so
+final answer streams **into** the panel and is also published as the message's answer inside a **collapsed `<details>`** — so
 multi-turn context, copy, and regenerate read the answer natively (the panel embed is UI-only and is never sent
 back to the model), while the visible surface stays the panel.
 
@@ -289,22 +289,20 @@ streaming panel deltas, the cards simply fill in at completion as before.
 - The live panel requires Open WebUI's **iframe same-origin** setting (Settings → Interface → "iframe sandbox
   allow same origin") — the panel reads the session token to open its socket. With it off, the panel still
   renders the complete deliberation **statically** on completion / page reload (from the persisted embed) — just
-  not live. The persisted embed is a saved chat the caller may write: owner, admin, or the write access Open WebUI grants
-  (0.12 and later); owner or admin below 0.12. On a temporary chat there is no row to write it to and nothing
-  to reload, so the panel is live-only there.
+  not live. The persisted embed is the panel's `embeds` event as Open WebUI saves it onto the message of a saved chat.
+  On a temporary chat there is no row to save it to and nothing to reload, so the panel is live-only there.
 - A **browser close** mid-run does not abort the deliberation: Open WebUI runs it as a detached task, so it
   finishes server-side and the full panel + answer are persisted; reopening the chat shows the finished result —
-  on a saved chat the caller may write, which is the only place there is anything to reopen.
+  on a saved chat, which is the only place there is anything to reopen.
   On a **Continue** of that answer the panel is added to the stored row and the stored answer itself is left to
   Open WebUI, which holds the prefix this generation does not carry.
 - A mid-stream **socket drop** has no live replay; reloading restores the complete panel from the persisted state.
 - A Fusion answer cut off by a length or provider cap is a **finished** run, not an interruption: the footer, the clock and the cost render exactly as they do for a completed turn.
-- A **dropped connection or a raised tool** is the other way round, and is not a finished run: the turn wrote no
+- A **dropped connection or a raised tool** is the other way round, and is not a finished run: the turn emitted no
   final panel, so a reload shows the error above the live panel rather than a deliberation frozen at "—" and
   presented as finished. A `final=True` panel is what a finished run persists, and it never opens a socket again,
-  so it is written only for a turn that shipped its answer, on a chat the caller may write: owner, admin, or
-  the write access Open WebUI grants (0.12 and later); owner or admin below 0.12. A channel's panel is
-  delivered by Open WebUI's own channel emitter, not by this write.
+  so it is emitted only for a turn that shipped its answer. A channel gets no panel: Open WebUI's channel emitter has
+  no branch for the `embeds` event, and the channel message carries the answer inside its `<details>` wrapper.
 
 - Forces the `/responses` endpoint (the only one that emits the granular Fusion events). A
   `FORCE_CHAT_COMPLETIONS_MODELS` match on the fusion model is **not** overridden: a pattern naming
