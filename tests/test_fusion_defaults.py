@@ -58,15 +58,15 @@ class TestPresetConstants:
     def test_quality_panel(self):
         assert FUSION_PRESET_PANELS["general-high"] == (
             "~anthropic/claude-opus-latest",
-            "~openai/gpt-latest",
+            "~openai/gpt-sol-latest",
             "~google/gemini-pro-latest",
         )
 
     def test_budget_and_fast_panels_identical(self):
         expected = (
             "~google/gemini-flash-latest",
-            "deepseek/deepseek-v4-flash",
-            "~moonshotai/kimi-latest",
+            "~deepseek/deepseek-flash-latest",
+            "~openai/gpt-luna-latest",
         )
         assert FUSION_PRESET_PANELS["general-budget"] == expected
         assert FUSION_PRESET_PANELS["general-fast"] == expected

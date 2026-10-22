@@ -195,9 +195,12 @@ The final answer is written by the preset's judge model from the panel drafts pl
 analysis. The synthesis material — the panel drafts and the analysis as one block — sits
 in the body as a **second leading `system` block**, after that stage's own prompt and
 before the conversation, so it reads as reference data ahead of the exchange it describes
-and the user's question stays last. Preset rosters are engine constants: `general-high` = the self-updating
-`~…-latest` frontier trio judged by an Opus-class model; `general-budget` = a faster
-trio with the same judge; `general-fast` = that same faster trio with a Sonnet-class judge.
+and the user's question stays last. Preset rosters are engine constants, and every member is one of
+OpenRouter's self-updating `~…-latest` aliases: `general-high` = the frontier trio
+`~anthropic/claude-opus-latest`, `~openai/gpt-sol-latest` and `~google/gemini-pro-latest`, judged
+by an Opus-class model; `general-budget` = the faster trio `~google/gemini-flash-latest`,
+`~deepseek/deepseek-flash-latest` and `~openai/gpt-luna-latest`, with the same judge;
+`general-fast` = that same faster trio with a Sonnet-class judge.
 Note: `FORCE_*` provider-glob valves match model IDs literally, so tilde aliases only
 match patterns written with the leading `~`.
 

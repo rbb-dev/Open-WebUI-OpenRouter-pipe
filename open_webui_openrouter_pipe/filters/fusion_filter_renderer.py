@@ -128,7 +128,7 @@ __KEEP_WHAT_STILL_FITS__
             title="Panel models (comma-separated)",
             description=(
                 "1-8 model IDs that answer in parallel, comma-separated, e.g. "
-                "'anthropic/claude-opus-latest, openai/gpt-latest'. Each model adds a call. "
+                "'~anthropic/claude-opus-latest, ~openai/gpt-sol-latest'. Each model adds a call. "
                 "More than 8 is refused on every route, not shortened: the turn stops with an "
                 "error naming the limit and how many models arrived. Empty = use the preset / "
                 "Fusion default panel. A video- or image-generation model "

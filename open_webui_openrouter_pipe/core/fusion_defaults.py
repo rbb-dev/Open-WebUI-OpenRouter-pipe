@@ -264,18 +264,18 @@ MAX_FUSION_MAX_TOOL_CALLS = 16
 FUSION_PRESET_PANELS: dict[str, tuple[str, ...]] = {
     "general-high": (
         "~anthropic/claude-opus-latest",
-        "~openai/gpt-latest",
+        "~openai/gpt-sol-latest",
         "~google/gemini-pro-latest",
     ),
     "general-budget": (
         "~google/gemini-flash-latest",
-        "deepseek/deepseek-v4-flash",
-        "~moonshotai/kimi-latest",
+        "~deepseek/deepseek-flash-latest",
+        "~openai/gpt-luna-latest",
     ),
     "general-fast": (
         "~google/gemini-flash-latest",
-        "deepseek/deepseek-v4-flash",
-        "~moonshotai/kimi-latest",
+        "~deepseek/deepseek-flash-latest",
+        "~openai/gpt-luna-latest",
     ),
 }
 
