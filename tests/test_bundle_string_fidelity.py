@@ -105,7 +105,6 @@ def _artifact_strings(path: Path) -> tuple[set[str], bool]:
     return bundled, carried
 
 
-@lru_cache(maxsize=None)
 def _assigned_strings(source: str) -> tuple[tuple[str, str], ...]:
     """(name, value) for every string reachable from an assignment.
 
@@ -122,10 +121,32 @@ def _assigned_strings(source: str) -> tuple[tuple[str, str], ...]:
     (`msg`, `reason`), and keying by name keeps only the last -- which silently drops
     most values from the comparison on both sides.
     """
+    return _scan(source)[0]
+
+
+@lru_cache(maxsize=None)
+def _scan(source: str) -> tuple[tuple[tuple[str, str], ...], tuple[ast.Constant, ...]]:
     try:
-        return _assigned_strings_in(ast.parse(source))
+        tree = ast.parse(source)
     except SyntaxError:
-        return ()
+        return (), ()
+    return _assigned_strings_in(tree), _interpolated_segments(tree)
+
+
+def _interpolated_segments(tree: ast.AST) -> tuple[ast.Constant, ...]:
+    return tuple(
+        segment
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign | ast.AnnAssign)
+        and any(isinstance(t, ast.Name) for t in _assign_targets(node))
+        and node.value is not None
+        for joined in ast.walk(node.value)
+        if isinstance(joined, ast.JoinedStr)
+        for segment in joined.values
+        if isinstance(segment, ast.Constant)
+        and isinstance(segment.value, str)
+        and len(segment.value) >= MIN_LENGTH
+    )
 
 
 def _assigned_strings_in(tree: ast.AST) -> tuple[tuple[str, str], ...]:
@@ -146,7 +167,7 @@ def _assigned_strings_in(tree: ast.AST) -> tuple[tuple[str, str], ...]:
     return tuple(out)
 
 
-def _package_strings(*, package_machinery: bool = True) -> dict[str, str]:
+def _package_strings(package_scan, *, package_machinery: bool = True) -> dict[str, str]:
     """Every compared constant, keyed uniquely.
 
     `package_machinery=False` drops the `__init__.py` files. Those exist to assemble a
@@ -160,19 +181,28 @@ def _package_strings(*, package_machinery: bool = True) -> dict[str, str]:
     growing into a hiding place.
     """
     found: dict[str, str] = {}
-    for path in sorted(PACKAGE_DIR.rglob("*.py")):
+    for path, pairs, _segments in package_scan:
         if path.name == "__init__.py" and not package_machinery:
             continue
-        for name, text in _assigned_strings(path.read_text(encoding="utf-8")):
+        for name, text in pairs:
             found[f"{path.relative_to(PACKAGE_DIR)}::{name}::{len(found)}"] = text
     return found
 
 
 @pytest.fixture(scope="module")
-def package_strings() -> dict[bool, dict[str, str]]:
+def package_scan():
+    scanned = []
+    for path in sorted(PACKAGE_DIR.rglob("*.py")):
+        pairs, segments = _scan(path.read_text(encoding="utf-8"))
+        scanned.append((path, pairs, segments))
+    return tuple(scanned)
+
+
+@pytest.fixture(scope="module")
+def package_strings(package_scan) -> dict[bool, dict[str, str]]:
     return {
-        True: _package_strings(package_machinery=True),
-        False: _package_strings(package_machinery=False),
+        True: _package_strings(package_scan, package_machinery=True),
+        False: _package_strings(package_scan, package_machinery=False),
     }
 
 
@@ -212,9 +242,9 @@ def test_no_bundled_string_constant_differs_from_the_package(package_strings, ar
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),
     reason="reads the source tree to build the expectation; the artifact is compared to it, not the other way round",
 )
-def test_the_package_still_has_strings_long_enough_to_compare():
+def test_the_package_still_has_strings_long_enough_to_compare(package_strings):
     """Anti-vacuity: an empty expectation would make the check above pass on anything."""
-    pkg = _package_strings()
+    pkg = package_strings[True]
     assert len(pkg) >= 800, (
         f"only {len(pkg)} strings of >= {MIN_LENGTH} chars found; the comparison above "
         "is close to asserting nothing. The floor is set above the 121 that the "
@@ -239,7 +269,7 @@ def test_the_package_still_has_strings_long_enough_to_compare():
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),
     reason="reads the source tree to build the expectation; the artifact is compared to it, not the other way round",
 )
-def test_the_compared_set_reaches_inside_f_strings():
+def test_the_compared_set_reaches_inside_f_strings(package_scan, package_strings):
     """The scan must reach text an f-string interpolates around.
 
     A template assembled with one `{value}` is a JoinedStr, and matching only
@@ -249,18 +279,7 @@ def test_the_compared_set_reaches_inside_f_strings():
     literals satisfy any total. This asserts on the f-string mass specifically.
     """
     interpolated = [
-        (path, segment)
-        for path in sorted(PACKAGE_DIR.rglob("*.py"))
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
-        if isinstance(node, ast.Assign | ast.AnnAssign)
-        and any(isinstance(t, ast.Name) for t in _assign_targets(node))
-        and node.value is not None
-        for joined in ast.walk(node.value)
-        if isinstance(joined, ast.JoinedStr)
-        for segment in joined.values
-        if isinstance(segment, ast.Constant)
-        and isinstance(segment.value, str)
-        and len(segment.value) >= MIN_LENGTH
+        (path, segment) for path, _pairs, segments in package_scan for segment in segments
     ]
     assert len(interpolated) >= 80, (
         f"only {len(interpolated)} assigned f-string segments of >= {MIN_LENGTH} chars "
@@ -268,7 +287,7 @@ def test_the_compared_set_reaches_inside_f_strings():
         "deliberately rather than letting the guard pass on an empty scan"
     )
 
-    compared = set(_package_strings().values())
+    compared = set(package_strings[True].values())
     absent = [
         f"{path.relative_to(PACKAGE_DIR)}: {str(segment.value)[:60]!r}"
         for path, segment in interpolated
@@ -292,7 +311,7 @@ def test_the_compared_set_reaches_inside_f_strings():
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),
     reason="reads the source tree to build the expectation; the artifact is compared to it, not the other way round",
 )
-def test_no_package_data_hides_behind_the_init_exemption():
+def test_no_package_data_hides_behind_the_init_exemption(package_scan, package_strings):
     """The `__init__.py` exemption must stay a description of wiring, not a hiding place.
 
     Those files are exempt from the flat-bundle comparison because a flat bundle is not
@@ -306,8 +325,10 @@ def test_no_package_data_hides_behind_the_init_exemption():
     can damage in the first place, which is the whole subject of this file.
     """
     exempt: list[tuple[str, str, str]] = []
-    for path in sorted(PACKAGE_DIR.rglob("__init__.py")):
-        for name, text in _assigned_strings(path.read_text(encoding="utf-8")):
+    for path, pairs, _segments in package_scan:
+        if path.name != "__init__.py":
+            continue
+        for name, text in pairs:
             exempt.append((str(path.relative_to(PACKAGE_DIR)), name, text))
 
     assert exempt, (
@@ -327,7 +348,7 @@ def test_no_package_data_hides_behind_the_init_exemption():
         "Move them into a module:\n  " + "\n  ".join(oversized)
     )
 
-    everything = _package_strings()
+    everything = package_strings[True]
     assert len(exempt) < len(everything) // 4, (
         f"{len(exempt)} of {len(everything)} compared constants live in an __init__.py. "
         "The exemption is meant to cover package wiring, not a quarter of the package."
