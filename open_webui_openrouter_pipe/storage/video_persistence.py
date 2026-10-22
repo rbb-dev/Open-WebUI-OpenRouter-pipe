@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 from ..core.utils import _await_if_needed, _iter_kind_marker_spans
+from .owui_chats import read_chat_message
 from .owui_files import channel_id_for_chat, is_channel_chat, is_temporary_chat
 
 
@@ -39,19 +40,12 @@ class VideoPersistence:
         except Exception:
             self.logger.debug("Open WebUI chats model unavailable", exc_info=True)
             return None
-        getter = cast(Any, getattr(Chats, "get_message_by_id_and_message_id", None))
-        if not callable(getter):
+        if not callable(getattr(Chats, "get_message_by_id_and_message_id", None)):
             return None
         try:
-            return await _await_if_needed(getter(chat_id, message_id))
-        except TypeError:
-            try:
-                return await _await_if_needed(getter(chat_id=chat_id, message_id=message_id))
-            except Exception:
-                self.logger.debug(
-                    "Could not load message %s of chat %s", message_id, chat_id, exc_info=True
-                )
-                return None
+            return await read_chat_message(
+                chat_id, message_id, Chats.get_message_by_id_and_message_id
+            )
         except Exception:
             self.logger.debug(
                 "Could not load message %s of chat %s", message_id, chat_id, exc_info=True

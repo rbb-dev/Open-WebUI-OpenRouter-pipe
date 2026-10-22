@@ -2754,7 +2754,12 @@ Key files:
 - [`storage/video_persistence.py`](../open_webui_openrouter_pipe/storage/video_persistence.py)
   — thin resume-path helper that reads the persisted chat message to
   detect prior `videojob` markers; a `channel:` read is authorised
-  against the channel first.
+  against the channel first. A saved chat's message is read as its one
+  `chat_message` row, through `read_chat_message` in
+  [`storage/owui_chats.py`](../open_webui_openrouter_pipe/storage/owui_chats.py),
+  and Open WebUI's whole-chat getter, which loads every message of the
+  chat, answers instead only when Open WebUI has no such table or method,
+  the row is missing or belongs to another chat, or the row read fails.
 - [`storage/multimodal.py`](../open_webui_openrouter_pipe/storage/multimodal.py)
   — `_download_remote_url_streaming`: the size- and type-bounded download
   that fetches the finished clip. Video generation is its only caller; the
