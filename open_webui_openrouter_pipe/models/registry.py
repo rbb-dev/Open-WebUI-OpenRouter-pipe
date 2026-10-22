@@ -434,6 +434,29 @@ def _chat_features_for_video(prior_features: set[str]) -> set[str]:
     return merged
 
 
+def _preset_base_id(config: Any) -> str | None:
+    if not isinstance(config, dict):
+        return None
+    base_id = config.get("model")
+    if not isinstance(base_id, str) or not base_id.strip():
+        candidates = config.get("models")
+        base_id = (
+            next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if isinstance(candidate, str) and candidate.strip()
+                ),
+                None,
+            )
+            if isinstance(candidates, list)
+            else None
+        )
+    if not isinstance(base_id, str) or not base_id.strip():
+        return None
+    return base_id.strip()
+
+
 class OpenRouterModelRegistry:
     _models: ClassVar[list[dict[str, Any]]] = []
     _specs: ClassVar[dict[str, dict[str, Any]]] = {}
@@ -807,7 +830,7 @@ class OpenRouterModelRegistry:
 
         fingerprint = _fingerprint(api_key)
         try:
-            wanted, unread = await cls._load_presets(
+            wanted, unread, switched_off = await cls._load_presets(
                 session,
                 base_url=base_url,
                 api_key=api_key,
@@ -821,6 +844,7 @@ class OpenRouterModelRegistry:
                 entry[0]: (entry[1], entry[2])
                 for entry in cls._preset_rows.get(fingerprint, {}).values()
             }
+            switched_off = cls._known_switched_off(fingerprint)
             if cls._first_preset_read_failure(fingerprint):
                 logger.warning(
                     "Failed to load OpenRouter presets; the presets served last refresh,"
@@ -840,6 +864,17 @@ class OpenRouterModelRegistry:
                 cls._owe_preset_retry(fingerprint, cache_seconds, paced=False)
             else:
                 cls._settle_preset_retry(fingerprint)
+        if switched_off:
+            for row in models:
+                if row["norm_id"] in switched_off:
+                    id_map.pop(cls._exact_norm(str(row["id"])), None)
+            models = [row for row in models if row["norm_id"] not in switched_off]
+            for switched_off_norm in switched_off:
+                specs.pop(switched_off_norm, None)
+            wanted = {
+                norm: entry for norm, entry in wanted.items() if norm not in switched_off
+            }
+        cls._align_own_preset_rows(specs, fingerprint)
         for preset_norm, preset_entry in wanted.items():
             if preset_norm in specs:
                 continue
@@ -1570,7 +1605,12 @@ class OpenRouterModelRegistry:
         )
 
     @classmethod
-    def _derive_chat_spec(cls, full_model: dict[str, Any], norm_id: str) -> dict[str, Any]:
+    def _derive_chat_spec(
+        cls,
+        full_model: dict[str, Any],
+        norm_id: str,
+        upload_model_id: str | None = None,
+    ) -> dict[str, Any]:
         supported_parameters = set(full_model.get("supported_parameters") or [])
         architecture = full_model.get("architecture") or {}
         pricing = full_model.get("pricing") or {}
@@ -1581,8 +1621,8 @@ class OpenRouterModelRegistry:
             pricing,
         )
 
-        original_id = full_model.get("id") or norm_id
-        blocklisted = is_direct_upload_blocklisted_for(original_id, full_model)
+        judged_id = upload_model_id or full_model.get("id") or norm_id
+        blocklisted = is_direct_upload_blocklisted_for(judged_id, full_model)
         if blocklisted:
             features.discard("file_input")
         else:
@@ -1712,7 +1752,7 @@ class OpenRouterModelRegistry:
     def _note_preset_state(
         cls,
         states: dict[str, str],
-        served: dict[str, Any],
+        served: set[str],
         logger: logging.Logger,
         slug: str,
         state: str,
@@ -1739,7 +1779,9 @@ class OpenRouterModelRegistry:
         http_referer: str | None,
         base_full: dict[str, dict[str, Any]],
         served_norms: frozenset[str] | set[str],
-    ) -> tuple[dict[str, tuple[dict[str, Any], dict[str, Any]]], list[str]]:
+    ) -> tuple[
+        dict[str, tuple[dict[str, Any], dict[str, Any]]], list[str], frozenset[str]
+    ]:
         fingerprint = _fingerprint(api_key)
         headers = cls._preset_headers(api_key, http_referer)
         timeout = _catalog_timeout()
@@ -1747,21 +1789,37 @@ class OpenRouterModelRegistry:
         listed = await cls._list_presets(session, base, headers, timeout)
         states = dict(cls._preset_states.get(fingerprint, {}))
         previous = cls._preset_rows.get(fingerprint, {})
+        served: set[str] = set()
         wanted: dict[str, tuple[str, dict[str, Any], dict[str, Any]]] = {}
         plans: dict[str, tuple[str, dict[str, Any] | None]] = {}
         listed_by_slug: dict[str, dict[str, Any]] = {}
+        switched_off: set[str] = set()
         for item in listed:
             slug = item.get("slug")
             if not isinstance(slug, str) or not slug.strip():
                 continue
             listed_by_slug[slug] = item
-            if item.get("status") != "active":
-                cls._note_preset_state(states, previous, logger, slug, "dropped:status")
+            listed_norm = _catalog_norm(f"@preset/{slug}")
+            if slug in previous or listed_norm in cls._chat_catalog_norms:
+                served.add(slug)
+            status = item.get("status")
+            if status != "active":
+                switched_off.add(listed_norm)
+                shown = status if isinstance(status, str) and status else "missing"
+                cls._note_preset_state(
+                    states, served, logger, slug, f"dropped:status:{shown}"
+                )
                 continue
             version = item.get("designated_version_id")
             if not isinstance(version, str) or not version:
                 cls._note_preset_state(
-                    states, previous, logger, slug, "dropped:no-designated-version"
+                    states,
+                    served,
+                    logger,
+                    slug,
+                    "served:no-designated-version"
+                    if listed_norm in served_norms
+                    else "dropped:no-designated-version",
                 )
                 continue
             cached = cls._preset_details.get(fingerprint, {}).get(slug)
@@ -1781,44 +1839,29 @@ class OpenRouterModelRegistry:
         for slug, (_, config) in plans.items():
             preset_id = f"@preset/{slug}"
             norm = _catalog_norm(preset_id)
+            base_id = _preset_base_id(config)
             listed_full = base_full.get(norm) if norm in served_norms else None
             if listed_full is not None:
                 wanted[slug] = (
                     norm,
-                    cls._derive_chat_spec(listed_full, norm),
+                    cls._derive_chat_spec(listed_full, norm, base_id),
                     cls._preset_row(preset_id, norm, listed_full),
                 )
-                cls._note_preset_state(states, previous, logger, slug, "built")
+                cls._note_preset_state(states, served, logger, slug, "built")
                 continue
             if config is None:
                 kept = previous.get(slug)
                 if kept is not None:
                     wanted[slug] = kept
-                cls._note_preset_state(states, previous, logger, slug, "kept")
+                cls._note_preset_state(states, served, logger, slug, "kept")
                 continue
-            base_id = config.get("model")
-            if not isinstance(base_id, str) or not base_id.strip():
-                candidates = config.get("models")
-                base_id = (
-                    next(
-                        (
-                            candidate
-                            for candidate in candidates
-                            if isinstance(candidate, str) and candidate.strip()
-                        ),
-                        None,
-                    )
-                    if isinstance(candidates, list)
-                    else None
-                )
-            if not isinstance(base_id, str) or not base_id.strip():
-                cls._note_preset_state(states, previous, logger, slug, "dropped:no-base-model")
+            if base_id is None:
+                cls._note_preset_state(states, served, logger, slug, "dropped:no-base-model")
                 continue
-            base_id = base_id.strip()
             base_row = base_full.get(_catalog_norm(base_id))
             if base_row is None:
                 cls._note_preset_state(
-                    states, previous, logger, slug, f"dropped:base-missing:{base_id}"
+                    states, served, logger, slug, f"dropped:base-missing:{base_id}"
                 )
                 continue
             name = listed_by_slug[slug].get("name")
@@ -1827,10 +1870,10 @@ class OpenRouterModelRegistry:
             preset_full["name"] = name if isinstance(name, str) and name else preset_id
             wanted[slug] = (
                 norm,
-                cls._derive_chat_spec(preset_full, norm),
+                cls._derive_chat_spec(preset_full, norm, base_id),
                 cls._preset_row(preset_id, norm, preset_full),
             )
-            cls._note_preset_state(states, previous, logger, slug, "built")
+            cls._note_preset_state(states, served, logger, slug, "built")
         cls._preset_rows[fingerprint] = dict(wanted)
         _trim_credential_history(cls._preset_rows, fingerprint, None)
         cls._preset_states[fingerprint] = states
@@ -1842,7 +1885,36 @@ class OpenRouterModelRegistry:
                 if norm not in served_norms
             },
             sorted(slug for slug, entry in fetched.items() if entry[1] is None),
+            frozenset(switched_off),
         )
+
+    @classmethod
+    def _known_switched_off(cls, fingerprint: str) -> frozenset[str]:
+        return frozenset(
+            _catalog_norm(f"@preset/{slug}")
+            for slug, state in cls._preset_states.get(fingerprint, {}).items()
+            if state.startswith("dropped:status")
+        )
+
+    @classmethod
+    def _align_own_preset_rows(
+        cls, specs: dict[str, dict[str, Any]], fingerprint: str
+    ) -> None:
+        for norm, stored, _row in cls._preset_rows.get(fingerprint, {}).values():
+            served = specs.get(norm)
+            if served is None or served is stored:
+                continue
+            offered = bool((stored.get("capabilities") or {}).get("file_upload"))
+            features: set[str] = set(served.get("features") or set())
+            capabilities: dict[str, Any] = dict(served.get("capabilities") or {})
+            if ("file_input" in features) == offered and capabilities.get("file_upload") == offered:
+                continue
+            if offered:
+                features.add("file_input")
+            else:
+                features.discard("file_input")
+            capabilities["file_upload"] = offered
+            specs[norm] = {**served, "features": features, "capabilities": capabilities}
 
     @classmethod
     def _owe_preset_retry(cls, fingerprint: str, cache_seconds: int, *, paced: bool) -> None:
@@ -1917,7 +1989,7 @@ class OpenRouterModelRegistry:
             if norm in served_norms and isinstance(spec.get("full_model"), dict)
         }
         try:
-            wanted, unread = await cls._load_presets(
+            wanted, unread, switched_off = await cls._load_presets(
                 session,
                 base_url=base_url,
                 api_key=api_key,
@@ -1945,9 +2017,9 @@ class OpenRouterModelRegistry:
         }
         id_map = dict(cls._id_map)
         removed: set[str] = set()
-        for norm in previous_by_norm.keys() - frozenset(wanted):
-            if norm in still_listed:
-                continue
+        for norm in (
+            previous_by_norm.keys() - frozenset(wanted) - still_listed
+        ) | switched_off:
             removed.add(norm)
             specs.pop(norm, None)
             row = models_by_norm.pop(norm, None)
@@ -1959,6 +2031,7 @@ class OpenRouterModelRegistry:
             models_by_norm[norm] = row
             id_map[cls._exact_norm(str(row["id"]))] = str(row["original_id"])
             replaced.add(norm)
+        cls._align_own_preset_rows(specs, fingerprint)
         models: list[dict[str, Any]] = []
         for model in cls._models:
             norm = model.get("norm_id") if isinstance(model, dict) else None

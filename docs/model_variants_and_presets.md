@@ -230,7 +230,9 @@ A variant inherits its base's endpoint pin. An entry in `FORCE_CHAT_COMPLETIONS_
 and the dated forms of each. This is the endpoint valve's own normalisation and nothing else:
 `MODEL_ID` is still matched as written, the catalogue keys stay exact, and `:free` remains a
 separately priced and separately catalogued row. A `:preset/...` suffix is not a routing variant
-here and is not covered -- a preset is served on `/chat/completions` only.
+here and is not covered: an entry that names the base model does not reach a preset, which follows
+`Default API endpoint` unless an entry names the preset itself (`@preset/<slug>` for a preset the
+picker lists, `base_id:preset/<slug>` for a `VARIANT_MODELS` preset).
 
 **By construction:** `MODEL_ID` matches catalogue rows by normalized id exactly, or by glob when the entry holds a `*`, `?` or `[`; a pattern is not run through the `:tag` / `@preset` resolution, and an exclusion runs after the includes and is not re-admitted by `VARIANT_MODELS`. A `!` entry is applied after the includes over the whole selection, so `!~openai/*` removes a `~`-pinned alias that `openai/*` never reached, and no base this list excludes is added as a variant. A `base_id:tag` entry is therefore
 matched on its exact normalized id: when the catalogue holds that tagged model as a row of its own it publishes
@@ -506,7 +508,7 @@ OpenRouter provides three ways to use presets. **This pipe supports all three:**
 |--------|--------|-----------|-------------|-------|
 | **Combined Model and Preset** | `model@preset/slug` | ✅ Yes | ⭐ **Yes** | Use in `VARIANT_MODELS` valve |
 | **Preset Field** | `"preset": "slug"` | ⚠️ Partial | No | OpenRouter may not honor; see below |
-| **Direct Model Reference** | `@preset/slug` | ✅ Yes | — | The pipe lists the account's presets itself and serves `@preset/slug` rows in the picker, rebuilt from OpenRouter's presets endpoints when the model list omits them, so the entry survives an answer that carries no presets; a chat on one follows the pipe's normal endpoint rules |
+| **Direct Model Reference** | `@preset/slug` | ✅ Yes | — | The pipe lists the account's presets itself and serves `@preset/slug` rows in the picker, rebuilt from OpenRouter's presets endpoints when the model list omits them, so the entry survives an answer that carries no presets; a preset the account disabled or archived is not offered, and a preset whose base model the direct-upload blocklist names offers no file upload; a chat on one follows the pipe's normal endpoint rules |
 
 #### Method 1: Combined Model and Preset (VARIANT_MODELS) — Recommended
 
@@ -583,7 +585,9 @@ When you select a preset model:
 
 Note: The internal separator (`:`) is converted to `@` when sending to OpenRouter, matching their API expectations.
 
-**Reasoning:** unlike a routing variant, a preset model does not take its base model's reasoning settings. The pipe adds no reasoning settings of its own to it, so the preset's saved ones apply. A reasoning effort the chat itself sets (for example Open WebUI's per-chat reasoning effort) still goes out with the request, and OpenRouter lets request fields override a preset's saved ones, so it overrides the preset's setting for that request. That reasoning configuration is the one thing a preset does not inherit: in every other respect a preset entry is its base model, and inherits the base model's capabilities, context window, output ceiling, supported parameters, ZDR status, pricing and filter support. A preset of a base model with `video_generation` or `image_output` is therefore generated through the video or image adapter rather than streamed as chat, exactly as its base model is.
+**Reasoning:** unlike a routing variant, a `base_id@preset/slug` entry does not take its base model's reasoning settings. The pipe adds no reasoning settings of its own to it, so the preset's saved ones apply. A reasoning effort the chat itself sets (for example Open WebUI's per-chat reasoning effort) still goes out with the request, and OpenRouter lets request fields override a preset's saved ones, so it overrides the preset's setting for that request. That reasoning configuration is the one thing such an entry does not inherit: in every other respect it is its base model, and inherits the base model's capabilities, context window, output ceiling, supported parameters, ZDR status, pricing and filter support. A preset of a base model with `video_generation` or `image_output` is therefore generated through the video or image adapter rather than streamed as chat, exactly as its base model is.
+
+A `@preset/<slug>` row that the picker lists from the account is the base model's catalog row under the preset's id. Its capabilities, context window, output ceiling, supported parameters and pricing are the base model's, and the pipe sends it the reasoning settings its base model is sent; OpenRouter lets request fields override a preset's saved ones, so those settings override the preset's saved reasoning for that request. Its zero-data-retention status is looked up under the preset's own id, not its base model's, so a preset whose base model is on OpenRouter's zero-data-retention list can still fail that check.
 
 ### Creating Presets
 
@@ -593,7 +597,7 @@ Presets are created and managed in your [OpenRouter dashboard](https://openroute
 2. Click **Create Preset**
 3. Configure your desired settings (model, system prompt, temperature, etc.)
 4. Save with a memorable slug (e.g., `email-copywriter`)
-5. Reference it in this pipe using `@preset/your-slug`
+5. After the pipe's next catalog refresh (`MODEL_CATALOG_REFRESH_SECONDS`) the preset is listed in the model picker as `@preset/your-slug`; to pin it to a base model of your choosing, add a `base_id@preset/your-slug` entry to `VARIANT_MODELS`
 
 ### Preset Limitations
 
@@ -601,13 +605,14 @@ Presets are created and managed in your [OpenRouter dashboard](https://openroute
    - Presets are tied to your OpenRouter account
    - Team members need access to the same OpenRouter organization to use shared presets
 
-2. **No preset discovery:**
-   - The pipe cannot auto-discover your available presets
-   - You must manually configure preset entries in `VARIANT_MODELS`
+2. **Presets are discovered, within limits:**
+   - The picker lists the account's active presets as `@preset/<slug>` rows, read from OpenRouter's presets endpoints at each catalog refresh
+   - A preset the account disabled or archived is not listed. A preset with no designated version, or whose configuration names no model the catalog lists, is listed only when OpenRouter's own model list already carries a row for it (see [Model Catalog & Routing Intelligence](model_catalog_and_routing_intelligence.md))
+   - A restricting `MODEL_ID` lists a preset only when an entry names it (`@preset/<slug>`) or a glob such as `@preset/*` matches it
 
-3. **Direct Model Reference not supported:**
-   - Using `@preset/slug` as the entire model ID is not supported
-   - Presets must be combined with a base model
+3. **`@preset/slug` alone is a model ID:**
+   - A picker row is the preset's base model under the preset's id, with the reasoning and zero-data-retention differences described under Preset API Behavior
+   - A `base_id@preset/slug` entry in `VARIANT_MODELS` pins a preset to a base model of your choosing
 
 ---
 

@@ -64,13 +64,6 @@ def reset_registry():
     reg._last_errors = {}
     reg._last_error = None
     reg._last_error_time = 0.0
-    reg._preset_rows = {}
-    reg._preset_details = {}
-    reg._preset_states = {}
-    reg._preset_retry_after = {}
-    reg._preset_read_failing = {}
-    reg._preset_retry_not_before = {}
-    reg._preset_retry_failures = {}
     ow.ModelFamily.set_dynamic_specs(None)
     yield
 
@@ -571,3 +564,171 @@ async def test_presets_served_from_the_presets_endpoints_survive_a_failed_read_a
     )
     assert "@preset.alpha" not in reg._chat_catalog_norms
     assert "@preset.beta" in served()
+
+
+def _listed_preset(slug: str, version: str, status: str = "active") -> dict[str, Any]:
+    return {
+        "slug": slug,
+        "name": slug.capitalize(),
+        "status": status,
+        "designated_version_id": version,
+    }
+
+
+def _preset_record(slug: str, version: str, config: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "data": {
+            "slug": slug,
+            "name": slug.capitalize(),
+            "status": "active",
+            "designated_version_id": version,
+            "designated_version": {"id": version, "config": config},
+        }
+    }
+
+
+async def _load_catalog(
+    *,
+    models: dict[str, Any] | None,
+    presets: list[dict[str, Any]] | None,
+    records: dict[str, dict[str, Any]],
+) -> None:
+    import aiohttp
+    from aioresponses import aioresponses
+
+    with aioresponses() as http:
+        if models is not None:
+            http.get("https://api/models", payload=models)
+            http.get("https://api/endpoints/zdr", payload={"data": []}, repeat=True)
+        presets_url = "https://api/presets?offset=0&limit=100"
+        if presets is None:
+            http.get(presets_url, exception=RuntimeError("presets list unavailable"))
+        else:
+            http.get(presets_url, payload={"data": presets, "total_count": len(presets)})
+            for slug, payload in records.items():
+                http.get(f"https://api/presets/{slug}", payload=payload)
+        async with aiohttp.ClientSession() as session:
+            await ow.OpenRouterModelRegistry.ensure_loaded(
+                session,
+                base_url="https://api",
+                api_key="k",
+                cache_seconds=3600,
+                logger=logging.getLogger("test"),
+            )
+
+
+def _force_full_refresh() -> None:
+    ow.OpenRouterModelRegistry._last_fetch = 0
+    ow.OpenRouterModelRegistry._next_refresh_after = 0
+
+
+@pytest.mark.asyncio
+async def test_a_preset_offers_file_upload_exactly_when_its_base_model_does():
+    from open_webui_openrouter_pipe.models.blocklists import DIRECT_UPLOAD_BLOCKLIST
+    from open_webui_openrouter_pipe.models.registry import sanitize_model_id
+
+    blocked_base = sorted(DIRECT_UPLOAD_BLOCKLIST)[0]
+    catalog = {
+        "data": [
+            {"id": blocked_base, "name": "Blocked base"},
+            {"id": "example/open", "name": "Open base"},
+            {"id": "@preset/own-blocked", "name": "Own blocked"},
+            {"id": "@preset/own-open", "name": "Own open"},
+        ]
+    }
+    presets = [
+        _listed_preset("own-blocked", "v1"),
+        _listed_preset("own-open", "v2"),
+        _listed_preset("built-blocked", "v3"),
+        _listed_preset("built-open", "v4"),
+    ]
+    records = {
+        "own-blocked": _preset_record("own-blocked", "v1", {"model": blocked_base}),
+        "own-open": _preset_record("own-open", "v2", {"model": "example/open"}),
+        "built-blocked": _preset_record(
+            "built-blocked", "v3", {"models": [blocked_base, "example/open"]}
+        ),
+        "built-open": _preset_record("built-open", "v4", {"model": "example/open"}),
+    }
+    reg = ow.OpenRouterModelRegistry
+    expected = {
+        sanitize_model_id(blocked_base): (False, False),
+        "example.open": (True, True),
+        "@preset.own-blocked": (False, False),
+        "@preset.own-open": (True, True),
+        "@preset.built-blocked": (False, False),
+        "@preset.built-open": (True, True),
+    }
+
+    def offered() -> dict[str, tuple[bool, bool]]:
+        return {
+            m["id"]: (
+                m["capabilities"]["file_upload"],
+                ow.ModelFamily.supports("file_input", m["id"]),
+            )
+            for m in reg.list_models()
+        }
+
+    await _load_catalog(models=catalog, presets=None, records={})
+    await _load_catalog(models=None, presets=presets, records=records)
+    assert offered() == expected, (
+        "after the presets-only retry a preset's file upload did not follow its base model"
+    )
+
+    _force_full_refresh()
+    await _load_catalog(models=catalog, presets=presets, records=records)
+    assert offered() == expected, (
+        "after a full refresh a preset's file upload did not follow its base model"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_switched_off_preset_stays_out_of_the_catalog_on_every_path_and_is_logged_once(caplog):
+    catalog = {
+        "data": [
+            {"id": "example/one", "name": "One"},
+            {"id": "example/two", "name": "Two"},
+            {"id": "@preset/alpha", "name": "Alpha"},
+            {"id": "@preset/beta", "name": "Beta"},
+        ]
+    }
+    presets = [_listed_preset("alpha", "v1", "disabled"), _listed_preset("beta", "v2")]
+    records = {"beta": _preset_record("beta", "v2", {"model": "example/two"})}
+    reg = ow.OpenRouterModelRegistry
+
+    def holders(norm_id: str) -> list[str]:
+        return [
+            where
+            for where, found in (
+                ("picker", norm_id in {m["id"] for m in reg.list_models()}),
+                ("specs", norm_id in reg._specs),
+                ("id map", norm_id in reg._id_map),
+                ("chat norms", norm_id in reg._chat_catalog_norms),
+            )
+            if found
+        ]
+
+    everywhere = ["picker", "specs", "id map", "chat norms"]
+
+    await _load_catalog(models=catalog, presets=None, records={})
+    assert holders("@preset.alpha") == everywhere
+
+    await _load_catalog(models=None, presets=presets, records=records)
+    assert holders("@preset.alpha") == [], "the presets-only retry kept a disabled preset"
+    assert holders("@preset.beta") == everywhere
+
+    _force_full_refresh()
+    await _load_catalog(models=catalog, presets=presets, records=records)
+    assert holders("@preset.alpha") == [], (
+        "a full refresh served the disabled preset's row from the model list"
+    )
+    assert holders("@preset.beta") == everywhere
+
+    _force_full_refresh()
+    await _load_catalog(models=catalog, presets=None, records={})
+    assert holders("@preset.alpha") == [], (
+        "a failed presets read brought a preset known to be disabled back"
+    )
+    assert holders("@preset.beta") == everywhere
+
+    assert len([r for r in caplog.records if "alpha" in r.getMessage()]) == 1

@@ -1263,6 +1263,13 @@ def _reset_model_registry():
     reg._last_errors = {}
     reg._last_error = None
     reg._last_error_time = 0.0
+    reg._preset_rows = {}
+    reg._preset_details = {}
+    reg._preset_states = {}
+    reg._preset_retry_after = {}
+    reg._preset_read_failing = {}
+    reg._preset_retry_not_before = {}
+    reg._preset_retry_failures = {}
     ModelFamily.set_dynamic_specs(None)
     yield
 
