@@ -1128,8 +1128,12 @@ async def _resolve_storage_context(request: Any, user_obj: Any) -> tuple[Any, An
 
 
 def _answer_videos_with(monkeypatch, pipe, outcome: str) -> list[str]:
-    """Stand in for OpenRouter's video endpoints: a submit that drops, a job that fails, one still running, or one that finishes."""
+    """Stand in for OpenRouter's video endpoints: a submit that drops, a job that fails, one still running, one that finishes, or one that finishes and whose clip Open WebUI's upload handler refuses."""
     from typing import cast
+
+    from fastapi import HTTPException
+
+    from open_webui_openrouter_pipe.storage import owui_files
 
     calls: list[str] = []
     adapter = pipe._ensure_video_generation_adapter()
@@ -1167,9 +1171,16 @@ def _answer_videos_with(monkeypatch, pipe, outcome: str) -> list[str]:
     async def stored(*_args: Any, **_kwargs: Any) -> str:
         return "file-1"
 
+    async def refused_by_open_webui(**_kwargs: Any) -> None:
+        calls.append("upload")
+        raise HTTPException(status_code=413, detail="too large")
+
     monkeypatch.setattr("open_webui_openrouter_pipe.integrations.video.OpenRouterVideoClient", _VideoReplies)
     monkeypatch.setattr(pipe._multimodal_handler, "_download_remote_url_streaming", downloaded)
-    monkeypatch.setattr(pipe._file_gateway, "upload_to_owui_storage_from_path", stored)
+    if outcome == "storage-refused":
+        monkeypatch.setattr(owui_files, "upload_file_handler", refused_by_open_webui)
+    else:
+        monkeypatch.setattr(pipe._file_gateway, "upload_to_owui_storage_from_path", stored)
     monkeypatch.setattr(pipe._file_gateway, "resolve_storage_context", _resolve_storage_context)
     pipe.valves = pipe.valves.model_copy(
         update={
@@ -1240,6 +1251,22 @@ async def test_a_delivered_video_clears_the_users_failures(monkeypatch, threshol
     assert recorded == 0, (recorded, video_reply)
     assert posts == _failing(2 * threshold - 1), (video_reply, replies)
     assert not any("Temporarily disabled" in reply for reply in replies), replies
+
+
+@pytest.mark.asyncio
+async def test_a_video_open_webui_refuses_to_store_does_not_count_toward_the_users_refusal(monkeypatch):
+    pipe = Pipe()
+    _reach_the_media_models(monkeypatch, pipe)
+    calls = _answer_videos_with(monkeypatch, pipe, "storage-refused")
+    try:
+        video_reply = await _media_turn(pipe, _VIDEO_MODEL)
+        recorded = len(pipe._circuit_breaker._breaker_records["user-1"])
+    finally:
+        await pipe.close()
+
+    assert calls.count("upload") == 1, (calls, video_reply)
+    assert "<video>" not in video_reply, video_reply
+    assert recorded == 0, (recorded, video_reply)
 
 
 @pytest.mark.asyncio

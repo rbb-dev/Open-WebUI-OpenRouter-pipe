@@ -2017,6 +2017,22 @@ each took, and the leading number is still the total that went missing:
 to storage (1) and are not shown above.
 ```
 
+When Open WebUI's Max Upload Size refused any of the clips, a second
+sentence names the setting and how many clips it refused:
+
+```markdown
+[openrouter:v1:videojob:<job_id>]: #
+[openrouter:v1:videomodel:<model_id>]: #
+
+<video>
+/api/v1/files/<owui_file_id_1>/content
+</video>
+
+2 of the 3 clips this job delivered could not be saved to storage and
+are not shown above. Open WebUI's Max Upload Size (Admin Panel >
+Settings > Documents) refused 2 of them.
+```
+
 When *every* clip the pipe tried was lost, the card is a different
 sentence, and it names the cause rather than guessing at a party. The
 download step reports why it refused, and the card repeats that reason:
@@ -2440,7 +2456,8 @@ document. Three things follow from it, and none of them is a failed call:
   OpenRouter, so five rewrites inside `BREAKER_WINDOW_SECONDS` will not open your circuit
   for your chat requests. Every other failure after the request is accepted — a job id the
   provider did not return, a provider-reported error, a poll that fell over — is charged
-  exactly once, as before.
+  exactly once, as before, except a clip the pipe's own download policy refused and a
+  completed video none of whose clips Open WebUI stored, which are not charged.
 - **It is not retried.** The request may already have run and been billed upstream, and a
   rewritten reply is rewritten again.
 - **The excerpt is quoted, not scrubbed, and fenced.** The first 200 characters of what
@@ -2494,6 +2511,24 @@ The download step failed mid-stream or wrote zero bytes. Check:
   `Remote streaming download blocked by security policy` for the reason.
 - Downstream storage (`STORAGE_PROVIDER`) is healthy and writable.
 - The pipe process has filesystem write permission to its temp dir.
+
+### "Generated video was not stored" / "Generated video could not be stored in Open WebUI"
+
+OpenRouter completed the job and the pipe downloaded the clips, but Open WebUI
+stored none of them. The generation is billed and its cost is recorded. The
+card does not count toward the user's request limit, and the user's earlier
+failures are cleared, as they are by a video that is delivered.
+
+- **"…larger than Open WebUI's Max Upload Size (Admin Panel > Settings >
+  Documents)"** — Open WebUI's upload handler answered `413` because a limit is
+  set under that setting and the clip is bigger. Open WebUI sets no limit by
+  default. Raise or clear the setting in Open WebUI; the pipe has no setting
+  for it. The WARNING in the log reads
+  `Open WebUI's Max Upload Size refused <file>, so it was not stored`.
+- **"…the upload failed"** — Open WebUI's storage did not take the file (the
+  log carries `Failed to streaming-upload … to OWUI storage` with the error),
+  or the request carried no user or request to store the file under (the log
+  says the job `has no resolved storage identity`).
 
 ### "The selected video model does not accept frame images"
 

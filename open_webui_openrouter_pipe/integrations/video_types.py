@@ -18,6 +18,10 @@ class VideoGenerationError(RuntimeError):
     pass
 
 
+class VideoNotStored(VideoGenerationError):
+    pass
+
+
 class VideoGenerationStalled(VideoGenerationError):
     pass
 

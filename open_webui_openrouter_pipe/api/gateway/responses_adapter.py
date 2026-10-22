@@ -292,6 +292,11 @@ def _record_failed_call(
             charge_holder.recorded_at = recorded_at
 
 
+def _clear_failed_calls(pipe: Pipe, breaker_key: str | None) -> None:
+    if breaker_key:
+        pipe._circuit_breaker.reset(breaker_key)
+
+
 def _withdraw_repaired_failure(
     pipe: Pipe, breaker_key: str | None, charge_holder: _FailureCharge | None
 ) -> None:

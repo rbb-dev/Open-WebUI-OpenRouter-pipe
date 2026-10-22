@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 import aiohttp
 from starlette.responses import StreamingResponse
 
-from ..api.gateway.responses_adapter import _record_failed_call
+from ..api.gateway.responses_adapter import _clear_failed_calls, _record_failed_call
 from ..core.config import (
     _PIPE_METADATA_KEY,
     OWUI_CHAT_ID,
@@ -143,6 +143,7 @@ from .video_types import (
     VideoGenerationError,
     VideoGenerationStalled,
     VideoLifecycleResult,
+    VideoNotStored,
     VideoStatusUnavailable,
 )
 
@@ -205,7 +206,7 @@ def _attachment_position(entry: dict[str, Any]) -> int:
     return 0
 
 
-def _shortfall_note(missing: int, attempted: int, fetched: int) -> str:
+def _shortfall_note(missing: int, attempted: int, fetched: int, refused: int = 0) -> str:
     never_fetched = max(attempted - fetched, 0)
     unstored = max(missing - never_fetched, 0)
     if never_fetched and unstored:
@@ -216,10 +217,16 @@ def _shortfall_note(missing: int, attempted: int, fetched: int) -> str:
         cause = "could not be saved to storage"
     else:
         cause = "could not be shown"
-    return (
+    note = (
         f"\n{missing} of the {attempted} clips this job delivered {cause} "
-        "and are not shown above.\n"
+        "and are not shown above."
     )
+    if refused > 0:
+        note += (
+            " Open WebUI's Max Upload Size (Admin Panel > Settings > Documents) "
+            f"refused {refused} of them."
+        )
+    return note + "\n"
 
 
 _CLIP_REFUSAL_CLAUSES = {
@@ -1760,7 +1767,7 @@ class VideoGenerationAdapter:
                     "Video job %s has no resolved storage identity; the clip was not uploaded",
                     job_id,
                 )
-                raise VideoGenerationError(
+                raise VideoNotStored(
                     "Generated video could not be stored in Open WebUI; the upload failed."
                 )
             refusals: list[str] = []
@@ -1793,12 +1800,12 @@ class VideoGenerationAdapter:
                         index,
                     )
             if not file_ids and refusals:
-                raise VideoGenerationError(
+                raise VideoNotStored(
                     "Generated video was not stored: it is larger than Open WebUI's Max Upload "
                     "Size (Admin Panel > Settings > Documents); its cost is recorded."
                 )
             if not file_ids:
-                raise VideoGenerationError(
+                raise VideoNotStored(
                     "Generated video could not be stored in Open WebUI; the upload failed."
                 )
             file_id = file_ids[0]
@@ -1810,6 +1817,7 @@ class VideoGenerationAdapter:
                 usage=usage,
                 attempted=outputs,
                 fetched=len(downloads),
+                refused=len(refusals),
             )
             if disclosure_block:
                 content = disclosure_block + "\n" + content
@@ -1923,7 +1931,9 @@ class VideoGenerationAdapter:
         except Exception as exc:
             self.logger.exception("Video lifecycle failed (job_id=%s)", job_id)
             failed = True
-            if not (refused_by_policy and not download_faults):
+            if isinstance(exc, VideoNotStored):
+                _clear_failed_calls(self._pipe, breaker_key)
+            elif not (refused_by_policy and not download_faults):
                 _record_failed_call(self._pipe, breaker_key)
             elapsed = max(0.0, time.monotonic() - started_at)
             reason = str(exc) or exc.__class__.__name__
@@ -4272,6 +4282,7 @@ class VideoGenerationAdapter:
         usage: dict[str, Any],
         attempted: int = 0,
         fetched: int = 0,
+        refused: int = 0,
     ) -> str:
         clips = "".join(
             f"<video>\n/api/v1/files/{file_id}/content\n</video>\n\n" for file_id in file_ids
@@ -4279,7 +4290,7 @@ class VideoGenerationAdapter:
         shortfall = ""
         missing = max(attempted - len(file_ids), 0)
         if missing > 0:
-            shortfall = _shortfall_note(missing, attempted, fetched)
+            shortfall = _shortfall_note(missing, attempted, fetched, refused)
         return (
             f"{_serialize_kind_marker(self.JOB_MARKER_KIND, _safe_marker_body(job_id))}\n"
             f"{_serialize_kind_marker(self.MODEL_MARKER_KIND, _safe_marker_body(model_id))}\n\n"
