@@ -28,10 +28,10 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -92,7 +92,7 @@ jobs:
       # consumes it. `bundle.yml` only reaches its Build job when this whole workflow has
       # succeeded, so a bundle that failed the gate is still never published.
       - name: Upload the verified bundles
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: verified-bundles-${{ github.run_id }}
           path: |
@@ -131,7 +131,7 @@ jobs:
             bundle: open_webui_openrouter_pipe_bundled_compressed_no_plugins.py
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # After the checkout, never before it: the bundles are gitignored, and
       # actions/checkout cleans untracked files out of the workspace by default, so a
@@ -141,7 +141,7 @@ jobs:
       # still reads all four artifacts off disk -- tests the exact bytes `build` produced,
       # type-checked and uploaded.
       - name: Download the verified bundles
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: verified-bundles-${{ github.run_id }}
 
@@ -158,7 +158,7 @@ jobs:
       # Enforced, not advisory: a green cell means these readers ran, so a checkout that
       # silently failed cannot report as a passing build.
       - name: Check out Open WebUI at the pinned tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: open-webui/open-webui
           ref: v0.11.4
@@ -188,7 +188,7 @@ jobs:
           echo "the pinned Open WebUI source is in place"
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
