@@ -772,7 +772,7 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "SESSION_LOG_ZIP_COMPRESSLEVEL": {
         "title": "Session log compression level",
         "group": "Logging/Session Logs",
-        "detail": "How hard `deflated`/`bzip2` compression works on session-log archives - more CPU for smaller files.\n\nThe range is per codec: `deflated` takes 0-9, where 0 stores without compressing, and `bzip2` takes 1-9, because bzip2 has no level 0; a 0 entered while `bzip2` is selected is read as 1.\n\nLeft unset (the default), each codec uses its own built-in level. The `stored` and `lzma` codecs ignore this entirely, and because `Session log archive codec` defaults to `lzma`, the setting has no effect until that codec is switched to `deflated` or `bzip2`. Clearing this box and saving returns it to unset.\n\n**Tip:** Rarely worth changing; switch the codec first, then tune this."
+        "detail": "How hard `deflated`/`bzip2` compression works on session-log archives - more CPU for smaller files.\n\nBoth codecs take levels 1 to 9. A 0 is refused when saved: bzip2 has no level 0, and `deflated` at 0 only stores the entries uncompressed, which the `stored` codec already does. A 0 saved by an earlier release is ignored on load, and the codec's built-in level applies instead.\n\nLeft unset (the default), each codec uses its own built-in level. The `stored` and `lzma` codecs ignore this entirely, and because `Session log archive codec` defaults to `lzma`, the setting has no effect until that codec is switched to `deflated` or `bzip2`. Clearing this box and saving returns it to unset.\n\n**Tip:** Rarely worth changing; switch the codec first, then tune this."
     },
     "SESSION_LOG_ZIP_PASSWORD": {
         "title": "Archive encryption passphrase",

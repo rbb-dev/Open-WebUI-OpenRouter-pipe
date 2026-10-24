@@ -34,7 +34,6 @@ from .url_scheme import (
     url_scheme,
 )
 from .valve_salvage import (
-    _STALE_VALVES_WARN_EVERY_S,
     _VALVE_SCHEMA_CACHE,  # noqa: F401
     _valve_schema,  # noqa: F401
     _warned_stale_valves,  # noqa: F401
@@ -64,20 +63,8 @@ except Exception:
 logger = logging.getLogger(__name__)
 
 _warned_forward_headers: set[str] = set()
-_warned_bzip2_compresslevel: dict[str, float] = {}
 
-_BZIP2_COMPRESSLEVEL_ADAPTER: TypeAdapter[int | None] = TypeAdapter(int | None)
 _LOOP_COUNT_ADAPTER: TypeAdapter[int] = TypeAdapter(int)
-
-
-def _warn_bzip2_level_floored() -> None:
-    logger.log(
-        warn_level(_warned_bzip2_compresslevel, "0", cooldown_s=_STALE_VALVES_WARN_EVERY_S),
-        "Session log zip compression is bzip2 at level 0, which bzip2 cannot use; "
-        "writing archives at level 1. bzip2 takes levels 1-9: set Session log zip "
-        "compress level to 1-9, or choose another codec. The stored setting still "
-        "reads 0 until it is saved again.",
-    )
 
 
 _OPENROUTER_TITLE = "Open WebUI plugin for OpenRouter Responses API"
@@ -1067,24 +1054,6 @@ class Valves(BaseModel):
             return dict(values, MAX_FUNCTION_CALL_LOOPS=1)
         return values
 
-    @model_validator(mode="before")
-    @classmethod
-    def _floor_the_bzip2_compression_level(cls, values):
-        if not isinstance(values, Mapping):
-            return values
-        if values.get("SESSION_LOG_ZIP_COMPRESSION") != "bzip2":
-            return values
-        try:
-            coerced = _BZIP2_COMPRESSLEVEL_ADAPTER.validate_python(
-                values.get("SESSION_LOG_ZIP_COMPRESSLEVEL")
-            )
-        except ValidationError:
-            return values
-        if coerced != 0:
-            return values
-        _warn_bzip2_level_floored()
-        return dict(values, SESSION_LOG_ZIP_COMPRESSLEVEL=1)
-
     @model_validator(mode="wrap")
     @classmethod
     def _drop_unvalidatable(cls, values, handler):
@@ -2059,14 +2028,14 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     )
     SESSION_LOG_ZIP_COMPRESSLEVEL: int | None = Field(
         default=None,
-        ge=0,
+        ge=1,
         le=9,
         description=(
-            "Compression level for deflated (0-9) and bzip2 (1-9) zip compression; 0 "
-            "stores a deflated entry without compressing it, and bzip2 has no such "
-            "level. "
+            "Compression level (1-9) for deflated and bzip2 zip compression. "
             "Ignored for stored/lzma. "
-            "A 0 under bzip2 is read as 1."
+            "A 0 is not accepted: bzip2 has no level 0, and deflated at 0 only stores "
+            "the entries uncompressed, which the stored codec already does. "
+            "A 0 stored by an earlier release is ignored."
         ),
     )
     SESSION_LOG_MAX_LINES: int = Field(
