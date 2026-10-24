@@ -3008,3 +3008,281 @@ async def test_only_copies_installed_under_a_per_load_id_are_removed(monkeypatch
         "someone_elses_filter",
         "someone_elses_filter_1",
     ]
+
+
+async def _send_pictures_to_a_video_model(
+    monkeypatch,
+    *,
+    frame_types,
+    description,
+    pictures,
+    frame_mode="auto",
+    model_id="acme/glimmer-video-1",
+    helper=None,
+):
+    import base64
+
+    import aiohttp
+    from aioresponses import CallbackResult
+    from open_webui.models.config import Config as _OwuiConfig
+
+    from open_webui_openrouter_pipe import EncryptedStr
+    from open_webui_openrouter_pipe.core.config import _PIPE_METADATA_KEY
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import render_video_filter_source
+    from open_webui_openrouter_pipe.integrations import video as video_module
+    from open_webui_openrouter_pipe.integrations import video_intent as video_intent_module
+    from tests.media_slots import bare_slot
+    from tests.posted_body import posted_json
+
+    video_model = {
+        "id": model_id,
+        "name": "Acme: Glimmer Video 1",
+        "supported_frame_images": list(frame_types),
+        "supported_durations": [4, 8],
+        "supported_aspect_ratios": ["16:9"],
+        "supported_resolutions": ["720p"],
+        "allowed_passthrough_parameters": [],
+    }
+    row = {
+        "slug": model_id,
+        "description": description,
+        "endpoint": {"model_variant_slug": model_id, "provider_info": {"slug": "acme"}},
+    }
+    pipe = Pipe()
+    pipe.valves.API_KEY = EncryptedStr("test-api-key")
+    pipe.valves.VIDEO_INITIAL_POLL_DELAY_SECONDS = 0
+    pipe.valves.VIDEO_POLL_INTERVAL_SECONDS = 1
+    pipe.valves.VIDEO_POLL_INTERVAL_MAX_SECONDS = 1
+    pipe.valves.UPDATE_MODEL_IMAGES = False
+    pipe.valves.UPDATE_MODEL_CAPABILITIES = False
+    pipe.valves.AUTO_ATTACH_WEB_TOOLS_FILTER = False
+    manager = pipe._ensure_catalog_manager()
+    manager._update_or_insert_model_with_metadata = AsyncMock()
+    monkeypatch.setattr(
+        manager, "_fetch_frontend_model_catalog", AsyncMock(return_value={"data": [row]})
+    )
+    try:
+        await manager._sync_model_metadata_to_owui(
+            [{"id": model_id.replace("/", "."), "name": "Glimmer", "original_id": model_id}],
+            pipe_identifier="test_pipe",
+        )
+        OpenRouterModelRegistry.register_video_models([video_model])
+
+        module = _load_filter_from_source(
+            render_video_filter_source(model_id=model_id, video_model=video_model),
+            "glimmer_video_filter",
+        )
+        instance = module.Filter()
+        metadata: dict = {"chat_id": "chat-1", "message_id": "msg-1", "user_id": "user-1"}
+        instance.inlet(
+            {
+                "model": model_id,
+                "messages": [{"role": "user", "content": "go"}],
+                "files": [
+                    {"id": f"file-{name}", "name": name, "content_type": "image/png"}
+                    for name in pictures
+                ],
+            },
+            __metadata__=metadata,
+            __user__={"valves": instance.UserValves(VIDEO_FRAME_MODE=frame_mode)},
+            __model__={},
+        )
+        assert metadata[_PIPE_METADATA_KEY]["video_generation"], "the filter wrote no request"
+
+        async def _file(file_id, _logger):
+            return SimpleNamespace(id=file_id, filename=file_id, user_id="user-1")
+
+        async def _bytes(file_obj, *_args, **_kwargs):
+            return bare_slot(base64.b64encode(str(file_obj.id).encode()).decode())
+
+        monkeypatch.setattr(video_module, "get_file_by_id", _file)
+        monkeypatch.setattr(video_module, "infer_file_mime_type", lambda _obj: "image/png")
+        monkeypatch.setattr(pipe._file_gateway, "read_file_record_media", _bytes)
+
+        class _Chat:
+            async def load_message_content(self, **_kwargs):
+                return ""
+
+        cast(Any, pipe._ensure_video_generation_adapter())._persistence = _Chat()
+        asked: list[dict] = []
+        if helper is not None:
+            _OwuiConfig._rows["task.model.default"] = "task-llm"
+            _OwuiConfig._rows["task.model.external"] = "task-llm"
+            reply = {
+                "attachments_words": "",
+                "attachments_as": "not_said",
+                "intent": "image_to_video",
+                "frame_plan": [],
+                "prompt": "go",
+                "use_user_prompt": False,
+                "language": "en",
+                "confidence": "high",
+                "clarification": {"needs": False, "question": "", "options": None, "reason": ""},
+                "reason": "the test's helper",
+                **helper,
+            }
+
+            async def _answer(form_data):
+                asked.append(form_data)
+                return {"choices": [{"message": {"content": json.dumps(reply)}}]}
+
+            monkeypatch.setattr(
+                video_intent_module, "_make_default_invoke", lambda _request, _user: _answer
+            )
+        posted: list[dict] = []
+
+        def _accept(_url, **kwargs):
+            posted.append(posted_json(kwargs))
+            return CallbackResult(status=200, payload={"id": "job-1", "status": "pending"})
+
+        base = pipe.valves.BASE_URL
+        with aioresponses() as http:
+            http.post(f"{base}/videos", callback=_accept)
+            http.get(
+                f"{base}/videos/job-1",
+                payload={"status": "failed", "error": "stopped for this test"},
+                repeat=True,
+            )
+            async with aiohttp.ClientSession() as session:
+                card = await pipe._ensure_video_generation_adapter().generate(
+                    body={"messages": [{"role": "user", "content": "go"}]},
+                    responses_body=SimpleNamespace(provider={}),
+                    valves=pipe.valves,
+                    session=session,
+                    event_emitter=None,
+                    metadata=metadata,
+                    user={"id": "user-1"},
+                    request=None,
+                    user_obj=SimpleNamespace(id="user-1", email="u@example.com", name="u"),
+                    normalized_model_id=model_id.replace("/", "."),
+                    api_model_id=model_id,
+                )
+    finally:
+        await pipe.close()
+    assert len(posted) == 1, f"OpenRouter was sent {len(posted)} requests"
+    assert bool(asked) is (helper is not None), f"the helper was asked {len(asked)} time(s)"
+    return posted[0], card
+
+
+def _data_url_of(name: str) -> str:
+    import base64
+
+    return "data:image/png;base64," + base64.b64encode(f"file-{name}".encode()).decode()
+
+
+@pytest.mark.asyncio
+async def test_two_pictures_for_a_model_that_mentions_references_all_go_in_as_references(
+    monkeypatch,
+):
+    sent, _card = await _send_pictures_to_a_video_model(
+        monkeypatch,
+        frame_types=["first_frame"],
+        description="Glimmer makes short clips from a prompt, a first frame or reference images.",
+        pictures=["environment.png", "character.png"],
+    )
+
+    assert "frame_images" not in sent, sent
+    assert [entry["image_url"]["url"] for entry in sent["input_references"]] == [
+        _data_url_of("environment.png"),
+        _data_url_of("character.png"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pictures_beyond_the_frames_are_named_not_sent_for_a_model_silent_on_references(
+    monkeypatch,
+):
+    sent, card = await _send_pictures_to_a_video_model(
+        monkeypatch,
+        frame_types=["first_frame", "last_frame"],
+        description="Glimmer 2 makes short clips from a prompt or from a first and a last frame.",
+        pictures=["start.png", "middle.png", "end.png"],
+    )
+
+    assert [(f["frame_type"], f["image_url"]["url"]) for f in sent["frame_images"]] == [
+        ("first_frame", _data_url_of("start.png")),
+        ("last_frame", _data_url_of("end.png")),
+    ]
+    assert "input_references" not in sent, sent
+    assert "Not sent with this video" in card and "middle.png" in card, card
+
+
+@pytest.mark.asyncio
+async def test_a_frames_choice_keeps_the_frames_on_a_model_that_mentions_references(monkeypatch):
+    sent, card = await _send_pictures_to_a_video_model(
+        monkeypatch,
+        frame_types=["first_frame", "last_frame"],
+        description="Glimmer 3 makes short clips from a prompt, frames or reference images.",
+        pictures=["start.png", "middle.png", "end.png"],
+        frame_mode="first_only",
+    )
+
+    assert [f["image_url"]["url"] for f in sent["frame_images"]] == [_data_url_of("start.png")]
+    assert "input_references" not in sent, sent
+    assert "middle.png" in card and "end.png" in card, card
+
+
+@pytest.mark.asyncio
+async def test_a_model_measured_to_ignore_reference_pictures_gets_frames_though_its_description_mentions_them(
+    monkeypatch,
+):
+    sent, card = await _send_pictures_to_a_video_model(
+        monkeypatch,
+        model_id="minimax/hailuo-2.3",
+        frame_types=["first_frame"],
+        description="A model that makes short clips from a prompt, a first frame or reference images.",
+        pictures=["environment.png", "character.png"],
+    )
+
+    assert "input_references" not in sent, sent
+    assert [f["image_url"]["url"] for f in sent["frame_images"]] == [_data_url_of("environment.png")]
+    assert "character.png" in card, card
+
+
+@pytest.mark.asyncio
+async def test_the_helper_saying_references_sends_every_picture_as_a_reference_though_the_frames_fit(
+    monkeypatch,
+):
+    sent, _card = await _send_pictures_to_a_video_model(
+        monkeypatch,
+        frame_types=["first_frame", "last_frame"],
+        description="Glimmer 4 makes short clips from a prompt, frames or reference images.",
+        pictures=["environment.png", "character.png"],
+        helper={
+            "attachments_words": "use the first picture as the environment and the second as the character",
+            "attachments_as": "references",
+        },
+    )
+
+    assert "frame_images" not in sent, sent
+    assert [entry["image_url"]["url"] for entry in sent["input_references"]] == [
+        _data_url_of("environment.png"),
+        _data_url_of("character.png"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_helper_saying_frames_keeps_the_frames_and_names_the_rest_on_a_model_that_mentions_references(
+    monkeypatch,
+):
+    sent, card = await _send_pictures_to_a_video_model(
+        monkeypatch,
+        frame_types=["first_frame", "last_frame"],
+        description="Glimmer 5 makes short clips from a prompt, frames or reference images.",
+        pictures=["start.png", "middle.png", "end.png"],
+        helper={
+            "attachments_words": "start from the first picture and end on the last one",
+            "attachments_as": "frames",
+            "frame_plan": [
+                {"source": "uploaded_attachment", "source_index": 0, "timestamp_seconds": None, "target": "first_frame"},
+                {"source": "uploaded_attachment", "source_index": 2, "timestamp_seconds": None, "target": "last_frame"},
+            ],
+        },
+    )
+
+    assert "input_references" not in sent, sent
+    assert [(f["frame_type"], f["image_url"]["url"]) for f in sent["frame_images"]] == [
+        ("first_frame", _data_url_of("start.png")),
+        ("last_frame", _data_url_of("end.png")),
+    ]
+    assert "middle.png" in card, card

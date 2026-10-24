@@ -107,6 +107,45 @@ def _frontend_catalog_answered(frontend_data: Any) -> TypeGuard[dict[str, Any]]:
     return isinstance(frontend_data, dict) and isinstance(frontend_data.get("data"), list)
 
 
+_REFERENCE_WORD = re.compile(r"\breferenc", re.IGNORECASE)
+
+MODELS_MEASURED_TO_IGNORE_REFERENCE_PICTURES = frozenset(
+    {"alibaba/wan-2.6", "minimax/hailuo-2.3"}
+)
+
+REFERENCE_PICTURES_TAKEN = "taken"
+REFERENCE_PICTURES_IGNORED = "ignored"
+REFERENCE_PICTURES_UNMENTIONED = "unmentioned"
+REFERENCE_PICTURES_UNREAD = "unread"
+
+_REFERENCE_PICTURE_VERDICTS = frozenset(
+    {
+        REFERENCE_PICTURES_TAKEN,
+        REFERENCE_PICTURES_IGNORED,
+        REFERENCE_PICTURES_UNMENTIONED,
+        REFERENCE_PICTURES_UNREAD,
+    }
+)
+
+
+def description_names_references(description: Any) -> bool:
+    return isinstance(description, str) and _REFERENCE_WORD.search(description) is not None
+
+
+def catalog_model_id(model: Any, fallback: str) -> str:
+    candidate = model.get("id") if isinstance(model, dict) else None
+    chosen = candidate if isinstance(candidate, str) and candidate else fallback
+    return chosen.lstrip("~")
+
+
+def model_reference_pictures(pipe: Any, model_id: str) -> str:
+    answer = getattr(getattr(pipe, "_catalog_manager", None), "reference_pictures", None)
+    verdict = answer(model_id) if callable(answer) else None
+    if isinstance(verdict, str) and verdict in _REFERENCE_PICTURE_VERDICTS:
+        return verdict
+    return REFERENCE_PICTURES_UNREAD
+
+
 def _ensure_pipe_meta(meta_dict: dict) -> dict:
     pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
     if isinstance(pipe_meta, dict):
@@ -987,6 +1026,7 @@ class ModelCatalogManager:
         self._model_param_digest: frozenset[tuple[str, str]] | None = None
 
         self._cached_provider_map: dict[str, dict[str, Any]] = {}
+        self._cached_reference_mentions: dict[str, bool] | None = None
         self._provider_overlay_failed_slugs: frozenset[str] = frozenset()
         self._provider_overlay_skipped_slugs: frozenset[str] = frozenset()
         self._provider_overlay_unreadable_slugs: frozenset[str] = frozenset()
@@ -999,6 +1039,29 @@ class ModelCatalogManager:
 
     def get_cached_provider_map(self) -> dict[str, dict[str, Any]]:
         return self._cached_provider_map
+
+    def reference_pictures(self, model_id: str) -> str:
+        mentions = self._cached_reference_mentions
+        if mentions is None or model_id not in mentions:
+            return REFERENCE_PICTURES_UNREAD
+        if not mentions[model_id]:
+            return REFERENCE_PICTURES_UNMENTIONED
+        if model_id in MODELS_MEASURED_TO_IGNORE_REFERENCE_PICTURES:
+            return REFERENCE_PICTURES_IGNORED
+        return REFERENCE_PICTURES_TAKEN
+
+    def _remember_which_models_name_references(self, frontend_data: Any) -> None:
+        if not _frontend_catalog_answered(frontend_data) or not frontend_data["data"]:
+            return
+        mentions: dict[str, bool] = {}
+        for item in frontend_data["data"]:
+            slug = item.get("slug") if isinstance(item, dict) else None
+            if not isinstance(slug, str) or not slug:
+                continue
+            mentions[slug] = mentions.get(slug, False) or description_names_references(
+                item.get("description")
+            )
+        self._cached_reference_mentions = mentions
 
     @staticmethod
     def _model_form_supports_access_control(model_form_cls: Any) -> bool:
@@ -1830,6 +1893,7 @@ class ModelCatalogManager:
                         continue
                     provider_map[slug] = dict(previous)
             self._cached_provider_map = provider_map
+            self._remember_which_models_name_references(frontend_data)
             self.logger.info(
                 "Provider map built: %d models have provider info. Sample keys: %s",
                 len(provider_map),

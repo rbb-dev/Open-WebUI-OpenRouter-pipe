@@ -58,7 +58,12 @@ filters' source is switched off too.
    each filter draws only the controls that model publishes.
 5. (Optional) Attach one or two images. The first image becomes the
    `first_frame`, and if you attach two and the model supports
-   `last_frame`, the second becomes the closing frame.
+   `last_frame`, the second becomes the closing frame. Say in your message
+   what the pictures are for and that is what they become: ask to start or
+   end on a picture and they are frames; give them roles, such as a
+   character, a place or a style, and they go in as references on a model
+   that takes reference pictures. See
+   [Attachments that are not frames](#attachments-that-are-not-frames).
 6. Type your prompt and press send.
 7. The chat shows a status line while the job runs — submitting, then
    whatever the provider reports while it works, then downloading — and
@@ -438,6 +443,11 @@ ink-wash looks.
 - **First-frame only**: 2.3 dropped last-frame conditioning that 2.0
   had, so you can anchor the opening still but cannot pin the ending —
   plan motion to flow forward from the first frame.
+- **Reference pictures are not used**: OpenRouter's description mentions
+  references, but a test on 24 October 2026 found the clip opening on the
+  first picture exactly and never using the second, so the pipe sends this
+  model frames only and names the other pictures as not sent. See
+  [Attachments that are not frames](#attachments-that-are-not-frames).
 - Hailuo rewards specific physical and emotional direction (e.g.
   "tight smile turning to laughter," "cloth catches the wind, then
   settles") far more than other models — vague prompts under-use its
@@ -501,6 +511,12 @@ control, 9-grid input, instruction-based editing, or stronger physics.
   conditioning but has no `last_frame`. To define both endpoints of a
   clip, you must upgrade to Wan 2.7 — don't try to fake it through
   prompts.
+- **Reference pictures are not used**: OpenRouter's description mentions
+  references, but a test on 24 October 2026 found the job accepted and
+  billed with the pictures ignored, so the pipe sends this model frames
+  only and names the other pictures as not sent. For pictures that fix a
+  character or a place, use Wan 2.7. See
+  [Attachments that are not frames](#attachments-that-are-not-frames).
 - `shot_type` controls camera framing/composition (e.g. values like
   `medium_to_closeup`), used for cinematic shot intent; this knob was
   removed in 2.7. For multi-shot scripts, write scene-timed segments in
@@ -1204,7 +1220,7 @@ default applies; the second gets no control.
 | `VIDEO_ASPECT_RATIO` | `Literal["", …]` | `""` | top-level `aspect_ratio` | `supported_aspect_ratios` non-empty | 27 (all except FLUX Video Edit, FLUX Video Upscale) |
 | `VIDEO_RESOLUTION` | `Literal["", …]` | `""` | top-level `resolution` | `supported_resolutions` non-empty | 26 (all except FLUX Video Edit, FLUX Video Upscale, Aleph 2.0) |
 | `VIDEO_SIZE` | `Literal["", …]` | `""` | top-level `size` | `supported_sizes` non-empty | 19 of 29 |
-| `VIDEO_FRAME_MODE` | `Literal["auto", "none"]("first_only", "first_last")` | `"auto"` | controls which chat-attached images become `frame_images[]` keyframes and which are sent as references instead (the keyframes go first and the references after them, in the order you attached them, up to the 16 a request carries — past that the excess is left out and named in the chat); under `"none"` no picture is sent as a reference either and every picture is left in the request; a clip or a sound file attached alongside is not a picture and is still sent as a reference | `supported_frame_images` non-empty | 24 of 29 |
+| `VIDEO_FRAME_MODE` | `Literal["auto", "none"]("first_only", "first_last")` | `"auto"` | decides whether chat-attached images go out as `frame_images[]` keyframes or as `input_references[]`, and a request carries one of the two, never both: with `"auto"` the first image (and the last, on a model that takes both ends) are keyframes unless the pictures go in as references; while `Reuse previous videos` is on, words in the message that give the pictures roles send every picture as a reference on a model that takes reference pictures, and words that ask to start or end on a picture keep the keyframes; when the message says neither, or that control is off, more images than the keyframes take, or a clip or a sound file with the pictures, send everything as references on a model that takes them (in the order attached and up to the 16 a request carries; past that the excess is left out and named in the chat), and otherwise only the keyframes are sent and the rest is left out and named in the chat; `"first_only"` and `"first_last"` keep the keyframes and leave out and name anything else; under `"none"` no picture is sent as a frame or as a reference and every picture is left in the request; a clip or a sound file attached alongside is not a picture and is still sent as a reference while the request carries no frame; the chosen value travels in the request metadata as `frame_mode`, and a filter row not refreshed since this rule carries none, which counts as `"auto"` | `supported_frame_images` non-empty | 24 of 29 |
 | `VIDEO_NEGATIVE_PROMPT` | `str` | `""` | passthrough `negative_prompt` (or `negativePrompt` on Veo) | `"negative_prompt"` or `"negativePrompt"` in `allowed_passthrough_parameters` | 8 of 29 |
 | `VIDEO_GENERATE_AUDIO` | `Literal["model_default", "on", "off"]` | `"model_default"` | top-level `generate_audio` (boolean) | not published as `false` | 22 of 29 |
 | `VIDEO_SEED` | `int` (`ge=0`) | `0` | top-level `seed` | not published as `false` | 19 of 29 |
@@ -1314,27 +1330,32 @@ rules:
   a `last_frame`, or only reference images. Meaning:
   - `auto`: if you attach images, the first becomes `first_frame` (and if
     the model supports `last_frame` AND you attached more, the last
-    becomes `last_frame`).
+    becomes `last_frame`), unless the pictures go in as references. While
+    `Reuse previous videos` is on, words in your message that give the
+    pictures roles send them all as references on a model that takes
+    reference pictures, and words that ask to start or end on a picture keep
+    the frames. When the message says neither, or that control is off, more
+    than the frames take, or a clip or a sound file with the pictures,
+    sends everything as references on a model that takes them and the
+    frames alone on any other. See
+    [Attachments that are not frames](#attachments-that-are-not-frames).
   - `none`: no attached image anchors the clip, and none is sent to the
     model as a reference either. The picture stays in the request; see
     [Attachments that are not frames](#attachments-that-are-not-frames).
   - `first_only`: even if multiple images are attached, only the first is
-    used as `first_frame`.
+    used as `first_frame`. Everything else attached is not sent and is
+    named in the chat under **Not sent with this video**.
   - `first_last`: attach exactly two images to get start and end keyframes.
-    With three or more, the first and last are the keyframes and every
-    image in between is still sent — as a reference the model can use,
-    not dropped. One request carries at most 16 references, so past that
-    the remainder is left out and the **Not sent with this video** list
-    names it — as plain text, with any Markdown punctuation in a name you
-    chose removed, so a preference key cannot become a link or an image
-    fetch in the stored transcript. The middle images keep
-    the order you attached them in and follow the two keyframes in the
-    request, so the first keyframe is never pushed back by however many
-    middle images there are. A classifier instruction that collides with
-    one of the two slots the dropdown filled is resolved in the dropdown's
-    favour and named with a ⚠️ note: the slot keeps the picture you set, and
-    the request carries one frame per slot rather than two rows competing
-    for the same one.
+    With three or more, the first and last are the keyframes and nothing
+    else goes with them: every image in between, and any clip or sound
+    file, is not sent and is named under **Not sent with this video** — as
+    plain text, with any Markdown punctuation in a name you chose removed,
+    so a preference key cannot become a link or an image fetch in the
+    stored transcript. When the helper's verdict is `frames` and its plan
+    collides with one of the two slots the dropdown filled, the collision is
+    resolved in the dropdown's favour and named with a ⚠️ note: the slot
+    keeps the picture you set, and the request carries one frame per slot
+    rather than two rows competing for the same one.
 - Setting `Size` to exact pixel dimensions settles any argument with the
   other two shape knobs: a `Resolution` tier that disagrees with those
   pixels, or an `Aspect ratio` that is not the shape of those pixels, is
@@ -1390,7 +1411,9 @@ generation job and returns the model's help blurb directly:
 - **Best known for**: research-grounded paragraph (signature features,
   use cases, position vs siblings).
 - **Output capabilities**: live durations, aspect ratios, resolutions,
-  frame controls, audio, seed — read from the live catalog.
+  frame controls, what Frames on `auto` does with pictures beyond the
+  frames (for a model that takes frames), audio, seed — read from the live
+  catalog.
 - **Controls**: every control this model's filter draws — the model's own
   settings, each with a one-sentence description tailored to it, then the
   four reuse-of-previous-video controls, which read the same on every
@@ -1481,16 +1504,121 @@ instead, as described next.
 
 ## Attachments that are not frames
 
-Anything you attach that the Frames control does not claim — extra
-images, a second image on a first-frame-only model, a clip, a sound file,
-or any image at all on a model with no frame support — is sent to the
-model as a **reference**: material for it to draw on rather than a fixed
-start or end point. One request carries at most 16 references, the
-request format's own ceiling; past that the excess is left out and the
-**Not sent with this video** list says how many and why, and the render
-still goes ahead. A name in that list is shown as plain text with its
-Markdown punctuation removed, so a preference key you chose cannot become
-a link or an image fetch in the stored transcript.
+What you attach goes in as frames or as references, never both. A **frame**
+is a picture that fixes the start or the end of the clip. A **reference**
+is material the model draws on rather than a fixed start or end point: a
+picture, a clip or a sound file. OpenRouter's video guide says that when a
+request carries both, the frames take precedence and the request is
+treated as image-to-video, and HeyGen Video refuses the mix outright, so
+the pipe settles it in one place, after the video helper has read the
+message and before it reads or uploads any attachment for the request. The
+links typed into a model's own reference controls, such as Reference
+images JSON, are a separate channel that this choice does not touch.
+
+The two modes are what the request then carries:
+
+- **Frames.** The frames are sent, and whatever would have gone along as a
+  reference is not sent: each is named under **Not sent with this video**
+  with the reason, and the render still goes ahead. A name in that list is
+  shown as plain text with its Markdown punctuation removed, so a
+  preference key you chose cannot become a link or an image fetch in the
+  stored transcript.
+- **References.** Every picture goes in as a reference, in the order you
+  attached them, together with any clip or sound file, and no frame is
+  sent.
+
+What decides, in this order:
+
+1. **The Frames setting.** `none` sends no picture, `first_only` and
+   `first_last` send frames and nothing else. Only `auto` goes on.
+2. **A frame taken from an earlier video** and placed in a frame slot keeps
+   the frames.
+3. **What the message says**, as read by the video helper (the classifier
+   behind `Reuse previous videos`). Words that make a picture the opening
+   or the closing image ("start from the first picture and end on the last
+   one") mean frames. Words that give the pictures a role in the scene,
+   who or what appears, where it happens or how it looks ("the first
+   picture is the environment and the second the character", "in the style
+   of these") mean references, on a model that takes reference pictures;
+   on any other model the frames are sent. Words that do both mean frames.
+   This holds even when the frames would have fitted the pictures
+   exactly: two pictures given roles on a model with an opening and a
+   closing slot go in as two references.
+4. **Otherwise, what is attached.** A message that says nothing about the
+   pictures ("make a video of these"), the helper being off, or a helper
+   that returned no usable answer leaves the choice to the attachments.
+   Pictures that fit the frame slots go in as frames when nothing else is
+   attached, and nothing needs settling. When more is attached than the
+   frames take, or a clip or a sound file comes with the pictures,
+   everything goes in as references on a model that takes reference
+   pictures, and as frames, with the rest named, on any other.
+
+Any attachment on a model with no frame support, and any clip or sound
+file attached without a picture, goes in as a reference whatever the
+message says, subject to the checks every reference passes (below), and
+with Frames set to `none` no picture is sent at all (below).
+
+The helper answers before it plans anything with two fields: the words of
+the message that say how the pictures are used, copied word for word, and
+a verdict, `frames`, `references`, `not_said` (the message does not say) or
+`none` (nothing is attached). Only the verdict reaches the choice above; the
+words are there so that the helper quotes the message before it decides. A
+missing or unknown verdict counts as `not_said`. The helper's plan for the
+person's own pictures, which picture opens and which closes, is applied
+only when the verdict is `frames`; with any other verdict the plan's
+entries for attachments are ignored, so a stray plan cannot move a picture.
+Its plan for an earlier video is not affected.
+
+**A model takes reference pictures** when OpenRouter's description of it
+mentions references and the model is not on the list of models measured to
+ignore them (below). OpenRouter publishes no field that says which models
+take references; its reference-to-video guide tells the reader to confirm
+it from the model description. The model list cuts descriptions short, so
+the pipe reads the full text from the website catalogue the model sync
+already fetches, and a description counts as mentioning references when it
+contains a word that starts with "referenc". A description that says
+nothing about references sends frames. The answer is kept in memory and
+replaced each time the sync reads the catalogue; a read that returns no
+rows leaves the previous answer. Until a read has answered, right after a
+restart or on an install where the model sync never runs, and for a model
+the answered catalogue has no row for, the pipe has no description to go
+by: it counts the model as not taking references, so a request that would
+carry both sends its frames. The Frames control states the rule for every
+model; the `help` reply for a model says which of four cases applies to
+it, read from the same answer at the moment it is asked: the description
+mentions references, it mentions them but the model is on the measured
+list, it does not mention them, or it has not been read.
+
+### Models measured to ignore reference pictures
+
+A description can mention references for a model that does not use them.
+Two models were measured, and the pipe sends them frames whatever their
+descriptions say:
+
+| Model | What the measured request did |
+|-------|-------------------------------|
+| `alibaba/wan-2.6` | The job was accepted and billed, and the clip ignored the pictures: it showed unrelated toys made from the prompt's words. |
+| `minimax/hailuo-2.3` | The clip opened on the first picture exactly, as a first frame, and never used the second. |
+
+Measured on the dev box on 24 October 2026 with Frames on `auto`, two or
+three invented pictures and a prompt that did not name them, sending the
+pictures as references only. The same run found the pictures used by the
+other eleven models whose descriptions mention references: `x-ai/grok-imagine-video`,
+`heygen/heygen-video-1` (billed at its reference-to-video price),
+`bytedance/seedance-2.0`, `bytedance/seedance-2.0-fast`,
+`bytedance/seedance-2.0-mini`, `bytedance/seedance-2.5`, `alibaba/wan-2.7`,
+`alibaba/wan-3.0`, `alibaba/happyhorse-1.0`, `alibaba/happyhorse-1.1` and
+`minimax/hailuo-3`. The seventeen other video models in the catalogue as
+fetched that day have descriptions that say nothing about references; they
+were not measured and are sent frames. The list is one constant beside the
+code that reads the descriptions, and it is the only thing that overrides a
+description: a model not on it follows its description, so a new model
+whose description over-claims is sent references until a test shows it
+ignores them.
+
+One request carries at most 16 references, the request format's own
+ceiling; past that the excess is left out and the **Not sent with this
+video** list says how many and why, and the render still goes ahead.
 
 Open WebUI keeps pictures out of the request-level file list — it feeds
 them to a chat as `image_url` parts — so the filter reads the turn's own
@@ -1505,21 +1633,23 @@ a render that carried the clip along unreferenced. A clip-only turn now
 keeps the intent the user's own attachment implies.
 
 A frame slot holds one frame. Two attached pictures fill the two slots,
-and a classifier instruction that names a slot the other picture already
-holds is resolved rather than obeyed: the picture you set in the Frames
-control keeps the slot, and the collision is named in the disclosure
-block. The turn still goes out with one frame per slot.
+and when the helper's verdict is `frames` and its plan names a slot the
+other picture already holds, the plan is resolved rather than obeyed: the
+picture you set in the Frames control keeps the slot, and the collision is
+named in the disclosure block. The turn still goes out with one frame per
+slot.
 
-Frames set to `none` is the one case that sends no picture: you asked for
-none, so no image is sent as a frame or as a reference. Every picture is
-left in the request, so they stay in the conversation and are still there
-if you change the knob and send again. A clip or a sound file attached
-alongside is not a picture and is not covered by that: it is still sent as
-a reference, and, like any reference the request cannot carry, it is left
-out with a note in the chat.
+Frames set to `none` is the one case that sends no picture and says
+nothing about it: you asked for none, so no image is sent as a frame or as
+a reference. Every picture is left in the request, so they stay in the
+conversation and are still there if you change the knob and send again. A
+clip or a sound file attached alongside is not a picture and is not
+covered by that: it is still sent as a reference while the request carries
+no frame, and, like any reference the request cannot carry, it is left out
+with a note in the chat.
 
-A left-over image goes as an image reference. Clips and sound files go
-as video and audio references, on the models that declare they read
+A picture that goes in as a reference goes as an image reference. Clips
+and sound files go as video and audio references, on the models that declare they read
 them: OpenRouter publishes the kinds each model takes, and one that does
 not name a kind is not sent that kind — the file is left out with a
 notice saying the model does not take it, rather than sent somewhere it
@@ -1543,8 +1673,9 @@ is left out the same way, and one the file host refuses stops the
 request instead, so that nothing is generated and billed from a prompt the
 attachment was meant to anchor. A **picture** is held to the same allowlist
 and count as any other reference. An image reference is sent as-is and the pipe cannot know whether
-the model read it, because nothing in the video catalog says which models
-honour image references.
+the model read it: the video catalog has no field that says which models
+honour image references, and the description the pipe goes by is prose that
+can over-claim, as the models measured above show.
 
 A turn with attachments and **no typed words** is refused rather than
 submitted: the intent classifier is off for a textless turn, so nothing would
@@ -2505,6 +2636,19 @@ You attached an image to a chat with a model that has no
 other than `none`. Either pick a frame-capable model or set Frames =
 `none`.
 
+### "Not sent with this video: … a video request takes frames or references, not both"
+
+A picture, clip or sound file you attached was left out because the
+request was already carrying frames, and what you attach goes in as frames
+or as references, never both. With Frames on `auto` the pipe sends references
+instead only on a model that takes reference pictures and only when your
+message does not ask to start or end on a picture; Frames set to
+`first_only` or `first_last` sends the frames. To send pictures as
+references, say in your message what they are, such as the character or the
+place, on a model that takes reference pictures; on any other model attach
+no more pictures than it has frame slots. How the choice is made is under
+[Attachments that are not frames](#attachments-that-are-not-frames).
+
 ### "Frame image MIME 'application/octet-stream' is not allowed"
 
 The attached image's content_type wasn't in
@@ -2568,6 +2712,11 @@ pipe()
         │  qualifies — may answer with a clarification instead of a job,
         │  and degrades open if it fails
         ├─ acquire user slot
+        ├─ choose frames or references — a request carries one, never both —
+        │  from the Frames choice, what the helper's reading of the message
+        │  says about the pictures and whether the model takes reference
+        │  pictures; what cannot go is named as not sent, before any
+        │  attachment is read
         ├─ prepare attachments
         │     ├─ frame images inlined as data URLs
         │     └─ clip and sound references need a public https link, so
@@ -2833,7 +2982,8 @@ Key files:
   the model list, not the Open WebUI model row,
   which the model-editor flow retires.
 - [`models/catalog_manager.py`](../open_webui_openrouter_pipe/models/catalog_manager.py)
-  — metadata sync that attaches and defaults filters.
+  — metadata sync that attaches and defaults filters, and remembers which
+  models' catalogue descriptions mention references.
 - [`core/config.py`](../open_webui_openrouter_pipe/core/config.py)
   — Valve definitions.
 

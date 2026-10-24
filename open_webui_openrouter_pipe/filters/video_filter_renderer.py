@@ -601,13 +601,47 @@ def _seed_meaning(declared: bool) -> str:
 
 _FRAME_MODE_MEANINGS: dict[str, str] = {
     "auto": (
-        "auto takes the first picture you attach as the opening frame, and the last one "
-        "as the closing frame when this model takes one and you attach more than one"
+        "auto opens the shot with the first picture, and closes it with the last when this "
+        "model takes a closing frame and you attach more than one, unless the pictures go "
+        "in as references (below)"
     ),
     "none": "none ignores them",
-    "first_only": "first_only opens the shot with one",
-    "first_last": "first_last pins the opening and the closing still, and sends the rest as references",
+    "first_only": "first_only opens the shot with the first picture and sends nothing else you attach",
+    "first_last": (
+        "first_last opens the shot with the first picture and closes it with the last and "
+        "sends nothing else you attach"
+    ),
 }
+
+_FRAMES_OR_REFERENCES = "What you attach goes in as frames or as references, never both."
+
+_AUTO_DECIDED_BY_THE_MESSAGE = (
+    "With auto and Reuse previous videos on, your message decides: words asking to start or "
+    "end the video on a picture mean frames, and words giving the pictures roles, such as a "
+    "character, a place or a style, mean references. When it says neither, or Reuse previous "
+    "videos is off, attaching more pictures than the frames take, or a clip or a sound file "
+    "with the pictures, means references."
+)
+
+_AUTO_DECIDED_BY_WHAT_IS_ATTACHED = (
+    "With auto, attaching more pictures than the frames take, or a clip or a sound file with "
+    "the pictures, means references."
+)
+
+_REFERENCES_NEED_A_MODEL_THAT_TAKES_THEM = (
+    "References are used only on a model that takes reference pictures; on any other, only "
+    "the frames are sent and the rest is named in the chat as not sent. The model's help "
+    "reply says which it is."
+)
+
+
+def _frame_mode_description(modes: list[str], message_decides: bool) -> str:
+    described = "; ".join(_FRAME_MODE_MEANINGS[mode] for mode in modes)
+    rule = _AUTO_DECIDED_BY_THE_MESSAGE if message_decides else _AUTO_DECIDED_BY_WHAT_IS_ATTACHED
+    return (
+        f"What the pictures you attach are for: {described}. {_FRAMES_OR_REFERENCES} {rule} "
+        f"{_REFERENCES_NEED_A_MODEL_THAT_TAKES_THEM}"
+    )
 
 
 _REFERENCE_PARAMS_BY_KIND: dict[str, tuple[str, ...]] = {
@@ -789,6 +823,9 @@ def render_video_filter_source(
     user_valves_fields = _render_user_valves_fields(spec)
     inlet_param_lines = _render_param_lines(spec)
     frame_block = _render_frame_block(spec)
+    frame_mode_record = (
+        '            video_meta["frame_mode"] = frame_mode\n' if spec.supports_frames else ""
+    )
     intent_inlet_block = (
         _render_intent_inlet_block()
         if spec.intent_classifier_admin_enabled
@@ -1039,7 +1076,7 @@ class Filter:
             video_meta = dict(pipe_meta.get("video_generation")) if isinstance(pipe_meta.get("video_generation"), dict) else {{}}
             video_meta["model_id"] = VIDEO_MODEL_ID
             video_meta["params"] = params
-            if frame_images:
+{frame_mode_record}            if frame_images:
                 video_meta["frame_images"] = frame_images
             else:
                 video_meta.pop("frame_images", None)
@@ -1216,13 +1253,13 @@ def _render_purpose_built_fields_uncached(spec: VideoFilterSpec) -> list[str]:
             modes.append("first_only")
             modes.append("first_last")
         literals = _literal_union(tuple(modes))
-        described = ", ".join(_FRAME_MODE_MEANINGS[mode] for mode in modes)
         fields.append(
             _field_block(
                 f"VIDEO_FRAME_MODE: Literal[{literals}] = Field(\n"
                 '            default="auto",\n'
                 '            title="Frames",\n'
-                f"            description={f'What the pictures you attach are for: {described}.'!r},\n"
+                "            description="
+                f"{_frame_mode_description(modes, spec.intent_classifier_admin_enabled)!r},\n"
                 "        )"
             )
         )

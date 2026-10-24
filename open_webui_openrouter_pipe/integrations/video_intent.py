@@ -205,6 +205,8 @@ class VideoIntentResult:
     task_model_latency_ms: int = 0
     task_model_fallback_triggered: bool = False
     task_model_absent: bool = False
+    attachments_words: str = ""
+    attachments_as: str = "not_said"
 
 
 def _intent_block_end_match(content: str, start: re.Match[str]) -> re.Match[str] | None:
@@ -479,6 +481,7 @@ _VALID_SOURCES = {
 }
 _VALID_TARGETS = {"first_frame", "last_frame", "input_reference"}
 _VALID_CONFIDENCE = {"high", "medium", "low"}
+_VALID_ATTACHMENTS_AS = frozenset(INTENT_JSON_SCHEMA["properties"]["attachments_as"]["enum"])
 _PROMPT_MAX_LEN = 2000
 _MAX_CONVERSATION_ROWS = 24
 _MAX_PRIOR_VIDEOS = 8
@@ -559,6 +562,19 @@ def validate_intent_params(
 
     reason = str(raw.get("reason") or "").strip()[:500]
 
+    attachments_as_raw = raw.get("attachments_as")
+    attachments_as = (
+        attachments_as_raw
+        if isinstance(attachments_as_raw, str) and attachments_as_raw in _VALID_ATTACHMENTS_AS
+        else "not_said"
+    )
+    attachments_words_raw = raw.get("attachments_words")
+    attachments_words = (
+        attachments_words_raw.strip()[:_PROMPT_MAX_LEN]
+        if isinstance(attachments_words_raw, str)
+        else ""
+    )
+
     clarification: ClarificationPayload | None = None
     clar_raw = raw.get("clarification")
     if isinstance(clar_raw, dict):
@@ -612,6 +628,8 @@ def validate_intent_params(
             target = entry_raw.get("target")
             if source not in _VALID_SOURCES or target not in _VALID_TARGETS:
                 downgrades.append("dropped_unknown_frame_plan_source_or_target")
+                continue
+            if source == "uploaded_attachment" and attachments_as != "frames":
                 continue
 
             source_index_raw = entry_raw.get("source_index")
@@ -697,10 +715,8 @@ def validate_intent_params(
 
     if (
         intent == "image_to_video"
+        and attachments_count == 0
         and not explicit_frame_images_present
-        and not any(
-            e.source == "uploaded_attachment" for e in frame_plan
-        )
     ):
         downgrades.append("image_to_video_without_attachment_downgraded_to_text")
         intent = "text_to_video"
@@ -742,6 +758,8 @@ def validate_intent_params(
         reason=reason,
         downgrades=downgrades,
         discarded_plan=discarded_plan,
+        attachments_words=attachments_words,
+        attachments_as=attachments_as,
     )
 
 
@@ -1130,8 +1148,8 @@ _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
         "That picture was already set as this frame, so it was left where you put it."
     ),
     "retarget_frame_demoted_to_reference": (
-        "A picture you set as a frame was sent as a style reference instead, so it "
-        "guides the video rather than anchoring it."
+        "A picture you set as a frame became a style reference instead, so it no longer "
+        "anchors the video."
     ),
     "conversation_truncated": (
         "Only the most recent turns of this chat were read, so the classifier worked "
@@ -1162,11 +1180,11 @@ _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
         "This model takes no frames at all, so the last frame you asked for was not used."
     ),
     "downgraded_unsupported_target_first_frame_to_input_reference": (
-        "This model cannot take the first frame as an anchor, so it was sent as a "
+        "This model cannot take the first frame as an anchor, so that picture became a "
         "style reference instead."
     ),
     "downgraded_unsupported_target_last_frame_to_input_reference": (
-        "This model cannot take the last frame as an anchor, so it was sent as a "
+        "This model cannot take the last frame as an anchor, so that picture became a "
         "style reference instead."
     ),
     "deduped_duplicate_first_frame_target": (

@@ -63,6 +63,11 @@ from ..media import (
     probe_video,
 )
 from ..media.frame_extraction import _INPUT_DEMUXER, _without_paths
+from ..models.catalog_manager import (
+    REFERENCE_PICTURES_TAKEN,
+    catalog_model_id,
+    model_reference_pictures,
+)
 from ..models.registry import OpenRouterModelRegistry
 from ..requests.fusion_engine import asks_for_help, latest_user_text
 from ..requests.orchestrator import (
@@ -196,6 +201,10 @@ def _attachment_position(entry: dict[str, Any]) -> int:
     if isinstance(declared, int) and not isinstance(declared, bool):
         return declared
     return 0
+
+
+def _attachment_name(entry: dict[str, Any]) -> str:
+    return _clean_str(entry.get("name")) or _clean_str(entry.get("id")) or "an attachment"
 
 
 def _shortfall_note(missing: int, attempted: int, fetched: int, refused: int = 0) -> str:
@@ -407,6 +416,10 @@ _validate_input_pixel_floors(_INPUT_PIXEL_FLOORS)
 
 _AUDIO_NEEDS_A_COMPANION = (
     "OpenRouter only takes a sound reference alongside a picture or a clip, so it was left out"
+)
+
+_FRAMES_EXCLUDE_REFERENCES = (
+    "a video request takes frames or references, not both, and this one is sending frames"
 )
 
 _REFERENCE_NEEDS_A_LINK = (
@@ -845,6 +858,7 @@ class VideoGenerationAdapter:
                 api_model_id,
                 video_model if isinstance(video_model, dict) else None,
                 admin_valves=valves,
+                reference_pictures=self._model_reference_pictures(video_model, api_model_id),
             )
             await self._emit_closing_status(
                 event_emitter, None, valves=valves, end_notices=end_notices
@@ -1195,7 +1209,13 @@ class VideoGenerationAdapter:
                     event_emitter, api_model_id, valves, end_notices
                 )
 
-            video_meta = self._extract_video_metadata(metadata)
+            video_meta = self._video_metadata_with_frames_or_references(
+                metadata,
+                video_model=video_model,
+                api_model_id=api_model_id,
+                intent=intent_result,
+                withheld=withheld,
+            )
             frame_images = await self._encode_frame_images(
                 video_meta, video_model, valves, user_obj=user_obj or user,
             )
@@ -1204,8 +1224,7 @@ class VideoGenerationAdapter:
                     video_meta, valves, withheld=withheld, user_obj=user_obj or user,
                     video_model=video_model, relayed=relayed_families,
                     maybe_stored=maybe_stored_families,
-                    companions=bool(frame_images), event_emitter=event_emitter,
-                    vetted=vetted_addresses,
+                    event_emitter=event_emitter, vetted=vetted_addresses,
                 )
             finally:
                 disclosure_block = self._with_the_file_host_record(
@@ -3947,13 +3966,74 @@ class VideoGenerationAdapter:
         passthrough -= _DOCUMENTED_TOP_LEVEL_VIDEO_FIELDS
         return top_level, passthrough
 
+    def _model_reference_pictures(self, video_model: Any, api_model_id: str) -> str:
+        return model_reference_pictures(self._pipe, catalog_model_id(video_model, api_model_id))
+
+    def _video_metadata_with_frames_or_references(
+        self,
+        metadata: dict[str, Any],
+        *,
+        video_model: Any,
+        api_model_id: str,
+        intent: VideoIntentResult | None,
+        withheld: list[tuple[str, str]],
+    ) -> dict[str, Any]:
+        video_meta = self._extract_video_metadata(metadata)
+        raw_frames = video_meta.get("frame_images")
+        frames = (
+            [item for item in raw_frames if isinstance(item, dict)]
+            if isinstance(raw_frames, list)
+            else []
+        )
+        if not frames:
+            return video_meta
+        references = [
+            item for item in resolve_reference_items(video_meta) if isinstance(item, dict)
+        ]
+        said = intent.attachments_as if intent is not None else "not_said"
+        frame_from_prior_video = intent is not None and bool(intent.frames_extracted)
+        if (
+            video_meta.get("frame_mode", "auto") == "auto"
+            and said != "frames"
+            and not frame_from_prior_video
+            and (said == "references" or references)
+            and self._model_reference_pictures(video_model, api_model_id)
+            == REFERENCE_PICTURES_TAKEN
+        ):
+            pictures = [
+                {key: value for key, value in frame.items() if key != "frame_type"}
+                for frame in frames
+            ]
+            video_meta.pop("video_attachments", None)
+            video_meta["input_references"] = sorted(
+                pictures + references, key=_attachment_position
+            )
+            video_meta.pop("frame_images", None)
+            self.logger.debug(
+                "Video request for %r sends its %d frame picture(s) as references: the "
+                "message said %r and the model takes reference pictures",
+                api_model_id,
+                len(pictures),
+                said,
+            )
+            return video_meta
+        if references:
+            video_meta.pop("video_attachments", None)
+            video_meta["input_references"] = []
+            withheld.extend(
+                (_attachment_name(item), _FRAMES_EXCLUDE_REFERENCES) for item in references
+            )
+            self.logger.debug(
+                "Video request for %r sends frames only; %d reference(s) left out (the "
+                "message said %r)",
+                api_model_id,
+                len(references),
+                said,
+            )
+        return video_meta
+
     def _provider_slug_candidates(self, video_model: Any, api_model_id: str) -> list[str]:
-        model_id = api_model_id
-        if isinstance(video_model, dict):
-            candidate = video_model.get("id")
-            if isinstance(candidate, str) and candidate:
-                model_id = candidate
-        model_id = model_id.lstrip("~")
+        model_id = catalog_model_id(video_model, api_model_id)
 
         candidates: list[str] = []
         catalog_manager = getattr(self._pipe, "_catalog_manager", None)

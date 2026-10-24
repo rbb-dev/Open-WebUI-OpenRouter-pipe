@@ -101,6 +101,8 @@ def test_example_03_fresh_start_despite_prior():
 
 def test_example_04_explicit_attachment_last_frame():
     raw = {
+        "attachments_words": "use this as the last frame",
+        "attachments_as": "frames",
         "intent": "image_to_video",
         "frame_plan": [{
             "source": "uploaded_attachment",
@@ -122,6 +124,8 @@ def test_example_04_explicit_attachment_last_frame():
 
 def test_example_05_two_attachments_first_plus_last():
     raw = {
+        "attachments_words": "use the first image as the start and the second as the end",
+        "attachments_as": "frames",
         "intent": "image_to_video",
         "frame_plan": [
             {"source": "uploaded_attachment", "source_index": 0, "timestamp_seconds": None, "target": "first_frame"},
@@ -335,6 +339,7 @@ class TestInvariants:
         the attachment is not on this turn, not that it went away between the two passes.
         """
         raw = {
+            "attachments_as": "frames",
             "intent": "image_to_video",
             "frame_plan": [{
                 "source": "uploaded_attachment",
@@ -403,6 +408,7 @@ class TestInvariants:
 
     def test_downgrades_unsupported_target(self):
         raw = {
+            "attachments_as": "frames",
             "intent": "image_to_video",
             "frame_plan": [{
                 "source": "uploaded_attachment",
@@ -424,6 +430,7 @@ class TestInvariants:
 
     def test_dedupes_duplicate_first_frame_targets(self):
         raw = {
+            "attachments_as": "frames",
             "intent": "image_to_video",
             "frame_plan": [
                 {"source": "uploaded_attachment", "source_index": 0, "timestamp_seconds": None, "target": "first_frame"},
@@ -442,6 +449,7 @@ class TestInvariants:
 
     def test_truncates_at_4_entries(self):
         raw = {
+            "attachments_as": "frames",
             "intent": "image_to_video",
             "frame_plan": [
                 {"source": "uploaded_attachment", "source_index": i, "timestamp_seconds": None, "target": "input_reference"}
@@ -479,6 +487,7 @@ class TestInvariants:
 
     def test_text_to_video_forces_empty_frame_plan(self):
         raw = {
+            "attachments_as": "frames",
             "intent": "text_to_video",
             "frame_plan": [{
                 "source": "uploaded_attachment", "source_index": 0,
@@ -493,6 +502,33 @@ class TestInvariants:
         }
         result = _validate(raw, attachments_count=1)
         assert result.frame_plan == []
+
+    @pytest.mark.parametrize(
+        ("said", "recorded"), [("references", "references"), ("banana", "not_said")]
+    )
+    def test_uploaded_attachments_are_planned_only_when_the_helper_says_frames(
+        self, said, recorded
+    ):
+        raw = {
+            "attachments_words": "use these as the character and the place",
+            "attachments_as": said,
+            "intent": "continue_prior_video",
+            "frame_plan": [
+                {"source": "uploaded_attachment", "source_index": 0, "timestamp_seconds": None, "target": "first_frame"},
+                {"source": "prior_video_last_frame", "source_index": -1, "timestamp_seconds": None, "target": "first_frame"},
+            ],
+            "prompt": "x",
+            "use_user_prompt": False,
+            "language": "en",
+            "confidence": "high",
+            "clarification": _empty_clar(),
+            "reason": "x",
+        }
+        result = _validate(raw, attachments_count=1, prior_videos=[{"index": 0}])
+
+        assert [e.source for e in result.frame_plan] == ["prior_video_last_frame"], result.frame_plan
+        assert result.attachments_as == recorded
+        assert result.downgrades == [], result.downgrades
 
     def test_image_to_video_without_attachment_downgrades_to_text(self):
         raw = {
@@ -702,6 +738,7 @@ class TestInvariants:
         # (no slot exists). Drop it instead of letting _encode_frame_images
         # break the paid call.
         raw = {
+            "attachments_as": "frames",
             "intent": "image_to_video",
             "frame_plan": [{
                 "source": "uploaded_attachment",
@@ -718,7 +755,8 @@ class TestInvariants:
         }
         result = _validate(raw, attachments_count=1, video_model={"supported_frame_images": []})
         assert len(result.frame_plan) == 0
-        assert result.intent == "text_to_video"
+        assert result.intent == "image_to_video"
+        assert "image_to_video_without_attachment_downgraded_to_text" not in result.downgrades
         assert any(
             "no_frame_support" in note for note in result.downgrades
         ), f"expected no_frame_support downgrade, got {result.downgrades}"

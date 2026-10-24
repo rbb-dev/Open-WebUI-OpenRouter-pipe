@@ -3,6 +3,12 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
+from ..models.catalog_manager import (
+    REFERENCE_PICTURES_IGNORED,
+    REFERENCE_PICTURES_TAKEN,
+    REFERENCE_PICTURES_UNMENTIONED,
+    REFERENCE_PICTURES_UNREAD,
+)
 from .image_help import OPENROUTER_PRICING
 from .image_types import PROVIDER_OPTIONS_DESCRIPTION, format_modality_kinds
 from .video_types import (
@@ -539,14 +545,16 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "ByteDance's flagship multimodal video model, best known for \"locked\" "
             "character consistency — preserving faces, clothing, accessories, and small "
             "subject details across the duration of a clip and across multi-shot "
-            "generations. It takes references as well as a prompt: the first picture you "
-            "attach anchors the opening of the shot and the last one the ending, and any "
-            "further pictures ride along as references that fix a character, a prop or a "
-            "setting without you having to describe it. Clips and sound files you attach "
-            "ride along the same way, but only if your administrator has turned on sending "
-            "media to a file host; otherwise they are left out with a note in the chat. A "
-            "sound file on its own is left out either way, because it is only accepted "
-            "alongside a picture or a clip. Against 2.0 Fast, which stops at 720p, and 1.5 "
+            "generations. It takes references as well as a prompt, and a request carries "
+            "frames or references, never both. While Reuse previous videos is on, a message "
+            "that gives the pictures roles, such as a character, a prop or a setting, sends "
+            "every picture as a reference, with any clip or sound file, to fix it without you "
+            "having to describe it; a message that says which picture opens or closes the "
+            "shot sends the pictures as frames, and the rest is left out with a note in the "
+            "chat. A clip or a sound file reaches the model only if your administrator has "
+            "turned on sending media to a file host; otherwise it is left out with a note in "
+            "the chat. A sound file on its own is left out either way, because it is only "
+            "accepted alongside a picture or a clip. Against 2.0 Fast, which stops at 720p, and 1.5 "
             "Pro, which stops at 1080p and 12 seconds, the full 2.0 variant reaches 4K and "
             "15 seconds with native audio (dialogue, ambience, SFX) and multi-shot story "
             "coherence."
@@ -996,6 +1004,44 @@ def _format_frames_capability(supported_frames: Any) -> str:
     return csv
 
 
+def _beyond_the_frames(
+    supported_frames: Any, reference_pictures: str, message_decides: bool
+) -> str:
+    if not _format_csv(supported_frames):
+        return ""
+    if reference_pictures == REFERENCE_PICTURES_TAKEN:
+        if message_decides:
+            return (
+                "With Frames on auto, a message that asks to start or end on a picture sends "
+                "frames, and one that gives the pictures roles, such as a character, a place "
+                "or a style, sends every picture as a reference; when it says neither, "
+                "attaching more than the frames take, or a clip or a sound file with the "
+                "pictures, sends everything as references. This model takes reference "
+                "pictures: OpenRouter's description of it mentions references."
+            )
+        return (
+            "With Frames on auto, attaching more than the frames take, or a clip or a sound "
+            "file with the pictures, sends everything as references, because OpenRouter's "
+            "description of this model mentions references."
+        )
+    if reference_pictures == REFERENCE_PICTURES_IGNORED:
+        reason = (
+            "OpenRouter's description of this model mentions references but the model was "
+            "found not to use reference pictures"
+        )
+    elif reference_pictures == REFERENCE_PICTURES_UNMENTIONED:
+        reason = "OpenRouter's description of this model does not mention references"
+    else:
+        reason = (
+            "references go only to a model known to take them and OpenRouter's description "
+            "of this model has not been read yet"
+        )
+    return (
+        "With Frames on auto, only the frames are sent, and anything beyond them, including "
+        f"a clip or a sound file, is named in the chat as not sent, because {reason}."
+    )
+
+
 def _help_input_kinds(model: dict[str, Any]) -> list[str]:
     declared = model.get("input_modalities")
     if not isinstance(declared, list):
@@ -1052,6 +1098,7 @@ def _render_template(
     model: dict[str, Any],
     data: dict[str, Any],
     admin_valves: Any = None,
+    reference_pictures: str = REFERENCE_PICTURES_UNREAD,
 ) -> str:
     from ..filters.video_filter_renderer import build_video_filter_spec
 
@@ -1061,6 +1108,11 @@ def _render_template(
     aspects = _format_csv(model.get("supported_aspect_ratios")) or "model default"
     resolutions = _format_csv(model.get("supported_resolutions")) or "model default"
     frames = _format_frames_capability(model.get("supported_frame_images"))
+    beyond_the_frames = _beyond_the_frames(
+        model.get("supported_frame_images"), reference_pictures, spec.intent_classifier_admin_enabled
+    )
+    if beyond_the_frames:
+        beyond_the_frames = f"- {beyond_the_frames}\n"
     accepted = _format_accepted_inputs(model)
     audio = _declared_capability(model.get("generate_audio"), spec.supports_generate_audio_toggle)
     seed = _declared_capability(model.get("seed"), spec.supports_seed)
@@ -1091,6 +1143,7 @@ def _render_template(
         f"- Aspect ratios: {aspects}\n"
         f"- Resolutions: {resolutions}\n"
         f"- Frame controls: {frames}\n"
+        f"{beyond_the_frames}"
         f"- Generated audio: {audio}\n"
         f"- Deterministic seed: {seed}"
         f"{knobs_section}"
@@ -1103,13 +1156,16 @@ def render_video_help(
     video_model: dict[str, Any] | None = None,
     *,
     admin_valves: Any = None,
+    reference_pictures: str = REFERENCE_PICTURES_UNREAD,
 ) -> str:
     model = video_model if isinstance(video_model, dict) else {}
     canonical_id = _canonical_model_id(model_id, model)
     data = _PER_MODEL_HELP_DATA.get(canonical_id)
     if data:
-        return _render_template(canonical_id, model, data, admin_valves)
-    return _render_catalog_fallback(canonical_id, model, admin_valves=admin_valves)
+        return _render_template(canonical_id, model, data, admin_valves, reference_pictures)
+    return _render_catalog_fallback(
+        canonical_id, model, admin_valves=admin_valves, reference_pictures=reference_pictures
+    )
 
 
 def _canonical_model_id(model_id: str, model: dict[str, Any]) -> str:
@@ -1139,7 +1195,10 @@ def _zdr_capability_sentence(model_id: str) -> str:
 
 
 def _render_catalog_fallback(
-    model_id: str, model: dict[str, Any], admin_valves: Any = None
+    model_id: str,
+    model: dict[str, Any],
+    admin_valves: Any = None,
+    reference_pictures: str = REFERENCE_PICTURES_UNREAD,
 ) -> str:
     from ..filters.video_filter_renderer import build_video_filter_spec
 
@@ -1158,15 +1217,18 @@ def _render_catalog_fallback(
     ratios = _format_csv(model.get("supported_aspect_ratios")) or "model default"
     durations = _format_csv(model.get("supported_durations")) or "model default"
     resolutions = _format_csv(model.get("supported_resolutions")) or "model default"
-    controls = ""
-    if _video_panel_is_attached(admin_valves):
-        spec = build_video_filter_spec(model_id, model, admin_valves=admin_valves)
-        controls = _render_knob_section({}, spec)
+    spec = build_video_filter_spec(model_id, model, admin_valves=admin_valves)
+    controls = _render_knob_section({}, spec) if _video_panel_is_attached(admin_valves) else ""
+    beyond_the_frames = _beyond_the_frames(
+        model.get("supported_frame_images"), reference_pictures, spec.intent_classifier_admin_enabled
+    )
+    if beyond_the_frames:
+        beyond_the_frames = f" {beyond_the_frames}"
     return (
         f"### {display}\n\n"
         f"Capability: {description.strip() or 'OpenRouter video generation model.'}\n\n"
         f"Accepted inputs: {accepted}.{ceiling}\n\n"
-        f"Frame controls: {frames}.\n\n"
+        f"Frame controls: {frames}.{beyond_the_frames}\n\n"
         "Useful prompt patterns: Describe subject, action, setting, camera "
         "movement, visual style, and constraints in one clear shot.\n\n"
         f"Known limitations: {zdr} Exact continuity can vary by generation.\n\n"

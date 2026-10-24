@@ -40,8 +40,11 @@ def _raw(
     frame_plan: list[dict] | None = None,
     confidence: str = "high",
     prompt: str = "x",
+    attachments_as: str = "not_said",
 ) -> dict:
     return {
+        "attachments_words": "",
+        "attachments_as": attachments_as,
         "intent": intent,
         "frame_plan": frame_plan or [],
         "prompt": prompt,
@@ -113,6 +116,7 @@ class TestNoFrameSupport:
                 "source": "uploaded_attachment", "source_index": 0,
                 "timestamp_seconds": None, "target": "input_reference",
             }],
+            attachments_as="frames",
         )
         res = validate_intent_params(
             raw, attachments_count=1, prior_videos=[],
@@ -121,7 +125,7 @@ class TestNoFrameSupport:
             prior_clarifications_in_session=0, max_clarifications=1,
             fallback_prompt=_FALLBACK_PROMPT,
         )
-        assert res.intent == "text_to_video"
+        assert res.intent == "image_to_video"
         assert res.frame_plan == []
         assert any("dropped_input_reference_no_frame_support" in d for d in res.downgrades)
 
@@ -189,6 +193,7 @@ class TestExplicitAttachmentsRetarget:
                 "source": "uploaded_attachment", "source_index": 0,
                 "timestamp_seconds": None, "target": "last_frame",
             }],
+            attachments_as="frames",
         )
         res = validate_intent_params(
             raw, attachments_count=1, prior_videos=[],
