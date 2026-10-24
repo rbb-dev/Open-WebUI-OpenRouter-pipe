@@ -991,7 +991,7 @@ class _ImageModelReplies:
         return ImageGenerationResult(images=[GeneratedImage(data=_PNG_BYTES, mime_type="image/png")], usage={})
 
 
-def _answer_images_with(monkeypatch, pipe, replies: _ImageModelReplies) -> None:
+def _answer_images_with(monkeypatch, pipe, replies: _ImageModelReplies, *, storage_refuses: bool = False) -> None:
     adapter = pipe._ensure_image_generation_adapter()
 
     async def no_endpoint_record(*_args: Any, **_kwargs: Any):
@@ -1002,7 +1002,19 @@ def _answer_images_with(monkeypatch, pipe, replies: _ImageModelReplies) -> None:
 
     monkeypatch.setattr(adapter, "_endpoint_record", no_endpoint_record)
     monkeypatch.setattr(adapter, "_client", lambda *_args, **_kwargs: replies)
-    monkeypatch.setattr(adapter, "_persist", stored)
+    if not storage_refuses:
+        monkeypatch.setattr(adapter, "_persist", stored)
+        return
+
+    from fastapi import HTTPException
+
+    from open_webui_openrouter_pipe.storage import owui_files
+
+    async def refused_by_open_webui(**_kwargs: Any) -> None:
+        raise HTTPException(status_code=413, detail="too large")
+
+    monkeypatch.setattr(owui_files, "upload_file_handler", refused_by_open_webui)
+    monkeypatch.setattr(pipe._file_gateway, "resolve_storage_context", _resolve_storage_context)
 
 
 async def _media_turn(pipe, model: str, prompt: str = "a lighthouse at dusk") -> str:
@@ -1080,6 +1092,24 @@ async def test_a_delivered_image_clears_the_users_failures(monkeypatch, threshol
     assert recorded == 0, (recorded, image_reply)
     assert posts == _failing(2 * threshold - 1), (image_reply, replies)
     assert not any("Temporarily disabled" in reply for reply in replies), replies
+
+
+@pytest.mark.asyncio
+async def test_a_picture_open_webui_refuses_to_store_clears_the_users_failures_instead_of_adding_one(monkeypatch):
+    pipe = Pipe()
+    _reach_the_media_models(monkeypatch, pipe)
+    images = _ImageModelReplies(["delivered"])
+    _answer_images_with(monkeypatch, pipe, images, storage_refuses=True)
+    try:
+        pipe._circuit_breaker.record_failure("user-1")
+        image_reply = await _media_turn(pipe, _IMAGE_MODEL)
+        recorded = len(pipe._circuit_breaker._breaker_records["user-1"])
+    finally:
+        await pipe.close()
+
+    assert images.sent == 1, image_reply
+    assert "/api/v1/files/" not in image_reply, image_reply
+    assert recorded == 0, (recorded, image_reply)
 
 
 @pytest.mark.asyncio

@@ -1473,7 +1473,11 @@ the turn whose round carries it. A picture larger than the Open WebUI
 admin's Max Upload Size (Admin Panel > Settings > Documents), which Open
 WebUI's own upload handler applies to every stored file, is not stored
 either: the reply names it with that setting, so the admin can raise it,
-and the reply's cost is recorded. An entry in a generated-image reply that is
+and the reply's cost is recorded. On the dedicated image route, a reply none of
+whose pictures is stored, because that setting refuses them or the upload
+fails, is the failure card and does not count toward pausing the user: the
+user's earlier failures are cleared, as a delivered picture clears them. An
+entry in a generated-image reply that is
 not a picture is refused as such, and every entry is named
 for what it is — over the ceiling or not a picture. The reply that carries
 the pictures is always read to its end, on the plain and the streamed form of
@@ -1805,7 +1809,11 @@ Check:
   rather than stored.
 - The pipe has filesystem write access to its temp dir and OWUI
   storage (Local/S3/GCS/Azure) is healthy.
-- Check the pipe logs for storage errors.
+- Check the pipe logs for storage errors. A dedicated image model's reply
+  that says its pictures were not saved because they are larger than Max
+  Upload Size (Admin Panel > Settings > Documents) was refused by that
+  setting, and one that says they could not be saved to Open WebUI storage
+  failed there. Neither counts toward pausing the user.
 
 ### Body validation error mentioning `image_config`
 

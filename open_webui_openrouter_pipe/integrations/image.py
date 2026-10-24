@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 from starlette.responses import StreamingResponse
 
-from ..api.gateway.responses_adapter import _record_failed_call
+from ..api.gateway.responses_adapter import _clear_failed_calls, _record_failed_call
 from ..core.config import (
     _PIPE_METADATA_KEY,
     OPENAI_ATTACHMENT_NOT_SENT_PREFIX,
@@ -1241,7 +1241,7 @@ class ImageGenerationAdapter:
         outcome_sink: dict[str, Any] | None = None,
         breaker_key: str | None = None,
     ) -> str | StreamingResponse:
-        outcome: _Outcome = {"usage": None, "reported": False, "costed": False, "sent": False, "delivered": False, "degraded": False, "provider_document": True}
+        outcome: _Outcome = {"usage": None, "reported": False, "costed": False, "sent": False, "delivered": False, "degraded": False, "provider_document": True, "not_stored": False}
         end_notices = _closing_notices(responses_body, metadata)
         try:
             content = await self._generate(
@@ -1347,7 +1347,10 @@ class ImageGenerationAdapter:
         if outcome_sink is not None:
             outcome_sink["error_occurred"] = failed
         if outcome["sent"] and failed and outcome["provider_document"]:
-            _record_failed_call(self._pipe, breaker_key)
+            if outcome["not_stored"]:
+                _clear_failed_calls(self._pipe, breaker_key)
+            else:
+                _record_failed_call(self._pipe, breaker_key)
 
     async def _settle(
         self,
@@ -1570,6 +1573,7 @@ class ImageGenerationAdapter:
             snippets.append(f"_{result.warning}_")
 
         if not snippets:
+            outcome["not_stored"] = True
             await self._close_status(event_emitter, end_notices)
             outcome["reported"] = True
             await self._report_generation(result.usage, "failed", metadata)
