@@ -5285,72 +5285,126 @@ async def test_an_unreadable_chat_owner_zdr_answer_enforces_zdr(monkeypatch):
         await pipe.close()
 
 
-@pytest.mark.asyncio
-async def test_zdr_enforce_rejects_non_zdr_model():
-    """ZDR enforcement should reject models that are not ZDR-capable."""
-    pipe = Pipe()
+_DATA_POLICY_REFUSAL = {
+    "error": {
+        "message": (
+            "No endpoints found matching your data policy (Zero data retention). "
+            "Configure: https://openrouter.ai/settings/privacy"
+        ),
+        "code": 404,
+        "metadata": {"routing_funnel": [], "failed_routing_step": "Filter by Data Policy"},
+    }
+}
 
+_ACME_CHAT_ROW = {
+    "id": "acme/plain-chat",
+    "name": "Acme: Plain Chat",
+    "supported_parameters": ["max_tokens", "reasoning", "include_reasoning"],
+    "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
+}
+_ACME_PICTURE_ROW = {
+    "id": "acme/picture-only",
+    "name": "Acme: Picture Only",
+    "supported_parameters": [],
+    "architecture": {"input_modalities": ["text"], "output_modalities": ["image"]},
+}
+
+
+async def _zdr_enforced_turn(
+    monkeypatch, model: str, *, openrouter_refuses: bool
+) -> tuple[list[dict[str, Any]], list[str], bool]:
+    from open_webui_openrouter_pipe.core.error_formatter import ErrorFormatter
+
+    pipe = Pipe()
+    posted: list[dict[str, Any]] = []
+    reasons: list[str] = []
+    real_emit = ErrorFormatter._emit_templated_error
+
+    async def record(self, emitter, *, variables=None, **kwargs):
+        reasons.append((variables or {}).get("restriction_reasons", ""))
+        return await real_emit(self, emitter, variables=variables, **kwargs)
+
+    def answer(url, **kwargs):
+        posted.append(posted_json(kwargs, {}))
+        if openrouter_refuses:
+            return CallbackResult(
+                status=404,
+                body=json.dumps(_DATA_POLICY_REFUSAL),
+                headers={"Content-Type": "application/json"},
+            )
+        return _smart_callback([], "Response")(url, **kwargs)
+
+    async def event_emitter(event):
+        pass
+
+    monkeypatch.setattr(ErrorFormatter, "_emit_templated_error", record)
     try:
         pipe.valves.API_KEY = EncryptedStr("test-api-key")
         pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
         pipe.valves.ZDR_ENFORCE = True
-
-        captured_payloads: list[dict] = []
-        callback = _smart_callback(captured_payloads, "Response")
-
-        emitted_events: list[dict] = []
-
-        async def event_emitter(event):
-            emitted_events.append(event)
-
+        pipe.valves.BREAKER_MAX_FAILURES = 1
         with aioresponses() as mock_http:
-            mock_http.post(
-                "https://openrouter.ai/api/v1/responses",
-                callback=callback,
-                repeat=True,
-            )
+            mock_http.post("https://openrouter.ai/api/v1/responses", callback=answer, repeat=True)
             mock_http.get(
                 "https://openrouter.ai/api/v1/models",
-                payload={"data": [{"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini"}]},
+                payload={"data": [_ACME_CHAT_ROW, _ACME_PICTURE_ROW]},
                 repeat=True,
             )
             mock_http.get(
                 "https://openrouter.ai/api/v1/endpoints/zdr",
-                payload={"data": [{"model_id": "openai/gpt-4o"}]},
+                payload={"data": []},
                 repeat=True,
             )
-
-            body = {
-                "model": "openai/gpt-4o-mini",
-                "messages": [{"role": "user", "content": "test"}],
-                "stream": True,
-            }
-
             result = await pipe.pipe(
-                body=body,
-                __user__={"id": "user_123"},
+                body={
+                    "model": model,
+                    "messages": [{"role": "user", "content": "test"}],
+                    "stream": True,
+                },
+                __user__={"id": "user_zdr"},
                 __request__=None,
                 __event_emitter__=event_emitter,
                 __event_call__=None,
-                __metadata__={"model": {"id": "openai/gpt-4o-mini"}},
+                __metadata__={"chat_id": "chat-1", "message_id": "message-1", "model": {"id": model}},
                 __tools__=None,
                 __task__=None,
                 __task_body__=None,
             )
-
             await _consume_stream(result)
-
-        assert captured_payloads == []
+        return posted, reasons, pipe._circuit_breaker.allows("user_zdr")
     finally:
         await pipe.close()
 
 
 @pytest.mark.asyncio
-async def test_zdr_enforce_fails_closed_when_zdr_endpoint_unavailable(caplog):
-    """ZDR_ENFORCE=True with an unavailable ZDR endpoint must fail-closed:
-    no upstream request, error logged."""
-    import logging as _logging
+async def test_a_chat_model_off_the_zdr_list_is_sent_with_the_flag_and_openrouters_refusal_is_the_short_card(
+    monkeypatch,
+):
+    posted, reasons, still_allowed = await _zdr_enforced_turn(
+        monkeypatch, "acme/plain-chat", openrouter_refuses=True
+    )
+    assert posted, (
+        "a chat model that is not on OpenRouter's ZDR list never reached OpenRouter: "
+        "the pipe refused it itself instead of sending it with the flag"
+    )
+    assert (posted[-1].get("provider") or {}).get("zdr") is True, posted[-1]
+    assert reasons == [Pipe.Valves.model_fields["ZDR_ENFORCE"].title], (
+        "OpenRouter's data-policy refusal was not shown as the pipe's short restriction card "
+        f"naming the setting that asked for ZDR: {reasons}"
+    )
+    assert still_allowed, (
+        "OpenRouter's data-policy refusal was counted as a failure against the user's circuit breaker"
+    )
 
+    picture_posted, picture_reasons, _ = await _zdr_enforced_turn(
+        monkeypatch, "acme/picture-only", openrouter_refuses=False
+    )
+    assert picture_posted == [], picture_posted
+    assert picture_reasons, "an image-only model was not refused with a restriction card"
+
+
+@pytest.mark.asyncio
+async def test_zdr_enforce_still_sends_the_flag_when_the_zdr_list_cannot_be_read():
     pipe = Pipe()
 
     try:
@@ -5364,7 +5418,7 @@ async def test_zdr_enforce_fails_closed_when_zdr_endpoint_unavailable(caplog):
         async def event_emitter(event):
             pass
 
-        with aioresponses() as mock_http, caplog.at_level(_logging.ERROR, logger="open_webui_openrouter_pipe.pipe"):
+        with aioresponses() as mock_http:
             mock_http.post(
                 "https://openrouter.ai/api/v1/responses",
                 callback=callback,
@@ -5390,7 +5444,7 @@ async def test_zdr_enforce_fails_closed_when_zdr_endpoint_unavailable(caplog):
 
             result = await pipe.pipe(
                 body=body,
-                __user__={"id": "user_zdr_fail_closed"},
+                __user__={"id": "user_zdr_list_unreadable"},
                 __request__=None,
                 __event_emitter__=event_emitter,
                 __event_call__=None,
@@ -5402,15 +5456,8 @@ async def test_zdr_enforce_fails_closed_when_zdr_endpoint_unavailable(caplog):
 
             await _consume_stream(result)
 
-        assert captured_payloads == [], (
-            f"Expected no upstream request when ZDR endpoint unavailable; "
-            f"got {len(captured_payloads)} payload(s)"
-        )
-        # The orchestrator logs the rejection with the unavailable marker.
-        joined_logs = "\n".join(record.getMessage() for record in caplog.records)
-        assert "ZDR endpoint list is unavailable" in joined_logs, (
-            f"Expected fail-closed log message; got: {joined_logs}"
-        )
+        assert len(captured_payloads) == 1, captured_payloads
+        assert (captured_payloads[0].get("provider") or {}).get("zdr") is True, captured_payloads[0]
     finally:
         await pipe.close()
 
@@ -5476,73 +5523,107 @@ async def test_zdr_enforce_passes_when_endpoint_available_and_model_zdr_capable(
         await pipe.close()
 
 
-@pytest.mark.asyncio
-async def test_zdr_enforce_fail_closed_uses_distinct_restriction_reason_from_capable_check(caplog):
-    """When ZDR is healthy but the model is not ZDR-capable, the existing
-    ZDR_ENFORCE log path is taken (not the new fail-closed path)."""
-    import logging as _logging
+_PRESET_SAVED_SETTINGS = {
+    "model": "acme/plain-chat",
+    "reasoning": {"effort": "low"},
+    "plugins": [{"id": "web", "max_results": 3}],
+    "provider": {"order": ["acme"], "allow_fallbacks": False},
+}
 
+
+async def _preset_turn(*, valves: dict[str, Any], extra_body: dict[str, Any]) -> dict[str, Any]:
     pipe = Pipe()
+    posted: list[dict[str, Any]] = []
+
+    async def event_emitter(event):
+        pass
 
     try:
         pipe.valves.API_KEY = EncryptedStr("test-api-key")
         pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
-        pipe.valves.ZDR_ENFORCE = True
-
-        captured_payloads: list[dict] = []
-        callback = _smart_callback(captured_payloads, "Response")
-
-        async def event_emitter(event):
-            pass
-
-        with aioresponses() as mock_http, caplog.at_level(_logging.WARNING, logger="open_webui_openrouter_pipe.pipe"):
+        for name, value in valves.items():
+            setattr(pipe.valves, name, value)
+        with aioresponses() as mock_http:
             mock_http.post(
                 "https://openrouter.ai/api/v1/responses",
-                callback=callback,
+                callback=_smart_callback(posted, "Response"),
                 repeat=True,
             )
             mock_http.get(
                 "https://openrouter.ai/api/v1/models",
-                payload={"data": [{"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini"}]},
+                payload={"data": [_ACME_CHAT_ROW]},
                 repeat=True,
             )
             mock_http.get(
                 "https://openrouter.ai/api/v1/endpoints/zdr",
-                payload={"data": [{"model_id": "openai/gpt-4o"}]},
+                payload={"data": []},
                 repeat=True,
             )
-
-            body = {
-                "model": "openai/gpt-4o-mini",
-                "messages": [{"role": "user", "content": "test"}],
-                "stream": True,
-            }
-
+            mock_http.get(
+                "https://openrouter.ai/api/v1/presets?offset=0&limit=100",
+                payload={
+                    "data": [
+                        {
+                            "slug": "own",
+                            "name": "Own",
+                            "status": "active",
+                            "designated_version_id": "v1",
+                        }
+                    ],
+                    "total_count": 1,
+                },
+                repeat=True,
+            )
+            mock_http.get(
+                "https://openrouter.ai/api/v1/presets/own",
+                payload={
+                    "data": {
+                        "slug": "own",
+                        "name": "Own",
+                        "status": "active",
+                        "designated_version_id": "v1",
+                        "designated_version": {"id": "v1", "config": _PRESET_SAVED_SETTINGS},
+                    }
+                },
+                repeat=True,
+            )
             result = await pipe.pipe(
-                body=body,
-                __user__={"id": "user_zdr_not_capable"},
+                body={
+                    "model": "@preset/own",
+                    "messages": [{"role": "user", "content": "test"}],
+                    "stream": True,
+                    **extra_body,
+                },
+                __user__={"id": "user_preset"},
                 __request__=None,
                 __event_emitter__=event_emitter,
                 __event_call__=None,
-                __metadata__={"model": {"id": "openai/gpt-4o-mini"}},
+                __metadata__={"chat_id": "chat-1", "message_id": "message-1", "model": {"id": "@preset/own"}},
                 __tools__=None,
                 __task__=None,
                 __task_body__=None,
             )
-
             await _consume_stream(result)
-
-        assert captured_payloads == []
-        joined_logs = "\n".join(record.getMessage() for record in caplog.records)
-        assert "Model restricted due to ZDR enforcement" in joined_logs, (
-            f"Expected the existing ZDR_ENFORCE log; got: {joined_logs}"
-        )
-        assert "ZDR endpoint list is unavailable" not in joined_logs, (
-            "Should NOT use the fail-closed log when the ZDR endpoint is available; "
-            f"got: {joined_logs}"
-        )
     finally:
         await pipe.close()
+    assert posted, "the preset request never reached OpenRouter"
+    return posted[-1]
+
+
+@pytest.mark.asyncio
+async def test_a_preset_row_keeps_the_settings_it_saved_over_the_pipes_own_defaults():
+    plain = await _preset_turn(valves={}, extra_body={})
+    assert not {"reasoning", "plugins", "provider"} & plain.keys(), {
+        key: plain[key] for key in ("reasoning", "plugins", "provider") if key in plain
+    }
+
+    chosen = await _preset_turn(
+        valves={"ZDR_ENFORCE": True, "ENABLE_WEB_SEARCH": False},
+        extra_body={"reasoning_effort": "high"},
+    )
+    assert chosen["reasoning"] == {"effort": "high"}, chosen.get("reasoning")
+    assert chosen["provider"] == {**_PRESET_SAVED_SETTINGS["provider"], "zdr": True}, chosen.get("provider")
+    assert chosen["plugins"] == [{"id": "web", "enabled": False}], chosen.get("plugins")
 
 
 # -----------------------------------------------------------------------------

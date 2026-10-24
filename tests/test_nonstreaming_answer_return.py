@@ -604,10 +604,10 @@ async def test_a_preset_endpoint_conflict_never_hands_a_card_to_a_task(
         ("### Cannot verify\n\n{restriction_reasons}", "Cannot verify"),
     ],
 )
-async def test_an_unverifiable_zdr_card_is_returned_as_well_as_shown(
+async def test_an_unenforceable_zdr_card_is_returned_as_well_as_shown(
     monkeypatch, template, marker
 ) -> None:
-    """ZDR enforcement fails closed when the endpoint list cannot be read.
+    """A model whose request format cannot carry the control is refused before anything is sent.
 
     The card that says so is the whole turn, so with streaming off it has to be the
     return value too or the refusal is not recorded anywhere.
@@ -622,7 +622,11 @@ async def test_an_unverifiable_zdr_card_is_returned_as_well_as_shown(
     async def emitter(event: dict[str, Any]) -> None:
         events.append(event)
 
-    monkeypatch.setattr(OpenRouterModelRegistry, "is_zdr_capable", staticmethod(lambda _m: None))
+    monkeypatch.setattr(
+        OpenRouterModelRegistry,
+        "_specs",
+        {"some.model": {"architecture": {"output_modalities": ["image"]}}},
+    )
     try:
         orchestrator = pipe._ensure_request_orchestrator()
         result = await orchestrator.process_request(
@@ -648,13 +652,13 @@ async def test_an_unverifiable_zdr_card_is_returned_as_well_as_shown(
 
         from open_webui_openrouter_pipe.pipe import _RESTRICTION_REASON_PHRASES
 
-        unreadable = _RESTRICTION_REASON_PHRASES["ZDR_LIST_UNAVAILABLE"]
+        unenforceable = _RESTRICTION_REASON_PHRASES["ZDR_UNENFORCEABLE"]
         shown = _shown_card(events)
         assert result == shown
         assert marker in shown
-        assert unreadable in shown, (
-            "this is the arm where the ZDR list could not be read, and the card has to say "
-            f"so rather than name a model that has no ZDR endpoint:\n{shown}"
+        assert unenforceable in shown, (
+            "this is the arm where the request format cannot carry the control, and the card "
+            f"has to say so:\n{shown}"
         )
     finally:
         await pipe.close()

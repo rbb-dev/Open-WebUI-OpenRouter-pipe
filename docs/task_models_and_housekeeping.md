@@ -84,7 +84,7 @@ Important nuance:
 
 ### Task reasoning effort override
 
-For housekeeping tasks targeting models the pipe “owns”, the pipe overrides the request’s reasoning configuration using `TASK_MODEL_REASONING_EFFORT` (default: `low`):
+For housekeeping tasks targeting models the pipe “owns”, the pipe overrides the request’s reasoning configuration using `TASK_MODEL_REASONING_EFFORT` (default: `low`), except on an OpenRouter preset that saved reasoning settings of its own, which keeps them:
 
 - If the model supports the modern `reasoning` parameter, the pipe sets `reasoning.effort` and keeps reasoning enabled. A `none` on a model whose reasoning is mandatory becomes the lowest level its catalog entry lists other than `none` - the lowest of the gateway's when that entry accepts every level, and none at all when it exposes no effort selection. On any other model, an effort of `none` is the one that turns reasoning off, and the reasoning pass that runs after the task override is what decides it: it rebuilds the `reasoning` object, so the `enabled` key nothing else wrote is not on the request a task asking for no effort goes out with. A task request that only hides the trace (`reasoning.exclude` of `true`) is not an off: it keeps the depth the valve chose and draws no status line about it.
 - If the model supports only the legacy `include_reasoning` flag, the pipe toggles it based on the configured effort — except on a row whose reasoning is mandatory, where there is no effort to substitute and the flag goes out as `true` whatever the configured effort says.
@@ -125,8 +125,8 @@ and never with a stub:
 | A kind whose name carries `follow`, `tag` or `title` but is not one of the three persisted kinds | the stub. No kind in Open WebUI's `TASKS` enum is in this class — `title_generation`, `follow_up_generation` and `tags_generation` are all persisted and checked first — so this row is a guard kept for a future kind, and it is documented so nobody reads the arm as dead code. |
 
 The same holds for the refusals
-that happen in-request, after the job is queued: ZDR enforcement on a model with no
-ZDR endpoint, the same refusal when the endpoint list cannot be read at all, an
+that happen in-request, after the job is queued: ZDR enforcement on a video model or a model
+answered only on the image API, an
 endpoint-override conflict from a preset on a model forced to `/responses`, a provider
 `refusal` in the task model's own reply on either endpoint, and the
 six sites inside `_handle_pipe_call` where the job itself fails — an artifact store

@@ -11,7 +11,7 @@ endpoints are the base model's endpoints, and OpenRouter's ZDR list only ever co
 base ids, so a variant can never appear in it. Any gate comparing the full id therefore
 rejects every variant of every ZDR-capable model.
 
-These tests drive all three gates against one registry state. Testing the gates
+These tests drive the gates that read the list against one registry state. Testing the gates
 separately is what allowed the second report: the fix was applied where the bug was seen
 rather than where the rule lives, and nothing compared the gates to each other.
 """
@@ -23,7 +23,16 @@ from typing import Any
 
 import pytest
 
-from tests.test_request_orchestrator import _consume_stream, _smart_callback
+import json
+
+from aioresponses import CallbackResult
+
+from tests.posted_body import posted_json
+from tests.test_request_orchestrator import (
+    _DATA_POLICY_REFUSAL,
+    _consume_stream,
+    _smart_callback,
+)
 
 from open_webui_openrouter_pipe.models.registry import ModelFamily
 from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry as Registry
@@ -177,11 +186,6 @@ def test_show_only_zdr_models_keeps_the_media_models_openrouter_lists(media_regi
 _ZDR_GATES = {
     ("open_webui_openrouter_pipe/pipe.py", "_apply_model_filters", "norm_id"),
     ("open_webui_openrouter_pipe/pipe.py", "_model_restriction_reasons", "model_norm_id"),
-    (
-        "open_webui_openrouter_pipe/requests/orchestrator.py",
-        "process_request",
-        "normalized_model_id",
-    ),
     # The video help card's retention sentence. It is a report, not a gate, but it
     # asks the same question, so it answers the same way: `model_id` is the canonical
     # id `render_video_help` resolved from the request or the catalogue row, handed
@@ -192,6 +196,23 @@ _ZDR_GATES = {
         "model_id",
     ),
 }
+
+
+def _openrouter_refuses_zdr_requests(captured: list[dict]):
+    answer = _smart_callback(captured, "Response")
+
+    def callback(url, **kwargs):
+        body = posted_json(kwargs, {})
+        if (body.get("provider") or {}).get("zdr") is True:
+            captured.append(body)
+            return CallbackResult(
+                status=404,
+                body=json.dumps(_DATA_POLICY_REFUSAL),
+                headers={"Content-Type": "application/json"},
+            )
+        return answer(url, **kwargs)
+
+    return callback
 
 
 @pytest.fixture(scope="module")
@@ -477,9 +498,9 @@ async def test_a_broken_valve_row_does_not_end_that_users_chat():
     covers both this and the undecodable-blob arm above.
 
     What still holds from the original position: the chat is not ended. The request is
-    routed ZDR, or refused by the ordinary restriction card, which names the user's own
-    setting and tells them what to repair. Repairing the row restores the answer and the
-    card goes away by itself.
+    routed ZDR, and when OpenRouter has no endpoint that meets it the refusal is shown as
+    the ordinary restriction card, which names the user's own setting and tells them what
+    to repair. Repairing the row restores the answer and the card goes away by itself.
 
     Its opposite arm is the sibling below: the two end in opposite places -- one
     answered, one refused -- so neither a hardcoded enforce nor a hardcoded allow
@@ -515,7 +536,7 @@ async def test_a_broken_valve_row_does_not_end_that_users_chat():
         pipe.valves.ALLOW_USER_ZDR_OVERRIDE = True
 
         captured: list[dict] = []
-        callback = _smart_callback(captured, "Response")
+        callback = _openrouter_refuses_zdr_requests(captured)
         events: list[dict] = []
 
         async def _emit(event):
@@ -543,7 +564,7 @@ async def test_a_broken_valve_row_does_not_end_that_users_chat():
                 __request__=None,
                 __event_emitter__=_emit,
                 __event_call__=None,
-                __metadata__={"model": {"id": "openai/gpt-4o"}},
+                __metadata__={"chat_id": "chat-1", "message_id": "message-1", "model": {"id": "openai/gpt-4o"}},
                 __tools__=None,
                 __task__=None,
                 __task_body__=None,
@@ -554,15 +575,16 @@ async def test_a_broken_valve_row_does_not_end_that_users_chat():
         ErrorFormatter._emit_templated_error = real_emit  # pyright: ignore[reportAttributeAccessIssue]
         await pipe.close()
 
-    assert not captured, (
+    assert captured and (captured[-1].get("provider") or {}).get("zdr") is True, (
         "the stored valve row could not be read, so this user's Zero Data Retention "
-        "answer is unknown -- yet the request was sent to a model that is not "
-        f"ZDR-capable: {captured[-1] if captured else None!r}\n"
+        "answer is unknown -- yet the request went out without provider.zdr: "
+        f"{captured[-1] if captured else None!r}\n"
         f"events={[e.get('type') for e in events]}"
     )
     assert reasons, (
-        "the request was refused, but no restriction was rendered, so the card the user "
-        f"sees reports nothing about what to repair. events={[e.get('type') for e in events]}"
+        "OpenRouter refused the request for its data policy, but no restriction was rendered, "
+        "so the card the user sees reports nothing about what to repair. "
+        f"events={[e.get('type') for e in events]}"
     )
     assert "ZDR_PREFERENCE_UNREADABLE" in reasons[-1] or "could not be read" in reasons[-1], (
         f"the refusal reported {reasons[-1]!r}, which neither names the unreadable "
@@ -634,7 +656,7 @@ async def test_an_unparseable_zdr_field_still_enforces_zdr():
         pipe.valves.ALLOW_USER_ZDR_OVERRIDE = True
 
         captured: list[dict] = []
-        callback = _smart_callback(captured, "Response")
+        callback = _openrouter_refuses_zdr_requests(captured)
         events: list[dict] = []
 
         async def _emit(event):
@@ -662,7 +684,7 @@ async def test_an_unparseable_zdr_field_still_enforces_zdr():
                 __request__=None,
                 __event_emitter__=_emit,
                 __event_call__=None,
-                __metadata__={"model": {"id": "openai/gpt-4o"}},
+                __metadata__={"chat_id": "chat-1", "message_id": "message-1", "model": {"id": "openai/gpt-4o"}},
                 __tools__=None,
                 __task__=None,
                 __task_body__=None,
@@ -673,17 +695,17 @@ async def test_an_unparseable_zdr_field_still_enforces_zdr():
         ErrorFormatter._emit_templated_error = real_emit  # pyright: ignore[reportAttributeAccessIssue]
         await pipe.close()
 
-    assert not captured, (
+    assert captured and (captured[-1].get("provider") or {}).get("zdr") is True, (
         "REQUEST_ZDR was present and unparseable, so the user may have opted in to Zero "
-        "Data Retention -- but the request was sent to a model that is not ZDR-capable "
-        f"anyway: {captured[-1] if captured else None!r}"
+        "Data Retention -- but the request went out without provider.zdr: "
+        f"{captured[-1] if captured else None!r}"
     )
     assert reasons, "no restriction was rendered, so the refusal reported nothing"
     _assert_names_the_users_preference(reasons[-1])
 
 
 async def _reported_restriction_for(stored_row: dict) -> str:
-    """Drive one real refusal and hand back the reasons string the card was built from.
+    """Drive one real refusal by OpenRouter and hand back the reasons string the card was built from.
 
     The row is the only thing that varies between calls, and it is stubbed at Open WebUI's
     own reader -- one seam below `_read_user_valves`, which is what classifies it -- so the
@@ -724,7 +746,7 @@ async def _reported_restriction_for(stored_row: dict) -> str:
 
         with aioresponses() as http:
             http.post("https://openrouter.ai/api/v1/responses",
-                      callback=_smart_callback(captured, "Response"), repeat=True)
+                      callback=_openrouter_refuses_zdr_requests(captured), repeat=True)
             http.get("https://openrouter.ai/api/v1/models",
                      payload={"data": [{"id": "openai/gpt-4o", "name": "M"}]}, repeat=True)
             http.get("https://openrouter.ai/api/v1/endpoints/zdr",
@@ -734,7 +756,7 @@ async def _reported_restriction_for(stored_row: dict) -> str:
                       "messages": [{"role": "user", "content": "hi"}], "stream": True},
                 __user__={"id": "u1", "valves": Pipe.UserValves()},
                 __request__=None, __event_emitter__=_emit, __event_call__=None,
-                __metadata__={"model": {"id": "openai/gpt-4o"}},
+                __metadata__={"chat_id": "chat-1", "message_id": "message-1", "model": {"id": "openai/gpt-4o"}},
                 __tools__=None, __task__=None, __task_body__=None,
             )
             await _consume_stream(result)
@@ -743,9 +765,9 @@ async def _reported_restriction_for(stored_row: dict) -> str:
         ErrorFormatter._emit_templated_error = real_emit  # pyright: ignore[reportAttributeAccessIssue]
         await pipe.close()
 
-    assert not captured, (
-        "the model is not ZDR-capable and ZDR was enforced, so nothing should have been "
-        f"sent to OpenRouter: {captured[-1] if captured else None!r}"
+    assert captured and (captured[-1].get("provider") or {}).get("zdr") is True, (
+        "ZDR was enforced, so the request should have gone out carrying provider.zdr: "
+        f"{captured[-1] if captured else None!r}"
     )
     assert reasons, "no restriction was rendered, so the refusal reported nothing"
     return reasons[-1]
@@ -847,7 +869,7 @@ async def test_an_undecodable_user_valve_blob_enforces_zdr(settings, expect_refu
 
         with aioresponses() as http:
             http.post("https://openrouter.ai/api/v1/responses",
-                      callback=_smart_callback(captured, "Response"), repeat=True)
+                      callback=_openrouter_refuses_zdr_requests(captured), repeat=True)
             http.get("https://openrouter.ai/api/v1/models",
                      payload={"data": [{"id": "openai/gpt-4o", "name": "M"}]}, repeat=True)
             http.get("https://openrouter.ai/api/v1/endpoints/zdr",
@@ -857,7 +879,7 @@ async def test_an_undecodable_user_valve_blob_enforces_zdr(settings, expect_refu
                       "messages": [{"role": "user", "content": "hi"}], "stream": True},
                 __user__={"id": "u1", "valves": Pipe.UserValves(), "settings": settings},
                 __request__=None, __event_emitter__=_emit, __event_call__=None,
-                __metadata__={"model": {"id": "openai/gpt-4o"}},
+                __metadata__={"chat_id": "chat-1", "message_id": "message-1", "model": {"id": "openai/gpt-4o"}},
                 __tools__=None, __task__=None, __task_body__=None,
             )
             await _consume_stream(result)
@@ -866,19 +888,22 @@ async def test_an_undecodable_user_valve_blob_enforces_zdr(settings, expect_refu
         ErrorFormatter._emit_templated_error = real_emit  # pyright: ignore[reportAttributeAccessIssue]
         await pipe.close()
 
+    assert captured, (
+        "the request never reached OpenRouter; the pipe refused it itself, which it no "
+        "longer does for a chat model"
+    )
     if expect_refusal:
-        assert not captured, (
+        assert (captured[-1].get("provider") or {}).get("zdr") is True, (
             "the user has a stored valve blob that will not decode, so their REQUEST_ZDR "
-            "answer is unknown -- yet the request went to a model that is not ZDR-capable"
+            "answer is unknown -- yet the request went out without provider.zdr"
         )
         assert reasons, "no restriction was rendered, so the refusal reported nothing"
         _assert_names_the_users_preference(reasons[-1])
     else:
-        assert captured, (
-            "a user with no undecodable blob was refused; the guard fires for users who "
-            "never opened the valve panel"
+        assert (captured[-1].get("provider") or {}).get("zdr") is not True, (
+            "a user with no undecodable blob was routed with Zero Data Retention; the guard "
+            "fires for users who never opened the valve panel"
         )
-        assert (captured[-1].get("provider") or {}).get("zdr") is not True
 
 
 def test_the_stored_valve_row_is_classified_in_exactly_one_place(package_trees):

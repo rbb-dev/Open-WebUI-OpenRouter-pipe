@@ -288,6 +288,23 @@ class EmptyAnswerError(OpenRouterAPIError, aiohttp.ClientError):
         Exception.__init__(self, message)
 
 
+_DATA_POLICY_ROUTING_STEP = "Filter by Data Policy"
+
+
+def refused_by_data_policy(exc: Any) -> bool:
+    if not isinstance(exc, OpenRouterAPIError) or exc.status != 404:
+        return False
+    metadata = exc.metadata if isinstance(exc.metadata, dict) else {}
+    return metadata.get("failed_routing_step") == _DATA_POLICY_ROUTING_STEP
+
+
+def data_policy_refusal_reason(model: str, labels: str) -> str:
+    return (
+        f"{model} has no endpoint that meets the Zero Data Retention routing in force "
+        f"({labels}); OpenRouter refused the request"
+    )
+
+
 def _classify_retryable_http_error(
     exc: httpx.HTTPStatusError,
 ) -> tuple[bool, float | None]:

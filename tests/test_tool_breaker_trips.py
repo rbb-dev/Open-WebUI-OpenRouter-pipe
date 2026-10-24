@@ -870,8 +870,7 @@ async def test_a_request_that_ends_in_an_error_of_its_own_does_not_clear_earlier
 
 
 _REFUSAL_HEADINGS = {
-    "model-without-zero-data-retention": "Model restricted",
-    "zero-data-retention-list-unavailable": "Model restricted",
+    "format-that-cannot-carry-zero-data-retention": "Model restricted",
     "model-outside-the-allowlist": "Model restricted",
     "attachment-that-cannot-be-read": "Direct Upload Issue",
     "endpoint-forced-against-a-preset": "Endpoint Override Conflict",
@@ -885,10 +884,13 @@ async def _chat_turn_refused_before_the_model_is_called(monkeypatch, pipe, refus
     body: dict[str, Any] = {"model": "m1", "messages": [{"role": "user", "content": "hi"}], "stream": False}
     metadata: dict[str, Any] = {"chat_id": "chat-1", "message_id": "message-1", "model": {"id": "m1"}}
     with monkeypatch.context() as patch:
-        if refusal in {"model-without-zero-data-retention", "zero-data-retention-list-unavailable"}:
-            capable = False if refusal == "model-without-zero-data-retention" else None
+        if refusal == "format-that-cannot-carry-zero-data-retention":
             pipe.valves = saved.model_copy(update={"ZDR_ENFORCE": True})
-            patch.setattr(pipe_mod.OpenRouterModelRegistry, "is_zdr_capable", classmethod(lambda _cls, _model_id: capable))
+            patch.setattr(
+                pipe_mod.OpenRouterModelRegistry,
+                "_specs",
+                {"m1": {"architecture": {"output_modalities": ["image"]}}},
+            )
         elif refusal == "model-outside-the-allowlist":
             pipe.valves = saved.model_copy(update={"MODEL_ID": "m2"})
             patch.setattr(

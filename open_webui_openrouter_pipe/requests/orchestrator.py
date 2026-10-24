@@ -111,6 +111,15 @@ from .fusion_engine import (
     latest_user_text,
     run_internal_fusion,
 )
+from .preset_settings import (
+    MODALITY_FIELDS,
+    OUTPUT_CAP_FIELDS,
+    PLUGIN_FIELDS,
+    REASONING_FIELDS,
+    TRUNCATION_FIELDS,
+    VERBOSITY_FIELDS,
+    PresetSettings,
+)
 from .sanitizer import _sanitize_request_input
 from .task_model_adapter import TaskModelAdapter
 from .transformer import _tool_picture_verdicts_for_input
@@ -774,6 +783,15 @@ def _switched_off_server_tool_types(valves: Any) -> set[str]:
     return switched_off
 
 
+def _switched_off_plugin_ids(valves: Any) -> frozenset[str]:
+    switched_off = _switched_off_server_tool_types(valves)
+    return frozenset(
+        plugin_id
+        for tool_type, plugin_id in _PLUGIN_ID_FOR_SERVER_TOOL_TYPE.items()
+        if tool_type in switched_off
+    )
+
+
 def _strip_switched_off_server_tools(responses_body: ResponsesBody, valves: Any) -> None:
     switched_off = _switched_off_server_tool_types(valves)
     if not switched_off:
@@ -782,11 +800,7 @@ def _strip_switched_off_server_tools(responses_body: ResponsesBody, valves: Any)
     kept = [e for e in existing if not (isinstance(e, dict) and e.get("type") in switched_off)]
     if len(kept) != len(existing):
         responses_body.tools = kept or None
-    switched_off_plugin_ids = {
-        plugin_id
-        for tool_type, plugin_id in _PLUGIN_ID_FOR_SERVER_TOOL_TYPE.items()
-        if tool_type in switched_off
-    }
+    switched_off_plugin_ids = _switched_off_plugin_ids(valves)
     existing_plugins = list(responses_body.plugins or [])
     kept_plugins = [
         p
@@ -1426,7 +1440,16 @@ class RequestOrchestrator:
                     body.get("preset"),
                 )
 
-        _inject_image_modalities(body, logger=self.logger)
+        requested_model_text = body.get("model")
+        preset_settings = PresetSettings.referenced_by(
+            OpenRouterModelRegistry.api_model_id(requested_model_text)
+            if isinstance(requested_model_text, str) and requested_model_text
+            else None,
+            preset,
+        )
+
+        if not preset_settings.saves(MODALITY_FIELDS):
+            _inject_image_modalities(body, logger=self.logger)
 
         completions_body = CompletionsBody.model_validate(body)
 
@@ -1695,17 +1718,22 @@ class RequestOrchestrator:
                 exec_registry.pop(exposed, None)
                 exposed_to_origin.pop(exposed, None)
             history_registry = None
+        preset_settings.note_carried(responses_body)
         responses_body._continued_turn = continued_turn_counts(responses_body.input)
         responses_body._continues_after_marker = ends_on_hidden_marker_line(CONTINUED_REPLY.get())
         responses_body.input_file_sizes = await index_referenced_file_payloads(
             responses_body.input, self.logger, user=user_model, known=input_file_sizes
         )
-        if valves.USE_MODEL_MAX_OUTPUT_TOKENS and (
-            responses_body.max_output_tokens is None
-            or (
-                isinstance(responses_body.max_output_tokens, int)
-                and not isinstance(responses_body.max_output_tokens, bool)
-                and responses_body.max_output_tokens < 1
+        if (
+            valves.USE_MODEL_MAX_OUTPUT_TOKENS
+            and not preset_settings.keeps(OUTPUT_CAP_FIELDS)
+            and (
+                responses_body.max_output_tokens is None
+                or (
+                    isinstance(responses_body.max_output_tokens, int)
+                    and not isinstance(responses_body.max_output_tokens, bool)
+                    and responses_body.max_output_tokens < 1
+                )
             )
         ):
             default_max = default_output_reservation(responses_body.model)
@@ -1757,18 +1785,30 @@ class RequestOrchestrator:
                     member=fusion_inner,
                 )
         reasoning = self._pipe._ensure_reasoning_config_manager()
-        refused = reasoning._apply_reasoning_preferences(responses_body, valves)
-        refused = reasoning._apply_gemini_thinking_config(responses_body, valves) or refused
-        reasoning._fit_effort_none_to_model(responses_body, settings_applied=True)
-        if not use_task_model_adapter:
-            reasoning._apply_anthropic_verbosity(responses_body, valves)
+        preset_decides_reasoning = preset_settings.saves(REASONING_FIELDS)
+        refused = None
+        if not preset_settings.keeps(REASONING_FIELDS):
+            refused = reasoning._apply_reasoning_preferences(
+                responses_body, valves, fill_defaults=not preset_decides_reasoning
+            )
+            refused = reasoning._apply_gemini_thinking_config(responses_body, valves) or refused
+            reasoning._fit_effort_none_to_model(responses_body, settings_applied=True)
+        if not use_task_model_adapter and not preset_settings.keeps(VERBOSITY_FIELDS):
+            reasoning._apply_anthropic_verbosity(
+                responses_body, valves, valve_effort=not preset_decides_reasoning
+            )
         if refused and __event_emitter__:
             refusal = f"Reasoning could not be turned off for '{refused}' - that model always thinks."
             if fusion_inner:
                 await _member_notice_or_outer(__event_emitter__, refusal, member=True)
             else:
                 await self._pipe._event_emitter_handler._emit_status(__event_emitter__, refusal)
-        apply_context_transforms(responses_body, auto_context_trimming=valves.AUTO_CONTEXT_TRIMMING)
+        apply_context_transforms(
+            responses_body,
+            auto_context_trimming=valves.AUTO_CONTEXT_TRIMMING,
+            leave_plugins=preset_settings.saves(PLUGIN_FIELDS),
+            leave_truncation=preset_settings.saves(TRUNCATION_FIELDS),
+        )
 
         if (not use_task_model_adapter) and isinstance(__metadata__, dict):
             pipe_meta = __metadata__.get(_PIPE_METADATA_KEY)
@@ -1812,71 +1852,6 @@ class RequestOrchestrator:
         if admin_enforce_zdr:
             zdr_reason = "ZDR_ENFORCE"
         if enforce_zdr:
-            is_zdr_capable = OpenRouterModelRegistry.is_zdr_capable(normalized_model_id)
-            if is_zdr_capable is False:
-                zdr_labels = ", ".join(
-                    self._pipe._model_restriction_labels(
-                        [zdr_reason], valves=valves
-                    )
-                )
-                if outcome_sink is not None:
-                    outcome_sink["member_refusal_reason"] = (
-                        f"{responses_body.model} is not permitted under the pipe's Zero "
-                        f"Data Retention routing ({zdr_labels}); ask your admin to allow it"
-                    )
-                shown = await self._pipe._ensure_error_formatter()._emit_templated_error(
-                    __event_emitter__,
-                    template=valves.MODEL_RESTRICTED_TEMPLATE,
-                    variables={
-                        "requested_model": responses_body.model,
-                        "normalized_model_id": normalized_model_id,
-                        "restriction_reasons": zdr_labels,
-                        "model_id_filter": "",
-                        "free_model_filter": "",
-                        "tool_calling_filter": "",
-                    },
-                    log_message=(
-                        f"Model restricted due to ZDR enforcement (requested={responses_body.model}, "
-                        f"normalized={normalized_model_id})"
-                    ),
-                    log_level=logging.WARNING,
-                )
-                if use_task_model_adapter:
-                    return self._pipe._task_refusal_result(__task__, shown)
-                return shown
-            if is_zdr_capable is None:
-                zdr_unavailable_labels = ", ".join(
-                    self._pipe._model_restriction_labels(
-                        [zdr_reason, "ZDR_LIST_UNAVAILABLE"], valves=valves
-                    )
-                )
-                if outcome_sink is not None:
-                    outcome_sink["member_refusal_reason"] = (
-                        f"{responses_body.model} is not permitted under the pipe's Zero "
-                        f"Data Retention routing ({zdr_unavailable_labels}); ask your admin "
-                        f"to allow it"
-                    )
-                shown = await self._pipe._ensure_error_formatter()._emit_templated_error(
-                    __event_emitter__,
-                    template=valves.MODEL_RESTRICTED_TEMPLATE,
-                    variables={
-                        "requested_model": responses_body.model,
-                        "normalized_model_id": normalized_model_id,
-                        "restriction_reasons": zdr_unavailable_labels,
-                        "model_id_filter": "",
-                        "free_model_filter": "",
-                        "tool_calling_filter": "",
-                    },
-                    log_message=(
-                        f"Model rejected — ZDR enforcement requested but ZDR endpoint list is unavailable "
-                        f"(requested={responses_body.model}, normalized={normalized_model_id})"
-                    ),
-                    log_level=logging.ERROR,
-                )
-                if use_task_model_adapter:
-                    return self._pipe._task_refusal_result(__task__, shown)
-                return shown
-
             if not _transport_carries_zdr(FilterManager.model_transport(normalized_model_id)):
                 zdr_unenforceable_labels = ", ".join(
                     self._pipe._model_restriction_labels(
@@ -1916,6 +1891,9 @@ class RequestOrchestrator:
                 responses_body.provider = {**existing_provider, "zdr": True}
             else:
                 responses_body.provider = {"zdr": True}
+            responses_body._zdr_restriction_labels = ", ".join(
+                self._pipe._model_restriction_labels([zdr_reason], valves=valves)
+            )
 
         is_direct = bool(getattr(getattr(__request__, "state", None), "direct", False))
         fusion_live = bool(valves.ENABLE_OPENROUTER_FUSION)
@@ -2139,7 +2117,7 @@ class RequestOrchestrator:
 
             requested_model = responses_body.model
             owns_task_model = ModelFamily.base_model(requested_model) in allowlist_norm_ids if allowlist_norm_ids else True
-            if owns_task_model:
+            if owns_task_model and not preset_settings.keeps(REASONING_FIELDS):
                 task_effort = valves.TASK_MODEL_REASONING_EFFORT
                 task_reasoning = self._pipe._ensure_reasoning_config_manager()
                 task_reasoning._apply_task_reasoning_preferences(responses_body, task_effort)
@@ -2148,6 +2126,9 @@ class RequestOrchestrator:
 
             _strip_switched_off_server_tools(responses_body, valves)
             _reconcile_tool_fields(responses_body)
+            preset_settings.merge_under(
+                responses_body, disabled_plugins=_switched_off_plugin_ids(valves)
+            )
             result = await self._pipe._ensure_task_model_adapter()._run_task_model_request(
                 responses_body.model_dump(),
                 valves,
@@ -2458,6 +2439,10 @@ class RequestOrchestrator:
 
         _reconcile_tool_fields(responses_body)
 
+        preset_settings.merge_under(
+            responses_body, disabled_plugins=_switched_off_plugin_ids(valves)
+        )
+
         setattr(responses_body, "api_model", OpenRouterModelRegistry.api_model_id(selected_model_id) or normalized_model_id)  # noqa: B010
 
         retry_handoff: dict[str, Any] = {}
@@ -2521,6 +2506,7 @@ class RequestOrchestrator:
                 normalized_model_id=responses_body.model,
                 api_model_id=getattr(responses_body, "api_model", None),
                 end_notices=take_closing_notices(responses_body, silenced=fusion_inner),
+                zdr_labels=responses_body._zdr_restriction_labels,
             )
             if not fusion_inner:
                 await self._pipe._dispatch_generation_complete(

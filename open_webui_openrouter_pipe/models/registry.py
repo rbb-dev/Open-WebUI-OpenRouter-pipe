@@ -10,6 +10,7 @@ import time
 import weakref
 from collections import OrderedDict
 from contextvars import ContextVar
+from copy import deepcopy
 from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 from typing import Any, ClassVar
@@ -455,6 +456,20 @@ def _preset_base_id(config: Any) -> str | None:
     if not isinstance(base_id, str) or not base_id.strip():
         return None
     return base_id.strip()
+
+
+_PRESET_REFERENCE = "@preset/"
+
+
+def referenced_preset_slug(*references: Any) -> str | None:
+    for reference in references:
+        if not isinstance(reference, str):
+            continue
+        _head, marker, slug = reference.strip().rpartition(_PRESET_REFERENCE)
+        slug = slug.strip()
+        if marker and slug and "/" not in slug and ":" not in slug:
+            return slug
+    return None
 
 
 class OpenRouterModelRegistry:
@@ -1950,6 +1965,15 @@ class OpenRouterModelRegistry:
         cls._preset_read_failing[fingerprint] = True
         _trim_credential_history(cls._preset_read_failing, fingerprint, None)
         return True
+
+    @classmethod
+    def preset_settings(cls, slug: str) -> dict[str, Any] | None:
+        fingerprint = cls._ZDR_KEY.get()
+        if fingerprint is None:
+            return None
+        entry = cls._preset_details.get(fingerprint, {}).get(slug)
+        config = entry[1] if entry is not None else None
+        return deepcopy(config) if isinstance(config, dict) else None
 
     @classmethod
     def _preset_row(cls, preset_id: str, norm: str, full: dict[str, Any]) -> dict[str, Any]:

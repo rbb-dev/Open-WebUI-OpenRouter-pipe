@@ -544,6 +544,7 @@ Set the `preset` parameter in a model's Advanced Settings to apply a preset to a
 - The pipe detects the `preset` parameter in the request body
 - Automatically routes the request to `/chat/completions` (required for preset field support)
 - The pipe sends the correct `preset` field to OpenRouter
+- The pipe applies the preset's saved settings (see [What the preset saved wins over the pipe's defaults](#what-the-preset-saved-wins-over-the-pipes-defaults)) only when the value is written `@preset/<slug>`, the form OpenRouter's presets guide gives for this field, which says a bare slug is ignored
 
 **When to use:**
 - When Method 1 (VARIANT_MODELS) is not available
@@ -587,7 +588,33 @@ Note: The internal separator (`:`) is converted to `@` when sending to OpenRoute
 
 **Reasoning:** unlike a routing variant, a `base_id@preset/slug` entry does not take its base model's reasoning settings. The pipe adds no reasoning settings of its own to it, so the preset's saved ones apply. A reasoning effort the chat itself sets (for example Open WebUI's per-chat reasoning effort) still goes out with the request, and OpenRouter lets request fields override a preset's saved ones, so it overrides the preset's setting for that request. That reasoning configuration is the one thing such an entry does not inherit: in every other respect it is its base model, and inherits the base model's capabilities, context window, output ceiling, supported parameters, ZDR status, pricing and filter support. A preset of a base model with `video_generation` or `image_output` is therefore generated through the video or image adapter rather than streamed as chat, exactly as its base model is.
 
-A `@preset/<slug>` row that the picker lists from the account is the base model's catalog row under the preset's id. Its capabilities, context window, output ceiling, supported parameters and pricing are the base model's, and the pipe sends it the reasoning settings its base model is sent; OpenRouter lets request fields override a preset's saved ones, so those settings override the preset's saved reasoning for that request. Its zero-data-retention status is looked up under the preset's own id, not its base model's, so a preset whose base model is on OpenRouter's zero-data-retention list can still fail that check.
+A `@preset/<slug>` row that the picker lists from the account is the base model's catalog row under the preset's id. Its capabilities, context window, output ceiling, supported parameters and pricing are the base model's. Its reasoning follows what the preset saved (see below): a preset that saved no reasoning settings is sent the settings its base model is sent, and one that saved some is sent none of the pipe's own. Under `ZDR_MODELS_ONLY` its zero-data-retention status is looked up under the preset's own id, not its base model's, so a preset whose base model is on OpenRouter's zero-data-retention list is still hidden there; `ZDR_ENFORCE` and a user's `Request ZDR` look nothing up and send the preset the flag.
+
+#### What the preset saved wins over the pipe's defaults
+
+OpenRouter applies a preset's saved settings to a request that names it and lets the request override them field by field: a field the request leaves out keeps the preset's value, a field the request carries replaces the preset's whole value of it, and the two `tools` lists are joined. The pipe reads each preset's saved settings together with the catalog (`MODEL_CATALOG_REFRESH_SECONDS`) and applies them to a request for a picker row, for a `base_id@preset/slug` entry, and for a request whose `preset` parameter is `@preset/<slug>`.
+
+A default of the pipe gives way to a setting the preset saved:
+
+| The preset saved | The pipe does not send |
+| --- | --- |
+| `reasoning` (or `include_reasoning`, `reasoning_effort`) | the default effort, summary mode and thinking budget (`REASONING_EFFORT`, `REASONING_SUMMARY_MODE`, `GEMINI_THINKING_BUDGET`), the background-task effort (`TASK_MODEL_REASONING_EFFORT`) and the verbosity that an `xhigh` `REASONING_EFFORT` adds |
+| `plugins` | the `context-compression` plugin (`AUTO_CONTEXT_TRIMMING`) |
+| `truncation` | the `truncation: "disabled"` pin (`AUTO_CONTEXT_TRIMMING`) |
+| `max_tokens` or `max_completion_tokens` | the output allowance (`USE_MODEL_MAX_OUTPUT_TOKENS`) |
+| `verbosity` or `text` | the verbosity that an `xhigh` effort adds |
+| `modalities` | the picture modalities the pipe adds for a base model that makes pictures |
+
+A setting the preset did not save keeps the pipe's default, as for any other model. A preset whose saved settings the pipe has not read (a failed read of the presets) is treated as one that saved nothing.
+
+A value the chat itself carries (Open WebUI's reasoning effort, temperature or max tokens, for example) still goes out and replaces the preset's value of that field. A reasoning effort chosen in the chat goes out without the summary and enabled flags the default would add; an `xhigh` one still adds its verbosity, as it does on any other request.
+
+What the pipe has to send is merged into the preset's saved value of the same field, because OpenRouter replaces a whole field:
+
+- **`provider`**: the zero-data-retention flag and the routing a provider-routing filter chose are added to the provider settings the preset saved, and the filter's or the pipe's key wins where both name one. A preset that saved `{"order": ["acme"]}` goes out with `{"order": ["acme"], "zdr": true}` under `ZDR_ENFORCE`.
+- **`plugins`**: a plugin the request has to carry (the file parser for a PDF attachment, for example) is added to the plugins the preset saved and replaces a saved entry with the same `id`. A plugin an admin switched off (the web search plugin under `ENABLE_WEB_SEARCH`) goes out as `{"id": "web", "enabled": false}` in place of the preset's entry, so the switch holds for a preset as well.
+
+Server tools the chat switches on are `tools` entries, which OpenRouter joins with the preset's own, so they need no merge.
 
 ### Creating Presets
 

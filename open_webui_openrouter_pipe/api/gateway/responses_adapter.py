@@ -29,6 +29,7 @@ from ...core.errors import (
     _ChatRetryWait,
     _classify_retryable_openrouter_error,
     is_sign_in_failure,
+    refused_by_data_policy,
 )
 from ...core.logging_system import SessionLogger
 from ...core.request_body import StreamedJSONPayload
@@ -349,7 +350,9 @@ async def _count_failed_call(
 ) -> AsyncGenerator[None, None]:
     try:
         yield
-    except (OpenRouterAPIError, aiohttp.ClientError, TimeoutError):
+    except (OpenRouterAPIError, aiohttp.ClientError, TimeoutError) as exc:
+        if refused_by_data_policy(exc):
+            raise
         if charge is not None:
             charge()
         else:

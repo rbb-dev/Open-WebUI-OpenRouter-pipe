@@ -63,6 +63,8 @@ from ..core.errors import (
     RequiredInternalFileError,
     StatusMessages,
     UpstreamBodyUnreadable,
+    data_policy_refusal_reason,
+    refused_by_data_policy,
 )
 from ..core.logging_system import SessionLogger, bounded_log_record_text
 from ..core.timing_logger import timed, timing_mark
@@ -4575,7 +4577,12 @@ class StreamingHandler:
             raise
         except OpenRouterAPIError as exc:
             error_occurred = True
-            session_log_reason = str(exc)
+            zdr_labels = getattr(body, "_zdr_restriction_labels", None)
+            session_log_reason = (
+                data_policy_refusal_reason(body.model, zdr_labels)
+                if zdr_labels is not None and refused_by_data_policy(exc)
+                else str(exc)
+            )
             cancel_thinking()
             if not retry_barrier_crossed:
                 handed_back_for_retry = True
@@ -4589,6 +4596,7 @@ class StreamingHandler:
                 api_model_id=getattr(body, "api_model", None),
                 partial_answer=assistant_message,
                 terminal=False,
+                zdr_labels=zdr_labels,
             )
             if reported:
                 assistant_message = reported

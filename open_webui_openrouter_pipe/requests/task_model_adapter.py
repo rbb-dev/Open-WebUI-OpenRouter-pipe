@@ -22,6 +22,7 @@ from ..core.errors import (
     _inline_span,
     _provider_log_subject,
     is_sign_in_failure,
+    refused_by_data_policy,
 )
 from ..core.logging_system import SessionLogger
 from ..core.timing_logger import timed
@@ -288,7 +289,7 @@ class TaskModelAdapter:
                     attempts,
                     _provider_log_subject(exc),
                 )
-                if is_auth_failure:
+                if is_auth_failure or refused_by_data_policy(exc):
                     break
                 if attempt < attempts:
                     await asyncio.sleep(delay_seconds)

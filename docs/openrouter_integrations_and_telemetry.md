@@ -40,7 +40,7 @@ Before sending requests to OpenRouter, the pipe filters request bodies to the al
 | `tools` | Tool definitions (merged from Open WebUI registry tools plus Open WebUI Direct Tool Servers when present). |
 | `tool_choice` | Tool selection directive. |
 | `plugins` | Legacy plugin configuration (retained for backward compatibility). |
-| `truncation` | Context-truncation strategy — what OpenRouter does when a request exceeds the model's context window. **The pipe owns this field on both arms of `AUTO_CONTEXT_TRIMMING`**, whatever the request body carried (`apply_context_transforms`): off pins `truncation: "disabled"`, on sends no `truncation` at all and carries the `context-compression` plugin instead. It is on the `/responses` allowlist only, so `/chat/completions` never carries it. See §4. |
+| `truncation` | Context-truncation strategy — what OpenRouter does when a request exceeds the model's context window. **The pipe owns this field on both arms of `AUTO_CONTEXT_TRIMMING`**, whatever the request body carried (`apply_context_transforms`): off pins `truncation: "disabled"`, on sends no `truncation` at all and carries the `context-compression` plugin instead. A request for an OpenRouter preset that saved its own `truncation` is sent without the pin, and one that saved its own `plugins` is sent without the plugin. It is on the `/responses` allowlist only, so `/chat/completions` never carries it. See §4. |
 | `preset` | OpenRouter preset slug for pre-configured LLM settings (system prompts, provider routing, parameters). See [Model Variants & Presets](model_variants_and_presets.md#presets). |
 | `text` | Response text configuration (`text.format` for structured outputs / JSON mode; `text.verbosity` when supported). `text.verbosity` is the `/responses` spelling of the verbosity setting and top-level `verbosity` is the `/chat/completions` one; **either spelling may be set by the caller** (a Custom Parameter, or Open WebUI's own field), and a caller who sets one is never overwritten by the pipe's own value. For one request the provider receives the same verbosity on both endpoints, under each endpoint's own spelling — including on the `AUTO_FALLBACK_CHAT_COMPLETIONS` leg, where a refused `/responses` re-sends the turn on `/chat/completions` without changing the depth; when both spellings are set and disagree, `text.verbosity` is the one honoured, on both endpoints. The pipe writes the value itself only from `REASONING_EFFORT=xhigh` on models whose catalog entry lists `verbosity`. Housekeeping requests are governed by the task valve, not this one. |
 | `parallel_tool_calls` | Tool parallelism hint (when supported). |
@@ -426,7 +426,7 @@ Operational note:
 
 ## 4. Auto context trimming (context-compression plugin)
 
-When `AUTO_CONTEXT_TRIMMING=True`, the pipe enables OpenRouter’s `context-compression` plugin by appending `{"id": "context-compression"}` to the request’s `plugins` array **only when no context-compression plugin is already present**. (This replaces the deprecated top-level `transforms=["middle-out"]` shape; `middle-out` is now the plugin’s internal compression engine.)
+When `AUTO_CONTEXT_TRIMMING=True`, the pipe enables OpenRouter’s `context-compression` plugin by appending `{"id": "context-compression"}` to the request’s `plugins` array **only when no context-compression plugin is already present and the OpenRouter preset the request names, if any, saved no plugins of its own**. (This replaces the deprecated top-level `transforms=["middle-out"]` shape; `middle-out` is now the plugin’s internal compression engine.)
 
 The same valve owns the request's `truncation` field on `/responses`, in **both** states and whatever the request body carried:
 
@@ -435,7 +435,7 @@ The same valve owns the request's `truncation` field on `/responses`, in **both*
 | `False` | `"disabled"` | absent |
 | `True` | absent | present |
 
-A `truncation` the caller supplied is overridden in both states — off because the pin is the valve's answer, on because sending `disabled` beside the compression plugin would ship two instructions that contradict each other. `truncation` is on the `/responses` allowlist only, so this table does not describe `/chat/completions`.
+A `truncation` the caller supplied is overridden in both states — off because the pin is the valve's answer, on because sending `disabled` beside the compression plugin would ship two instructions that contradict each other. A request for an OpenRouter preset that saved its own `truncation` is the exception: the pipe writes no `truncation` for it. `truncation` is on the `/responses` allowlist only, so this table does not describe `/chat/completions`.
 
 Operational guidance:
 - Leave this enabled if you want long prompts to degrade gracefully instead of failing due to context limits.

@@ -107,7 +107,13 @@ class ReasoningConfigManager:
             self._refusal_left_no_level = True
         return repaired, True
 
-    def _apply_reasoning_preferences(self, responses_body: ResponsesBody, valves: Pipe.Valves) -> str | None:
+    def _apply_reasoning_preferences(
+        self,
+        responses_body: ResponsesBody,
+        valves: Pipe.Valves,
+        *,
+        fill_defaults: bool = True,
+    ) -> str | None:
         carried = responses_body.reasoning
         if isinstance(carried, dict) and "max_tokens" in carried:
             budget = _coerced_token_cap(carried.get("max_tokens"))
@@ -130,17 +136,20 @@ class ReasoningConfigManager:
             cfg: dict[str, Any] = {}
             if isinstance(responses_body.reasoning, dict):
                 cfg = dict(responses_body.reasoning)
-            if target_effort in _EFFORT_REASONING_OFF or (
-                target_effort and "effort" not in cfg and not isinstance(cfg.get("max_tokens"), int)
-            ):
-                cfg["effort"] = target_effort
-            if summary_mode == "disabled":
-                cfg.pop("summary", None)
-            elif requested_summary and "summary" not in cfg:
-                cfg["summary"] = requested_summary
-            cfg.setdefault("enabled", True)
+            if fill_defaults:
+                if target_effort in _EFFORT_REASONING_OFF or (
+                    target_effort and "effort" not in cfg and not isinstance(cfg.get("max_tokens"), int)
+                ):
+                    cfg["effort"] = target_effort
+                if summary_mode == "disabled":
+                    cfg.pop("summary", None)
+                elif requested_summary and "summary" not in cfg:
+                    cfg["summary"] = requested_summary
+                cfg.setdefault("enabled", True)
             cfg, refused = self._refuse_off_on_mandatory_model(
-                responses_body.model, cfg, off_from_settings=target_effort == _NO_EFFORT
+                responses_body.model,
+                cfg,
+                off_from_settings=fill_defaults and target_effort == _NO_EFFORT,
             )
             self._reserve_the_answer_room(responses_body, cfg)
             responses_body.reasoning = cfg or None
@@ -148,7 +157,9 @@ class ReasoningConfigManager:
         elif supports_legacy_only:
             carried = responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
             responses_body.reasoning = None
-            asks_off = target_effort in _EFFORT_REASONING_OFF or self._request_asks_for_no_reasoning(carried)
+            asks_off = (
+                fill_defaults and target_effort in _EFFORT_REASONING_OFF
+            ) or self._request_asks_for_no_reasoning(carried)
             off = asks_off or self._request_hides_the_reasoning_trace(carried)
             if asks_off and self._model_requires_reasoning(responses_body.model):
                 off = False
@@ -302,7 +313,13 @@ class ReasoningConfigManager:
             responses_body.reasoning = {"effort": "none"}
             self._set_include_reasoning(responses_body, None)
 
-    def _apply_anthropic_verbosity(self, responses_body: ResponsesBody, valves: Pipe.Valves) -> None:
+    def _apply_anthropic_verbosity(
+        self,
+        responses_body: ResponsesBody,
+        valves: Pipe.Valves,
+        *,
+        valve_effort: bool = True,
+    ) -> None:
         if responses_body.verbosity is not None:
             return
         text = responses_body.text
@@ -318,7 +335,7 @@ class ReasoningConfigManager:
         effort = ""
         if isinstance(responses_body.reasoning, dict):
             effort = _normalised_effort(responses_body.reasoning)
-        if not effort:
+        if not effort and valve_effort:
             effort = (valves.REASONING_EFFORT or "").strip().lower()
 
         if effort == _XHIGH_EFFORT:

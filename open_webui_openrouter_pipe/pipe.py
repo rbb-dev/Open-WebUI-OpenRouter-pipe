@@ -354,9 +354,6 @@ _RESTRICTION_REASON_PHRASES: dict[str, str] = {
     "VIDEO_CATALOG_LOADING": (
         "the video model catalogue is still loading; the next turn will carry this model"
     ),
-    "ZDR_LIST_UNAVAILABLE": (
-        "OpenRouter's Zero Data Retention endpoint list could not be read"
-    ),
     "ZDR_UNENFORCEABLE": (
         "the request format for this model cannot carry a Zero Data Retention control"
     ),

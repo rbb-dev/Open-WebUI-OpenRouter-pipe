@@ -137,6 +137,7 @@ class ResponsesBody(BaseModel):
     _continues_after_marker: bool = PrivateAttr(default=False)
     _attachment_notices: list[str] = PrivateAttr(default_factory=list)
     _attachment_notices_shown: bool = PrivateAttr(default=False)
+    _zdr_restriction_labels: str | None = PrivateAttr(default=None)
 
     max_tokens: int | None = None
     max_completion_tokens: int | None = None
@@ -2581,11 +2582,21 @@ def _filter_replayable_input_items(
     return filtered if changed else items
 
 
-def apply_context_transforms(responses_body: ResponsesBody, *, auto_context_trimming: bool) -> None:
+def apply_context_transforms(
+    responses_body: ResponsesBody,
+    *,
+    auto_context_trimming: bool,
+    leave_plugins: bool = False,
+    leave_truncation: bool = False,
+) -> None:
     if not auto_context_trimming:
-        responses_body.truncation = "disabled"
+        if not leave_truncation:
+            responses_body.truncation = "disabled"
         return
-    responses_body.truncation = None
+    if not leave_truncation:
+        responses_body.truncation = None
+    if leave_plugins:
+        return
     plugins = list(responses_body.plugins or [])
     if not any(isinstance(entry, dict) and entry.get("id") == "context-compression" for entry in plugins):
         plugins.append({"id": "context-compression"})

@@ -22,6 +22,7 @@ from .errors import (
     _provider_log_subject,
     _resolve_error_model_context,
     is_sign_in_failure,
+    refused_by_data_policy,
 )
 from .utils import (
     CONTINUED_REPLY,
@@ -440,7 +441,29 @@ class ErrorFormatter:
         partial_answer: str = "",
         terminal: bool = True,
         end_notices: list[str] | None = None,
+        zdr_labels: str | None = None,
     ) -> str:
+        if zdr_labels is not None and refused_by_data_policy(exc):
+            return await self._emit_templated_error(
+                event_emitter,
+                template=self.valves.MODEL_RESTRICTED_TEMPLATE,
+                variables={
+                    "requested_model": normalized_model_id or "",
+                    "normalized_model_id": normalized_model_id or "",
+                    "restriction_reasons": zdr_labels,
+                    "model_id_filter": "",
+                    "free_model_filter": "",
+                    "tool_calling_filter": "",
+                },
+                log_message=(
+                    f"OpenRouter refused a Zero Data Retention request for its data policy "
+                    f"(requested={normalized_model_id}, restricted by {zdr_labels})"
+                ),
+                log_level=logging.WARNING,
+                terminal=terminal,
+                partial_answer=partial_answer,
+                end_notices=end_notices,
+            )
         sign_in_failure = is_sign_in_failure(exc)
         if sign_in_failure:
             self._pipe._note_auth_failure()
