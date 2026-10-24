@@ -45,6 +45,7 @@ from ..core.errors import (
     _is_reasoning_effort_error,
     _parse_supported_effort_values,
     is_sign_in_failure,
+    model_restricted_variables,
 )
 from ..core.fusion_defaults import (
     _REQUIRED_TOOL_CHOICE,
@@ -730,6 +731,11 @@ def _ruled_out_tool_entries_stripped(
 
 def _transport_carries_zdr(transport: str) -> bool:
     return "zdr" in TRANSPORT_PROVIDER_KEYS.get(transport, frozenset())
+
+
+def _model_not_listed_refusal(model: str, *, fusion_member: bool) -> str:
+    remedy = "change the Fusion panel to use another model" if fusion_member else "choose another model"
+    return f"OpenRouter does not list {model}, which may have been retired or renamed; {remedy}"
 
 
 def _required_with_no_callable_tool(responses_body: ResponsesBody) -> bool:
@@ -1867,14 +1873,11 @@ class RequestOrchestrator:
                 shown = await self._pipe._ensure_error_formatter()._emit_templated_error(
                     __event_emitter__,
                     template=valves.MODEL_RESTRICTED_TEMPLATE,
-                    variables={
-                        "requested_model": responses_body.model,
-                        "normalized_model_id": normalized_model_id,
-                        "restriction_reasons": zdr_unenforceable_labels,
-                        "model_id_filter": "",
-                        "free_model_filter": "",
-                        "tool_calling_filter": "",
-                    },
+                    variables=model_restricted_variables(
+                        requested_model=responses_body.model,
+                        normalized_model_id=normalized_model_id,
+                        restriction_reasons=zdr_unenforceable_labels,
+                    ),
                     log_message=(
                         f"Model rejected — ZDR enforcement requested but this model's "
                         f"transport cannot carry provider.zdr "
@@ -2056,22 +2059,30 @@ class RequestOrchestrator:
                         f"(requested={responses_body.model}, normalized={entry})"
                     ),
                 )
+            not_listed = reasons == ["not_in_catalog"]
             if outcome_sink is not None:
-                outcome_sink["member_refusal_reason"] = (
-                    f"{responses_body.model} is not permitted by the pipe's model "
-                    f"restrictions ({labels}); ask your admin to allow it"
-                )
+                if not_listed:
+                    outcome_sink["member_refusal_reason"] = _model_not_listed_refusal(
+                        responses_body.model if entry == normalized_model_id else entry,
+                        fusion_member=fusion_inner,
+                    )
+                else:
+                    outcome_sink["member_refusal_reason"] = (
+                        f"{responses_body.model} is not permitted by the pipe's model "
+                        f"restrictions ({labels}); ask your admin to allow it"
+                    )
             return await self._pipe._ensure_error_formatter()._emit_templated_error(
                 __event_emitter__,
                 template=valves.MODEL_RESTRICTED_TEMPLATE,
-                variables={
-                    "requested_model": responses_body.model,
-                    "normalized_model_id": entry,
-                    "restriction_reasons": labels,
-                    "model_id_filter": model_id_filter if model_id_filter.lower() != "auto" else "",
-                    "free_model_filter": free_mode if free_mode != "all" else "",
-                    "tool_calling_filter": tool_mode if tool_mode != "all" else "",
-                },
+                variables=model_restricted_variables(
+                    requested_model=responses_body.model,
+                    normalized_model_id=entry,
+                    restriction_reasons=labels,
+                    model_not_listed=not_listed,
+                    model_id_filter=model_id_filter if model_id_filter.lower() != "auto" else "",
+                    free_model_filter=free_mode if free_mode != "all" else "",
+                    tool_calling_filter=tool_mode if tool_mode != "all" else "",
+                ),
                 log_message=(
                     f"Model restricted (requested={responses_body.model}, normalized={entry}, reasons={reasons})"
                 ),

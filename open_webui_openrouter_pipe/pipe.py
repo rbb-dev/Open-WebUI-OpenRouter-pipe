@@ -350,7 +350,7 @@ _LIFECYCLE_REGISTRY_KEY = "_openrouter_pipe_lifecycle"
 _LIMITS_HOLDER_KEY = "_openrouter_pipe_limits"
 
 _RESTRICTION_REASON_PHRASES: dict[str, str] = {
-    "not_in_catalog": "the model is not in this pipe's model list",
+    "not_in_catalog": "OpenRouter does not list this model",
     "VIDEO_CATALOG_LOADING": (
         "the video model catalogue is still loading; the next turn will carry this model"
     ),

@@ -743,12 +743,20 @@ DEFAULT_PAYLOAD_TOO_LARGE_TEMPLATE = (
 )
 
 DEFAULT_MODEL_RESTRICTED_TEMPLATE = (
+    "{{#if model_not_listed}}\n"
+    "### 🚫 Model not listed\n\n"
+    "OpenRouter does not list `{normalized_model_id}`. It may have been retired or renamed. "
+    "Choose another model.\n\n"
+    "{{/if}}\n"
+    "{{#if model_restricted}}\n"
     "### 🚫 Model restricted\n\n"
     "This pipe rejected the requested model due to configuration restrictions.\n\n"
+    "{{/if}}\n"
     "- **Requested model**: `{requested_model}`\n"
     "{{#if normalized_model_id}}\n"
     "- **Normalized model id**: `{normalized_model_id}`\n"
     "{{/if}}\n"
+    "{{#if model_restricted}}\n"
     "{{#if restriction_reasons}}\n"
     "- **Restricted by**: {restriction_reasons}\n"
     "{{/if}}\n"
@@ -762,6 +770,7 @@ DEFAULT_MODEL_RESTRICTED_TEMPLATE = (
     "- **Tool-calling model filter**: `{tool_calling_filter}`\n"
     "{{/if}}\n\n"
     "Choose an allowed model or ask your admin to update the pipe filters.\n"
+    "{{/if}}\n"
     "{{#if support_email}}\n"
     "\n**Support:** {support_email}\n"
     "{{/if}}\n"
@@ -2391,11 +2400,17 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=DEFAULT_MODEL_RESTRICTED_TEMPLATE,
         description=(
             "Markdown template emitted when a model is blocked by MODEL_ID and/or model filter valves, and when Zero Data Retention routing blocks it: before the request is sent (a video model or a model answered only on the image API), or because OpenRouter answers that no endpoint meets the routing in force. "
+            "It is also emitted when OpenRouter does not list the model. "
             "{normalized_model_id} may name a fallback entry rather than the primary, so the card can refuse an id the "
             "caller never typed as the model to serve the turn. "
             "Available variables: {requested_model}, {normalized_model_id}, {restriction_reasons}, "
-            "{model_id_filter}, {free_model_filter}, {tool_calling_filter}, plus standard context variables "
-            "like {error_id}, {timestamp}, {session_id}, {user_id}, {support_email}, and {support_url}."
+            "{model_id_filter}, {free_model_filter}, {tool_calling_filter}, {model_not_listed}, {model_restricted}, "
+            "plus standard context variables like {error_id}, {timestamp}, {session_id}, {user_id}, {support_email}, "
+            "and {support_url}. "
+            "{model_not_listed} is true when OpenRouter not listing the model is the only reason and {model_restricted} "
+            "is true in every other case, so {{#if model_not_listed}}...{{/if}} and {{#if model_restricted}}...{{/if}} "
+            "let one template word the two cases differently; when the model is not listed, {restriction_reasons} reads "
+            "'OpenRouter does not list this model'."
             + _CHANNEL_CARD_RULE
         ),
     )

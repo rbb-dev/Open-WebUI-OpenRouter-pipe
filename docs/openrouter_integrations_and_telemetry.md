@@ -111,7 +111,7 @@ OpenRouter supports a primary `model` plus a fallback list `models` (array). Ope
 - Custom param: `model_fallback` (a CSV string or a JSON array)
 - Pipe behavior:
   - Reads the value as a list of model ids, whether it arrived as a CSV string or as an array. Each element is trimmed, skipped if it is not a string, and de-duplicated (order-preserving), exactly as a CSV part is.
-  - Checks every entry against the same model restriction valves as the primary model — `MODEL_ID`, `FREE_MODEL_FILTER`, `TOOL_CALLING_FILTER` and `ZDR_MODELS_ONLY` — and refuses the whole turn with the `MODEL_RESTRICTED_TEMPLATE` card naming the offending id, before any request is sent.
+  - Checks every entry against the same model restriction valves as the primary model — `MODEL_ID`, `FREE_MODEL_FILTER`, `TOOL_CALLING_FILTER` and `ZDR_MODELS_ONLY` — and refuses the whole turn with the `MODEL_RESTRICTED_TEMPLATE` card naming the offending id, before any request is sent. An entry OpenRouter does not list is refused the same way, with the card's `Model not listed` block.
   - **Replaces** the request's `models` list rather than merging with it. A caller-supplied `models` array is not the deployment's to send: it is discarded, so the ids that reach the wire are the ones the deployment supplied.
   - Writes the final list to `models` (fallback list only).
   - Removes `model_fallback` from the outgoing OpenRouter payload.

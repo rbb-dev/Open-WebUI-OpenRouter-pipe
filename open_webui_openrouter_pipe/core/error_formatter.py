@@ -22,6 +22,7 @@ from .errors import (
     _provider_log_subject,
     _resolve_error_model_context,
     is_sign_in_failure,
+    model_restricted_variables,
     refused_by_data_policy,
 )
 from .utils import (
@@ -447,14 +448,11 @@ class ErrorFormatter:
             return await self._emit_templated_error(
                 event_emitter,
                 template=self.valves.MODEL_RESTRICTED_TEMPLATE,
-                variables={
-                    "requested_model": normalized_model_id or "",
-                    "normalized_model_id": normalized_model_id or "",
-                    "restriction_reasons": zdr_labels,
-                    "model_id_filter": "",
-                    "free_model_filter": "",
-                    "tool_calling_filter": "",
-                },
+                variables=model_restricted_variables(
+                    requested_model=normalized_model_id or "",
+                    normalized_model_id=normalized_model_id or "",
+                    restriction_reasons=zdr_labels,
+                ),
                 log_message=(
                     f"OpenRouter refused a Zero Data Retention request for its data policy "
                     f"(requested={normalized_model_id}, restricted by {zdr_labels})"

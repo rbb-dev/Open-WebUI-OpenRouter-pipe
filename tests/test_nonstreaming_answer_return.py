@@ -531,6 +531,55 @@ async def test_a_restricted_model_card_is_returned_as_well_as_shown(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("model_id_setting", "case"),
+    [("auto", "not listed"), ("other/model", "restricted")],
+)
+async def test_a_model_openrouter_does_not_list_is_told_apart_from_one_the_admin_restricts(
+    monkeypatch, model_id_setting, case
+) -> None:
+    from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+
+    pipe = _orchestrator_pipe()
+    pipe.valves.MODEL_ID = model_id_setting
+    pipe.valves.MODEL_RESTRICTED_TEMPLATE = (
+        "{{#if model_not_listed}}not listed{{/if}}{{#if model_restricted}}restricted{{/if}}"
+    )
+    events: list[dict[str, Any]] = []
+
+    async def emitter(event: dict[str, Any]) -> None:
+        events.append(event)
+
+    monkeypatch.setattr(OpenRouterModelRegistry, "is_zdr_capable", staticmethod(lambda _m: True))
+    try:
+        orchestrator = pipe._ensure_request_orchestrator()
+        await orchestrator.process_request(
+            body={"model": "retired/model", "messages": [{"role": "user", "content": "hi"}],
+                  "stream": False},
+            __user__={"id": "user-1"},
+            __request__=None,
+            __event_emitter__=emitter,
+            __event_call__=None,
+            __metadata__={},
+            __tools__=None,
+            __task__=None,
+            __task_body__=None,
+            session=cast(Any, _NoSession()),
+            openwebui_model_id="retired/model",
+            pipe_identifier="test-pipe",
+            allowlist_norm_ids={"other/model"},
+            enforced_norm_ids={"other/model"},
+            catalog_norm_ids={"other/model"},
+            features={},
+            valves=pipe.valves,
+        )
+
+        assert _shown_card(events) == case
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("task", "wants_card"),
     [(None, True), ("title_generation", False)],
 )

@@ -305,6 +305,28 @@ def data_policy_refusal_reason(model: str, labels: str) -> str:
     )
 
 
+def model_restricted_variables(
+    *,
+    requested_model: str,
+    normalized_model_id: str,
+    restriction_reasons: str,
+    model_not_listed: bool = False,
+    model_id_filter: str = "",
+    free_model_filter: str = "",
+    tool_calling_filter: str = "",
+) -> dict[str, Any]:
+    return {
+        "requested_model": requested_model,
+        "normalized_model_id": normalized_model_id,
+        "restriction_reasons": restriction_reasons,
+        "model_id_filter": model_id_filter,
+        "free_model_filter": free_model_filter,
+        "tool_calling_filter": tool_calling_filter,
+        "model_not_listed": model_not_listed,
+        "model_restricted": not model_not_listed,
+    }
+
+
 def _classify_retryable_http_error(
     exc: httpx.HTTPStatusError,
 ) -> tuple[bool, float | None]:
