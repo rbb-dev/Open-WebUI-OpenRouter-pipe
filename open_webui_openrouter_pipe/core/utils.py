@@ -1704,6 +1704,30 @@ def summarise_names(names: list[str], limit: int = 4, width: int = _TEXT_LIMIT) 
     return f"{'; '.join(shown)}{tail}"
 
 
+_ANSWERED_BY_SHOWN = 3
+
+
+def _answering_model_key(model_id: str) -> str:
+    return model_id.casefold().split("@", 1)[0].split(":", 1)[0].strip()
+
+
+def answered_by_text(requested_model: Any, answering_models: Iterable[Any]) -> str:
+    if not (isinstance(requested_model, str) and requested_model.strip()):
+        return ""
+    requested_key = _answering_model_key(requested_model)
+    by_key: dict[str, str] = {}
+    for candidate in answering_models:
+        if isinstance(candidate, str) and candidate.strip():
+            shown = clamp_text(" ".join(candidate.split()))
+            by_key.setdefault(_answering_model_key(shown), shown)
+    if all(key == requested_key for key in by_key):
+        return ""
+    ids = list(by_key.values())
+    text = ", ".join(ids[:_ANSWERED_BY_SHOWN])
+    hidden = len(ids) - _ANSWERED_BY_SHOWN
+    return f"{text} and {hidden} more" if hidden > 0 else text
+
+
 CONTINUED_REPLY: ContextVar[str | None] = ContextVar("continued_reply", default=None)
 
 ATTACHMENT_NOTICES: ContextVar[list[str] | None] = ContextVar("attachment_notices", default=None)

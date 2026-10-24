@@ -59,8 +59,9 @@ _DEFAULT_USAGE_STATUS_ICONS: tuple[str, ...] = (
     "▼",
     "↺",
     "▽",
+    "→",
 )
-_USAGE_ICON_FIELDS = ("time", "cost", "total", "input", "output", "cached", "reasoning")
+_USAGE_ICON_FIELDS = ("time", "cost", "total", "input", "output", "cached", "reasoning", "answered_by")
 
 
 from .errors import (
@@ -553,6 +554,7 @@ class ErrorFormatter:
         total_usage: dict[str, Any],
         valves: Pipe.Valves,
         stream_duration: float | None = None,
+        answered_by: str = "",
     ) -> str:
         default_description = f"Thought for {elapsed:.1f} seconds"
         if not valves.SHOW_FINAL_USAGE_STATUS:
@@ -569,7 +571,16 @@ class ErrorFormatter:
                     if icon:
                         icons[idx] = icon
 
-        icon_time, icon_cost, icon_total, icon_input, icon_output, icon_cached, icon_reasoning = icons
+        (
+            icon_time,
+            icon_cost,
+            icon_total,
+            icon_input,
+            icon_output,
+            icon_cached,
+            icon_reasoning,
+            icon_answered_by,
+        ) = icons
 
         usage = total_usage or {}
         if use_icons and icon_time:
@@ -648,6 +659,13 @@ class ErrorFormatter:
                 time_segment = f"{time_segment}  {tokens_per_second:.1f} tps"
 
         segments.insert(0, time_segment)
+        if answered_by:
+            segments.insert(
+                1,
+                f"{icon_answered_by} {answered_by}"
+                if use_icons and icon_answered_by
+                else f"Answered by {answered_by}",
+            )
 
         description = " | ".join(segments)
         return description or default_description

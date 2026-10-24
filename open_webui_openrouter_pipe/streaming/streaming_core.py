@@ -87,6 +87,7 @@ from ..core.utils import (
     _safe_json_loads,
     _serialize_marker,
     _serialize_phase_marker,
+    answered_by_text,
     citation_access_stamp,
     closing_status_descriptions,
     continued_turn_counts,
@@ -761,6 +762,7 @@ class StreamingHandler:
         }
         total_usage: dict[str, Any] = {}
         last_round_usage: dict[str, Any] = {}
+        answering_models: list[str] = []
         reasoning_stream_active = False
         active_reasoning_item_id: str | None = None
         reasoning_stream_buffers: dict[str, _ReasoningTextBox] = {}
@@ -3620,6 +3622,10 @@ class StreamingHandler:
                         warning_msg = f"{warning_msg} Reason: {reason}."
                     await _emit_budget_notice(warning_msg)
 
+                answering_model = final_response.get("model")
+                if isinstance(answering_model, str) and answering_model.strip():
+                    answering_models.append(answering_model)
+
                 raw_usage = final_response.get("usage") or {}
                 usage = dict(raw_usage) if isinstance(raw_usage, dict) else {}
 
@@ -4808,6 +4814,11 @@ class StreamingHandler:
                         total_usage=total_usage,
                         valves=valves,
                         stream_duration=stream_window,
+                        answered_by=(
+                            ""
+                            if fusion_armed or fusion_inner_call or event_source is not None
+                            else answered_by_text(dispatched_model_id, answering_models)
+                        ),
                     )
                     closing = closing_status_descriptions(
                         description,

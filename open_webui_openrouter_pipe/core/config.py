@@ -2635,17 +2635,18 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     )
     SHOW_FINAL_USAGE_STATUS: bool = Field(
         default=True,
-        description="When True, the final status line includes elapsed time, token usage, and the cost of the generation, with the cost shown only when it is above zero; when False, that status line reports elapsed time alone.",
+        description="When True, the final status line includes elapsed time, token usage, and the cost of the generation, with the cost shown only when it is above zero, and it names the model that answered when OpenRouter used a different one than the one picked (a Fusion reply does not, since its panel names the models); when False, that status line reports elapsed time alone.",
     )
     FINAL_USAGE_STATUS_STYLE: Literal["text", "icons"] = Field(
         default="text",
         description="Choose text labels or icons for the final usage status line.",
     )
     USAGE_STATUS_ICON_SET: str = Field(
-        default="⧗,$,⇅,▲,▼,↺,▽",
+        default="⧗,$,⇅,▲,▼,↺,▽,→",
         description=(
             "CSV of icons for the final usage status fields "
-            "(time,cost,total,input,output,cached,reasoning). "
+            "(time,cost,total,input,output,cached,reasoning,answered by). "
+            "An empty entry, and any entry a shorter list leaves out, keeps its built-in icon. "
             "Only used when FINAL_USAGE_STATUS_STYLE is set to 'icons'."
         ),
     )
@@ -3490,7 +3491,7 @@ class UserValves(BaseModel):
     SHOW_FINAL_USAGE_STATUS: bool = Field(
         default=True,
         title="Show usage details",
-        description="Display tokens, time, and cost at the end of each reply; the cost appears only when it is above zero.",
+        description="Display tokens, time, and cost at the end of each reply; the cost appears only when it is above zero, and the line names the model that answered when OpenRouter used a different one than the one you picked.",
     )
     THINKING_OUTPUT_MODE: Literal["open_webui", "status", "both"] = Field(
         default="open_webui",

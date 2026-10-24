@@ -2820,6 +2820,43 @@ async def test_chat_completions_streaming_with_usage(pipe_instance_async):
     assert usage.get("output_tokens") == 5
 
 
+@pytest.mark.asyncio
+async def test_chat_completions_streaming_terminal_event_names_the_model_that_answered(pipe_instance_async):
+    pipe = pipe_instance_async
+    valves = pipe.valves
+    session = pipe._create_http_session(valves)
+
+    sse_response = (
+        _sse({"model": "exampleco/model-small", "choices": [{"delta": {"content": "Test"}, "finish_reason": None}]})
+        + _sse({"model": "exampleco/model-small", "choices": [{"delta": {}, "finish_reason": "stop"}]})
+        + "data: [DONE]\n\n"
+    )
+
+    with aioresponses() as mock_http:
+        mock_http.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            body=sse_response.encode("utf-8"),
+            headers={"Content-Type": "text/event-stream"},
+            status=200,
+        )
+
+        events = []
+        async for event in pipe.send_openai_chat_completions_streaming_request(
+            session,
+            {"model": "exampleco/router-auto", "stream": True, "input": [{"role": "user", "content": "Hi"}]},
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            valves=valves,
+        ):
+            events.append(event)
+
+        await session.close()
+
+    completed = [e for e in events if e.get("type") == "response.completed"]
+    assert len(completed) == 1
+    assert completed[0]["response"].get("model") == "exampleco/model-small"
+
+
 # ============================================================================
 # Streaming Request Tests - Tool Calls
 # ============================================================================

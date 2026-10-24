@@ -420,6 +420,7 @@ class ChatCompletionsAdapter:
         truncating_reason: str | None = None
         assistant_text_parts: list[str] = []
         latest_usage: dict[str, Any] = {}
+        answering_model = ""
         seen_citation_urls: set[str] = set()
         unhandled_citation_types: set[str] = set()
         latest_message_annotations: list[dict[str, Any]] = []
@@ -616,7 +617,7 @@ class ChatCompletionsAdapter:
             return out
 
         def _consume_blob(data_blob: bytes | None, preparsed: Any | None = None):
-            nonlocal received_any, latest_usage, reasoning_item_id, reasoning_text_seen, \
+            nonlocal received_any, latest_usage, answering_model, reasoning_item_id, reasoning_text_seen, \
                 latest_message_annotations, image_item_id, \
                 image_output_item, images_emitted, refusal_text_seen, provider_refusal_full, \
                 tool_calls_completed, \
@@ -653,6 +654,9 @@ class ChatCompletionsAdapter:
 
             if isinstance(chunk_obj, dict) and isinstance(chunk_obj.get("usage"), dict):
                 latest_usage = dict(chunk_obj["usage"])
+            chunk_model = chunk_obj.get("model") if isinstance(chunk_obj, dict) else None
+            if isinstance(chunk_model, str) and chunk_model.strip():
+                answering_model = chunk_model.strip()
 
             choices = chunk_obj.get("choices") if isinstance(chunk_obj, dict) else None
             if not isinstance(choices, list) or not choices:
@@ -1301,24 +1305,20 @@ class ChatCompletionsAdapter:
         if not done and not terminal_usage:
             terminal_usage = {"incomplete_usage": True}
 
+        terminal_response: dict[str, Any] = {"output": output, "usage": terminal_usage}
+        if answering_model:
+            terminal_response["model"] = answering_model
         if truncating_reason is not None:
             yield {
                 "type": "response.completed",
                 "response": {
-                    "output": output,
-                    "usage": terminal_usage,
+                    **terminal_response,
                     "status": "incomplete",
                     "incomplete_details": {"reason": truncating_reason},
                 },
             }
             return
-        yield {
-            "type": "response.completed",
-            "response": {
-                "output": output,
-                "usage": terminal_usage,
-            },
-        }
+        yield {"type": "response.completed", "response": terminal_response}
 
 
     @timed

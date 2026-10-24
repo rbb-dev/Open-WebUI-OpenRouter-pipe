@@ -482,6 +482,10 @@ When `SHOW_FINAL_USAGE_STATUS` resolves True — the reader's own copy where the
 
 The valve exists on both `Valves` and `UserValves`, and the merge overrides only the fields a reader has actually set. A generation reported at exactly zero prints the token counts the reply carried and the timing where that merge resolves True; it prints the timing alone where it resolves False, and also where the reply carried no token counts at all, since only the counters OpenRouter actually sends are ever read.
 
+The line also names the model that answered when OpenRouter used a different model than the one the pipe sent. In the text style it is `Answered by <model id>` right after the elapsed time; in the icon style it is the answered-by icon (the eighth entry of `USAGE_STATUS_ICON_SET`, or the built-in arrow when the list is shorter) followed by the id. The id is the `model` OpenRouter returns with the final response of each round, on `/responses` and on `/chat/completions`, streamed or not. The pipe case-folds it and the id it sent, cuts each at the first `@` and at the first `:`, and compares what is left, so a routing suffix such as `:nitro` or an `@preset/...` tail on the picked model is not a difference, while the pick of an auto router, a `~...-latest` alias that resolves to a current model and a fallback model OpenRouter answered with are. A turn whose tool rounds were answered by different models lists each one once, in order of first use, and shows the first three followed by `and N more` when there are more. A retry, and the fallback from `/responses` to `/chat/completions`, leave only the round that completed on the line.
+
+The segment is part of the usage line, so it follows `SHOW_FINAL_USAGE_STATUS` and has no setting of its own: turning the usage line off removes it. A Fusion reply does not carry it, since the Fusion panel names its models.
+
 This is intended as user-visible telemetry and operator troubleshooting signal (not as an authoritative billing record).
 
 ### Which usage keys sum, and which do not

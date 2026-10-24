@@ -410,6 +410,9 @@ class NonStreamingAdapter:
                 "output": output,
                 "usage": _chat_completions_adapter()._chat_usage_to_responses_usage(latest_usage),
             }
+            answering_model = chat_response.get("model") if isinstance(chat_response, dict) else None
+            if isinstance(answering_model, str) and answering_model.strip():
+                response_payload["model"] = answering_model.strip()
             terminal_type = "response.completed"
             if finish_reason == "length":
                 terminal_type = "response.completed"

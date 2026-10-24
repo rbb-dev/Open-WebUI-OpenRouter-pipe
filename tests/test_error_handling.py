@@ -1910,3 +1910,116 @@ async def test_a_refused_attachment_is_noted_once_before_the_card_when_the_reply
         i for i, e in enumerate(events)
         if i != noted[0][0] and "ALLOW_INSECURE_HTTP" in json.dumps(e)
     ]
+
+
+_ANSWERED_BY_URL = "https://openrouter.ai/api/v1/responses"
+
+
+def _answered_by_round(model: str, *, calls_the_tool: bool) -> bytes:
+    usage = {"input_tokens": 9, "output_tokens": 2}
+    if calls_the_tool:
+        call = {
+            "type": "function_call", "id": "fc-1", "call_id": "call-1",
+            "name": "lookup", "arguments": "{}", "status": "completed",
+        }
+        events = [
+            {"type": "response.output_item.done", "item": call},
+            {"type": "response.completed", "response": {"id": "resp-1", "model": model, "output": [call], "usage": usage}},
+        ]
+    else:
+        message = {
+            "type": "message", "role": "assistant", "status": "completed",
+            "content": [{"type": "output_text", "text": "Found it."}],
+        }
+        events = [
+            {"type": "response.output_text.delta", "delta": "Found it."},
+            {"type": "response.completed", "response": {"id": "resp-2", "model": model, "output": [message], "usage": usage}},
+        ]
+    return ("".join(f"data: {json.dumps(event)}\n\n" for event in events) + "data: [DONE]\n\n").encode("utf-8")
+
+
+async def _final_status_of_a_turn(
+    pipe, monkeypatch, picked: str, answering: list[str]
+) -> tuple[str, list[str]]:
+    from aioresponses.core import CallbackResult
+
+    import open_webui_openrouter_pipe.pipe as pipe_mod
+    from tests.posted_body import posted_json
+
+    async def loaded(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    async def lookup(**_kwargs: Any) -> str:
+        return "found"
+
+    catalogue = [
+        {"id": "exampleco/router-auto", "name": "Router", "norm_id": "exampleco.router-auto"},
+        {"id": "exampleco/model-small:nitro", "name": "Small", "norm_id": "exampleco.model-small:nitro"},
+    ]
+    tools = {
+        "lookup": {
+            "type": "function",
+            "callable": lookup,
+            "spec": {"name": "lookup", "description": "Look it up", "parameters": {"type": "object", "properties": {}}},
+        }
+    }
+    monkeypatch.setattr(pipe, "_resolve_openrouter_api_key", lambda _valves: ("sk-test-key", None))
+    monkeypatch.setattr(pipe._artifact_store, "_ensure_artifact_store", lambda *_a, **_k: None)
+    monkeypatch.setattr(pipe_mod.OpenRouterModelRegistry, "ensure_loaded", loaded)
+    monkeypatch.setattr(pipe_mod.OpenRouterModelRegistry, "list_models", lambda: catalogue)
+    dispatched: list[str] = []
+
+    def upstream(_url, **kwargs):
+        dispatched.append(posted_json(kwargs)["model"])
+        round_number = len(dispatched)
+        return CallbackResult(
+            status=200,
+            body=_answered_by_round(answering[round_number - 1], calls_the_tool=round_number < len(answering)),
+        )
+
+    with aioresponses() as mock_http:
+        mock_http.post(_ANSWERED_BY_URL, callback=upstream, repeat=True)
+        result = await pipe.pipe(
+            body={"model": picked, "messages": [{"role": "user", "content": "look it up"}], "stream": True},
+            __user__={"id": "user-1", "role": "user"},
+            __request__=None,
+            __event_emitter__=None,
+            __event_call__=None,
+            __metadata__={"chat_id": "chat-1", "message_id": "message-1", "model": {"id": picked}},
+            __tools__=tools,
+        )
+        chunks = [chunk async for chunk in result]
+
+    statuses = [
+        chunk["event"]["data"]
+        for chunk in chunks
+        if isinstance(chunk, dict)
+        and isinstance(chunk.get("event"), dict)
+        and chunk["event"].get("type") == "status"
+    ]
+    closing = [data["description"] for data in statuses if data.get("done") is True]
+    assert len(closing) == 1, statuses
+    return closing[0], dispatched
+
+
+@pytest.mark.asyncio
+async def test_the_final_status_names_the_model_that_answered_only_when_it_is_not_the_one_picked(
+    pipe_instance_async, monkeypatch
+):
+    routed, routed_posts = await _final_status_of_a_turn(
+        pipe_instance_async,
+        monkeypatch,
+        "exampleco/router-auto",
+        ["exampleco/model-small", "exampleco/model-large"],
+    )
+    assert routed_posts == ["exampleco/router-auto"] * 2
+    assert _status_field(routed, 1) == "Answered by exampleco/model-small, exampleco/model-large", routed
+
+    same, same_posts = await _final_status_of_a_turn(
+        pipe_instance_async,
+        monkeypatch,
+        "exampleco/model-small:nitro",
+        ["exampleco/model-small"],
+    )
+    assert same_posts == ["exampleco/model-small:nitro"]
+    assert "Answered by" not in same, same

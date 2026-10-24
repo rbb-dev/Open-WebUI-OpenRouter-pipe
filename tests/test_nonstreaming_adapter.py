@@ -798,6 +798,41 @@ async def test_nonstreaming_chat_developer_role_and_usage_details(pipe_instance_
 
 
 @pytest.mark.asyncio
+async def test_nonstreaming_chat_terminal_event_names_the_model_that_answered(pipe_instance_async):
+    pipe = pipe_instance_async
+    valves = pipe.valves
+    session = pipe._create_http_session(valves)
+
+    with aioresponses() as mock_http:
+        mock_http.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            payload={
+                "id": "chatcmpl-routed",
+                "model": "exampleco/model-small",
+                "choices": [{"message": {"role": "assistant", "content": "Done"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+            },
+        )
+
+        events = []
+        async for event in pipe.send_openrouter_nonstreaming_request_as_events(
+            session,
+            {"model": "exampleco/router-auto", "input": [{"role": "user", "content": "Hi"}]},
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            endpoint_override="chat_completions",
+            valves=valves,
+        ):
+            events.append(event)
+
+        await session.close()
+
+    completed = [e for e in events if e.get("type") == "response.completed"]
+    assert len(completed) == 1
+    assert completed[0]["response"].get("model") == "exampleco/model-small"
+
+
+@pytest.mark.asyncio
 async def test_nonstreaming_chat_refusal_field(pipe_instance_async):
     """Test _run_chat uses refusal when content is empty."""
     pipe = pipe_instance_async
