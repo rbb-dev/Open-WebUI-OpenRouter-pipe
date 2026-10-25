@@ -426,6 +426,32 @@ async def test_a_save_never_answers_with_a_secret(monkeypatch, fake_functions):
 
 
 @pytest.mark.asyncio
+async def test_a_save_is_audited_with_its_secret_masked_and_its_other_settings_readable(
+    monkeypatch, fake_functions, caplog
+):
+    monkeypatch.setattr(actions, "can_act_known", AsyncMock(return_value=True))
+    secret = "sk-or-v1-invented-0000"
+    with caplog.at_level(logging.DEBUG, logger=actions.logger.name):
+        status, _payload = await actions.dispatch_action(
+            _config_pipe(),
+            _user(role="admin"),
+            "config_set",
+            {
+                "edits": {"API_KEY": secret, "MODEL_ID": "example-vendor/*"},
+                "rev": fake_functions.rev,
+            },
+            request=_req(),
+        )
+    assert status == 200
+    lines = [message for message in caplog.messages if "action=config_set" in message]
+    assert len(lines) == 1, caplog.messages
+    line = lines[0]
+    assert secret not in line
+    assert "<redacted>" in line
+    assert "example-vendor/*" in line
+
+
+@pytest.mark.asyncio
 async def test_config_set_preserves_unedited_secret(fake_functions):
     fake_functions.valves = {"API_KEY": "sk-keep-me"}
     pipe = _config_pipe()

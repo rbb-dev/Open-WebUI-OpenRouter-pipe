@@ -704,9 +704,10 @@ def _set_task_model(*, internal: str = "", external: str = "") -> None:
     _OwuiConfig._rows["task.model.external"] = external
 
 
-def _intent_request():
+def _intent_request(owned_by: str = ""):
     _set_task_model(external="task-llm")
-    return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(MODELS={})))
+    models = {"task-llm": {"owned_by": owned_by}} if owned_by else {}
+    return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(MODELS=models)))
 
 
 @pytest.mark.asyncio
@@ -753,6 +754,39 @@ async def test_the_classifier_is_told_which_text_the_user_typed(standing_text, u
     assert result.prompt == composed, (
         "when the classifier is unavailable the model still has to be sent the style"
     )
+
+
+async def _classifier_request_to_a_task_model_owned_by(owned_by: str) -> dict:
+    sent: list[dict] = []
+
+    async def capture(form_data):
+        sent.append(form_data)
+        raise RuntimeError("stop once the request has been built")
+
+    await resolve_intent(
+        body={"messages": [{"role": "user", "content": "a cat walking through tall grass"}]},
+        video_meta={},
+        video_model={},
+        valves=_intent_valves(),
+        request=_intent_request(owned_by),
+        user_obj=SimpleNamespace(id="u1"),
+        chat_id="c1",
+        logger=logging.getLogger("test"),
+        invoke_chat_completion=capture,
+        fallback_prompt_text="a cat walking through tall grass",
+    )
+    assert sent, "the classifier was never called, so this proves nothing about its request"
+    return sent[0]
+
+
+@pytest.mark.asyncio
+async def test_the_classifiers_temperature_goes_under_options_only_for_an_ollama_task_model():
+    ollama = await _classifier_request_to_a_task_model_owned_by("ollama")
+    other = await _classifier_request_to_a_task_model_owned_by("openai")
+
+    assert ollama.get("options") == {"temperature": 0}
+    assert other["temperature"] == 0
+    assert "options" not in other
 
 
 def test_the_payload_names_exactly_the_fields_the_system_prompt_describes():
