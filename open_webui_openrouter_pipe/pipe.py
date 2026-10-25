@@ -378,7 +378,7 @@ _RESTRICTION_REASON_FALLBACK = "a restriction configured for this pipe"
 
 _PERSISTED_TASK_KINDS = frozenset({"title_generation", "tags_generation", "follow_up_generation"})
 
-_CONTENT_CONSUMED_TASK_KINDS = frozenset({"context_compaction", "context_summary", "memory_review"})
+_CONTENT_CONSUMED_TASK_KINDS = frozenset({"context_compaction", "memory_review"})
 
 
 def _is_content_consumed_task_kind(task: Any) -> bool:

@@ -555,7 +555,6 @@ _TASK_QUALIFIERS = frozenset(
         "moa_response_generation",
         "context_compaction",
         "memory_review",
-        "context_summary",
         INTENT_SCHEMA_NAME,
     }
 )
