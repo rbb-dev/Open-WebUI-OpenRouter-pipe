@@ -22,6 +22,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from conftest import _TimeTravelPolicy
 from tests.pipe_limits import set_slot
 from open_webui_openrouter_pipe.integrations.provider_options import (
     MAX_URL_SCAN_DEPTH,
@@ -58,36 +59,42 @@ def _nested(levels: int) -> dict:
 
 
 # ------------------------------------------------------------- PER LOOKUP ----
-@pytest.mark.parametrize("budget", [0.2, 0.5])
-@pytest.mark.asyncio
-async def test_a_stalled_lookup_gives_up_inside_the_budget_it_was_given(budget):
-    """`socket.getaddrinfo` takes as long as the requester's nameserver wants.
+class TestAStalledLookup:
+    @pytest.fixture
+    def event_loop_policy(self):
+        return _TimeTravelPolicy()
 
-    The host comes out of a free-text request field, so the caller chooses the resolver
-    and therefore the duration. Two budgets, so a production `wait_for(..., 5)` that
-    ignores the argument cannot pass both, and a hardcoded sleep cannot either.
-    """
-    released = threading.Event()
+    @pytest.mark.parametrize("budget", [0.2, 0.5])
+    @pytest.mark.asyncio
+    async def test_a_stalled_lookup_gives_up_inside_the_budget_it_was_given(self, budget):
+        """`socket.getaddrinfo` takes as long as the requester's nameserver wants.
 
-    def _blocking(_url):
-        released.wait(30)
-        return ["93.184.216.34"]
+        The host comes out of a free-text request field, so the caller chooses the resolver
+        and therefore the duration. Two budgets, so a production `wait_for(..., 5)` that
+        ignores the argument cannot pass both, and a hardcoded sleep cannot either.
+        """
+        released = threading.Event()
 
-    handler = _handler(_blocking)
-    started = time.monotonic()
-    try:
-        verdict = await handler._is_safe_url("https://slow.example/a.mp4", seconds=budget)
-        elapsed = time.monotonic() - started
-    finally:
-        released.set()
+        def _blocking(_url):
+            released.wait(30)
+            return ["93.184.216.34"]
 
-    assert verdict is None, (
-        "a check that never finished was reported as a decision at all: it reached "
-        "no verdict, which is neither safe nor refused"
-    )
-    assert budget <= elapsed < budget + 1.0, (
-        f"a {budget}s budget took {elapsed:.2f}s"
-    )
+        handler = _handler(_blocking)
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        try:
+            verdict = await handler._is_safe_url("https://slow.example/a.mp4", seconds=budget)
+            elapsed = loop.time() - started
+        finally:
+            released.set()
+
+        assert verdict is None, (
+            "a check that never finished was reported as a decision at all: it reached "
+            "no verdict, which is neither safe nor refused"
+        )
+        assert budget <= elapsed < budget + 1.0, (
+            f"a {budget}s budget took {elapsed:.2f}s"
+        )
 
 
 @pytest.mark.parametrize(
