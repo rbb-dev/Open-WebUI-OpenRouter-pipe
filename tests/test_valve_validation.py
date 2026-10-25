@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import cast
 
 import pytest
@@ -11,6 +12,8 @@ from open_webui_openrouter_pipe import (
     EncryptedStr,
     Pipe,
 )
+from open_webui_openrouter_pipe.core import valve_salvage
+from tests.log_capture import emitted
 
 
 class TestEncryptedStr:
@@ -170,3 +173,14 @@ class TestValveValidation:
         assert valves.MAX_CONCURRENT_REQUESTS > 0
         assert valves.MAX_PARALLEL_TOOLS_GLOBAL >= 0
         assert valves.MAX_PARALLEL_TOOLS_PER_REQUEST >= 0
+
+    def test_a_stored_value_outside_its_bounds_is_dropped_to_unset_and_the_rest_load(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        stored = {"SESSION_LOG_ZIP_COMPRESSION": "bzip2", "SESSION_LOG_ZIP_COMPRESSLEVEL": 0}
+        with caplog.at_level(logging.WARNING, logger=valve_salvage.logger.name):
+            valves = Pipe.Valves(**stored)
+        assert valves.SESSION_LOG_ZIP_COMPRESSLEVEL is None
+        assert valves.model_dump(exclude_unset=True) == {"SESSION_LOG_ZIP_COMPRESSION": "bzip2"}
+        warned = emitted(caplog, level=logging.WARNING, containing="SESSION_LOG_ZIP_COMPRESSLEVEL")
+        assert len(warned) == 1
