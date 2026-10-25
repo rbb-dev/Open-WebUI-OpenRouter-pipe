@@ -28,6 +28,7 @@ from ...core.errors import (
     _build_openrouter_api_error,
     _ChatRetryWait,
     _classify_retryable_openrouter_error,
+    _provider_log_subject,
     is_sign_in_failure,
     refused_by_data_policy,
 )
@@ -705,14 +706,12 @@ class ResponsesAdapter:
                                 if not delivered_any:
                                     raise aiohttp.ClientPayloadError("OpenRouter sent no user-visible events on /responses")
                             except Exception as producer_exc:
-                                is_auth_failure = isinstance(
-                                    producer_exc, OpenRouterAPIError
-                                ) and is_sign_in_failure(producer_exc)
-                                if is_auth_failure:
-                                    self._pipe._note_auth_failure()
+                                if isinstance(producer_exc, OpenRouterAPIError):
+                                    if is_sign_in_failure(producer_exc):
+                                        self._pipe._note_auth_failure()
                                     self.logger.warning(
-                                        "Producer encountered auth error while streaming from OpenRouter: %s",
-                                        _data_url_log_subject(str(producer_exc)),
+                                        "Producer received an error reply while streaming from OpenRouter: %s",
+                                        _provider_log_subject(producer_exc),
                                     )
                                 else:
                                     self.logger.exception(

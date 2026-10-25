@@ -29,10 +29,12 @@ Remaining uncovered paths (23 lines):
 # pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 from __future__ import annotations
 
+from tests.log_capture import emitted
 from tests.posted_body import posted_json
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import sys
 import types
@@ -483,6 +485,44 @@ async def test_responses_streaming_error_4xx_non_special(pipe_instance_async):
         await session.close()
 
     assert exc_info.value.status == 405
+
+
+@pytest.mark.asyncio
+async def test_the_stream_logs_a_provider_refusal_as_a_warning_and_a_fault_with_its_traceback(
+    pipe_instance_async, caplog
+):
+    pipe = pipe_instance_async
+    valves = pipe.valves
+    session = pipe._create_http_session(valves)
+
+    async def failed_stream(expected, **mocked):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING), aioresponses() as mock_http:
+            mock_http.post("https://openrouter.ai/api/v1/responses", **mocked)
+            with pytest.raises(expected):
+                async for _ in pipe.send_openai_responses_streaming_request(
+                    session,
+                    {"model": "openai/gpt-4o", "stream": True, "input": []},
+                    api_key="test-key",
+                    base_url="https://openrouter.ai/api/v1",
+                    valves=valves,
+                ):
+                    pass
+        return [
+            (record.levelno, record.exc_info is not None)
+            for record in emitted(caplog, min_level=logging.WARNING)
+        ]
+
+    refused = await failed_stream(
+        OpenRouterAPIError,
+        payload={"error": {"message": "The attached picture is larger than this provider accepts", "code": 413}},
+        status=413,
+    )
+    faulted = await failed_stream(ValueError, exception=ValueError("frame handler fault"))
+    await session.close()
+
+    assert refused == [(logging.WARNING, False)]
+    assert faulted == [(logging.ERROR, True)]
 
 
 @pytest.mark.asyncio
