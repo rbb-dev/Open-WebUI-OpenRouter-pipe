@@ -35,7 +35,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from conftest import _TimeTravelPolicy
-from open_webui_openrouter_pipe import EncryptedStr, Pipe, ResponsesBody, _ToolExecutionContext
+from open_webui_openrouter_pipe import EncryptedStr, Pipe, ResponsesBody, _ToolExecutionContext, generate_item_id
 from open_webui_openrouter_pipe.core.config import EncryptedStr
 from open_webui_openrouter_pipe.core.errors import (
     OpenRouterAPIError,
@@ -43,6 +43,11 @@ from open_webui_openrouter_pipe.core.errors import (
     StatusMessages,
 )
 from open_webui_openrouter_pipe.core.logging_system import SessionLogger
+from open_webui_openrouter_pipe.core.utils import (
+    CONTINUED_REPLY,
+    _serialize_marker,
+    ends_on_hidden_marker_line,
+)
 from open_webui_openrouter_pipe.streaming.streaming_core import (
     StreamingHandler,
     _wrap_event_emitter,
@@ -13257,3 +13262,79 @@ async def test_an_abandoned_turn_leaves_no_unaddressed_artifact_rows(
         assert len(this_turn) == artifact_count
         unaddressed = [r for r in this_turn if getattr(r, "id", "") not in marker_text]
         assert unaddressed == [], f"{len(unaddressed)} committed row(s) have no marker"
+
+
+REFUSAL_SENTENCE = "I cannot help with that."
+SENTENCE_AFTER_THE_REFUSAL = "Here is what I can do."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("refusal_events", "stored_reply", "expected"),
+    [
+        pytest.param(
+            [
+                {"type": "response.refusal.delta", "delta": REFUSAL_SENTENCE},
+                {"type": "response.refusal.done", "refusal": REFUSAL_SENTENCE},
+            ],
+            None,
+            REFUSAL_SENTENCE + "\n\n" + SENTENCE_AFTER_THE_REFUSAL,
+            id="refusal-events-on-a-fresh-turn",
+        ),
+        pytest.param(
+            [
+                {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "message",
+                        "id": "msg-1",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "refusal", "refusal": REFUSAL_SENTENCE}],
+                    },
+                },
+            ],
+            "Part one.\n\n" + _serialize_marker(generate_item_id()),
+            "\n" + REFUSAL_SENTENCE + "\n\n" + SENTENCE_AFTER_THE_REFUSAL,
+            id="refusal-item-on-a-continue-after-a-marker-line",
+        ),
+    ],
+)
+async def test_text_after_a_refusal_starts_a_block_of_its_own(
+    monkeypatch, pipe_instance_async, refusal_events, stored_reply, expected
+):
+    pipe = pipe_instance_async
+    events = [
+        *refusal_events,
+        {"type": "response.output_text.delta", "delta": SENTENCE_AFTER_THE_REFUSAL},
+        {"type": "response.completed", "response": {"output": [], "usage": {}}},
+    ]
+    monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
+    body = ResponsesBody(model="test/model", input=[], stream=True)
+    body._continues_after_marker = ends_on_hidden_marker_line(stored_reply)
+    emitted: list[dict] = []
+
+    async def emitter(event):
+        emitted.append(event)
+
+    token = CONTINUED_REPLY.set(stored_reply)
+    try:
+        result = await pipe._streaming_handler._run_streaming_loop(
+            body,
+            pipe.valves,
+            emitter,
+            metadata={"model": {"id": "test"}},
+            tools={},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+    finally:
+        CONTINUED_REPLY.reset(token)
+
+    shown = "".join(
+        (event.get("data") or {}).get("content", "")
+        for event in emitted
+        if event.get("type") == "chat:message:delta"
+    )
+    assert result == expected
+    assert shown == expected

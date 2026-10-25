@@ -563,6 +563,7 @@ class StreamingHandler:
             emitter_supplied = event_emitter is not None
         continuation_newline_pending = bool(body._continues_after_marker)
         refusal_pending: list[str] = []
+        refusal_block_end = -1
         continues_after_text = not continuation_newline_pending and bool((CONTINUED_REPLY.get() or "").strip())
         continues_reply = continuation_newline_pending or continues_after_text
         if event_emitter is None:
@@ -2097,10 +2098,18 @@ class StreamingHandler:
                 continuation_newline_pending = False
                 return lead
 
-            def _block_lead(current_text: str) -> str:
-                if not (current_text or continues_reply):
-                    return ""
-                return _continuation_lead(current_text) or "\n\n"
+            def _refusal_block(current_text: str, refusal: str) -> str:
+                nonlocal refusal_block_end
+                if current_text or continues_reply:
+                    refusal = (_continuation_lead(current_text) or "\n\n") + refusal
+                refusal_block_end = len(current_text) + len(refusal)
+                return refusal
+
+            def _text_lead(current_text: str) -> str:
+                lead = _continuation_lead(current_text)
+                if lead or len(current_text) != refusal_block_end:
+                    return lead
+                return "\n\n"
 
             async def _append_assistant_hidden_markers(current_text: str, markers: list[str]) -> str:
                 if not markers or realtime_call:
@@ -2693,7 +2702,7 @@ class StreamingHandler:
                                     }
                                 )
                             if normalized_delta:
-                                normalized_delta = _continuation_lead(assistant_message) + normalized_delta
+                                normalized_delta = _text_lead(assistant_message) + normalized_delta
                             assistant_message += normalized_delta
                             if not fusion_armed:
                                 await _open_message()
@@ -2742,7 +2751,7 @@ class StreamingHandler:
                                         "data": {"description": "Responding to the user…"},
                                     }
                                 )
-                            normalized_refusal = _block_lead(assistant_message) + normalized_refusal
+                            normalized_refusal = _refusal_block(assistant_message, normalized_refusal)
                             assistant_message += normalized_refusal
                             if not fusion_armed:
                                 await _open_message()
@@ -3017,7 +3026,7 @@ class StreamingHandler:
                                                 "data": {"description": "Responding to the user…"},
                                             }
                                         )
-                                    published = _block_lead(assistant_message) + published
+                                    published = _refusal_block(assistant_message, published)
                                     assistant_message += published
                                     if not fusion_armed:
                                         await _open_message()
