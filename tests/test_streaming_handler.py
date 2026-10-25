@@ -1211,6 +1211,66 @@ class TestToolPassthrough:
         )
 
 
+class TestPipelineModeHandBack:
+    @pytest.mark.asyncio
+    async def test_a_streamed_round_open_webui_runs_goes_back_as_one_tool_call_chunk_per_call_each_with_its_own_index(
+        self, monkeypatch, pipe_instance_async
+    ):
+        pipe = pipe_instance_async
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+
+        events = [
+            {
+                "type": "response.completed",
+                "response": {
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": "call-1",
+                            "name": "get_weather",
+                            "arguments": '{"city":"NYC"}',
+                        },
+                        {
+                            "type": "function_call",
+                            "call_id": "call-2",
+                            "name": "get_time",
+                            "arguments": '{"zone":"UTC"}',
+                        },
+                    ],
+                    "usage": {},
+                },
+            },
+        ]
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
+
+        emitted: list[dict] = []
+        async def emitter(event):
+            emitted.append(event)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body,
+            pipe.valves,
+            emitter,
+            metadata={"model": {"id": "test"}, "tools": {"get_weather": {}, "get_time": {}}},
+            tools={},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+
+        handed_back = [
+            call
+            for event in _collect_events_of_type(emitted, "chat:tool_calls")
+            for call in event["data"]["tool_calls"]
+        ]
+        assert [
+            (c["index"], c["id"], c["function"]["name"], c["function"]["arguments"]) for c in handed_back
+        ] == [
+            (0, "call-1", "get_weather", '{"city": "NYC"}'),
+            (1, "call-2", "get_time", '{"zone": "UTC"}'),
+        ]
+
+
 # Web Search Status Tests
 
 

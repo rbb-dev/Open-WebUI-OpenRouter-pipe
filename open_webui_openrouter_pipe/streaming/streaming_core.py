@@ -467,9 +467,6 @@ class _ReasoningTextBox:
             return False
         return self.tail.endswith(candidate)
 
-    def is_prefix_of(self, text: str) -> bool:
-        return bool(text) and text.startswith(self._text)
-
 
 def _tagless_id(norm_id: str) -> str:
     current = norm_id
@@ -696,7 +693,6 @@ class StreamingHandler:
                     call_items[index] = {**call, "provider_function": provider_function}
 
         tool_call_item_ids: dict[str, str] = {}
-        streamed_tool_call_args: dict[str, _ReasoningTextBox] = {}
         host_call_indices: dict[str, int] = {}
         host_call_item_ids: dict[str, str] = {}
         host_call_names: dict[str, str] = {}
@@ -2782,9 +2778,6 @@ class StreamingHandler:
                             call_id = raw_call_id.strip() if isinstance(raw_call_id, str) else ""
                             if not call_id:
                                 continue
-                            streamed_tool_call_indices.setdefault(
-                                call_id, len(streamed_tool_call_indices)
-                            )
                             raw_name = event.get("name") or tool_call_names.get(call_id)
                             tool_name = _origin_tool_name(raw_name.strip()) if isinstance(raw_name, str) else ""
                             if not tool_name:
@@ -2814,8 +2807,6 @@ class StreamingHandler:
                             raw_args = event.get("arguments")
                             args_text = raw_args.strip() if isinstance(raw_args, str) else ""
                             if args_text:
-                                streamed_tool_call_args[call_id] = _ReasoningTextBox()
-                                streamed_tool_call_args[call_id].add(args_text)
                                 if call_id in host_call_finalised:
                                     continue
                                 host_call_finalised.add(call_id)
@@ -2948,9 +2939,6 @@ class StreamingHandler:
                             if call_id:
                                 if item_id:
                                     tool_call_item_ids[item_id] = call_id
-                                streamed_tool_call_indices.setdefault(
-                                    call_id, len(streamed_tool_call_indices)
-                                )
                                 if tool_name:
                                     tool_call_names[call_id] = tool_name
                                 if event_emitter and tool_name:
@@ -4068,9 +4056,6 @@ class StreamingHandler:
 
                                 if body.stream and event_emitter:
                                     if owui_tool_passthrough:
-                                        streamed_tool_call_indices.setdefault(
-                                            call_id, len(streamed_tool_call_indices)
-                                        )
                                         await _publish_host_call_item(
                                             call_id, str(call.get("id") or ""), tool_name
                                         )
