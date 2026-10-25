@@ -353,6 +353,15 @@ def _fingerprint(api_key: str) -> str:
     return hashlib.sha256(api_key.encode()).hexdigest()[:32]
 
 
+def _failure_backoff_window(cache_seconds: int, failures: int) -> float:
+    if failures <= 0:
+        return float(cache_seconds)
+    exponent = min(failures - 1, 5)
+    base_backoff = 5.0
+    raw_backoff = base_backoff * (2 ** exponent)
+    return float(min(cache_seconds, max(base_backoff, raw_backoff)))
+
+
 def _contract_target(valves: Any) -> tuple[str, str]:
     base_url = (getattr(valves, "BASE_URL", "") or "https://openrouter.ai/api/v1").rstrip("/")
     return base_url, _fingerprint(str(getattr(valves, "API_KEY", "") or ""))
@@ -504,6 +513,7 @@ class OpenRouterModelRegistry:
     _chat_content_digest: str = ""
     _video_content_digest: str = ""
     _image_content_digest: str = ""
+    _router_content_digest: str = ""
     _preset_rows: ClassVar[
         dict[str, dict[str, tuple[str, dict[str, Any], dict[str, Any]]]]
     ] = {}
@@ -520,8 +530,12 @@ class OpenRouterModelRegistry:
     def content_stamp(cls) -> str:
         return (
             f"{cls._chat_content_digest}|{cls._video_content_digest}"
-            f"|{cls._image_content_digest}"
+            f"|{cls._image_content_digest}|{cls._router_content_digest}"
         )
+
+    @classmethod
+    def register_router_digest(cls, digest: str) -> None:
+        cls._router_content_digest = digest
 
     @classmethod
     def _invalidate_name_map(cls) -> None:
@@ -1003,13 +1017,7 @@ class OpenRouterModelRegistry:
 
     @classmethod
     def _media_retry_window(cls, cache_seconds: int, key: str) -> float:
-        failures = cls._media_failure_counts.get(key, 0)
-        if failures <= 0:
-            return float(cache_seconds)
-        exponent = min(failures - 1, 5)
-        base_backoff = 5.0
-        raw_backoff = base_backoff * (2 ** exponent)
-        return float(min(cache_seconds, max(base_backoff, raw_backoff)))
+        return _failure_backoff_window(cache_seconds, cls._media_failure_counts.get(key, 0))
 
     @classmethod
     def record_media_failure(cls, api_key: str) -> None:

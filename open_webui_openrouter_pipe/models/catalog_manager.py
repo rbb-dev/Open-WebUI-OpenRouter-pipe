@@ -251,6 +251,7 @@ _warned_video_gen_filter_ensure: set[str] = set()
 _warned_fusion_filter_ensure: set[str] = set()
 _warned_direct_uploads_filter_ensure: set[str] = set()
 _warned_image_filter_ensure: set[str] = set()
+_warned_router_filter_ensure: set[str] = set()
 
 _MODEL_ROW_READ_CHUNK = 1000
 
@@ -509,6 +510,7 @@ _DISABLE_PARAM_KEYS: tuple[str, ...] = (
     "disable_direct_uploads_auto_attach",
     "disable_video_gen_auto_attach",
     "disable_image_filter_auto_attach",
+    "disable_router_filter_auto_attach",
     "disable_description_updates",
 )
 
@@ -959,6 +961,8 @@ _SYNC_GATE_TERMS: tuple[str, ...] = (
     "AUTO_ATTACH_IMAGE_FILTERS",
     "AUTO_INSTALL_FUSION_FILTER",
     "AUTO_ATTACH_FUSION_FILTER",
+    "AUTO_INSTALL_ROUTER_FILTERS",
+    "AUTO_ATTACH_ROUTER_FILTERS",
     "AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS",
 )
 
@@ -981,6 +985,8 @@ def syncs_owui_models(valves: Any, provider_routing_enabled: bool) -> bool:
         or valves.AUTO_ATTACH_IMAGE_FILTERS
         or valves.AUTO_INSTALL_FUSION_FILTER
         or valves.AUTO_ATTACH_FUSION_FILTER
+        or valves.AUTO_INSTALL_ROUTER_FILTERS
+        or valves.AUTO_ATTACH_ROUTER_FILTERS
         or valves.AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS
         or provider_routing_enabled
     )
@@ -1283,6 +1289,8 @@ class ModelCatalogManager:
             valves.AUTO_INSTALL_FUSION_FILTER,
             valves.AUTO_ATTACH_FUSION_FILTER,
             valves.AUTO_DEFAULT_FUSION_FILTER,
+            valves.AUTO_INSTALL_ROUTER_FILTERS,
+            valves.AUTO_ATTACH_ROUTER_FILTERS,
             valves.ENABLE_WEB_SEARCH,
             valves.ENABLE_WEB_FETCH,
             valves.ENABLE_DATETIME,
@@ -2160,6 +2168,30 @@ class ModelCatalogManager:
                 if fusion_filter_unresolved:
                     fusion_ids_known = False
 
+            from ..integrations.router_catalog import (
+                router_catalog_known,
+                router_plugin_for_model,
+            )
+
+            router_filter_function_ids: dict[str, str] = {}
+            router_ids_known = True
+            router_filter_ids_unresolved: frozenset[str] = frozenset()
+            if valves.AUTO_INSTALL_ROUTER_FILTERS or valves.AUTO_ATTACH_ROUTER_FILTERS:
+                if not router_catalog_known():
+                    router_ids_known = False
+                else:
+                    _router_filter_manager = self._pipe._ensure_filter_manager()
+                    try:
+                        router_filter_function_ids, router_filter_ids_unresolved = (
+                            await _router_filter_manager.ensure_openrouter_router_filter_function_ids(models, rows=install_rows, refused_out=refused_this_build)
+                        )
+                    except Exception as exc:
+                        self.logger.log(
+                            _ensure_failure_level(_warned_router_filter_ensure, "router", exc),
+                            "OpenRouter router settings ensure failed: %s", exc, exc_info=True,
+                        )
+                        router_ids_known = False
+
             direct_uploads_filter_function_id: str | None = None
             direct_uploads_family_off = not (
                 valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER
@@ -2543,6 +2575,20 @@ class ModelCatalogManager:
                     and valves.AUTO_ATTACH_FUSION_FILTER
                 )
 
+                router_filter_supported = router_plugin_for_model(model) is not None
+                router_filter_ids_for_model: list[str] = []
+                if router_filter_supported:
+                    router_filter_id = (
+                        router_filter_function_ids.get(openrouter_id)
+                        or router_filter_function_ids.get(str(original_id or ""))
+                    )
+                    if router_filter_id:
+                        router_filter_ids_for_model = [router_filter_id]
+                router_ids_unresolved = (
+                    openrouter_id in router_filter_ids_unresolved
+                    or str(original_id or "") in router_filter_ids_unresolved
+                )
+
                 pr_filter_id = provider_routing_filter_map.get(original_id) if original_id else None
 
                 if provider_routing_filter_map and SessionLogger.debug_enabled(self.logger):
@@ -2609,6 +2655,11 @@ class ModelCatalogManager:
                                 and valves.AUTO_DEFAULT_FUSION_FILTER
                             ),
                             fusion_ids_known=fusion_ids_known,
+                            router_filter_function_ids=router_filter_ids_for_model,
+                            router_filter_supported=router_filter_supported,
+                            auto_attach_router_filter=bool(valves.AUTO_ATTACH_ROUTER_FILTERS),
+                            router_ids_known=router_ids_known,
+                            router_ids_unresolved=router_ids_unresolved,
                             provider_routing_filter_id=pr_filter_id,
                             provider_routing_ids_known=pr_ids_known,
                             auto_default_provider_routing_filter=bool(
@@ -2823,6 +2874,11 @@ class ModelCatalogManager:
         auto_attach_fusion_filter: bool = False,
         auto_default_fusion_filter: bool = False,
         fusion_ids_known: bool = True,
+        router_filter_function_ids: list[str] | None = None,
+        router_filter_supported: bool = False,
+        auto_attach_router_filter: bool = False,
+        router_ids_known: bool = True,
+        router_ids_unresolved: bool = False,
         provider_routing_filter_id: str | None = None,
         provider_routing_ids_known: bool = True,
         auto_default_provider_routing_filter: bool = False,
@@ -2859,6 +2915,7 @@ class ModelCatalogManager:
         disable_direct_uploads_auto_attach = False
         disable_video_gen_auto_attach = False
         disable_image_filter_auto_attach = False
+        disable_router_filter_auto_attach = False
         disable_description_updates = False
 
         if existing is not None:
@@ -2873,6 +2930,7 @@ class ModelCatalogManager:
             disable_direct_uploads_auto_attach = _get_disable_param(params, "disable_direct_uploads_auto_attach")
             disable_video_gen_auto_attach = _get_disable_param(params, "disable_video_gen_auto_attach")
             disable_image_filter_auto_attach = _get_disable_param(params, "disable_image_filter_auto_attach")
+            disable_router_filter_auto_attach = _get_disable_param(params, "disable_router_filter_auto_attach")
             disable_description_updates = _get_disable_param(params, "disable_description_updates")
 
             if param_digest is not None:
@@ -2902,6 +2960,9 @@ class ModelCatalogManager:
         if disable_image_filter_auto_attach:
             auto_attach_image_filter = False
             hands_off.add("image_filter_ids")
+        if disable_router_filter_auto_attach:
+            auto_attach_router_filter = False
+            hands_off.add("router_filter_ids")
         if disable_description_updates:
             update_descriptions = False
 
@@ -3019,6 +3080,8 @@ class ModelCatalogManager:
                 keep |= _recorded_ids_any_shape(meta_dict, prune_key="image_filter_ids")
             if not fusion_ids_known:
                 keep |= _recorded_ids_any_shape(meta_dict, prune_key="fusion_filter_ids")
+            if router_ids_unresolved or not router_ids_known:
+                keep |= _recorded_ids_any_shape(meta_dict, prune_key="router_filter_ids")
             if not provider_routing_ids_known:
                 keep.add(_recorded_filter_id(meta_dict, "provider_routing_filter_id"))
             if _single_id_is_transient(
@@ -3499,6 +3562,21 @@ class ModelCatalogManager:
             ):
                 meta_updated = True
 
+            router_hands_off = (
+                "router_filter_ids" in hands_off
+                or not router_ids_known
+                or router_ids_unresolved
+            )
+            if _apply_list_filter_ids(
+                meta_dict,
+                filter_function_ids=router_filter_function_ids,
+                filter_supported=router_filter_supported,
+                auto_attach=auto_attach_router_filter,
+                prune_key="router_filter_ids",
+                hands_off=router_hands_off,
+            ):
+                meta_updated = True
+
             pr_hands_off = not provider_routing_ids_known
             pr_ids_now = [provider_routing_filter_id] if provider_routing_filter_id else []
             pr_detached = set() if pr_hands_off else _detached_with_default_off(
@@ -3659,6 +3737,18 @@ class ModelCatalogManager:
                 filter_supported=fusion_filter_supported,
                 auto_default=auto_default_fusion_filter,
                 hands_off=fusion_hands_off,
+            )
+            _apply_list_filter_ids(
+                meta_dict,
+                filter_function_ids=router_filter_function_ids,
+                filter_supported=router_filter_supported,
+                auto_attach=auto_attach_router_filter,
+                prune_key="router_filter_ids",
+                hands_off=(
+                    "router_filter_ids" in hands_off
+                    or not router_ids_known
+                    or router_ids_unresolved
+                ),
             )
             pr_hands_off = not provider_routing_ids_known
             pr_detached = set() if pr_hands_off else _detached_with_default_off(

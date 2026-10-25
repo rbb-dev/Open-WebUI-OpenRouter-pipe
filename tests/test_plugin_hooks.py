@@ -7,11 +7,12 @@ import hashlib
 import inspect
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
 from open_webui_openrouter_pipe import Pipe
+from open_webui_openrouter_pipe.integrations import router_catalog
 from open_webui_openrouter_pipe.plugins.base import PluginBase
 from open_webui_openrouter_pipe.plugins.registry import _PR_SUBSCRIBABLE_HOOKS, PluginRegistry
 from open_webui_openrouter_pipe.storage.persistence import ArtifactStore, _sanitize_table_fragment
@@ -358,6 +359,9 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
     cast(Any, catalog_mgr).prune_stale_openrouter_filter_ids = _explode_async
     cast(Any, catalog_mgr).remove_per_load_model_rows = _explode_async
 
+    async def _explode_router_read(*_args, **_kwargs):
+        raise RuntimeError("router schema reader failed")
+
     # `_keep_web_tools_filters_in_step` answers its own filter-manager failures (the
     # web_tools and web_tools_repair sites), so the pipes() arm around it only runs when
     # the pass itself raises. The real pass runs first, so those two sites stay driven.
@@ -423,8 +427,9 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
                     exception=RuntimeError("ZDR endpoint down"),
                     repeat=True,
                 )
-                for _ in range(3):
-                    await pipe.pipes()
+                with patch.object(router_catalog, "ensure_router_catalog_loaded", _explode_router_read):
+                    for _ in range(3):
+                        await pipe.pipes()
 
             # Second phase: the catalog pair needs the fetch to FAIL, which the phase
             # above deliberately keeps healthy so the later sites are reachable at all.
@@ -633,6 +638,7 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
         "chat_catalog_refresh", "metadata_sync", "web_tools_repair",
         "api_key_resolution",
         "filter_rows", "filter_rows_active",
+        "router_catalog",
     }
     from tests.warn_latch_census import UNRESOLVABLE_MESSAGE
 

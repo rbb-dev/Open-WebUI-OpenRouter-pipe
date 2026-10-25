@@ -2525,6 +2525,7 @@ _INSTALLED_FILTER_RENDERER_ARGS: dict[str, dict[str, Any]] = {
         "quantizations": ["fp16"], "visibility": "both",
     },
     "render_openrouter_fusion_filter_source": {"marker": "fusion"},
+    "render_router_filter_source": {},
     "render_image_model_filter_source": {},
     "render_image_gen_filter_source": {"catalog_match": True},
     "render_video_filter_source": {
@@ -2549,7 +2550,7 @@ def _installed_filter_renderers() -> dict[str, Any]:
     found: dict[str, Any] = {}
     for module_name in (
         "filter_manager", "fusion_filter_renderer",
-        "image_filter_renderer", "video_filter_renderer",
+        "image_filter_renderer", "router_filter_renderer", "video_filter_renderer",
     ):
         module = importlib.import_module(
             f"open_webui_openrouter_pipe.filters.{module_name}"
@@ -2587,6 +2588,24 @@ def _render_installed_filter(name: str) -> str:
                 "allowed_passthrough_parameters": ["style"],
             }],
             dedicated_image_api=True,
+        )
+
+    if name == "render_router_filter_source":
+        from open_webui_openrouter_pipe.filters.router_filter_renderer import (
+            build_router_filter_spec,
+        )
+        from open_webui_openrouter_pipe.integrations.router_catalog import RouterOption
+
+        kwargs["spec"] = build_router_filter_spec(
+            "openrouter/auto",
+            "auto-router",
+            "Auto Router",
+            (
+                RouterOption(
+                    name="cost_tier", field="COST_TIER", kind="enum", title="Cost tier",
+                    description="How much it may spend.", choices=("low", "high"),
+                ),
+            ),
         )
 
     fn = _installed_filter_renderers()[name]
@@ -2629,7 +2648,7 @@ def test_the_installed_filter_table_still_names_every_filter_renderer():
     discovered: set[str] = set()
     for module_name in (
         "filter_manager", "fusion_filter_renderer",
-        "image_filter_renderer", "video_filter_renderer",
+        "image_filter_renderer", "router_filter_renderer", "video_filter_renderer",
     ):
         module = importlib.import_module(
             f"open_webui_openrouter_pipe.filters.{module_name}"

@@ -550,6 +550,31 @@ no text carries only `ORDER`, `ONLY`, `IGNORE`, `SORT`, `SORT_PARTITION` and
 and a filter left from an earlier release is deactivated. The full per-control
 reference is in [OpenRouter Provider Routing](openrouter_provider_routing.md).
 
+### OpenRouter router settings
+
+| Valve | Type | Default (verified) | Purpose / notes |
+| --- | --- | --- | --- |
+| `AUTO_INSTALL_ROUTER_FILTERS` | `bool` | `True` | Give each OpenRouter router model whose settings OpenRouter publishes (the Auto Router is one) its own settings entry in Open WebUI, named `Router settings: <router name>`, and keep it up to date. The entry is generated from the options OpenRouter publishes for that router in its request schema, read from `https://openrouter.ai/openapi.json` without a key, so a new option appears without a pipe update once the schema is read again, which happens on the `MODEL_CATALOG_REFRESH_SECONDS` interval. An admin sets defaults on the entry's valves, and each option has an `ALLOW_USER_<OPTION>` valve (default off) that lets users set it for themselves from a chat's Controls; a user's value replaces the admin's only where that valve is on. An option nobody has set sends nothing, so OpenRouter's own default applies. If the schema cannot be read, the entries already installed stay exactly as they are and the read is tried again after a short delay that grows with each failure. With this off the pipe neither installs nor updates the entries: an entry already in place keeps the code it has, and a warning is logged when that code is out of date. Turning this off retires the rows the pipe installed for it - switched off, not deleted, so their settings survive - and turning it back on brings them back. A row an earlier install of this pipe wrote — the pipe function was renamed or re-created, so its record names an id Open WebUI no longer loads as a pipe — is retired too; a copy an admin installed by hand carries no such record and is left alone. A filter switched off by hand in Open WebUI's Functions list stays off: the pipe keeps its code up to date but never switches it back on. The one exception is a write Open WebUI itself refused, which the pipe retries until it lands; once it lands the retry stops, so a filter switched off after that stays off. One this version switched off itself comes back on its own when the feature is enabled again, and it comes back private rather than shared: Open WebUI puts every filter marked Global at the front of every model's list, so a row an admin made Global is made private again in the same write that re-enables it. |
+| `AUTO_ATTACH_ROUTER_FILTERS` | `bool` | `True` | Attach each router's settings entry to its model, and to the routing variants of that model (for example a `:nitro` row), so the settings apply to every chat with that router. The entry has no per-chat switch: once attached it runs in every chat with that model and sends only what an admin or an allowed user has set. Turning this off detaches the entries the pipe attached; an entry an admin attached by hand is left alone. A router whose entry could not be installed, or whose settings could not be read from OpenRouter, keeps what it has and is tried again at the next pass. A single model can opt out with the `disable_router_filter_auto_attach` advanced parameter. |
+
+Notes:
+- The routers covered are the ones in the pipe's pairing of router models to OpenRouter's router settings: the Auto Router and its beta track, the Pareto Code Router, Switchyard and the Jev Router. A router OpenRouter publishes settings for but the pipe has no model for is left out, and so is a router model OpenRouter publishes no settings for (for example `openrouter/free`). See [OpenRouter Routers](openrouter_routers.md).
+- Each entry acts only on a request for its own router model, in any spelling the picker can hold; an entry attached by hand to another model does nothing there.
+- Router settings are applied to chats. Titles, tags and follow-ups that Open WebUI generates with the same model, and the models of a Fusion panel, run without them.
+
+#### Generated router settings valves (per router model)
+
+Each generated entry has these valves; the options are whatever OpenRouter currently publishes for that router.
+
+| Valve | Type | Default | Maps to OpenRouter API |
+| --- | --- | --- | --- |
+| `priority` | `int` | `0` | Nothing — a sort key, not a request field. Filter execution order. |
+| `<OPTION>` (admin) | `Literal[...]`, `str`, `float \| None` or `int \| None` | empty | The router's setting of that name, sent only when set. A list of choices becomes a drop-down with an empty entry; a list of models becomes comma-separated text; a number carries OpenRouter's own minimum and maximum. |
+| `ALLOW_USER_<OPTION>` | `bool` | `False` | Nothing — it decides whether a user's `<OPTION>` counts. |
+| `<OPTION>` (user) | same as the admin valve | empty | The same setting, for the user's own chats; used only where `ALLOW_USER_<OPTION>` is on, and an empty value keeps the admin's. |
+
+A value stored for an option OpenRouter no longer publishes, or one outside the choices or bounds OpenRouter now publishes, is dropped and the rest are kept. Switchyard's candidate models are sent as the pipe's `model_fallback` parameter rather than inside the router's own settings, because the pipe builds the request's `models` list from `model_fallback`.
+
 ### Reporting, UI behavior, and request identifiers
 
 | Valve | Type | Default (verified) | Purpose / notes |

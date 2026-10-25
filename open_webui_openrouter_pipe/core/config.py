@@ -73,6 +73,7 @@ _OPENROUTER_REFERER = "https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/"
 _DEFAULT_PIPE_ID = "open_webui_openrouter_pipe"
 _FUNCTION_MODULE_PREFIX = "function_"
 _OPENROUTER_FRONTEND_MODELS_URL = "https://openrouter.ai/api/frontend/v1/catalog/models"
+_OPENROUTER_OPENAPI_URL = "https://openrouter.ai/openapi.json"
 _OPENROUTER_MODEL_ENDPOINTS_URL_TEMPLATE = "https://openrouter.ai/api/v1/models/{slug}/endpoints"
 _OPENROUTER_SITE_URL = "https://openrouter.ai"
 _OPENROUTER_HOST = "openrouter.ai"
@@ -144,6 +145,8 @@ _OPENROUTER_IMAGE_FILTER_MARKER = "openrouter_pipe:image_filter:v1"
 
 _OPENROUTER_FUSION_FILTER_MARKER = "openrouter_pipe:fusion_filter:v1"
 _OPENROUTER_FUSION_FILTER_PREFERRED_FUNCTION_ID = "openrouter_fusion"
+
+_OPENROUTER_ROUTER_FILTER_MARKER = "openrouter_pipe:router_filter:v1"
 
 _DIRECT_UPLOADS_FILTER_MARKER = "openrouter_pipe:direct_uploads_filter:v1"
 _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID = "openrouter_direct_uploads"
@@ -2918,6 +2921,38 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     AUTO_DEFAULT_VIDEO_FILTERS: bool = Field(
         default=True,
         description="Keep the per-model video filter enabled by default on its video model. Reapplied on every catalogue or settings change; turning it off clears the default the pipe seeded, leaving the filter attached. A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next pass. Models that require a per-model parameter (e.g. Veo's personGeneration) cannot be driven without it; parameter-free models still generate.",
+    )
+    AUTO_INSTALL_ROUTER_FILTERS: bool = Field(
+        default=True,
+        description=(
+            "Give each OpenRouter router model whose settings OpenRouter publishes (the Auto Router "
+            "is one) its own settings entry in Open WebUI, and keep it up to date. The entry is "
+            "generated from the options OpenRouter publishes for that router, so a new option "
+            "appears without a pipe update, once the schema is read again on the model-list "
+            "refresh interval. It lets an admin set defaults such as allowed and excluded models "
+            "or a cost tier, and choose which of them users may change for themselves. Nothing is "
+            "sent to OpenRouter for an option nobody has set. If OpenRouter's schema cannot be "
+            "read, the entries already installed stay exactly as they are and the read is tried "
+            "again. With this off the pipe neither installs nor updates them: an entry already in "
+            "place keeps the code it has, and a warning is logged when that code is out of date. "
+            "Turning it off retires the entries the pipe installed - they are switched off, not "
+            "deleted, so their values survive - and turning it back on brings them back."
+            + _PIPE_OFF_COMES_BACK
+            + _ADMIN_OFF_STAYS_OFF
+        ),
+    )
+    AUTO_ATTACH_ROUTER_FILTERS: bool = Field(
+        default=True,
+        description=(
+            "Attach each router's settings entry to its model, and to the routing variants of "
+            "that model, so the settings apply to every chat with that router. The entry has no "
+            "per-chat switch: once attached it runs in every chat with that model and sends only "
+            "what an admin or an allowed user has set. Turning this off detaches the entries the "
+            "pipe attached; an entry an admin attached by hand is left alone. A router whose "
+            "entry could not be installed, or whose settings could not be read from OpenRouter, "
+            "keeps what it has and is tried again at the next pass. A single model can opt out "
+            "with the `disable_router_filter_auto_attach` advanced parameter."
+        ),
     )
     ENABLE_OPENROUTER_FUSION: bool = Field(
         default=True,

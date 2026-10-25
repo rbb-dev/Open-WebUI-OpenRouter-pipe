@@ -1275,6 +1275,14 @@ def _reset_model_registry():
 
 
 @pytest.fixture(autouse=True)
+def _reset_router_catalog():
+    from open_webui_openrouter_pipe.integrations.router_catalog import reset_router_catalog
+
+    reset_router_catalog()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _isolate_webui_secret_key(monkeypatch):
     """Keep WEBUI_SECRET_KEY unset by default so the SEND_CACHE_SESSION_ID cache pin is
     deterministic regardless of ambient env or test order; tests that exercise the pin set

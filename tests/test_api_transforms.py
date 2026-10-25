@@ -3532,3 +3532,41 @@ def _responses_body(text: dict[str, Any]) -> dict[str, Any]:
         "model": "openai/gpt-4o", "input": "hi", "stream": False,
         "text": text, "response_format": {"type": "json_object"},
     }
+
+
+def _invented_chat_model(model_id: str) -> dict[str, Any]:
+    return {
+        "id": model_id,
+        "name": model_id,
+        "supported_parameters": ["max_tokens", "temperature", "tools", "tool_choice"],
+        "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("endpoint", "valves"),
+    [("responses", {}), ("chat/completions", {"DEFAULT_LLM_ENDPOINT": "chat_completions"})],
+    ids=["responses", "chat-completions"],
+)
+async def test_a_routers_plugin_entry_and_candidates_reach_the_dispatched_payload(endpoint, valves):
+    from tests.test_include_reasoning_reaches_only_models_that_list_it import _sent
+    from tests.test_router_filter import SWITCHYARD_MODEL, _render
+
+    _source, router = _render("nvidia/switchyard", "switchyard-router", "NVIDIA: Switchyard")
+    filter_instance = router.Filter()
+    filter_instance.valves = router.Filter.Valves(ALGORITHM="passthrough", MODELS="acme/one, acme/two")
+    filtered = filter_instance.inlet({"model": SWITCHYARD_MODEL, "messages": []}, __user__=None)
+
+    sent = await _sent(
+        "nvidia/switchyard",
+        valves=valves,
+        extra_body={"plugins": filtered["plugins"], "model_fallback": filtered["model_fallback"]},
+        catalog=[_invented_chat_model(model_id) for model_id in ("nvidia/switchyard", "acme/one", "acme/two")],
+    )
+
+    reached = [body for sent_endpoint, body in sent if sent_endpoint == endpoint]
+    assert len(reached) == 1
+    assert {"id": "switchyard-router", "algorithm": "passthrough"} in reached[0]["plugins"]
+    assert reached[0]["models"] == ["acme/one", "acme/two"]
+    assert "model_fallback" not in reached[0]

@@ -23,6 +23,7 @@ from ..core.config import (
     _OPENROUTER_IMAGE_GEN_FILTER_DEFAULT_MODEL,
     _OPENROUTER_IMAGE_GEN_FILTER_MARKER,
     _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID,
+    _OPENROUTER_ROUTER_FILTER_MARKER,
     _OPENROUTER_VIDEO_GEN_FILTER_MARKER,
     _OPENROUTER_WEB_TOOLS_FILTER_MARKER,
     _OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID,
@@ -81,6 +82,7 @@ _warned_write_refusals: dict[str, float] = {}
 _WARNED_WRITE_REFUSALS_PRUNE_AT = 256
 _warned_image_filter_installs: OrderedDict[str, None] = OrderedDict()
 _warned_video_filter_installs: OrderedDict[str, None] = OrderedDict()
+_warned_router_filter_installs: OrderedDict[str, None] = OrderedDict()
 _PER_MODEL_INSTALL_WARN_WINDOW = 300
 
 _PIPE_OFF_META_KEY = "openrouter_pipe:switched_off_by_pipe"
@@ -828,6 +830,7 @@ _AUTO_INSTALL_FAMILY_MARKERS: tuple[tuple[str, str], ...] = (
     ("AUTO_INSTALL_IMAGE_FILTERS", _OPENROUTER_IMAGE_FILTER_MARKER),
     ("AUTO_INSTALL_FUSION_FILTER", _OPENROUTER_FUSION_FILTER_MARKER),
     ("AUTO_INSTALL_DIRECT_UPLOADS_FILTER", _DIRECT_UPLOADS_FILTER_MARKER),
+    ("AUTO_INSTALL_ROUTER_FILTERS", _OPENROUTER_ROUTER_FILTER_MARKER),
 )
 
 _WEB_TOOLS_INSTALL_VALVE = "AUTO_INSTALL_WEB_TOOLS_FILTER"
@@ -2651,6 +2654,143 @@ class FilterManager:
         )
         return function_id, _outcome.refused
 
+    @timed
+    async def ensure_openrouter_router_filter_function_ids(
+        self,
+        models: list[dict[str, Any]],
+        rows: _FilterRows | None = None,
+        refused_out: set[str] | None = None,
+    ) -> tuple[dict[str, str], frozenset[str]]:
+        from ..integrations.router_catalog import (
+            ROUTER_PLUGIN_BY_MODEL,
+            router_options_for,
+        )
+        from ..models.registry import sanitize_model_id
+        from .router_filter_renderer import build_router_filter_spec
+
+        if rows is None:
+            prefetched = await self._filter_rows()
+            rows = _FilterRows(prefetched, None, prefetched is not None)
+        if not rows.available or rows.all_rows is None:
+            return {}, frozenset()
+        index, unindexed = _sweep_candidate_index(
+            rows.all_rows, "ROUTER_MODEL_ID", _OPENROUTER_ROUTER_FILTER_MARKER
+        )
+
+        rows_by_router: dict[str, list[dict[str, Any]]] = {}
+        for model in models:
+            model_id = model.get("id")
+            if not isinstance(model_id, str) or not model_id.strip():
+                continue
+            original_id = model.get("original_id")
+            canonical_id = (
+                original_id.strip()
+                if isinstance(original_id, str) and original_id.strip()
+                else model_id.strip()
+            )
+            if canonical_id in ROUTER_PLUGIN_BY_MODEL:
+                rows_by_router.setdefault(canonical_id, []).append(model)
+
+        installed: dict[str, str] = {}
+        unresolved: set[str] = set()
+        for canonical_id, members in rows_by_router.items():
+            plugin_id = ROUTER_PLUGIN_BY_MODEL[canonical_id]
+            options = router_options_for(plugin_id)
+            if options is None:
+                continue
+            base = next(
+                (
+                    member
+                    for member in members
+                    if sanitize_model_id(str(member.get("id") or "")) == sanitize_model_id(canonical_id)
+                ),
+                members[0],
+            )
+            spec = build_router_filter_spec(
+                canonical_id, plugin_id, str(base.get("name") or ""), options
+            )
+            published = {
+                text.strip()
+                for member in members
+                for text in (member.get("id"), member.get("original_id"))
+                if isinstance(text, str) and text.strip()
+            }
+            try:
+                function_id, refused = await self._install_single_router_filter(
+                    spec=spec,
+                    rows=rows,
+                    candidates=_sweep_candidates(
+                        index, unindexed, f"ROUTER_MODEL_ID = {spec.model_id!r}"
+                    ),
+                    refused_out=refused_out,
+                )
+            except Exception as exc:
+                if _is_install_enumeration_failure(exc):
+                    raise
+                self.logger.log(
+                    bounded_warn_level(
+                        _warned_router_filter_installs,
+                        f"{canonical_id}:{type(exc).__name__}",
+                        _PER_MODEL_INSTALL_WARN_WINDOW,
+                    ),
+                    "Router settings install failed for %r: %s", canonical_id, exc, exc_info=True,
+                )
+                unresolved |= published
+                continue
+            if function_id:
+                for published_id in published:
+                    installed[published_id] = function_id
+            elif refused:
+                unresolved |= published
+
+        return installed, frozenset(unresolved)
+
+    async def _install_single_router_filter(
+        self,
+        *,
+        spec: Any,
+        rows: _FilterRows | None = None,
+        candidates: list[Any] | None = None,
+        refused_out: set[str] | None = None,
+    ) -> tuple[str | None, bool]:
+        from .router_filter_renderer import (
+            ROUTER_FILTER_NAME_PREFIX,
+            render_router_filter_source,
+        )
+
+        model_id_token = f"ROUTER_MODEL_ID = {spec.model_id!r}"
+
+        def _matches(content: str) -> bool:
+            return _is_filter_carrying(content, _OPENROUTER_ROUTER_FILTER_MARKER) and (
+                model_id_token in (content or "")
+            )
+
+        if candidates is not None:
+            candidates = _kept_candidates(candidates, _matches)
+
+        desired_source = render_router_filter_source(spec).strip() + "\n"
+        function_id, outcome = await self._ensure_filter_installed(
+            desired_source=desired_source,
+            desired_name=f"{ROUTER_FILTER_NAME_PREFIX}{spec.display_name}"[:_DISPLAY_NAME_MAX_CHARS],
+            desired_meta={
+                "description": f"Settings for how {spec.display_name} chooses a model.",
+                "toggle": False,
+                "manifest": {
+                    "title": f"{ROUTER_FILTER_NAME_PREFIX}{spec.display_name}"[:_DISPLAY_NAME_MAX_CHARS],
+                    "id": spec.function_id,
+                    "version": "0.1.0",
+                    "license": "MIT",
+                },
+            },
+            preferred_id=spec.function_id,
+            auto_install_valve="AUTO_INSTALL_ROUTER_FILTERS",
+            log_label=f"OpenRouter router settings for {spec.model_id}",
+            matches_candidate=_matches,
+            rows=rows,
+            candidates=candidates,
+            refused_out=refused_out,
+        )
+        return function_id, outcome.refused
 
     @staticmethod
     def render_openrouter_image_filter_source(

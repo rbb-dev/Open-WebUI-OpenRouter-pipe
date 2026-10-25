@@ -403,7 +403,7 @@ it; a row with no owner is therefore never left unmanaged. The attach mapping is
 unaffected either way: a filter this copy does not write is still the filter the model
 carries.
 
-The same applies to the install record the six filter families carry, in the row's meta
+The same applies to the install record the seven filter families carry, in the row's meta
 as `openrouter_pipe:installed_by`: it is new, so a row installed by an earlier build
 carries none. Turning an `AUTO_INSTALL_*` valve off retires the rows whose meta names
 this pipe **and the rows whose meta names an install of this pipe that Open WebUI no

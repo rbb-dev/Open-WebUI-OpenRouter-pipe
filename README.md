@@ -71,6 +71,7 @@ Model icons + descriptions + capabilities sync automatically. Per-chat cost disp
 - **Video generation** — 29 OpenRouter video models with per-model filters and inline `<video>` rendering.
 - **OpenRouter Web Tools** — Web Search + Web Fetch + Datetime + **Advisor** + **Subagent** + **Model Search** as one toggleable filter; tool-execution cards with citations, plus a per-request `SERVER_TOOLS_MAX_COST_USD` cap that bounds the server-tool agent loop; an internal Fusion turn is one such request per panel member plus the judge and the synthesis, each sent the whole cap, so the turn's ceiling is that multiple.
 - **Provider routing filters** — admin + user-controlled routing, fallbacks, ZDR, sort order.
+- **Router settings** — the Auto, Pareto, Switchyard and Jev routers each get settings generated from the options OpenRouter publishes: admin defaults, and the limits users may change in their own chats.
 - **Direct Uploads filter** — bypass OWUI RAG; forward chat attachments as `input_file` to OpenRouter.
 
 ---
@@ -174,6 +175,7 @@ Every document in [`docs/`](docs/README.md):
 - [Server Tools](docs/openrouter_server_tools.md) — Web Search, Web Fetch, Datetime, Advisor, Subagent, Model Search, legacy Image Gen
 - [Direct Uploads](docs/openrouter_direct_uploads.md) — bypass OWUI RAG, forward as `input_file`
 - [Provider Routing](docs/openrouter_provider_routing.md) — admin + user routing filters
+- [Routers](docs/openrouter_routers.md) — settings for the Auto, Pareto, Switchyard and Jev routers
 - [Variants & Presets](docs/model_variants_and_presets.md) — `:nitro`, `:exacto`, `@preset/...`
 - [Telemetry & Cost Attribution](docs/openrouter_integrations_and_telemetry.md) — identifiers, headers, exports
 - [Error Handling & UX](docs/error_handling_and_user_experience.md) — what users see, troubleshooting

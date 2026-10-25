@@ -291,7 +291,7 @@ Switching a web tool off affects **every** Web Tools filter this pipe maintains,
 - If the row you need was one **you** switched off, the pipe will not bring it back; switch it on there.
 - **Upgrading:** a filter that was already off before this version stays off. The pipe only re-arms a filter it switched off itself, and it records that in the filter's own meta. The same record is what makes retirement safe: turning an `AUTO_INSTALL_*` valve off switches off the rows the pipe itself installed and the rows an earlier install of this pipe left behind — the pipe function was renamed or re-created, so its record names an id Open WebUI no longer loads as a pipe — while a copy an admin added by hand — Web Tools, Direct Uploads or anything else — is left alone, as is a row whose id Open WebUI still loads as a pipe. A row that was already off when you upgraded carries no such record, which is also why the pipe leaves it off: without a record the switch-off is not the pipe's to undo. Switch it on in Workspace > Functions if you want it.
 
-The same rule holds for every other filter the pipe installs (Fusion, image generation, the per-model panels, Direct Uploads, provider routing).
+The same rule holds for every other filter the pipe installs (Fusion, image generation, the per-model panels, Direct Uploads, provider routing, router settings).
 
 ### Pipe side (orchestrator)
 
@@ -465,7 +465,7 @@ nothing. The pipe repairs the rows:
   it on in Workspace > Functions to bring it back.
 
 The same rule holds for every other filter the pipe installs (Fusion, image generation, the per-model panels, Direct
-Uploads, provider routing).
+Uploads, provider routing, router settings).
 
 ### Disable image generation
 

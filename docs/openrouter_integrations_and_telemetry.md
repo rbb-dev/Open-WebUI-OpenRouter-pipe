@@ -100,6 +100,7 @@ The pipe accepts the following Advanced Model Parameters:
 | `disable_web_tools_auto_attach` | `bool-ish` | Model metadata sync | Prevents auto-attaching the **OR Web Tools** integration toggle (filter id) for this model. |
 | `disable_web_tools_default_on` | `bool-ish` | Model metadata sync | Prevents auto-enabling **OR Web Tools** by default for this model (prevents seeding `meta.defaultFilterIds`, and releases one the pipe had already seeded for it). |
 | `disable_direct_uploads_auto_attach` | `bool-ish` | Model metadata sync | Prevents auto-attaching the **Direct Uploads** integration toggle (filter id) for this model, and prevents removing it from `meta.defaultFilterIds`. |
+| `disable_router_filter_auto_attach` | `bool-ish` | Model metadata sync | Prevents auto-attaching the router's **settings** entry (filter id) for this model, and prevents removing one the pipe already attached. See §2.17. |
 
 Notes:
 - “bool-ish” accepts JSON booleans (`true/false`) and common string/int forms (`"true"`, `"1"`, `"on"`, etc.).
@@ -118,6 +119,10 @@ OpenRouter supports a primary `model` plus a fallback list `models` (array). Ope
 
 A task request (`__task__`, such as Open WebUI's title generation) follows the same chain, on the
 task leg as on the chat legs.
+
+The Switchyard router's **Models** setting (see [OpenRouter Routers](openrouter_routers.md))
+writes this parameter for the requests it applies to, replacing a value the model's advanced
+parameters carry, so the candidates it names pass the same restriction check.
 
 Open WebUI JSON-parses a custom param before the pipe sees it, so both of these admin spellings
 reach the pipe as a list and produce the same `models` array:
@@ -379,6 +384,12 @@ A call that carries no `chat_id` — the plain API route — is pinned instead o
 
 Controlled by `SEND_CACHE_SESSION_ID` (default **on**); skipped when neither the primary name nor its deprecated fallback is set. A manually pinned `provider.order` overrides it.
 
+### 2.17 `disable_router_filter_auto_attach` → preserve the router settings wiring
+- Custom param: `disable_router_filter_auto_attach` (bool-ish)
+- Pipe behavior (when truthy):
+  - The pipe will not attach the router settings entry to that router model in `meta.filterIds`, even when `AUTO_ATTACH_ROUTER_FILTERS=True`, and will not take off one it attached before.
+  - Turning the valve off detaches the entries the pipe attached; an entry an admin attached by hand is left alone. See [OpenRouter Routers](openrouter_routers.md).
+
 ---
 
 ## 3. Model catalog and capability-aware routing
@@ -406,9 +417,10 @@ What it syncs (best-effort):
 Data sources / egress:
 - Fetches `https://openrouter.ai/api/frontend/v1/catalog/models` (no auth) to discover icons and descriptions. The same read tells the pipe which models' full descriptions mention references, which a video request uses to choose between sending frames and sending references (see [Attachments that are not frames](openrouter_video_generation.md#attachments-that-are-not-frames)); nothing extra is fetched for it.
 - When provider routing valves list models, fetches `https://openrouter.ai/api/v1/models/{author}/{slug}/endpoints` (no auth) for each listed model to build the full provider list for the routing filter dropdowns. That sweep is bounded as a whole and not only per read, like the two icon sweeps below, so the length of the routing list does not appear in how long one metadata pass takes; a slug the budget abandons keeps the provider data it already had and has its routing row left exactly as it is.
+- When `AUTO_INSTALL_ROUTER_FILTERS` or `AUTO_ATTACH_ROUTER_FILTERS` is on, fetches `https://openrouter.ai/openapi.json` (no auth), OpenRouter's published request schema, to read the options it publishes for each router (see [OpenRouter Routers](openrouter_routers.md)). The read is repeated on the `MODEL_CATALOG_REFRESH_SECONDS` interval; a failed read is retried after a short delay that grows with each failure and leaves the last good options in use. Only the router portion is kept in memory, and the rest of the document is dropped once it is parsed.
 - Downloads each icon URL (absolute or relative to `https://openrouter.ai`) and may fall back to a maker page OpenGraph image (`https://openrouter.ai/<maker>`); while the stamped source is unchanged, neither the page nor its image is fetched again. The maker-page fallback is a fallback for a catalogue read that ANSWERED and had no icon for the model: a pass whose read did not answer scrapes no maker page at all and leaves stored icons as they are, so an outage does not turn into one request per maker per refresh window. Both icon sweeps — the maker pages and the downloads — are bounded as a whole and not only per read, so the size of the catalogue does not appear in how long one metadata pass takes; a leg the budget abandons keeps whatever the row already had, is named in a `WARNING` that separates it from a leg that ran and found nothing, and is offered again on the next sync-key change — a new catalogue fetch, a settings change such as a valve edit, or a restart.
 
-All three of those fetches carry the `HTTP-Referer` attribution header, because each names an openrouter.ai host. An icon download is a different matter: its URL can name any host (a provider's favicon is fetched from a third-party CDN), so it carries none, and the vetted transport re-decides per redirect hop rather than replaying the header onto whatever a `Location` names.
+All four of those fetches carry the `HTTP-Referer` attribution header, because each names an openrouter.ai host. An icon download is a different matter: its URL can name any host (a provider's favicon is fetched from a third-party CDN), so it carries none, and the vetted transport re-decides per redirect hop rather than replaying the header onto whatever a `Location` names.
 
 Controls:
 - `UPDATE_MODEL_IMAGES` (default `True`): enable/disable profile image sync.

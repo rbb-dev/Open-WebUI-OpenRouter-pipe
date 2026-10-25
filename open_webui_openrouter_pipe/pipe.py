@@ -2459,6 +2459,25 @@ class Pipe:
                     logger=self.logger,
                     cache_seconds=self.valves.MODEL_CATALOG_REFRESH_SECONDS,
                 )
+                try:
+                    from .integrations.router_catalog import (
+                        ensure_router_catalog_loaded,
+                    )
+
+                    await ensure_router_catalog_loaded(
+                        session,
+                        valves=self.valves,
+                        logger=self.logger,
+                        cache_seconds=self.valves.MODEL_CATALOG_REFRESH_SECONDS,
+                    )
+                except Exception as exc:
+                    level = warn_level(_warned_pipes_maintenance, f"router_catalog:{type(exc).__name__}")
+                    self.logger.log(
+                        level,
+                        "Reading OpenRouter's router settings failed; the model list is unaffected: %s",
+                        exc,
+                        exc_info=True,
+                    )
         except ValueError as exc:
             refresh_error = exc
             self.logger.exception("OpenRouter configuration error")

@@ -456,6 +456,8 @@ def test_maybe_schedule_model_metadata_sync_no_valves_enabled(pipe_instance) -> 
     pipe.valves.AUTO_ATTACH_IMAGE_FILTERS = False
     pipe.valves.AUTO_INSTALL_FUSION_FILTER = False
     pipe.valves.AUTO_ATTACH_FUSION_FILTER = False
+    pipe.valves.AUTO_INSTALL_ROUTER_FILTERS = False
+    pipe.valves.AUTO_ATTACH_ROUTER_FILTERS = False
     pipe.valves.AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS = False
 
     pipe._catalog_manager.maybe_schedule_model_metadata_sync(
@@ -5035,6 +5037,8 @@ _SYNC_GATE_VALVE_NAMES = (
     "AUTO_ATTACH_IMAGE_FILTERS",
     "AUTO_INSTALL_FUSION_FILTER",
     "AUTO_ATTACH_FUSION_FILTER",
+    "AUTO_INSTALL_ROUTER_FILTERS",
+    "AUTO_ATTACH_ROUTER_FILTERS",
     "AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS",
 )
 """The valves that make the scheduler start a metadata sync, written down independently.
@@ -5202,6 +5206,129 @@ def _owned_record(family: str, owned: str):
     the four single-id families store a string.
     """
     return [owned] if family in ("image", "fusion") else owned
+
+
+class _MemoryModels:
+    def __init__(self) -> None:
+        self.rows: dict[str, Any] = {}
+
+    async def get_model_by_id(self, model_id, db=None):
+        return self.rows.get(model_id)
+
+    async def get_models_by_ids(self, ids, db=None):
+        return [self.rows[model_id] for model_id in ids if model_id in self.rows]
+
+    async def get_all_models(self, db=None):
+        return list(self.rows.values())
+
+    async def insert_new_model(self, form, user_id="", db=None):
+        row = SimpleNamespace(
+            id=form.id, name=form.name, base_model_id=form.base_model_id, meta=form.meta,
+            params=form.params, access_grants=[], is_active=True,
+        )
+        self.rows[form.id] = row
+        return row
+
+    async def update_model_by_id(self, model_id, form, db=None):
+        row = self.rows[model_id]
+        row.meta = form.meta
+        row.params = form.params
+        return row
+
+
+class _MemoryFunctions:
+    def __init__(self) -> None:
+        self.rows: dict[str, Any] = {}
+
+    async def get_functions_by_type(self, function_type, active_only=False, db=None):
+        return [row for row in self.rows.values() if row.is_active or not active_only]
+
+    async def get_function_by_id(self, function_id, db=None):
+        return self.rows.get(function_id)
+
+    async def insert_new_function(self, user_id, function_type, form, db=None):
+        row = SimpleNamespace(
+            id=form.id, name=form.name, content=form.content, meta=form.meta,
+            is_active=False, is_global=False, updated_at=1, type="filter",
+        )
+        self.rows[form.id] = row
+        return row
+
+    async def update_function_by_id(self, function_id, updates, db=None):
+        row = self.rows.get(function_id)
+        if row is None:
+            return None
+        for key, value in dict(updates).items():
+            setattr(row, key, value)
+        return row
+
+    async def delete_function_by_id(self, function_id, db=None):
+        return self.rows.pop(function_id, None) is not None
+
+
+@pytest.mark.asyncio
+async def test_a_sync_attaches_each_router_its_settings_and_leaves_them_when_the_schema_is_unavailable(
+    pipe_instance_async, monkeypatch
+) -> None:
+    import aiohttp
+    import open_webui.models.functions as owui_functions
+    import open_webui.models.models as owui_models
+
+    from open_webui_openrouter_pipe.core.config import Valves
+    from open_webui_openrouter_pipe.integrations import router_catalog
+    from tests.test_router_filter import SCHEMA_URL, invented_schema
+
+    memory_models, memory_functions = _MemoryModels(), _MemoryFunctions()
+    monkeypatch.setattr(owui_models, "Models", memory_models)
+    monkeypatch.setattr(owui_functions, "Functions", memory_functions)
+
+    pipe = pipe_instance_async
+    for name, field in Valves.model_fields.items():
+        if field.annotation is bool and name.startswith(("UPDATE_MODEL_", "AUTO_", "ENABLE_")):
+            setattr(pipe.valves, name, False)
+    pipe.valves.ADMIN_PROVIDER_ROUTING_MODELS = ""
+    pipe.valves.USER_PROVIDER_ROUTING_MODELS = ""
+    pipe.valves.AUTO_INSTALL_ROUTER_FILTERS = True
+    pipe.valves.AUTO_ATTACH_ROUTER_FILTERS = True
+    manager = pipe._ensure_catalog_manager()
+
+    async with aiohttp.ClientSession() as session:
+        with aioresponses() as http:
+            http.get(SCHEMA_URL, payload=invented_schema())
+            await router_catalog.ensure_router_catalog_loaded(
+                session, valves=pipe.valves, logger=manager.logger, cache_seconds=3600
+            )
+
+    models = [
+        {"id": "openrouter.auto", "original_id": "openrouter/auto", "norm_id": "openrouter/auto", "name": "Auto Router"},
+        {"id": "openrouter.auto:nitro", "original_id": "openrouter/auto", "norm_id": "openrouter/auto:nitro", "name": "Auto Router Nitro"},
+        {"id": "nvidia.switchyard", "original_id": "nvidia/switchyard", "norm_id": "nvidia/switchyard", "name": "NVIDIA: Switchyard"},
+        {"id": "acme.plain", "original_id": "acme/plain", "norm_id": "acme/plain", "name": "Plain"},
+    ]
+
+    async def attached() -> dict[str, list[str]]:
+        await manager._sync_model_metadata_to_owui(models, pipe_identifier="test_pipe")
+        return {
+            row_id: list(row.meta.get("filterIds", []))
+            for row_id, row in memory_models.rows.items()
+        }
+
+    expected = {
+        "test_pipe.openrouter.auto": ["openrouter_router_openrouter_auto"],
+        "test_pipe.openrouter.auto:nitro": ["openrouter_router_openrouter_auto"],
+        "test_pipe.nvidia.switchyard": ["openrouter_router_nvidia_switchyard"],
+        "test_pipe.acme.plain": [],
+    }
+    assert await attached() == expected
+    assert sorted(memory_functions.rows) == [
+        "openrouter_router_nvidia_switchyard",
+        "openrouter_router_openrouter_auto",
+    ]
+    assert all(row.is_active for row in memory_functions.rows.values())
+
+    router_catalog.reset_router_catalog()
+    assert await attached() == expected
+    assert all(row.is_active for row in memory_functions.rows.values())
 
 
 # -----------------------------------------------------------------------------
