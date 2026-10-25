@@ -13398,3 +13398,105 @@ async def test_text_after_a_refusal_starts_a_block_of_its_own(
     )
     assert result == expected
     assert shown == expected
+
+
+CHAT_COMPLETIONS_REFUSAL_REPLY = "".join(
+    "data: " + json.dumps(chunk) + "\n\n"
+    for chunk in (
+        {"choices": [{"index": 0, "delta": {"refusal": REFUSAL_SENTENCE}, "finish_reason": None}]},
+        {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+    )
+) + "data: [DONE]\n\n"
+
+RESPONSES_REFUSAL_THEN_TEXT_REPLY = {
+    "id": "resp-1",
+    "status": "completed",
+    "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+    "output": [
+        {
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "refusal", "refusal": REFUSAL_SENTENCE}],
+        },
+        {
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": SENTENCE_AFTER_THE_REFUSAL, "annotations": []}],
+        },
+    ],
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("endpoint", "stream", "stored_reply", "reply", "expected"),
+    [
+        pytest.param(
+            "chat_completions",
+            True,
+            "Part one.",
+            {"body": CHAT_COMPLETIONS_REFUSAL_REPLY.encode(), "headers": {"Content-Type": "text/event-stream"}},
+            "\n\n" + REFUSAL_SENTENCE,
+            id="chat-completions-refusal-that-opens-a-continue",
+        ),
+        pytest.param(
+            "responses",
+            False,
+            None,
+            {"payload": RESPONSES_REFUSAL_THEN_TEXT_REPLY},
+            REFUSAL_SENTENCE + "\n\n" + SENTENCE_AFTER_THE_REFUSAL,
+            id="responses-reply-not-streamed-with-text-after-a-refusal",
+        ),
+    ],
+)
+async def test_a_refusal_from_chat_completions_or_an_unstreamed_reply_stays_a_block_of_its_own(
+    pipe_instance_async, endpoint, stream, stored_reply, reply, expected
+):
+    from aioresponses import aioresponses
+
+    pipe = pipe_instance_async
+    urls = {
+        "chat_completions": "https://openrouter.ai/api/v1/chat/completions",
+        "responses": "https://openrouter.ai/api/v1/responses",
+    }
+    body = ResponsesBody(model="test/model", input=[], stream=stream)
+    body._continues_after_marker = ends_on_hidden_marker_line(stored_reply)
+    emitted: list[dict] = []
+
+    async def emitter(event):
+        emitted.append(event)
+
+    runner = (
+        pipe._streaming_handler._run_streaming_loop
+        if stream
+        else pipe._streaming_handler._run_nonstreaming_loop
+    )
+    session = pipe._create_http_session(pipe.valves)
+    token = CONTINUED_REPLY.set(stored_reply)
+    try:
+        with aioresponses() as http:
+            http.post(urls[endpoint], status=200, **reply)
+            result = await runner(
+                body,
+                pipe.valves,
+                emitter,
+                metadata={"model": {"id": "test"}},
+                tools={},
+                session=cast(Any, session),
+                user_id="user-123",
+                endpoint_override=endpoint,
+            )
+    finally:
+        CONTINUED_REPLY.reset(token)
+        await session.close()
+
+    assert result == expected
+    if stream:
+        shown = "".join(
+            (event.get("data") or {}).get("content", "")
+            for event in emitted
+            if event.get("type") == "chat:message:delta"
+        )
+        assert shown == expected

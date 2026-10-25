@@ -49,6 +49,12 @@ def _build_chat_output_items(**kwargs: Any) -> list[dict[str, Any]]:
     return build(**kwargs)
 
 
+def _chat_refusal_split(answer: str, refusal: str) -> tuple[str | None, str]:
+    from ..api.gateway.chat_completions_adapter import _refusal_split as split
+
+    return split(answer, refusal)
+
+
 def _chat_route_search_record(
     events: AsyncGenerator[dict[str, Any], None],
     offered: bool,
@@ -140,17 +146,13 @@ class NonStreamingAdapter:
                         continue
                     if item.get("type") == "message" and item.get("role") == "assistant":
                         answer = output_message_text([item])
-                        text_parts: list[str] = [answer] if answer else []
                         refusal_text = responses_refusal_text(item)
                         if task_request and refusal_text:
                             raise TaskProviderRefusal("task_model_refusal")
+                        if answer:
+                            yield {"type": "response.output_text.delta", "delta": answer}
                         if refusal_text:
-                            text_parts.append(refusal_text)
-                        if text_parts:
-                            yield {
-                                "type": "response.output_text.delta",
-                                "delta": "\n\n".join(text_parts),
-                            }
+                            yield {"type": "response.refusal.done", "refusal": refusal_text}
                         yield {"type": "response.output_item.done", "item": item}
                         continue
                     item_type = item.get("type")
@@ -382,14 +384,12 @@ class NonStreamingAdapter:
                         }
                     )
 
-            assistant_text = _extract_chat_message_text(message_obj)
-            if isinstance(refusal_text, str) and refusal_text.strip():
-                refusal_text = refusal_text.strip()
-                assistant_text = (
-                    f"{assistant_text}\n\n{refusal_text}" if assistant_text else refusal_text
-                )
-            if assistant_text:
-                yield {"type": "response.output_text.delta", "delta": assistant_text}
+            answer_text = _extract_chat_message_text(message_obj)
+            refusal_to_show, assistant_text = _chat_refusal_split(answer_text, refusal_text or "")
+            if answer_text:
+                yield {"type": "response.output_text.delta", "delta": answer_text}
+            if refusal_to_show is not None:
+                yield {"type": "response.refusal.done", "refusal": refusal_to_show}
 
             output_annotations: list[dict[str, Any]] | None = None
             if isinstance(annotations, list) and annotations:

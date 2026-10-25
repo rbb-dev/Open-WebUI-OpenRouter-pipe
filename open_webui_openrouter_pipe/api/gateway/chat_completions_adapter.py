@@ -97,7 +97,7 @@ def _refusal_split(answer: str, refusal: str) -> tuple[str | None, str]:
         return None, answer
     if not answer:
         return refusal, refusal
-    return f"\n\n{refusal}", f"{answer}\n\n{refusal}"
+    return refusal, f"{answer}\n\n{refusal}"
 
 
 def _append_text_field(item: dict, key: str, value: str) -> None:
@@ -1217,11 +1217,11 @@ class ChatCompletionsAdapter:
             yield {"type": "openrouter_pipe.unhandled_citations", "types": sorted(unhandled_citation_types)}
 
         if cut_off:
-            refusal_cut, _ = _refusal_split(
+            refusal_to_show, _ = _refusal_split(
                 "".join(assistant_text_parts), provider_refusal_full or "".join(provider_refusal_parts)
             )
-            if refusal_cut is not None:
-                yield {"type": "response.output_text.delta", "delta": refusal_cut}
+            if refusal_to_show is not None:
+                yield {"type": "response.refusal.done", "refusal": refusal_to_show}
             return
 
         if reasoning_item_id is not None:
@@ -1270,11 +1270,11 @@ class ChatCompletionsAdapter:
                 }
 
         assistant_text = "".join(assistant_text_parts)
-        refusal_delta, assistant_text = _refusal_split(
+        refusal_to_show, assistant_text = _refusal_split(
             assistant_text, provider_refusal_full or "".join(provider_refusal_parts)
         )
-        if refusal_delta is not None:
-            yield {"type": "response.output_text.delta", "delta": refusal_delta}
+        if refusal_to_show is not None:
+            yield {"type": "response.refusal.done", "refusal": refusal_to_show}
         tool_call_items: list[dict[str, Any]] = []
         for index in sorted(tool_calls_by_index.keys()):
             current = tool_calls_by_index[index]

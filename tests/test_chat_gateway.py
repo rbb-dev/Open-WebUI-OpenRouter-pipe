@@ -3133,8 +3133,10 @@ async def test_chat_completions_streaming_refusal_field(pipe_instance_async):
 
         await session.close()
 
-    refusal_deltas = [e for e in events if e.get("type") == "response.output_text.delta"]
-    assert any("can't help" in e.get("delta", "") for e in refusal_deltas)
+    assert [e.get("refusal") for e in events if e.get("type") == "response.refusal.done"] == [
+        "I can't help with that."
+    ]
+    assert not [e for e in events if e.get("type") == "response.output_text.delta"]
 
     completed = [e for e in events if e.get("type") == "response.completed"]
     assert len(completed) == 1

@@ -867,8 +867,10 @@ async def test_nonstreaming_chat_refusal_field(pipe_instance_async):
 
         await session.close()
 
-    refusal_deltas = [e for e in events if e.get("type") == "response.output_text.delta"]
-    assert any("can't do that" in e.get("delta", "") for e in refusal_deltas)
+    assert [e.get("refusal") for e in events if e.get("type") == "response.refusal.done"] == [
+        "No, I can't do that."
+    ]
+    assert not [e for e in events if e.get("type") == "response.output_text.delta"]
 
     completed = [e for e in events if e.get("type") == "response.completed"]
     assert len(completed) == 1
