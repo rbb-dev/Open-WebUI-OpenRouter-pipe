@@ -4980,7 +4980,7 @@ async def test_zdr_enforce_injects_provider_preference():
 
 
 def _stored_valves_row(monkeypatch, row: dict) -> None:
-    """Open WebUI 0.11.4's reader hands the pipe the user's stored valves row; the pipe reads that row first and falls
+    """Open WebUI's reader hands the pipe the user's stored valves row; the pipe reads that row first and falls
     back to what `__user__["valves"]` carries only when the read fails."""
     import open_webui.models.functions as owf
 

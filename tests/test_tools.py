@@ -442,16 +442,17 @@ async def test_idle_timeout_returns_failed_output_and_continues():
 
 
 def _as_open_webui_resolves_them(metadata: Any) -> Any:
-    """What Open WebUI 0.11.4's middleware does with the browser's tool servers before calling the pipe: it pops each
-    server's `specs` and `system_prompt` in place and puts every spec into the request's resolved tools as
-    `{"spec", "direct": True, "server"}`. The pipe never sees a server's specs, so its browser-run tools can come only
-    from those resolved entries, and any gate Open WebUI applies there applies to the pipe."""
+    """What Open WebUI 0.12.0's middleware does with the browser's tool servers before calling the pipe: it copies each
+    server, pops the copy's `specs` and `system_prompt`, and puts every spec into the request's resolved tools as
+    `{"spec", "direct": True, "server"}`, leaving `metadata["tool_servers"]` as the browser sent it. The pipe's
+    browser-run tools come only from those resolved entries, and any gate Open WebUI applies there applies to the pipe."""
     if not isinstance(metadata, dict):
         return metadata
     resolved: dict[str, Any] = {}
     for index, server in enumerate(metadata.get("tool_servers") or []):
         if not isinstance(server, dict):
             continue
+        server = dict(server)
         server.pop("system_prompt", None)
         for spec_index, spec in enumerate(server.pop("specs", None) or []):
             name = spec.get("name") if isinstance(spec, dict) else None

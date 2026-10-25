@@ -62,10 +62,10 @@ from `.external/open-webui`, which is gitignored. CI checks the pinned tag into 
 before the suite runs:
 
 ```bash
-git clone --depth 1 --branch v0.11.4 https://github.com/open-webui/open-webui .external/open-webui
+git clone --depth 1 --branch v0.12.0 https://github.com/open-webui/open-webui .external/open-webui
 ```
 
-The pin is `v0.11.4`, the same version the test extra installs from PyPI. The clone is
+The pin is `v0.12.0`, the floor the pipe's manifest names. The clone is
 shallow and CI asks for `backend` and `src` only -- the frontend is not optional, because
 `tests/test_browser_tool_failures_count.py` reads `src/lib/apis/index.ts`.
 
@@ -76,7 +76,7 @@ checkout that has not fetched the pin is a smaller suite and never a different o
 reader does its work at module scope either: a module-level read is a *collection* error,
 which interrupts the run before any test executes.
 
-Do not `pip download open-webui==0.11.4` and unzip it instead. A wheel carries no
+Do not `pip download open-webui==0.12.0` and unzip it instead. A wheel carries no
 `src/lib`, so the frontend readers would still skip while the fix looked complete.
 
 ### Pytest bootstrap behavior
@@ -163,7 +163,7 @@ The suite is organized by subsystem. Common entry points:
 
 | Step | Why |
 | --- | --- |
-| Confirm Open WebUI ≥ 0.11.4 | The pipe manifest requires 0.11.4. |
+| Confirm Open WebUI ≥ 0.12.0 | The pipe manifest requires 0.12.0. |
 | Set `OPENROUTER_API_KEY` (valve or env) | Required for provider requests. |
 | Configure `WEBUI_SECRET_KEY` | Recommended so Open WebUI can encrypt/decrypt secret valve values stored via `EncryptedStr`. |
 | Decide on `ARTIFACT_ENCRYPTION_KEY` | Set before first launch if you plan to encrypt persisted artifacts; rotating later creates a new table and strands old rows, and a write already inside the cipher build when the rotation lands is dropped and logged with its artifact kind. |

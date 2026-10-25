@@ -260,16 +260,6 @@ class _ModelWriteRefused(Exception):
     pass
 
 
-class _AccessUnrepresentable:
-    __slots__ = ("principal_type",)
-
-    def __init__(self, principal_type: str) -> None:
-        self.principal_type = principal_type
-
-
-_ACCESS_UNREPRESENTABLE = _AccessUnrepresentable
-
-
 async def _read_model_rows(ids: list[str], logger: Any) -> Any:
     from open_webui.models.models import Models
 
@@ -1070,123 +1060,7 @@ class ModelCatalogManager:
         self._cached_reference_mentions = mentions
 
     @staticmethod
-    def _model_form_supports_access_control(model_form_cls: Any) -> bool:
-        fields = getattr(model_form_cls, "model_fields", None)
-        return isinstance(fields, dict) and "access_control" in fields
-
-    @staticmethod
-    def _normalize_access_grants(value: Any) -> list[dict[str, Any]]:
-        if not isinstance(value, list):
-            return []
-        normalized: list[dict[str, Any]] = []
-        for entry in value:
-            if isinstance(entry, dict):
-                normalized.append(dict(entry))
-                continue
-            model_dump = getattr(entry, "model_dump", None)
-            if callable(model_dump):
-                with contextlib.suppress(Exception):
-                    dumped = model_dump()
-                    if isinstance(dumped, dict):
-                        normalized.append(dumped)
-        return normalized
-
-    @staticmethod
-    def _legacy_grants_imply_public(grants: list[dict[str, Any]]) -> bool:
-        for grant in grants:
-            principal_id = grant.get("principal_id")
-            principal_type = grant.get("principal_type")
-            permission = grant.get("permission")
-            if (
-                isinstance(principal_id, str)
-                and principal_id == "*"
-                and isinstance(principal_type, str)
-                and principal_type.lower() == "user"
-                and isinstance(permission, str)
-                and permission.lower() == "read"
-            ):
-                return True
-        return False
-
-    @classmethod
-    def _legacy_grants_to_access_control(
-        cls, grants_value: Any
-    ) -> dict[str, Any] | None | _AccessUnrepresentable:
-        grants = cls._normalize_access_grants(grants_value)
-
-        access_control: dict[str, dict[str, list[str]]] = {}
-        saw_public_read = False
-        for grant in grants:
-            principal_id = grant.get("principal_id")
-            principal_type = grant.get("principal_type")
-            permission = grant.get("permission")
-            if not isinstance(principal_id, str) or not principal_id:
-                continue
-            if not isinstance(principal_type, str) or not isinstance(permission, str):
-                continue
-
-            principal_type_lower = principal_type.lower()
-            permission_lower = permission.lower()
-            if permission_lower not in {"read", "write"}:
-                continue
-
-            bucket = access_control.setdefault(
-                permission_lower, {"user_ids": [], "group_ids": []}
-            )
-            if principal_type_lower == "user":
-                target = bucket["user_ids"]
-                if principal_id == "*" and permission_lower == "read":
-                    saw_public_read = True
-            elif principal_type_lower == "group":
-                target = bucket["group_ids"]
-            else:
-                return _ACCESS_UNREPRESENTABLE(principal_type_lower)
-
-            if principal_id not in target:
-                target.append(principal_id)
-
-        return None if (saw_public_read and not access_control) else access_control or {}
-
-    def _resolve_model_access_payload(
-        self,
-        *,
-        model_obj: Any,
-        supports_access_control: bool,
-    ) -> dict[str, Any] | list[dict[str, Any]] | None:
-        if supports_access_control:
-            access_control = getattr(model_obj, "access_control", None)
-            if isinstance(access_control, dict):
-                return dict(access_control)
-            payload = self._legacy_grants_to_access_control(
-                getattr(model_obj, "access_grants", None)
-            )
-            if isinstance(payload, _AccessUnrepresentable):
-                model_id = str(getattr(model_obj, "id", "") or "")
-                self.logger.warning(
-                    "Metadata refresh refused for model '%s': its stored grants carry a "
-                    "'%s' principal, which this schema's access field cannot spell; the "
-                    "row keeps its grants, its icon and its description",
-                    model_id,
-                    payload.principal_type,
-                )
-                raise _ModelWriteRefused(
-                    f"the stored grants of {model_id} name a '{payload.principal_type}' "
-                    "principal, which this schema's access field cannot spell, so "
-                    f"{model_id} is left exactly as it is"
-                )
-            return payload
-
-        return None
-
-    @staticmethod
-    def _default_new_model_access_payload(
-        *,
-        access_mode: str,
-        supports_access_control: bool,
-    ) -> dict[str, Any] | list[dict[str, str]] | None:
-        if supports_access_control:
-            return None if access_mode == "public" else {}
-
+    def _default_new_model_access_payload(*, access_mode: str) -> list[dict[str, str]]:
         if access_mode == "public":
             return [
                 {
@@ -1201,37 +1075,23 @@ class ModelCatalogManager:
     def _build_model_form(
         *,
         model_form_cls: Any,
-        supports_access_control: bool,
         id: str,
         base_model_id: str | None,
         name: str,
         meta: Any,
         params: Any,
-        access_payload: dict[str, Any] | list[dict[str, Any]] | None,
+        access_payload: list[dict[str, Any]] | None,
         is_active: bool,
     ) -> Any:
-        payload: dict[str, Any] = {
-            "id": id,
-            "base_model_id": base_model_id,
-            "name": name,
-            "meta": meta,
-            "params": params,
-            "is_active": is_active,
-        }
-        if supports_access_control:
-            payload["access_control"] = (
-                access_payload
-                if access_payload is None or isinstance(access_payload, dict)
-                else {}
-            )
-        else:
-            payload["access_grants"] = (
-                access_payload
-                if access_payload is None or isinstance(access_payload, list)
-                else []
-            )
-
-        return model_form_cls(**payload)
+        return model_form_cls(
+            id=id,
+            base_model_id=base_model_id,
+            name=name,
+            meta=meta,
+            params=params,
+            is_active=is_active,
+            access_grants=access_payload,
+        )
 
     @timed
     def maybe_schedule_model_metadata_sync(
@@ -2740,8 +2600,6 @@ class ModelCatalogManager:
         from open_webui.models.functions import Functions as _FunctionsTable
         from open_webui.models.models import ModelForm, ModelMeta, ModelParams, Models
 
-        supports_access_control = self._model_form_supports_access_control(ModelForm)
-
         all_filters = await _FunctionsTable.get_functions_by_type("filter")
         valid_ids = frozenset(
             f.id for f in all_filters if f.id.startswith("openrouter_")
@@ -2796,16 +2654,12 @@ class ModelCatalogManager:
                 meta_obj = ModelMeta(**meta_dict)
                 form = self._build_model_form(
                     model_form_cls=ModelForm,
-                    supports_access_control=supports_access_control,
                     id=model.id,
                     base_model_id=fresh.base_model_id,
                     name=fresh.name,
                     meta=meta_obj,
                     params=_params_unchanged(ModelParams, fresh.params),
-                    access_payload=self._resolve_model_access_payload(
-                        model_obj=fresh,
-                        supports_access_control=supports_access_control,
-                    ),
+                    access_payload=None,
                     is_active=fresh.is_active,
                 )
                 if await Models.update_model_by_id(model.id, form) is None:
@@ -2893,7 +2747,6 @@ class ModelCatalogManager:
         param_digest: set[tuple[str, str]] | None = None,
     ):
         from open_webui.models.models import ModelForm, ModelMeta, ModelParams, Models
-        supports_access_control = self._model_form_supports_access_control(ModelForm)
 
         openwebui_model_id = (openwebui_model_id or "").strip()
         if not openwebui_model_id:
@@ -3620,16 +3473,12 @@ class ModelCatalogManager:
                 meta_obj = ModelMeta(**meta_dict)
             model_form = self._build_model_form(
                 model_form_cls=ModelForm,
-                supports_access_control=supports_access_control,
                 id=existing.id,
                 base_model_id=existing.base_model_id,
                 name=existing.name,
                 meta=meta_obj,
                 params=_params_without_tag_scanning(ModelParams, existing.params),
-                access_payload=self._resolve_model_access_payload(
-                    model_obj=existing,
-                    supports_access_control=supports_access_control,
-                ),
+                access_payload=None,
                 is_active=existing.is_active,
             )
             if await Models.update_model_by_id(openwebui_model_id, model_form) is None:
@@ -3786,14 +3635,10 @@ class ModelCatalogManager:
             params_obj = _params_without_tag_scanning(ModelParams, None)
 
             access_mode = new_model_access_control
-            access_payload = self._default_new_model_access_payload(
-                access_mode=access_mode,
-                supports_access_control=supports_access_control,
-            )
+            access_payload = self._default_new_model_access_payload(access_mode=access_mode)
 
             model_form = self._build_model_form(
                 model_form_cls=ModelForm,
-                supports_access_control=supports_access_control,
                 id=openwebui_model_id,
                 base_model_id=None,
                 name=name,

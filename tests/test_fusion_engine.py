@@ -1296,18 +1296,11 @@ async def test_the_tool_search_offer_filter_and_the_member_manifest_and_dispatch
     strip must remove the item outright -- an emptied message left behind would satisfy a weaker
     manifest-free check but not the equal one.
     """
-    import open_webui_openrouter_pipe.requests.orchestrator as orchestrator_mod
     from open_webui_openrouter_pipe import _ToolExecutionContext
     from open_webui_openrouter_pipe.tools.tool_registry import (
         CALL_TOOL_TOOL_ID,
         OWUI_OWNS_KEY,
         _build_collision_safe_tool_specs_and_registry,
-    )
-    from tests.test_pipe_resolves_call_tool import _open_webui_tool_search_functions
-
-    functions = _open_webui_tool_search_functions()
-    monkeypatch.setattr(
-        orchestrator_mod, "strip_deferred_tools_manifest", functions["strip_deferred_tools_manifest"], raising=False
     )
 
     async def runs(**_kwargs):

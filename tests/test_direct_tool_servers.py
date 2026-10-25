@@ -37,10 +37,10 @@ def _offered_names(captured: dict[str, Any]) -> list[str | None]:
 
 
 def _metadata_with_a_browser_tool(*, session_id: str | None, request_params: dict[str, Any] | None = None):
-    """The metadata Open WebUI 0.11.4 builds for a chat whose tool picker holds one browser tool server.
+    """The metadata Open WebUI 0.12.0 builds for a chat whose tool picker holds one browser tool server.
 
     `session_id` is the only thing that decides whether the pipe gets an `__event_call__`
-    (`middleware.py:3281-3292`): a chat replayed by an API caller, a background task or a title
+    (`middleware.py:3391-3407`): a chat replayed by an API caller, a background task or a title
     generation has none, and then the pipe owns the call with no browser to make it.
     """
     metadata: dict[str, Any] = {

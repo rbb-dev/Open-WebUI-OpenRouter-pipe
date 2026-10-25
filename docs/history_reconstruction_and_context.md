@@ -389,7 +389,7 @@ only through the card Open WebUI keeps for it in the browser, and none with card
   `[This call succeeded. Its result is not kept for later turns; view_tool_call 37.4 returns it.]` --, a function of
   the round's position on the chat's current path alone, and the search returns the stored result, and the call's
   arguments, on request; with the search off, or wherever it is not offered, the note is the bare form. The withholding holds on the list shape,
-  and on the flattened shape whenever the hand-off sits next to its result, which is how Open WebUI 0.11.4 builds it
+  and on the flattened shape whenever the hand-off sits next to its result, which is how Open WebUI 0.12 builds it
   (`flush_tool_outputs()` and `flush_tool_images()` run back to back). On a flattened history whose hand-off is
   separated from its result -- a shape only an API caller, an imported or hand-edited chat, or a filter can build --
   the round's picture is forwarded: the pipe cannot tell that history apart from a person's own message carrying
@@ -520,7 +520,7 @@ and before the round's picture handoff. A message that names a
 different `model` has its whole `reasoning_details` block dropped before the request is built, the way the
 model-mismatch strip on Open WebUI's continue path (`strip_reasoning_details`) does; a message that names no model, or a blank one, keeps it, because the
 pipe's own gateway puts `model` on the chunk and never on the message and a missing id cannot be attributed.
-**On Open WebUI 0.11.4's replayed path that host guard cannot fire**: `process_messages_with_output` pops
+**On Open WebUI 0.12's replayed path that host guard cannot fire**: `process_messages_with_output` pops
 `model` from every message before the pipe runs, so the message-level
 `same_model` predicate always takes its absent-means-unknown arm there. It is load-bearing on the pipe's own
 OpenAI-compatible gateway, where the caller supplies its own messages; on a saved chat the **stored row's** guard
@@ -545,7 +545,7 @@ added to `replayed_reasoning_refs`, because that list is the queue the cleanup c
 switches back and it is good. Rows written before the column was read back have no producer and keep replaying.
 
 This is the pipe compensating for a host behaviour rather than mirroring it, and deliberately so. Open WebUI
-0.11.4's own `strip_reasoning_details` guard (§6.1) is unreachable on the replayed path, and the store is the
+0.12's own `strip_reasoning_details` guard (§6.1) is unreachable on the replayed path, and the store is the
 only component that still knows which model signed a block. The value never reaches the wire.
 
 ### 6.2 An answer continued across more than one request

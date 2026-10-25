@@ -1197,19 +1197,14 @@ async def test_editor_meta_wipe_leaves_snapshots_intact(svc, fake_functions, fak
 
 
 @pytest.mark.asyncio
-async def test_reload_failure_repairs_sys_modules_and_is_active(svc, fake_functions, flat_module, monkeypatch):
+async def test_reload_failure_repairs_sys_modules_and_writes_nothing(svc, fake_functions, flat_module, monkeypatch):
     import open_webui.utils.plugin as owp
 
+    leaked = f"function_{PID}_{'0' * 32}"
+
     async def _boom(fid, content=None):
-        sys.modules[f"function_{PID}"] = types.ModuleType(f"function_{PID}")
-        del sys.modules[f"function_{PID}"]
-        await owp_functions_set_inactive()
+        monkeypatch.setitem(sys.modules, leaked, types.ModuleType(leaked))
         raise RuntimeError("ImportError: cannot import name X")
-
-    import open_webui.models.functions as owf
-
-    async def owp_functions_set_inactive():
-        await owf.Functions.update_function_by_id(PID, {"is_active": False})
 
     monkeypatch.setattr(owp, "load_function_module_by_id", _boom)
     with pytest.raises(us.UpdateError) as exc:
@@ -1217,8 +1212,8 @@ async def test_reload_failure_repairs_sys_modules_and_is_active(svc, fake_functi
     assert exc.value.code == "exec_failed"
     assert "ImportError" in str(exc.value)
     assert sys.modules[f"function_{PID}"] is flat_module
-    assert {"is_active": True} in fake_functions.updates
-    assert not any("content" in u for u in fake_functions.updates)
+    assert leaked not in sys.modules
+    assert fake_functions.updates == []
 
 
 @pytest.mark.asyncio
@@ -1229,7 +1224,7 @@ async def test_reload_success_passes_replace_imports_content(svc, fake_functions
 
     async def _load(fid, content=None):
         received["content"] = content
-        return SimpleNamespace(name="instance"), "pipe", {"version": "2.7.0"}
+        return SimpleNamespace(name="instance"), "pipe", {"version": "2.7.0"}, None
 
     monkeypatch.setattr(owp, "load_function_module_by_id", _load)
     monkeypatch.setattr(owp, "replace_imports", lambda c: c + "\n# normalized")
@@ -1318,7 +1313,7 @@ def wired(svc, fake_functions, fake_http, fake_storage, monkeypatch):
 
     async def _load(fid, content=None):
         events.append("loader")
-        return SimpleNamespace(name="new-instance"), "pipe", owp.extract_frontmatter(content or "")
+        return SimpleNamespace(name="new-instance"), "pipe", owp.extract_frontmatter(content or ""), None
 
     monkeypatch.setattr(owp, "load_function_module_by_id", _load)
     return SimpleNamespace(events=events, functions=fake_functions, http=fake_http, storage=fake_storage)
@@ -1399,7 +1394,7 @@ async def test_apply_rev_recheck_trips_after_loader(svc, wired, monkeypatch):
     async def _load_and_bump(fid, content=None):
         wired.events.append("loader")
         wired.functions.row.updated_at += 7
-        return SimpleNamespace(name="new-instance"), "pipe", {"version": "2.7.0"}
+        return SimpleNamespace(name="new-instance"), "pipe", {"version": "2.7.0"}, None
 
     monkeypatch.setattr(owp, "load_function_module_by_id", _load_and_bump)
     rev = wired.functions.row.updated_at
@@ -1783,7 +1778,7 @@ async def test_auto_cancellation_after_loader_swap_still_commits(svc, wired, mon
         wired.events.append("loader")
         holder["task"].cancel()
         await asyncio.sleep(0)
-        return SimpleNamespace(name="ni"), "pipe", owp.extract_frontmatter(content or "")
+        return SimpleNamespace(name="ni"), "pipe", owp.extract_frontmatter(content or ""), None
 
     monkeypatch.setattr(owp, "load_function_module_by_id", _load_and_cancel)
     task = asyncio.get_event_loop().create_task(svc.run_auto_loop())
@@ -2223,7 +2218,7 @@ async def test_apply_reinstall_same_version_switches_variant(svc, fake_functions
         fake_http.bytes_map[asset["browser_download_url"]] = same.encode()
 
     async def _load(fid, content=None):
-        return SimpleNamespace(name="ni"), "pipe", owp.extract_frontmatter(content or "")
+        return SimpleNamespace(name="ni"), "pipe", owp.extract_frontmatter(content or ""), None
 
     monkeypatch.setattr(owp, "load_function_module_by_id", _load)
     rev = fake_functions.row.updated_at

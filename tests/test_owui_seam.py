@@ -181,9 +181,9 @@ def _resolves(base: Path, module: str, symbol: str | None) -> bool:
 _BASE = _owui_base()
 _IMPORTS = _our_owui_imports()
 
-# Empty while the manifest floor is the newest Open WebUI the pipe uses anything from. An entry belongs here
-# only for a symbol the pipe imports under a guard that some supported Open WebUI genuinely lacks.
-_NEWER_THAN_OUR_FLOOR: dict[tuple[str, str], str] = {}
+_NEWER_THAN_OUR_FLOOR: dict[tuple[str, str], str] = {
+    ("open_webui.utils.tool_search", "resolve_tool_call"): "0.12.2",
+}
 
 
 @pytest.mark.skipif(_BASE is None, reason="open_webui is not installed")

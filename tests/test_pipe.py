@@ -7961,9 +7961,7 @@ async def test_persist_session_log_stages_participant_turns_by_the_chat_write_ru
 
         monkeypatch.setattr(ChatsStub, "is_chat_owner", staticmethod(_not_owner))
         monkeypatch.setattr(UsersStub, "get_user_by_id", staticmethod(_plain_user))
-        monkeypatch.setattr(
-            ChatsStub, "get_accessible_chat_by_id", staticmethod(_write_access), raising=False
-        )
+        monkeypatch.setattr(ChatsStub, "get_accessible_chat_by_id", staticmethod(_write_access))
         await pipe._session_log_manager.persist_segment_to_db(
             user_id="participant1",
             session_id="sess1",

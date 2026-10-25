@@ -33,7 +33,6 @@ from ..core.context_budget import (
 )
 from ..core.error_formatter import (
     _api_caller_error_response,
-    _is_anthropic_endpoint,
     _transported_failure_envelope,
     _transported_failure_response,
     _unreadable_body_failure_response,
@@ -127,20 +126,6 @@ from .transformer import _tool_picture_verdicts_for_input
 
 try:
     from open_webui.utils.tool_search import (
-        strip_deferred_tools_manifest,  # type: ignore[import-not-found]
-    )
-except ImportError:
-    strip_deferred_tools_manifest = None  # type: ignore
-except Exception:
-    logging.getLogger(__name__).warning(
-        "open_webui.utils.tool_search failed to import for a reason other than absence; "
-        "deferred-tool manifest stripping is now disabled",
-        exc_info=True,
-    )
-    strip_deferred_tools_manifest = None  # type: ignore
-
-try:
-    from open_webui.utils.tool_search import (
         resolve_tool_call,  # type: ignore[import-not-found]
     )
 except ImportError:
@@ -155,8 +140,10 @@ except Exception:
 
 
 def _strip_deferred_tool_manifests(input_items: Any) -> Any:
-    if not isinstance(input_items, list) or strip_deferred_tools_manifest is None:
+    if not isinstance(input_items, list):
         return input_items
+    from open_webui.utils.tool_search import strip_deferred_tools_manifest
+
     rebuilt: list[Any] = []
     for item in input_items:
         content = item.get("content") if isinstance(item, dict) else None
@@ -2474,13 +2461,7 @@ class RequestOrchestrator:
                     await self._note_provider_failure(exc, fusion_inner=fusion_inner)
                     return escape
 
-            if (
-                _is_chatless_caller(__metadata__)
-                and responses_body.stream
-                and not _is_anthropic_endpoint(
-                    getattr(getattr(__request__, "url", None), "path", "") or ""
-                )
-            ):
+            if _is_chatless_caller(__metadata__) and responses_body.stream:
                 await self._note_provider_failure(exc, fusion_inner=fusion_inner)
                 if isinstance(exc, OpenRouterAPIError):
                     envelope = _transported_failure_envelope(
@@ -2804,13 +2785,7 @@ class RequestOrchestrator:
                     )
                     return escape
 
-            if (
-                _is_chatless_caller(__metadata__)
-                and responses_body.stream
-                and not _is_anthropic_endpoint(
-                    getattr(getattr(__request__, "url", None), "path", "") or ""
-                )
-            ):
+            if _is_chatless_caller(__metadata__) and responses_body.stream:
                 await self._note_provider_failure(exc, fusion_inner=fusion_inner)
                 envelope = _transported_failure_envelope(exc.summary(), code=code)
                 if __event_emitter__:

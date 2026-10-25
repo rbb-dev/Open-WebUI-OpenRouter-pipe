@@ -60,7 +60,7 @@ def _append_text(output: list[dict[str, Any]], value: str, output_id) -> None:
 
 
 def _open_webui_backend(emitted: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Open WebUI 0.11.4's backend fed the pipe's events: text through its chunk branch, the call under the
+    """Open WebUI's backend fed the pipe's events: text through its chunk branch, the call under the
     passthrough through its `response.*` handler (which is the branch that builds the `function_call` item),
     a non-passthrough hand-back through its `delta.tool_calls` branch, then its after-stream call update."""
     handler = _open_webui_streaming_handler()

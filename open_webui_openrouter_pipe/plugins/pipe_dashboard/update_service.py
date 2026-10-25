@@ -760,10 +760,10 @@ class UpdateService:
         content = owp.replace_imports(content)
         before = {k: sys.modules[k] for k in sys.modules}
         before_meta_path = list(sys.meta_path)
-        was_active = bool(getattr(await self._row(), "is_active", True))
         try:
-            loaded = await owp.load_function_module_by_id(pipe_id, content=content)
-            instance, _ftype, frontmatter = loaded[:3]
+            instance, _ftype, frontmatter, module = await owp.load_function_module_by_id(
+                pipe_id, content=content
+            )
         except Exception as exc:
             loader_reached_exec = _loader_reached_exec(exc, pipe_id)
             _restore_module_state(before, before_meta_path, pipe_id)
@@ -779,43 +779,13 @@ class UpdateService:
                     "could not be installed on this worker, so its code was never run; the "
                     "pipe still runs the previous version and nothing was changed",
                 ) from exc
-            if was_active:
-                try:
-                    repaired = await self._functions().update_function_by_id(
-                        pipe_id, {"is_active": True}
-                    )
-                except Exception:
-                    logger.warning("update: is_active repair failed", exc_info=True)
-                    repaired = None
-                refused = repaired is None
-                logger.warning(
-                    "update: %r did not load; the database %s its is_active repair, so the "
-                    "function row is switched %s in Open WebUI",
-                    pipe_id,
-                    "refused" if refused else "accepted",
-                    "off" if refused else "on",
-                )
-                if refused:
-                    raise UpdateError(
-                        "exec_failed_inactive",
-                        f"the new code did not load and the database refused to switch the "
-                        f"pipe back on, so {pipe_id} is switched off in Open WebUI; switch it "
-                        f"on in Workspace > Functions",
-                    ) from exc
-                raise UpdateError("exec_failed", str(exc)) from exc
             logger.warning(
-                "update: %r did not load, and the function row was already switched off, "
-                "so it is left as the operator left it",
+                "update: %r did not load; the function row was not written, so the previous "
+                "version keeps serving",
                 pipe_id,
             )
-            raise UpdateError(
-                "exec_failed",
-                f"{exc}; {pipe_id} was already switched off and is left as the operator left it",
-            ) from exc
-        _adopt_loaded_module(
-            pipe_id,
-            loaded[3] if len(loaded) > 3 else _registered_pipe_module(pipe_id),
-        )
+            raise UpdateError("exec_failed", str(exc)) from exc
+        _adopt_loaded_module(pipe_id, module)
         return instance, dict(frontmatter or {}), content, _restorer(
             before, before_meta_path, pipe_id
         )

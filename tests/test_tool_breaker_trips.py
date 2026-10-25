@@ -1569,8 +1569,8 @@ async def _turn_with_messages(pipe, messages: list[dict[str, Any]], **metadata: 
 )
 @pytest.mark.parametrize("threshold", [2])
 async def test_a_request_bringing_tool_results_is_answered_at_the_saved_count(monkeypatch, threshold, messages, metadata):
-    """Open WebUI runs a tool and calls the pipe again to finish the same answer: that answer is under way. On 0.11.1 and
-    later a resume after a tool approval or an ask_user answer arrives the same way, naming the message it continues."""
+    """Open WebUI runs a tool and calls the pipe again to finish the same answer: that answer is under way. A resume
+    after a tool approval or an ask_user answer arrives the same way, naming the message it continues."""
     pipe = Pipe()
     _reach_the_model(monkeypatch, pipe)
     try:

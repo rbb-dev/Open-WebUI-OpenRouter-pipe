@@ -145,7 +145,7 @@ def main() -> int:
         import open_webui  # noqa: F401
     except ImportError:
         print("ERROR: OpenWebUI is not installed or cannot be imported.")
-        print("This script requires OpenWebUI >= 0.11.4 to be installed.")
+        print("This script requires OpenWebUI >= 0.12.0 to be installed.")
         return 2
 
     # Try to get version

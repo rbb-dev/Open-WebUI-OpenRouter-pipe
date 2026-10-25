@@ -14,7 +14,6 @@ import asyncio
 import ast
 import copy
 import json
-import re
 import sysconfig
 from pathlib import Path
 from typing import Any, cast
@@ -33,20 +32,21 @@ _MALFORMED_CALL_ARGUMENTS = _CALL_TOOL_ARGUMENTS[:-6]
 
 
 def _open_webui_tool_search_functions() -> dict[str, Any]:
-    """Open WebUI's own `resolve_tool_call` and `strip_deferred_tools_manifest`, compiled from the
-    installed source with the constants and codec they read.
+    """Open WebUI's own `resolve_tool_call`, compiled from the installed source with the constants and
+    codec it reads.
 
-    The suite's `open_webui` stub carries no `utils` submodules, so the pipe's own imports of these
-    resolve to None; the tests rebind the pipe's module-level symbols to the real functions, compiled
-    the same way as this suite's other Open WebUI seams. Nothing is added to `sys.modules`.
+    The suite's `open_webui` stub carries `strip_deferred_tools_manifest` but not `resolve_tool_call`
+    (Open WebUI 0.12.2), so the pipe's own import of it resolves to None; the tests rebind the pipe's
+    module-level symbol to the real function, compiled the same way as this suite's other Open WebUI
+    seams. Nothing is added to `sys.modules`.
     """
     source = Path(sysconfig.get_paths()["purelib"]) / "open_webui" / "utils" / "tool_search.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
-    namespace: dict[str, Any] = {"re": re, "JSONCodec": json}
-    wanted = {"resolve_tool_call", "strip_deferred_tools_manifest"}
+    namespace: dict[str, Any] = {"JSONCodec": json}
+    wanted = {"resolve_tool_call"}
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(
-            getattr(target, "id", None) in {"CALL_TOOL_NAME", "SEARCH_TOOL_NAME", "_MANIFEST_RE"}
+            getattr(target, "id", None) in {"CALL_TOOL_NAME", "SEARCH_TOOL_NAME"}
             for target in node.targets
         ):
             exec(  # noqa: S102 - the suite's established Open WebUI seam compile

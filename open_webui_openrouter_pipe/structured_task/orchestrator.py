@@ -152,14 +152,8 @@ def select_task_model_candidates(
     mode: TaskModelMode,
     fallback: TaskModelFallback,
 ) -> list[str]:
-    if rows is None:
-        config = getattr(getattr(request, "app", None), "state", None)
-        config = getattr(config, "config", None) if config is not None else None
-        internal = (getattr(config, "TASK_MODEL", "") or "").strip() if config else ""
-        external = (getattr(config, "TASK_MODEL_EXTERNAL", "") or "").strip() if config else ""
-    else:
-        internal = rows.get("task.model.default", "")
-        external = rows.get("task.model.external", "")
+    internal = rows.get("task.model.default", "") if rows is not None else ""
+    external = rows.get("task.model.external", "") if rows is not None else ""
 
     primary = internal if mode == "internal" else external
     other = external if mode == "internal" else internal

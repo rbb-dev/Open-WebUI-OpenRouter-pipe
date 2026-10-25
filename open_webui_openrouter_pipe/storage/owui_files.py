@@ -365,10 +365,9 @@ async def chat_write_allowed(chat_id: Any, user_id: Any) -> bool:
     user = await Users.get_user_by_id(principal)
     if getattr(user, "role", None) == "admin":
         return True
-    get_accessible_chat = getattr(Chats, "get_accessible_chat_by_id", None)
-    if get_accessible_chat is None or user is None:
+    if user is None:
         return False
-    chat = await get_accessible_chat(chat_id, user, permission="write")
+    chat = await Chats.get_accessible_chat_by_id(chat_id, user, permission="write")
     return chat is not None
 
 

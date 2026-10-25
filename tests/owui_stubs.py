@@ -15,6 +15,7 @@ os.environ.setdefault("DATA_DIR", "/tmp/owui-test-data")
 os.environ.setdefault("WEBUI_AUTH", "false")
 
 import inspect
+import re
 import sys
 import types
 import uuid
@@ -84,6 +85,10 @@ def _install_open_webui_stubs() -> None:
 
         @staticmethod
         async def get_message_by_id_and_message_id(*_args, **_kwargs):
+            return None
+
+        @staticmethod
+        async def get_accessible_chat_by_id(chat_id, user, db=None, *, permission="read", chat=None):
             return None
 
         @staticmethod
@@ -605,7 +610,7 @@ def _install_open_webui_stubs() -> None:
         return sources
 
     async def _process_tool_result(request=None, tool_function_name='', tool_result='', tool_type='', direct_tool=False, metadata=None, user=None):
-        """Open WebUI 0.11.4 `utils/middleware.py::process_tool_result` (`:1052-1265`), tail only.
+        """Open WebUI 0.12.0 `utils/middleware.py::process_tool_result` (`:1100-1313`), tail only.
 
         Transcribed from the installed function, not from its shape: the model-visible text is a
         dict or list as pretty JSON, a list folded under `{"results": ...}`, a tuple unpacked to
@@ -616,16 +621,16 @@ def _install_open_webui_stubs() -> None:
         Three branches are deliberately left out, and the divergence they would create is
         pinned by `tests/test_a_stand_in_for_an_open_webui_function_is_that_function.py`:
 
-        * `HTMLResponse` and external-tool header handling (`:1064-1165`). The installed
+        * `HTMLResponse` and external-tool header handling (`:1112-1214`). The installed
           function decodes an inline body into embeds and answers with a `ui_component` result
           dict. For a **bare** `HTMLResponse` this returns `(str(tool_result), [], [])`, which is
           what arm D pins. The installed function also accepts the 2-tuple
-          `(HTMLResponse, result_context)` that `:1064-1067` unpacks; the tail's tuple branch is
+          `(HTMLResponse, result_context)` that `:1115-1117` unpacks; the tail's tuple branch is
           **not** transcribed, so the text is `str()` of the whole tuple and the embeds stay
           empty. Deliberate: transcribing the branch would need the `HTMLResponse` import here.
-        * the MCP list branch (`:1176-1245`), which needs `get_file_url_from_base64` and the
+        * the MCP list branch (`:1225-1293`), which needs `get_file_url_from_base64` and the
           Open WebUI storage behind it.
-        * `extract_base64_images` (`:1013-1026`), which walks dicts and lists and would drag
+        * `extract_base64_images` (`:1061-1074`), which walks dicts and lists and would drag
           that same storage import into every tool test. The flat `data:image/` branch the
           pipe's picture path needs is two lines with no Open WebUI imports.
         """
@@ -662,7 +667,7 @@ def _install_open_webui_stubs() -> None:
         return None
 
     def _is_tool_result_error(value: Any) -> bool:
-        """Open WebUI 0.11.4 `utils/middleware.py::_is_tool_result_error`, verbatim but for `json` in place of
+        """Open WebUI 0.12.0 `utils/middleware.py::_is_tool_result_error`, verbatim but for `json` in place of
         its `JSONCodec` wrapper."""
         if isinstance(value, str):
             text = value.strip().lower()
@@ -710,7 +715,7 @@ def _install_open_webui_stubs() -> None:
     middleware_mod.terminal_event_handler = _terminal_event_handler
     utils_pkg.middleware = middleware_mod
 
-    # Open WebUI 0.11.4 `utils/ask_user.py`, copied verbatim: the pipe asks it how long an
+    # Open WebUI 0.12.0 `utils/ask_user.py`, copied verbatim: the pipe asks it how long an
     # ask_user prompt stays open and whether an ask_user call may run in its turn, so a
     # simplified stand-in would test a rule Open WebUI does not have.
     ask_user_mod = cast(Any, _ensure_module("open_webui.utils.ask_user"))
@@ -790,7 +795,7 @@ def _install_open_webui_stubs() -> None:
     ask_user_mod.get_ask_user_tool_calls = _get_ask_user_tool_calls
     ask_user_mod.normalize_ask_user_request = _normalize_ask_user_request
 
-    # Open WebUI 0.11.4 `utils/chat_id.py`, copied verbatim: the pipe asks it whether a chat is saved, because only
+    # Open WebUI 0.12.0 `utils/chat_id.py`, copied verbatim: the pipe asks it whether a chat is saved, because only
     # a saved chat is reloaded from the database with its structured output, so only there does Open WebUI replay
     # a recorded tool round. A stand-in that called every id saved would hide the temporary-chat case.
     chat_id_mod = cast(Any, _ensure_module("open_webui.utils.chat_id"))
@@ -813,7 +818,7 @@ def _install_open_webui_stubs() -> None:
     chat_id_mod.is_temporary_chat_id = _is_temporary_chat_id
     utils_pkg.ask_user = ask_user_mod
 
-    # Open WebUI 0.11.4 `utils/tools.py`, copied verbatim: the pipe re-binds a tool's `__messages__` and `__files__`
+    # Open WebUI 0.12.0 `utils/tools.py`, copied verbatim: the pipe re-binds a tool's `__messages__` and `__files__`
     # through Open WebUI's own re-binder, so a stand-in would test a re-bind Open WebUI does not do.
     tools_mod = cast(Any, _ensure_module("open_webui.utils.tools"))
 
@@ -891,6 +896,17 @@ def _install_open_webui_stubs() -> None:
     tools_mod.get_async_tool_function_and_apply_extra_params = _get_async_tool_function_and_apply_extra_params
     tools_mod.get_updated_tool_function = _get_updated_tool_function
     utils_pkg.tools = tools_mod
+
+    # Open WebUI 0.12.0 `utils/tool_search.py::strip_deferred_tools_manifest` and its pattern, copied without the
+    # docstring. `resolve_tool_call` (0.12.2) is left out on purpose, so the pipe's import of it resolves to None here.
+    tool_search_mod = cast(Any, _ensure_module("open_webui.utils.tool_search"))
+    _MANIFEST_RE = re.compile(r'\n?<available_tools>\n.*?</available_tools>', re.DOTALL)
+
+    def _strip_deferred_tools_manifest(system_prompt: str | None) -> str | None:
+        return _MANIFEST_RE.sub('', system_prompt) if system_prompt else system_prompt
+
+    tool_search_mod.strip_deferred_tools_manifest = _strip_deferred_tools_manifest
+    utils_pkg.tool_search = tool_search_mod
 
     access_control_pkg = cast(Any, _ensure_module("open_webui.utils.access_control"))
     access_control_pkg.__path__ = []

@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Version](https://img.shields.io/badge/version-2.8.0-blue.svg)](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe)
-[![Open WebUI Compatible](https://img.shields.io/badge/Open%20WebUI-0.11.4%2B-green.svg)](https://openwebui.com/)
+[![Open WebUI Compatible](https://img.shields.io/badge/Open%20WebUI-0.12.0%2B-green.svg)](https://openwebui.com/)
 
 **520+ AI models. Chat, image, video, and live multi-model Fusion with full access to your knowledge bases and tools — all from your Open WebUI.**
 
@@ -153,12 +153,12 @@ That's it.
 
 ## Requirements
 
-- Open WebUI 0.11.4+
+- Open WebUI 0.12.0+
 - An [OpenRouter](https://openrouter.ai/) account
 - `WEBUI_SECRET_KEY` configured (required for encrypted credential storage)
 - Python packages: Open WebUI installs them for you from the pipe's `requirements:` line. If you run with
-  `ENABLE_PIP_INSTALL_FRONTMATTER_REQUIREMENTS=false`, bake them into your image instead — the stock
-  Open WebUI 0.11.4 image has none of `imageio`, `imageio-ffmpeg`, `lz4`, `pyzipper` or `cairosvg`. Installing the
+  `ENABLE_PIP_INSTALL_FRONTMATTER_REQUIREMENTS=false`, bake them into your image instead — none of
+  `imageio`, `imageio-ffmpeg`, `lz4`, `pyzipper` or `cairosvg` is among Open WebUI's own dependencies. Installing the
   stub loader (`open_webui_openrouter_pipe.py`) by hand means installing the release archive its `requirements:`
   line names, and nothing else.
 

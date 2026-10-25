@@ -9,7 +9,7 @@ holds -- an upload against an unsaved chat reaches an INSERT whose foreign key h
 nothing to point at.
 
 So the resolver prefers upstream's list where the deployment publishes one. It cannot
-just import it unguarded: the floor is 0.11.4, where the module is present, so the guard
+just import it unguarded: the floor is 0.12.0, where the module is present, so the guard
 is a safety net for a deployment that does not publish it -- a hand-edited or vendored
 Open WebUI, or a broken import -- rather than a compatibility requirement, and the
 import stays guarded today. That deployment is a live path, not a hypothetical one: the
@@ -105,7 +105,7 @@ def test_the_local_list_is_used_when_open_webui_has_no_such_module(monkeypatch):
     """The module missing entirely: the resolver's ImportError path must still keep the gate armed.
 
     Absence is simulated explicitly. This test used to rely on `open_webui.utils.chat_id` being absent from the
-    test stubs, but that module has shipped since Open WebUI v0.11.0 -- below the 0.11.4 floor -- so it is present
+    test stubs, but that module has shipped since Open WebUI v0.11.0 -- below the 0.12.0 floor -- so it is present
     wherever the pipe runs, and the stubs now carry a verbatim copy of it. A `None` entry in `sys.modules` makes
     the import raise, which is the path the resolver guards. (Retiring the hand-copied list, and with it this
     fallback, is tracked as T226.)

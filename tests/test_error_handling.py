@@ -2089,6 +2089,73 @@ async def test_a_streaming_request_with_no_chat_gets_only_what_an_openai_client_
     assert failed_without_a_chat == [{"error": {"message": "Request failed. Please retry."}}]
 
 
+@pytest.mark.parametrize("failure", ["a_provider_rejection", "a_body_that_is_not_an_openrouter_response"])
+@pytest.mark.asyncio
+async def test_a_streamed_failure_with_no_chat_on_an_anthropic_mount_reaches_the_agent_as_an_error_event(
+    pipe_instance_async, monkeypatch, failure
+):
+    import ast
+    import logging
+    import sysconfig
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from open_webui_openrouter_pipe.core.errors import UpstreamBodyUnreadable, _build_openrouter_api_error
+    from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import MODEL, NORM, install
+
+    converter_path = Path(sysconfig.get_paths()["purelib"]) / "open_webui" / "utils" / "anthropic.py"
+    converter_source = converter_path.read_text(encoding="utf-8")
+    converter_node = next(
+        node for node in ast.parse(converter_source).body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "openai_stream_to_anthropic_stream"
+    )
+    namespace: dict[str, Any] = {"JSONCodec": json, "log": logging.getLogger("open_webui.utils.anthropic")}
+    exec(compile(ast.get_source_segment(converter_source, converter_node), str(converter_path), "exec"), namespace)
+    to_anthropic = namespace["openai_stream_to_anthropic_stream"]
+
+    unreadable = UpstreamBodyUnreadable(
+        endpoint="https://openrouter.ai/api/v1/responses", body_excerpt="<html>bad gateway</html>", content_type="text/html"
+    )
+    raised, expected = {
+        "a_provider_rejection": (
+            _build_openrouter_api_error(
+                429, "Too Many Requests", json.dumps({"error": {"message": "Rate limit exceeded", "code": 429}})
+            ),
+            {"error": {"message": "Rate limit exceeded", "code": 429}},
+        ),
+        "a_body_that_is_not_an_openrouter_response": (
+            unreadable,
+            {"error": {"message": unreadable.summary(), "code": 502}},
+        ),
+    }[failure]
+
+    def fails(_n: int, _request: dict[str, Any]):
+        raise raised
+
+    pipe = pipe_instance_async
+    install(pipe, monkeypatch, fails)
+    streamed = await pipe.pipe(
+        body={"model": NORM, "stream": True, "messages": [{"role": "user", "content": "hello"}]},
+        __user__={"id": "user-1", "role": "user"},
+        __request__=SimpleNamespace(url=SimpleNamespace(path="/api/v1/messages")),
+        __event_emitter__=None,
+        __event_call__=None,
+        __metadata__={"model": {"id": MODEL}},
+        __tools__=None,
+    )
+    frames = [frame async for frame in streamed]
+    assert frames == [expected], frames
+
+    async def what_open_webui_streams():
+        for frame in frames:
+            yield f"data: {json.dumps(frame)}\n\n".encode()
+        yield b"data: [DONE]\n\n"
+
+    sent = [piece.decode() async for piece in to_anthropic(what_open_webui_streams(), model=MODEL)]
+    assert [piece.split("\n", 1)[0] for piece in sent] == ["event: message_start", "event: error"], sent
+    assert json.loads(sent[1].split("data: ", 1)[1])["error"]["message"] == expected["error"]["message"], sent
+
+
 @pytest.mark.parametrize("failure", ["in_the_loop", "handed_back", "image"])
 @pytest.mark.asyncio
 async def test_a_refused_attachment_is_carried_once_by_the_closing_frames_when_the_reply_fails(
