@@ -1,10 +1,26 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import logging
+import math
 import threading
 import time
+import uuid
 from collections import defaultdict, deque
-from typing import ClassVar
+from collections.abc import Awaitable, Callable
+from typing import Any, ClassVar, Self
+
+from .utils import _await_if_needed
+from .warn_latch import warn_level
+
+logger = logging.getLogger(__name__)
+
+_SHARED_WAIT_SECONDS = 1.0
+
+_SHARED_RECORD_MIN_TTL_SECONDS = 1800
+
+_warned_shared_breaker: set[str] = set()
 
 
 def counted_tool_failures(failures: deque[float], now: float, window_seconds: float) -> int:
@@ -13,15 +29,59 @@ def counted_tool_failures(failures: deque[float], now: float, window_seconds: fl
     return len(failures)
 
 
+class _SharedStamp(float):
+    __slots__ = ("member",)
+    member: str
+
+    def __new__(cls, value: float, member: str) -> Self:
+        stamp = super().__new__(cls, value)
+        stamp.member = member
+        return stamp
+
+
+async def _shared_write_failure(
+    client: Any, key: str, member: str, stamp: float, window_seconds: float
+) -> None:
+    pipeline = client.pipeline()
+    pipeline.zadd(key, {member: stamp})
+    pipeline.expire(key, max(_SHARED_RECORD_MIN_TTL_SECONDS, math.ceil(window_seconds)))
+    await _await_if_needed(pipeline.execute())
+
+
+async def _shared_take_back(client: Any, key: str, member: str) -> None:
+    await _await_if_needed(client.zrem(key, member))
+
+
+async def _shared_clear(client: Any, key: str) -> None:
+    await _await_if_needed(client.delete(key))
+
+
+async def _shared_read(client: Any, key: str, oldest: float) -> list[float]:
+    pipeline = client.pipeline()
+    pipeline.zremrangebyscore(key, "-inf", f"({oldest!r}")
+    pipeline.zrange(key, 0, -1, withscores=True)
+    replies = await _await_if_needed(pipeline.execute())
+    return [float(score) for _member, score in replies[1]]
+
+
 class CircuitBreaker:
     _AUTH_FAILURE_TTL_SECONDS = 60
     _AUTH_FAILURE_UNTIL: ClassVar[dict[str, float]] = {}
     _AUTH_FAILURE_SWEPT_AT: ClassVar[float] = 0.0
     _AUTH_FAILURE_LOCK = threading.Lock()
 
-    def __init__(self, *, threshold: int, window_seconds: float):
+    def __init__(
+        self,
+        *,
+        threshold: int,
+        window_seconds: float,
+        shared: Callable[[], tuple[Any, str] | None] | None = None,
+    ):
         self._threshold = max(1, int(threshold))
         self._window_seconds = window_seconds
+
+        self._shared = shared
+        self._shared_tail: asyncio.Task[None] | None = None
 
         self._breaker_records: dict[str, deque[float]] = defaultdict(deque)
 
@@ -103,6 +163,73 @@ class CircuitBreaker:
 
         return len(window) < self._threshold
 
+    def _send(self, user_id: str, operation: Callable[[Any, str], Awaitable[None]]) -> bool:
+        target = self._shared() if self._shared is not None else None
+        if target is None:
+            return False
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+        client, prefix = target
+        previous = self._shared_tail
+        if previous is not None and (previous.done() or previous.get_loop() is not loop):
+            previous = None
+        self._shared_tail = loop.create_task(
+            self._send_after(previous, operation, client, f"{prefix}:{user_id}")
+        )
+        return True
+
+    async def _send_after(
+        self,
+        previous: asyncio.Task[None] | None,
+        operation: Callable[[Any, str], Awaitable[None]],
+        client: Any,
+        key: str,
+    ) -> None:
+        if previous is not None:
+            await asyncio.wait((previous,))
+        try:
+            async with asyncio.timeout(_SHARED_WAIT_SECONDS):
+                await operation(client, key)
+        except Exception as exc:
+            logger.log(
+                warn_level(_warned_shared_breaker, "write"),
+                "Sharing a user's request failures through Redis failed, so the other workers do "
+                "not see this change: %r",
+                exc,
+                exc_info=True,
+            )
+
+    async def settle(self) -> None:
+        tail = self._shared_tail
+        if tail is not None and not tail.done() and tail.get_loop() is asyncio.get_running_loop():
+            await asyncio.wait((tail,), timeout=_SHARED_WAIT_SECONDS)
+
+    async def refresh(self, user_id: str) -> None:
+        target = self._shared() if self._shared is not None and user_id else None
+        if target is None:
+            return
+        client, prefix = target
+        try:
+            async with asyncio.timeout(_SHARED_WAIT_SECONDS):
+                await self.settle()
+                stamps = await _shared_read(
+                    client, f"{prefix}:{user_id}", time.time() - self._window_seconds
+                )
+        except Exception as exc:
+            logger.log(
+                warn_level(_warned_shared_breaker, "read"),
+                "Reading a user's shared request failures from Redis failed, so this worker "
+                "checked the user against the copy it holds in its own memory: %r",
+                exc,
+                exc_info=True,
+            )
+            return
+        self._breaker_records.pop(user_id, None)
+        if stamps:
+            self._breaker_records[user_id] = deque(stamps)
+
     def record_failure(self, user_id: str) -> float | None:
         if not user_id:
             return None
@@ -112,11 +239,21 @@ class CircuitBreaker:
         del self._breaker_records[user_id]
         self._breaker_records[user_id] = window
         self._sweep_expired(now, force=True, which="requests")
-        return now
+        member = f"{now!r}:{uuid.uuid4().hex}"
+        window_seconds = self._window_seconds
+        if not self._send(
+            user_id,
+            lambda client, key: _shared_write_failure(client, key, member, now, window_seconds),
+        ):
+            return now
+        return _SharedStamp(now, member)
 
     def retract_failure(self, user_id: str, recorded_at: float | None) -> None:
         if not user_id or recorded_at is None:
             return
+        member = getattr(recorded_at, "member", None)
+        if member is not None:
+            self._send(user_id, lambda client, key: _shared_take_back(client, key, member))
         window = self._breaker_records.get(user_id)
         if not window:
             return
@@ -129,6 +266,7 @@ class CircuitBreaker:
         if not user_id:
             return
         self._breaker_records.pop(user_id, None)
+        self._send(user_id, _shared_clear)
 
     def tool_allows(self, user_id: str, tool_type: str, tool_name: str = "") -> bool:
         if not user_id or not tool_type:

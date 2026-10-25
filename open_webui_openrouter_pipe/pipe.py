@@ -1233,6 +1233,7 @@ class Pipe:
         self._circuit_breaker = CircuitBreaker(
             threshold=self.valves.BREAKER_MAX_FAILURES,
             window_seconds=self.valves.BREAKER_WINDOW_SECONDS,
+            shared=self._shared_breaker_target,
         )
         self._artifact_store.configure_breaker(
             threshold=self.valves.BREAKER_MAX_FAILURES,
@@ -1603,6 +1604,12 @@ class Pipe:
     @property
     def _redis_allowed(self) -> bool:
         return bool(self._redis_candidate) and bool(self.valves.ENABLE_REDIS_CACHE)
+
+    def _shared_breaker_target(self) -> tuple[Any, str] | None:
+        store = self._artifact_store
+        if not (self.valves.ENABLE_REDIS_CACHE and store._redis_admits_writes()):
+            return None
+        return store._redis_client, f"{store._redis_namespace}:breaker"
 
     @timed
     def _redis_candidate_now(self) -> bool:
@@ -2827,6 +2834,7 @@ class Pipe:
             if breaker.window_seconds != valves.BREAKER_WINDOW_SECONDS:
                 breaker.window_seconds = valves.BREAKER_WINDOW_SECONDS
             self._artifact_store.configure_breaker(valves.BREAKER_MAX_FAILURES, valves.BREAKER_WINDOW_SECONDS)
+            await breaker.refresh(user_id)
             if not breaker.allows(user_id) and not _brings_tool_results(body):
                 message = "Temporarily disabled due to repeated errors. Please retry later."
                 if safe_event_emitter:
@@ -3313,6 +3321,11 @@ class Pipe:
             session_log_manager.stop_workers()
         return pending
 
+    async def _settle_circuit_breaker(self) -> None:
+        breaker = getattr(self, "_circuit_breaker", None)
+        if breaker is not None:
+            await breaker.settle()
+
     @timed
     async def _stop_request_worker(self) -> None:
         worker = self._queue_worker_task
@@ -3591,7 +3604,7 @@ class Pipe:
 
         for drain in (self._stop_video_tasks, self._stop_request_worker,
                       self._stop_active_jobs, self._stop_log_worker,
-                      self._stop_session_log_workers):
+                      self._stop_session_log_workers, self._settle_circuit_breaker):
             try:
                 await drain()
             except Exception:

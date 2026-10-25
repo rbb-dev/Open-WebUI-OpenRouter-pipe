@@ -1457,7 +1457,7 @@ Complete list of `Pipe` attributes accessible via `ctx.pipe`:
 | `valves` | `Valves` | Active configuration (100+ settings) |
 | `logger` | `SessionLogger` | Structured logger |
 | `_artifact_store` | `ArtifactStore` | DB + Redis artifact persistence, encryption, cleanup |
-| `_circuit_breaker` | `CircuitBreaker` | Per-user failure tracking; `allows(user_id)`, `record_failure(user_id)`, `reset(user_id)`; its history is retained across a threshold change, which only moves the gate |
+| `_circuit_breaker` | `CircuitBreaker` | Per-user failure tracking; `allows(user_id)`, `record_failure(user_id)`, `reset(user_id)`; its history is retained across a threshold change, which only moves the gate; with the Redis cache active the count is shared by the workers, `record_failure`, `retract_failure` and `reset` also send their change to Redis, and `allows` reads this worker's copy, which `await refresh(user_id)` replaces with the shared record (a request does that when it is admitted) |
 | `_event_emitter_handler` | `EventEmitterHandler` | Emits UI events: status, errors, citations |
 | `_streaming_handler` | `StreamingHandler` | SSE streaming: delta parsing, chunk buffering |
 | `_multimodal_handler` | `MultimodalHandler` | File/image operations: uploads, downloads, inline handling |

@@ -742,3 +742,124 @@ class _CountingDict(dict):
     def items(self):
         type(self).items_calls += 1
         return super().items()
+
+
+# ===== A user's pause counts failures across workers =====
+
+
+from collections.abc import Callable
+
+from open_webui_openrouter_pipe.api.gateway.responses_adapter import _record_failed_call
+
+
+def _score_bound(text: str) -> tuple[float, bool]:
+    return float(text.lstrip("(")), text.startswith("(")
+
+
+class _QueuedCommands:
+    def __init__(self, redis: _SharedRedis) -> None:
+        self._redis = redis
+        self._queued: list[Callable[[], Any]] = []
+
+    def zadd(self, key: str, mapping: dict[str, float]) -> _QueuedCommands:
+        self._queued.append(lambda: self._redis.sorted_sets.setdefault(key, {}).update(mapping))
+        return self
+
+    def expire(self, key: str, seconds: int) -> _QueuedCommands:
+        self._queued.append(lambda: key in self._redis.sorted_sets)
+        return self
+
+    def zremrangebyscore(self, key: str, low: str, high: str) -> _QueuedCommands:
+        def run() -> int:
+            entries = self._redis.sorted_sets.get(key, {})
+            (low_value, low_open), (high_value, high_open) = _score_bound(low), _score_bound(high)
+            doomed = [
+                member
+                for member, score in entries.items()
+                if (score > low_value or (score == low_value and not low_open))
+                and (score < high_value or (score == high_value and not high_open))
+            ]
+            for member in doomed:
+                del entries[member]
+            return len(doomed)
+
+        self._queued.append(run)
+        return self
+
+    def zrange(self, key: str, start: int, stop: int, withscores: bool = False) -> _QueuedCommands:
+        assert (start, stop, withscores) == (0, -1, True)
+        self._queued.append(
+            lambda: sorted(self._redis.sorted_sets.get(key, {}).items(), key=lambda item: (item[1], item[0]))
+        )
+        return self
+
+    async def execute(self) -> list[Any]:
+        return [run() for run in self._queued]
+
+
+class _SharedRedis:
+    def __init__(self) -> None:
+        self.sorted_sets: dict[str, dict[str, float]] = {}
+
+    def members(self) -> int:
+        return sum(len(entries) for entries in self.sorted_sets.values())
+
+    def pipeline(self) -> _QueuedCommands:
+        return _QueuedCommands(self)
+
+    async def zrem(self, key: str, *members: str) -> int:
+        entries = self.sorted_sets.get(key, {})
+        return sum(entries.pop(member, None) is not None for member in members)
+
+    async def delete(self, *keys: str) -> int:
+        return sum(self.sorted_sets.pop(key, None) is not None for key in keys)
+
+    async def llen(self, _key: str) -> int:
+        return 0
+
+    async def aclose(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_failures_on_different_workers_add_up_to_one_pause(monkeypatch) -> None:
+    user_id = "user-7f3a"
+    redis = _SharedRedis()
+    monkeypatch.setattr(Pipe, "_attach_to_lifecycle_registry", lambda self: None)
+    workers = [Pipe(), Pipe()]
+
+    async def no_concurrency_setup(_valves) -> None:
+        return None
+
+    async def reached_redis(total: int) -> None:
+        for _ in range(100):
+            if redis.members() >= total:
+                return
+            await asyncio.sleep(0)
+
+    async def answers() -> list[str]:
+        statuses = [
+            (await worker.pipe({"stream": False}, {"id": user_id}, None, None, None, {}, None)).status_code
+            for worker in workers
+        ]
+        return [{429: "paused", 503: "admitted"}[status] for status in statuses]
+
+    try:
+        for worker in workers:
+            monkeypatch.setattr(worker, "_ensure_concurrency_controls", no_concurrency_setup)
+            for holder in (worker, worker._artifact_store):
+                holder._redis_client = redis
+                holder._redis_enabled = True
+
+        for worker in workers:
+            for _ in range(2):
+                _record_failed_call(worker, user_id)
+        await reached_redis(4)
+        assert await answers() == ["admitted", "admitted"]
+
+        _record_failed_call(workers[1], user_id)
+        await reached_redis(5)
+        assert await answers() == ["paused", "paused"]
+    finally:
+        for worker in workers:
+            await worker.close()
