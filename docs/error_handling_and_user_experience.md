@@ -128,7 +128,9 @@ a property of the conversation, not of the frame:
   reply early, badge it as a failed response, and leave the model answering into a message the UI
   already considers finished. On a **channel** the emitter has no `status` branch at all, so the
   host drops both copies and the channel message carries no refusal notice. That is the host's
-  behaviour, accepted rather than worked around.
+  behaviour, accepted rather than worked around. A caller with no chat has no status line, so on a
+  reply from a text model the sentence ends its answer text instead: in the returned body when it
+  does not stream, and as the last text before the stream closes when it does.
 - **A realtime voice call.** Open WebUI's realtime voice call treats a reply that carries no `error` as a finished
   answer and passes its text to the voice model, so a card delivered as text alone is handed over as the answer. On a
   request that is a turn of such a call (`features.voice` together with the voice mark the realtime bridge puts on the

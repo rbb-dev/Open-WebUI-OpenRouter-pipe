@@ -1834,6 +1834,14 @@ def _answer_delta_at(chunks: list[Any], text: str) -> int:
     )
 
 
+def _answer_text_of(chunks: list[Any]) -> str:
+    return "".join(
+        (chunk.get("choices") or [{}])[0].get("delta", {}).get("content") or ""
+        for chunk in chunks
+        if isinstance(chunk, dict)
+    )
+
+
 @pytest.mark.asyncio
 async def test_a_refused_attachment_is_the_latest_status_when_the_answer_starts_and_again_on_the_closing_line(
     pipe_instance_async, monkeypatch
@@ -1998,6 +2006,39 @@ async def test_a_refused_attachment_is_carried_by_the_closing_line_alone_when_th
     assert noted == statuses[-1:] and noted[0].get("done") is True, (
         f"the refusal was not carried by the closing line alone: {statuses}"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_refused_attachment_ends_a_streamed_api_answer_and_is_not_answer_text_in_a_chat(
+    pipe_instance_async, monkeypatch
+):
+    from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import (
+        CHAT,
+        answer_round,
+        install,
+        run,
+    )
+
+    pipe = pipe_instance_async
+    install(pipe, monkeypatch, lambda _n, _request: answer_round("It is a short clip."))
+    api_caller = {"session_id": "session-1"}
+
+    chat_chunks, _raw = await run(pipe, mode="Pipeline", stream=True, metadata=dict(CHAT), messages=_REFUSED_CLIP)
+    streamed_chunks, _raw = await run(pipe, mode="Pipeline", stream=True, metadata=dict(api_caller), messages=_REFUSED_CLIP)
+    returned, _raw = await run(pipe, mode="Pipeline", stream=False, metadata=dict(api_caller), messages=_REFUSED_CLIP)
+
+    answer_at = _answer_delta_at(chat_chunks, "It is a short clip.")
+    sentence = next(
+        data["description"] for i, data in _statuses_of(chat_chunks)
+        if i < answer_at and _REFUSAL_SENTENCE in data.get("description", "")
+    )
+    assert _answer_text_of(chat_chunks) == "It is a short clip.", "a chat's answer text carried more than the answer"
+    assert _answer_text_of(streamed_chunks) == f"It is a short clip.\n\n{sentence}", (
+        f"the streamed answer of an API caller did not end with the refusal: {streamed_chunks}"
+    )
+    closing_at = next(i for i, chunk in enumerate(streamed_chunks) if _event_of(chunk).get("type") == "chat:completion")
+    assert _answer_delta_at(streamed_chunks, f"\n\n{sentence}") < closing_at
+    assert returned["choices"][0]["message"]["content"] == _answer_text_of(streamed_chunks)
 
 
 @pytest.mark.parametrize("failure", ["in_the_loop", "handed_back", "image"])

@@ -5140,6 +5140,19 @@ class StreamingHandler:
                         exc_info=True,
                     )
 
+            if body.stream and terminal and not was_cancelled:
+                try:
+                    end_of_answer_notice = _chatless_answer_notice(body, metadata)
+                    if end_of_answer_notice:
+                        await _append_answer_block(end_of_answer_notice)
+                except (asyncio.CancelledError, Exception) as _exc:
+                    if isinstance(_exc, asyncio.CancelledError):
+                        _finalise_cancelled = _finalise_cancelled or _exc
+                    self.logger.warning(
+                        "Could not append the attachment notice to the streamed answer",
+                        exc_info=True,
+                    )
+
             if not was_cancelled:
                 if not error_occurred:
                     self._audit_orphan_tool_cards(emitted_tool_call_items, emitted_tool_output_items)
@@ -5257,16 +5270,8 @@ class StreamingHandler:
             emitter_supplied=emitter_supplied,
         )
 
-        from ..requests.orchestrator import _is_api_caller
-
-        notices = getattr(body, "_attachment_notices", None)
-        if (
-            _is_api_caller(metadata)
-            and isinstance(notices, list)
-            and notices
-            and isinstance(answer, str)
-        ):
-            return join_answer_and_card(answer, " ".join(dict.fromkeys(notices)))
+        if isinstance(answer, str):
+            return join_answer_and_card(answer, _chatless_answer_notice(body, metadata))
         return answer
 
 
@@ -5396,6 +5401,16 @@ class StreamingHandler:
 
 
 _NAMES_THE_RESPONSES_ENDPOINT = re.compile(r"\bresponses\b|\bresponse\s+(?:api|endpoint)\b")
+
+
+def _chatless_answer_notice(body: Any, metadata: dict[str, Any] | None) -> str:
+    from ..requests.orchestrator import _is_chatless_caller
+
+    notices = getattr(body, "_attachment_notices", None)
+    if not (isinstance(notices, list) and _is_chatless_caller(metadata)):
+        return ""
+    lines = closing_status_descriptions(None, notices, join=False)
+    return lines[0] if lines else ""
 
 
 def _wrap_event_emitter(
