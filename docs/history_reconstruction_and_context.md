@@ -144,6 +144,18 @@ not recognise either — a transport artefact of this pipe is not the caller's t
 A message whose only markers are kind markers takes the marker branch here and produces no `missing_artifact_markers`
 warning.
 
+**A turn answered on a realtime voice call writes no replay marker and no phase label.** Open WebUI's realtime voice
+call passes a finished reply's text to the voice model as it stands, so a marker line in it is text the voice model is
+handed. The pipe takes a request for a turn of such a call when `features.voice` is set and the request's user message
+carries the `meta.voice` mark that the realtime bridge puts on every user message it records (in Open WebUI 0.12.3's
+source). A standard voice call sets `features.voice` too, but its user message has no such mark, and the screen that reads
+its answers aloud strips marker lines and `<details>` blocks itself, so its turns are written and replayed like any
+other turn's. The reply of a realtime-call turn carries no `[<20-char-ulid>]: #` line and no `[P:<phase>]: #` line, and
+the pipe stores no reasoning item and no tool round for it, because a row with no marker could not be found again. Later
+turns of that chat lose that turn's thinking, its pipe-held tool rounds and the phase of a phase-emitting model's answer;
+the answer text replays as for any turn, and so do the tool cards Open WebUI saved with it. Markers already in earlier
+messages of the chat are not touched, and the kind-marker family is unchanged.
+
 Tool **results** are stripped of hidden marker lines before the model sees them; tool **arguments** deliberately are
 not, because a JSON argument value is not a line of the message and a caller may legitimately pass text that looks
 like a marker — stripping it would corrupt the payload it means to send.
@@ -234,14 +246,15 @@ This keeps replay payloads smaller while preserving recency and high-level conte
 What is remembered between turns, for a round replayed from that copy: nothing about the round's rows themselves. A stored picture's well-formedness verdict is remembered by the digest of its payload -- a 16-byte digest and a yes or no, never the picture -- so a replayed picture is not re-validated on every turn, and a temporary chat, which keeps nothing, is not remembered at all.
 
 Every tool round the pipe runs itself, and every round of an OpenRouter server tool, is also stored by the pipe: the
-call and its output as a pair, behind a hidden marker placed in the answer where the round happened. Four exceptions:
+call and its output as a pair, behind a hidden marker placed in the answer where the round happened. Five exceptions:
 with results kept, a server tool whose own item OpenRouter takes back unchanged -- the advisor, the subagent, model
 search -- is stored as that item instead, while every other server tool, including one the pipe does not know, keeps
 the pair; image generation, whose picture is already part of the answer, is not stored; a request that belongs to no
 chat message -- a call that carries no `chat_id`, the plain API route -- keeps its copy in memory for the length of that
 request only, keyed on the request id, and never writes it to the database (the request ends and it is gone, and no
 marker line is added to the caller's response, so such a call's records last for the request, not the conversation);
-and a temporary chat keeps nothing, so with tool cards off its rounds reach no later request. (In Open-WebUI tool mode,
+a turn answered on a realtime voice call stores no round at all, because its reply carries no marker for a later turn
+to find one by (§4.2); and a temporary chat keeps nothing, so with tool cards off its rounds reach no later request. (In Open-WebUI tool mode,
 or under `ask` tool approval in either mode, the rounds of a temporary chat's reply are held in memory until that reply
 ends or the provider refuses a call-back the pipe was waiting for, so Open WebUI's calls back after each round of tool
 calls still hand them to the model. A reply dropped under the pool's byte ceiling is reported as holding none of the rows it was
@@ -469,6 +482,8 @@ When replayed artifacts include reasoning items, the pipe can optionally record 
 `disabled` gates the replay as well as the write. A chat that still holds a reasoning marker from a turn run under another setting reaches the provider with that reasoning withheld: on `/responses` no `reasoning` input item is built from the row, and on `/chat/completions` the message's own `reasoning_details` are not re-attached either. The row is still recorded in `replayed_reasoning_refs`, so the cleanup above clears it, to the empty marker described above, on exactly the terms `next_reply` uses; a row that is never cleared that way waits, still full, for the housekeeping sweep, whose `created_at` clock was refreshed by the read that resolved it, so a withheld row keeps ageing from the last turn it was resolved in and is reaped within `ARTIFACT_CLEANUP_DAYS` as usual. The gate is a `continue` over one marker, not a `break` over the message, so the round's own `function_call` / `function_call_output` markers still replay under `PERSIST_TOOL_RESULTS` - an Anthropic tool round therefore goes out with its tool call and result and no thinking block.
 
 System default is `PERSIST_REASONING_TOKENS="conversation"`; see [Valves & Configuration Atlas](valves_and_configuration_atlas.md) for the exact semantics and defaults.
+
+A turn answered on a realtime voice call stores no reasoning whatever this is set to (§4.2).
 
 Reasoning stored for an earlier turn that used tools and that `TOOL_TURNS_TO_REMEMBER` cuts (§5.5) is not replayed in any mode, and neither is the `reasoning_details` that turn's assistant message carries; an earlier turn that used no tool keeps its reasoning as the mode says. Under `next_reply` and `disabled` the rows of a cut turn are still read and recorded in `replayed_reasoning_refs`, so the cleanup above clears them, to the same empty markers, on the same terms; under `conversation` they are read only where §5.5 says the request needs them, and a message renews the retention date of the rows it leaves unread.
 

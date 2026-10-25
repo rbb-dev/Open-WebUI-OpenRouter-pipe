@@ -814,7 +814,7 @@ class VideoGenerationAdapter:
     def _failed_completion_error(self, content: str, *, failed: bool) -> dict[str, Any] | None:
         if not failed:
             return None
-        return self._pipe._event_emitter_handler._automation_error(content)
+        return self._pipe._event_emitter_handler._failure_mark(content)
 
     async def _emit_generation_outcome(
         self,

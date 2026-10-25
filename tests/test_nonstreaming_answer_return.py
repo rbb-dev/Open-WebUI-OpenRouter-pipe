@@ -26,6 +26,7 @@ from __future__ import annotations
 from tests.media_slots import bare_slot
 import asyncio
 import json
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -250,6 +251,50 @@ async def test_an_unusable_catalog_is_returned_as_well_as_shown(
 
     assert result == _shown_error(events)
     assert result
+
+
+async def _call_in_a_request_with(
+    pipe: Pipe, user_message: dict[str, Any], events: list[dict[str, Any]]
+) -> Any:
+    job = SimpleNamespace(
+        session_id="", request_id="", user_id="u", valves=pipe.valves,
+        metadata={"features": {"voice": True}, "user_message": user_message, "chat_id": "c1"},
+    )
+    context_tokens = pipe._apply_logging_context(cast(Any, job))
+    try:
+        return await _call(pipe, events)
+    finally:
+        for context_var, token in context_tokens:
+            context_var.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_a_realtime_voice_call_with_streaming_off_is_told_a_missing_key_failed_the_request(
+    monkeypatch, pipe_instance_async
+) -> None:
+    pipe = pipe_instance_async
+    _prepared(pipe, monkeypatch)
+    monkeypatch.setattr(
+        pipe, "_resolve_openrouter_api_key", lambda _valves: (None, "key-missing-detail")
+    )
+    realtime_events: list[dict[str, Any]] = []
+    realtime_result = await _call_in_a_request_with(
+        pipe,
+        {
+            "id": "user-message-1", "role": "user", "content": "What is two plus two?",
+            "meta": {"voice": {"call_id": "call-1", "input_item_id": "item-1", "model": "realtime-model"}},
+        },
+        realtime_events,
+    )
+    standard_events: list[dict[str, Any]] = []
+    standard_result = await _call_in_a_request_with(
+        pipe, {"id": "user-message-2", "role": "user", "content": "What is two plus two?"}, standard_events
+    )
+
+    assert _shown_error(realtime_events)
+    assert "key-missing-detail" in realtime_result["choices"][0]["message"]["content"]
+    assert "key-missing-detail" in standard_result["choices"][0]["message"]["content"]
+    assert not [event for event in standard_events if event.get("type") == "chat:completion"]
 
 
 # ---------------------------------------------------------------------------

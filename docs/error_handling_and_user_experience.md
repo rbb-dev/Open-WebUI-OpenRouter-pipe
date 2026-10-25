@@ -119,6 +119,21 @@ a property of the conversation, not of the frame:
   channel emitter closes on any `chat:message:error` and ignores the frame's `done`, and no
   frame the pipe can send leaves a channel message open after one. That is the host's
   behaviour, accepted and recorded in a test rather than worked around.
+- **A realtime voice call.** Open WebUI's realtime voice call treats a reply that carries no `error` as a finished
+  answer and passes its text to the voice model, so a card delivered as text alone is handed over as the answer. On a
+  request that is a turn of such a call (`features.voice` together with the voice mark the realtime bridge puts on the
+  user message it records), the arms that end a turn in a failure card therefore also put an `error` on the
+  `chat:completion` frame, as they do for an automation run: the provider's rejection, the templated cards (a lost
+  connection, a timeout, an interrupted stream, an internal error), a failed image or video generation, a reply that
+  ended with no content, a Fusion run whose panel members all failed, and a reply that is not streamed and fails for
+  want of an API key, where the `error` rides a `chat:completion` frame of its own because the card is returned as
+  the reply. The call then reports the turn as failed, and Open WebUI tells the voice model to say briefly that the
+  request failed (Open WebUI 0.12.3's source). The card still travels as the message text, so the `error` holds one
+  short fixed sentence rather than the card, which the error area under the message would show as plain text. A
+  standard voice call sets `features.voice` too but is left as it was: the card travels with no `error` and the screen
+  reads it aloud like any other answer. With an `error` on the message that screen is never told the reply has
+  finished, so its microphone stays off until the user taps the screen, unless the user allows voice interruption
+  (Open WebUI 0.12.3's source).
 - **Channel.** The channel's emitter is a different function from the socket emitter, and it
   honours a different set of types. It has no `chat:message` branch at all, so on a channel
   the card is written by a `chat:message:error` frame — which Open WebUI prefixes with

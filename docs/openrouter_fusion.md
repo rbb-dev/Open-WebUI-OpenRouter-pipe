@@ -266,6 +266,9 @@ final answer streams **into** the panel and is also published as the message's a
 multi-turn context, copy, and regenerate read the answer natively (the panel embed is UI-only and is never sent
 back to the model), while the visible surface stays the panel.
 
+On a realtime voice call the answer is published as plain text, with no `<details>` wrapper, because Open WebUI's
+realtime voice call hands a message's text to the voice model as it stands.
+
 While the panel deliberates, each model's card is **live**: its status line becomes a ticker showing
 the tail of whatever that model is currently producing plus a running word count, streamed from
 the engine's per-token panel events (batched by the pipe to a few updates per second per model).

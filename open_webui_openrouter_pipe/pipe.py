@@ -120,6 +120,7 @@ from .core.config import (
     AUTOMATION_RUN,
     OWUI_CHAT_ID,
     OWUI_REQUEST,
+    REALTIME_CALL,
     EncryptedStr,
     UserValves,
     Valves,
@@ -157,6 +158,7 @@ from .core.utils import (
     continued_reply_text,
     http_timeout,
     http_timeout_str,
+    is_realtime_call,
     join_answer_and_card,
 )
 from .core.warn_latch import warn_level
@@ -4327,6 +4329,7 @@ class Pipe:
         tokens.append(
             (AUTOMATION_RUN, AUTOMATION_RUN.set(bool((job_metadata or {}).get("automation_id"))))
         )
+        tokens.append((REALTIME_CALL, REALTIME_CALL.set(is_realtime_call(job_metadata))))
         tokens.append((SessionLogger.log_level, SessionLogger.log_level.set(log_level)))
         tokens.append(
             (
@@ -4517,6 +4520,11 @@ class Pipe:
                     f"{api_key_error}\n\n"
                     f"**Error ID:** `{error_id}`\n\n"
                     "Verify the API key configured for this pipe."
+                )
+            failure_mark = self._event_emitter_handler._failure_mark(markdown)
+            if failure_mark is not None and __event_emitter__ is not None:
+                await self._event_emitter_handler._emit_completion(
+                    __event_emitter__, content=None, error=failure_mark
                 )
             return self._build_chat_completion_payload(
                 model=str(body.get("model") or openwebui_model_id or "pipe"),

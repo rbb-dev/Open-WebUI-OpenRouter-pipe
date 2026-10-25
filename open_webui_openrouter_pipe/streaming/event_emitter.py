@@ -10,7 +10,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
-from ..core.config import AUTOMATION_RUN, OWUI_CHAT_ID
+from ..core.config import AUTOMATION_RUN, OWUI_CHAT_ID, REALTIME_CALL
 from ..core.errors import _channel_safe_card_text, _inline_span, channel_safe_values
 from ..core.logging_system import SessionLogger
 from ..core.utils import (
@@ -39,6 +39,8 @@ if TYPE_CHECKING:
     from ..pipe import _PipeJob
 
 _TERMINAL_PUT_CEILING_SECONDS = 1.0
+
+REALTIME_CALL_FAILURE_NOTICE = "The request could not be completed."
 
 _owui_template_cached: Callable[..., dict[str, Any]] | None = None
 
@@ -304,10 +306,10 @@ class EventEmitterHandler:
                     {"type": "status", "data": {"description": closing_line, "done": True}}
                 )
             await self._publish_card(event_emitter, shown, on_channel, continuing, terminal=terminal)
-            automation_error = self._automation_error(markdown)
+            failure_mark = self._failure_mark(markdown)
             completion: dict[str, Any] = {"done": terminal}
-            if automation_error is not None:
-                completion["error"] = automation_error
+            if failure_mark is not None:
+                completion["error"] = failure_mark
             if shown and (on_channel or not continuing):
                 completion["content"] = shown
             await event_emitter({
@@ -489,10 +491,12 @@ class EventEmitterHandler:
             self.logger.exception("Failed to emit completion")
 
 
-    def _automation_error(self, message: str) -> dict[str, Any] | None:
-        if not AUTOMATION_RUN.get():
-            return None
-        return {"message": message}
+    def _failure_mark(self, message: str) -> dict[str, Any] | None:
+        if AUTOMATION_RUN.get():
+            return {"message": message}
+        if REALTIME_CALL.get():
+            return {"message": REALTIME_CALL_FAILURE_NOTICE}
+        return None
 
     async def _emit_unstreamed_answer(
         self,

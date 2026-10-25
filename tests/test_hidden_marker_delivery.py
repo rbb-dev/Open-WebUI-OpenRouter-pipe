@@ -12,12 +12,14 @@ from __future__ import annotations
 import base64
 import json
 import logging
+from collections.abc import Iterator
 from typing import Any, cast
 
 import pytest
 
 import open_webui_openrouter_pipe.pipe as pipe_mod
 from open_webui_openrouter_pipe import Pipe, _serialize_marker, generate_item_id
+from open_webui_openrouter_pipe.core.utils import is_hidden_marker_line
 
 _UNADDRESSED = "left unaddressed"
 
@@ -153,3 +155,66 @@ async def test_a_non_streaming_tool_hand_back_that_returns_before_its_markers_st
     assert not any(marker in content for marker in markers)
     assert len(warnings) == 1
     assert all(marker in warnings[0].getMessage() for marker in markers)
+
+
+def _every_string(value: Any) -> Iterator[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _every_string(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _every_string(item)
+
+
+def _marker_lines_in(chunks: list[Any]) -> list[str]:
+    return [
+        line.strip()
+        for text in _every_string(chunks)
+        for line in text.splitlines()
+        if is_hidden_marker_line(line)
+    ]
+
+
+def _reasoned_answer_with_a_phase(text: str) -> list[dict[str, Any]]:
+    message = {
+        "type": "message", "role": "assistant", "status": "completed", "phase": "final_answer",
+        "content": [{"type": "output_text", "text": text}],
+    }
+    return [
+        {"type": "response.output_item.done", "item": {
+            "id": "rs-1", "type": "reasoning", "status": "completed",
+            "content": [{"type": "reasoning_text", "text": "THOUGHT"}], "summary": [], "signature": "SIG"}},
+        {"type": "response.output_text.delta", "delta": text},
+        {"type": "response.output_item.done", "item": message},
+        {"type": "response.completed", "response": {"output": [message], "usage": {}}},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_realtime_voice_call_answer_carries_no_marker_lines(monkeypatch, pipe_instance_async):
+    from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import CHAT, install, run
+
+    pipe = pipe_instance_async
+    install(pipe, monkeypatch, lambda _n, _request: _reasoned_answer_with_a_phase("Two plus two is four."))
+    realtime_user_message = {
+        "id": "user-message-1", "role": "user", "content": "What is two plus two?",
+        "meta": {"voice": {"call_id": "call-1", "input_item_id": "item-1", "model": "realtime-model"}},
+    }
+    standard_user_message = {"id": "user-message-2", "role": "user", "content": "What is two plus two?"}
+
+    realtime_chunks, _ = await run(
+        pipe, mode="Pipeline", stream=True,
+        metadata={**CHAT, "features": {"voice": True}, "user_message": realtime_user_message},
+    )
+    standard_chunks, _ = await run(
+        pipe, mode="Pipeline", stream=True,
+        metadata={**CHAT, "features": {"voice": True}, "user_message": standard_user_message},
+    )
+
+    standard_lines = _marker_lines_in(standard_chunks)
+    assert any(line.startswith("[P:") for line in standard_lines), standard_lines
+    assert any(not line.startswith("[P:") for line in standard_lines), standard_lines
+    assert "Two plus two is four." in "".join(_every_string(realtime_chunks))
+    assert _marker_lines_in(realtime_chunks) == []

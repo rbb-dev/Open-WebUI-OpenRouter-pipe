@@ -1220,7 +1220,7 @@ class ImageGenerationAdapter:
             await self._pipe._event_emitter_handler._emit_unstreamed_answer(
                 event_emitter,
                 content=content,
-                error=self._pipe._event_emitter_handler._automation_error(content),
+                error=self._pipe._event_emitter_handler._failure_mark(content),
             )
         return content
 

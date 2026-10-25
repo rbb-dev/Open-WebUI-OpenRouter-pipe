@@ -1339,6 +1339,13 @@ def _extract_feature_flags(__metadata__: dict[str, Any]) -> dict[str, Any]:
     return dict(raw_features) if isinstance(raw_features, dict) else {}
 
 
+def is_realtime_call(metadata: Any) -> bool:
+    user_message = metadata.get("user_message") if isinstance(metadata, dict) else None
+    meta = user_message.get("meta") if isinstance(user_message, dict) else None
+    voice_is_on = bool(_extract_feature_flags(metadata).get("voice"))
+    return voice_is_on and isinstance(meta, dict) and bool(meta.get("voice"))
+
+
 _USAGE_SUMMABLE_KEYS = frozenset(
     {
         "input_tokens",

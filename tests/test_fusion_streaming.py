@@ -3,6 +3,7 @@ import asyncio
 import contextlib
 import logging
 import re
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -317,6 +318,33 @@ async def test_fusion_emits_native_message_item_with_clean_answer(monkeypatch, p
     ]
     assert final_frames
     assert final_frames[-1]["data"].get("content") is None
+
+
+@pytest.mark.asyncio
+async def test_a_realtime_voice_call_gets_the_fusion_answer_as_plain_text(monkeypatch, pipe_instance_async):
+    pipe = pipe_instance_async
+    realtime_job = SimpleNamespace(
+        session_id="", request_id="", user_id="u", valves=pipe.valves,
+        metadata={
+            "features": {"voice": True},
+            "user_message": {
+                "id": "user-message-1", "role": "user", "content": "What is the answer?",
+                "meta": {"voice": {"call_id": "call-1", "input_item_id": "item-1", "model": "realtime-model"}},
+            },
+            "chat_id": "c1",
+        },
+    )
+    context_tokens = pipe._apply_logging_context(realtime_job)
+    try:
+        result, emitted = await _run(pipe, monkeypatch, fusion_live_enabled=True)
+    finally:
+        for context_var, token in context_tokens:
+            context_var.reset(token)
+
+    added, _ = _native_message_items(emitted)
+    assert len(added) == 1
+    assert added[0]["item"]["content"][0]["text"] == "The answer is 42."
+    assert result == "The answer is 42."
 
 
 @pytest.mark.asyncio

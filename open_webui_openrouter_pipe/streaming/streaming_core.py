@@ -47,6 +47,7 @@ from ..core.config import (
     _RAW_REPLAYED_SERVER_TOOLS,
     DEFAULT_STREAM_INTERRUPTED_TEMPLATE,
     NO_CONTENT_AFTER_TOOLS_FALLBACK,
+    REALTIME_CALL,
 )
 from ..core.context_budget import (
     apply_live_tool_output_budget,
@@ -573,6 +574,7 @@ class StreamingHandler:
 
         _loop_pipe_meta = metadata.get(_PIPE_METADATA_KEY)
         fusion_inner_call = bool(isinstance(_loop_pipe_meta, dict) and _loop_pipe_meta.get("fusion_inner"))
+        realtime_call = REALTIME_CALL.get()
 
         async def _emit_budget_notice(text: str) -> None:
             if fusion_inner_call and event_emitter is not None:
@@ -2006,6 +2008,8 @@ class StreamingHandler:
 
             @timed
             async def _persist_rows(rows: list[dict[str, Any]], reason: str) -> list[str]:
+                if realtime_call:
+                    return []
                 try:
                     return await self._pipe._artifact_store._db_persist(rows)
                 except Exception:
@@ -2100,7 +2104,7 @@ class StreamingHandler:
                 return _continuation_lead(current_text) or "\n\n"
 
             async def _append_assistant_hidden_markers(current_text: str, markers: list[str]) -> str:
-                if not markers:
+                if not markers or realtime_call:
                     return current_text
                 current_text += _continuation_lead(current_text)
                 msg_before = len(current_text)
@@ -4956,12 +4960,13 @@ class StreamingHandler:
                 fusion_armed and fusion_state is not None and fusion_state.fusion_index is not None
                 and assistant_message and not error_occurred and not was_cancelled
             ):
-                assistant_message = (
-                    '<details type="fusion_answer" done="true">\n'
-                    '<summary>Final answer</summary>\n\n'
-                    + assistant_message
-                    + '\n</details>'
-                )
+                if not realtime_call:
+                    assistant_message = (
+                        '<details type="fusion_answer" done="true">\n'
+                        '<summary>Final answer</summary>\n\n'
+                        + assistant_message
+                        + '\n</details>'
+                    )
                 recorded_message_chars = len(assistant_message)
                 if event_emitter:
                     fusion_answer_item = {
@@ -5160,7 +5165,7 @@ class StreamingHandler:
                             usage=_handover_usage(total_usage, last_round_usage),
                             error=tool_call_limit_error
                             or (
-                                self._pipe._event_emitter_handler._automation_error(
+                                self._pipe._event_emitter_handler._failure_mark(
                                     "The model returned no content."
                                 )
                                 if reply_ended_without_an_answer

@@ -2639,7 +2639,7 @@ class RequestOrchestrator:
                         fusion_failure,
                         level="error",
                     )
-                    fusion_error = self._pipe._event_emitter_handler._automation_error(fusion_failure)
+                    fusion_error = self._pipe._event_emitter_handler._failure_mark(fusion_failure)
                     if fusion_error is not None and __event_emitter__ is not None:
                         await self._pipe._event_emitter_handler._emit_completion(
                             __event_emitter__,

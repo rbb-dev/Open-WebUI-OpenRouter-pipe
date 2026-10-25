@@ -702,3 +702,58 @@ async def test_an_automation_run_records_the_provider_rejection_the_reply_failed
         f"always has: the card as text, no error item beside it. got {_banner(plain_items)!r}"
     )
     assert "provider said 402" in _content(plain_items), _content(plain_items)
+
+
+def _error_payloads(items: list[Any]) -> list[Any]:
+    found: list[Any] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if isinstance(item.get("error"), dict):
+            found.append(item["error"])
+        event = item.get("event")
+        data = event.get("data") if isinstance(event, dict) else None
+        if isinstance(data, dict) and data.get("error"):
+            found.append(data["error"])
+    return found
+
+
+@pytest.mark.asyncio
+async def test_a_realtime_voice_call_is_told_the_request_failed_and_not_handed_the_error_card_as_its_answer(
+    pipe_instance_async, monkeypatch
+) -> None:
+    from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import CHAT, install, run
+
+    pipe = pipe_instance_async
+    install(pipe, monkeypatch, lambda _n, _request: [])
+
+    async def rejecting_model(self, session, request_body, **_kwargs):
+        raise OpenRouterAPIError(status=400, reason="rejected", openrouter_message="provider said 400")
+        yield
+
+    monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", rejecting_model)
+    realtime_user_message = {
+        "id": "user-message-1", "role": "user", "content": "What is two plus two?",
+        "meta": {"voice": {"call_id": "call-1", "input_item_id": "item-1", "model": "realtime-model"}},
+    }
+    standard_user_message = {"id": "user-message-2", "role": "user", "content": "What is two plus two?"}
+
+    realtime_items, _ = await run(
+        pipe, mode="Pipeline", stream=True,
+        metadata={**CHAT, "features": {"voice": True}, "user_message": realtime_user_message},
+    )
+    standard_items, _ = await run(
+        pipe, mode="Pipeline", stream=True,
+        metadata={**CHAT, "features": {"voice": True}, "user_message": standard_user_message},
+    )
+
+    assert _error_payloads(realtime_items), (
+        "the realtime voice call reads a reply with no error as a completed answer and hands its text, the card, "
+        f"to the voice model; the queue carried no error. got {realtime_items!r}"
+    )
+    assert "provider said 400" in _content(realtime_items), _content(realtime_items)
+    assert not _error_payloads(standard_items), (
+        "a standard voice call reads the card aloud as it always has, and an error on its message would leave "
+        f"its microphone off until the user taps; got {_error_payloads(standard_items)!r}"
+    )
+    assert "provider said 400" in _content(standard_items), _content(standard_items)
