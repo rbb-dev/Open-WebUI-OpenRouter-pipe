@@ -24,7 +24,6 @@ from ..core.url_scheme import (
 )
 from ..core.utils import (
     TOOL_CALL_STATUSES,
-    note_for_the_end,
     parse_tool_arguments,
     picture_output,
 )
@@ -1102,10 +1101,7 @@ class ToolExecutor:
             )
         if refused:
             notice = _tool_picture_notice(refused)
-            if not note_for_the_end(notice):
-                await pipe._event_emitter_handler._emit_status(
-                    context.event_emitter, notice, done=False,
-                )
+            await pipe._event_emitter_handler._collect_or_show_notice(context.event_emitter, notice)
         if unfiled:
             await self._notify_unfiled_tool_file_safe(context, unfiled, tool_name)
         return pictures, shown

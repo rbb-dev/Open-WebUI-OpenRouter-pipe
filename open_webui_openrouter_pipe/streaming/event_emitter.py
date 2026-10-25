@@ -19,6 +19,8 @@ from ..core.utils import (
     citation_access_stamp,
     closing_status_descriptions,
     join_answer_and_card,
+    note_for_the_end,
+    strip_hidden_marker_lines,
     take_closing_notices,
 )
 from ..storage.owui_files import is_channel_chat, loggable_session_id
@@ -145,20 +147,54 @@ class EventEmitterHandler:
         self,
         event_emitter: EventEmitter | None,
         message: str,
-        done: bool = False
+        done: bool | None = False
     ):
         if event_emitter:
+            data: dict[str, Any] = {"description": message}
+            if done is not None:
+                data["done"] = done
             try:
-                await event_emitter({
-                    "type": "status",
-                    "data": {
-                        "description": message,
-                        "done": done
-                    }
-                })
+                await event_emitter({"type": "status", "data": data})
             except Exception:
                 self.logger.exception("Failed to emit status")
 
+
+    async def _collect_or_show_notice(self, event_emitter: EventEmitter | None, notice: str) -> None:
+        if note_for_the_end(notice):
+            return
+        await self._emit_status(event_emitter, notice, done=False)
+
+    def _show_notices_while_answering(
+        self,
+        emitter: EventEmitter,
+        notices: list[str],
+    ) -> EventEmitter:
+        shown = ""
+        buried = False
+
+        async def _wrapped(event: dict[str, Any]) -> bool | None:
+            nonlocal shown, buried
+            kind = event.get("type") if isinstance(event, dict) else None
+            if kind == "status":
+                buried = True
+            elif kind == "chat:message:delta" and notices:
+                lines = closing_status_descriptions(None, notices, join=False)
+                data = event.get("data")
+                content = data.get("content") if isinstance(data, dict) else None
+                if (
+                    lines
+                    and (buried or lines[0] != shown)
+                    and isinstance(content, str)
+                    and strip_hidden_marker_lines(content).strip()
+                ):
+                    shown, buried = lines[0], False
+                    await self._emit_status(emitter, shown, done=None)
+            return await emitter(event)
+
+        inner = getattr(emitter, _UNGUARDED_ATTR, None)
+        if inner is not None:
+            setattr(_wrapped, _UNGUARDED_ATTR, inner)
+        return _wrapped
 
     async def _emit_closing_notices(
         self,

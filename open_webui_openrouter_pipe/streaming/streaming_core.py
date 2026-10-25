@@ -96,7 +96,6 @@ from ..core.utils import (
     is_picture_output,
     join_answer_and_card,
     merge_usage_stats,
-    note_for_the_end,
     owui_call_status,
     parse_tool_arguments,
     picture_output,
@@ -2338,6 +2337,12 @@ class StreamingHandler:
             if not isinstance(end_notices, list):
                 end_notices = []
             end_notices_token = ATTACHMENT_NOTICES.set(end_notices)
+            from ..requests.orchestrator import _is_api_caller
+
+            if body.stream and emitter_supplied and not (fusion_inner_call or _is_api_caller(metadata)):
+                event_emitter = self._pipe._event_emitter_handler._show_notices_while_answering(
+                    event_emitter, end_notices
+                )
             max_loops = max(1, int(valves.MAX_FUNCTION_CALL_LOOPS))
             input_is_sanitized = False
             _answer_carry = [assistant_message]
@@ -4525,10 +4530,9 @@ class StreamingHandler:
                                     loggable_link(url), reason, cause,
                                 )
                             notice = _tool_picture_notice(round_refusals)
-                            if not note_for_the_end(notice):
-                                await self._pipe._event_emitter_handler._emit_status(
-                                    event_emitter, notice, done=False,
-                                )
+                            await self._pipe._event_emitter_handler._collect_or_show_notice(
+                                event_emitter, notice
+                            )
                         body.input.extend(budgeted_outputs)
                         input_is_sanitized = False
                         shipped_budget = _sanitize_request_input(

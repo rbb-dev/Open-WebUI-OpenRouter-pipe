@@ -1807,8 +1807,35 @@ def _status_field(description: str, index: int) -> str:
     return fields[index]
 
 
+_REFUSED_CLIP = [{"role": "user", "content": [
+    {"type": "text", "text": "what is in this clip"},
+    {"type": "video_url", "video_url": {"url": "http://example.com/clip.mp4"}},
+]}]
+_REFUSAL_SENTENCE = "ALLOW_INSECURE_HTTP"
+
+
+def _event_of(chunk: Any) -> dict[str, Any]:
+    found = chunk.get("event") if isinstance(chunk, dict) else None
+    return found if isinstance(found, dict) else {}
+
+
+def _statuses_of(chunks: list[Any]) -> list[tuple[int, dict[str, Any]]]:
+    return [(i, _event_of(chunk)["data"]) for i, chunk in enumerate(chunks) if _event_of(chunk).get("type") == "status"]
+
+
+def _latest_status_before(statuses: list[tuple[int, dict[str, Any]]], position: int) -> tuple[int, dict[str, Any]]:
+    return [entry for entry in statuses if entry[0] < position][-1]
+
+
+def _answer_delta_at(chunks: list[Any], text: str) -> int:
+    return next(
+        i for i, chunk in enumerate(chunks)
+        if isinstance(chunk, dict) and (chunk.get("choices") or [{}])[0].get("delta", {}).get("content") == text
+    )
+
+
 @pytest.mark.asyncio
-async def test_a_refused_attachment_is_noted_once_after_the_answer_and_never_mid_reply(
+async def test_a_refused_attachment_is_the_latest_status_when_the_answer_starts_and_again_on_the_closing_line(
     pipe_instance_async, monkeypatch
 ):
     from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import (
@@ -1820,40 +1847,162 @@ async def test_a_refused_attachment_is_noted_once_after_the_answer_and_never_mid
 
     pipe = pipe_instance_async
     install(pipe, monkeypatch, lambda _n, _request: answer_round("It is a short clip."))
-    messages = [{"role": "user", "content": [
-        {"type": "text", "text": "what is in this clip"},
-        {"type": "video_url", "video_url": {"url": "http://example.com/clip.mp4"}},
-    ]}]
 
-    chunks, _raw = await run(pipe, mode="Pipeline", stream=True, metadata=dict(CHAT), messages=messages)
+    chunks, _raw = await run(pipe, mode="Pipeline", stream=True, metadata=dict(CHAT), messages=_REFUSED_CLIP)
 
-    def event_of(chunk: Any) -> dict[str, Any]:
-        found = chunk.get("event") if isinstance(chunk, dict) else None
-        return found if isinstance(found, dict) else {}
+    answer_at = _answer_delta_at(chunks, "It is a short clip.")
+    statuses = _statuses_of(chunks)
+    error_frames = [chunk for chunk in chunks if _event_of(chunk).get("type") == "chat:message:error"]
+    assert not error_frames, f"the reply carried an error frame: {error_frames}"
 
-    answer_at = next(
+    noted = [(i, data) for i, data in statuses if _REFUSAL_SENTENCE in data.get("description", "")]
+    latest = _latest_status_before(statuses, answer_at)
+    assert len([entry for entry in statuses if entry[0] < answer_at]) > 1, (
+        f"nothing else was on the status line before the answer: {statuses}"
+    )
+    assert latest in noted, (
+        f"the refusal was not the latest status when the answer started (first answer at {answer_at}): {statuses}"
+    )
+    assert latest[1].get("done") is not False, f"the refusal would shimmer on the status line: {latest}"
+    assert [entry for entry in noted if entry[0] < answer_at] == [latest], (
+        f"a status carried the refusal before the answer started: {noted}"
+    )
+    assert len(noted) == 2 and noted[-1] == statuses[-1] and noted[-1][0] > answer_at, (
+        f"the refusal is not carried once more by the last status: {noted}"
+    )
+    assert [data for _i, data in statuses if data.get("done") is True] == [noted[-1][1]]
+    assert _event_of(chunks[-1]).get("type") == "chat:completion"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_attachment_is_the_latest_status_again_when_the_answer_resumes_after_another_status(
+    pipe_instance_async, monkeypatch
+):
+    from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import (
+        CHAT,
+        install,
+        run,
+    )
+
+    clock = {"type": "openrouter:datetime", "id": "dt-1", "status": "completed",
+             "datetime": "2026-01-02T03:04:05", "timezone": "UTC"}
+    answer = {"type": "message", "role": "assistant", "status": "completed",
+              "content": [{"type": "output_text", "text": "First half, still going. Second half."}]}
+    two_parts = [
+        {"type": "response.output_text.delta", "delta": "First half,"},
+        {"type": "response.output_text.delta", "delta": " still going."},
+        {"type": "response.output_item.added", "item": {"type": "openrouter:datetime", "id": "dt-1", "status": "in_progress"}},
+        {"type": "response.output_item.done", "item": clock},
+        {"type": "response.output_text.delta", "delta": " Second half."},
+        {"type": "response.completed", "response": {"output": [answer], "usage": {}}},
+    ]
+    pipe = pipe_instance_async
+    install(pipe, monkeypatch, lambda _n, _request: two_parts)
+
+    chunks, _raw = await run(pipe, mode="Pipeline", stream=True, metadata=dict(CHAT), messages=_REFUSED_CLIP)
+
+    starts = _answer_delta_at(chunks, "First half,")
+    middle = _answer_delta_at(chunks, " still going.")
+    resumes = _answer_delta_at(chunks, " Second half.")
+    statuses = _statuses_of(chunks)
+    noted = [(i, data) for i, data in statuses if _REFUSAL_SENTENCE in data.get("description", "")]
+    live = noted[:-1]
+    other_between = [entry for entry in statuses if middle < entry[0] < resumes and entry not in noted]
+    assert other_between, f"no other status came between the two parts of the answer: {statuses}"
+    assert live == [_latest_status_before(statuses, starts), _latest_status_before(statuses, resumes)], (
+        f"the refusal was not the latest status once when the answer started and once when it resumed: {noted}"
+    )
+    assert all(data.get("done") is not False for _i, data in live), (
+        f"a live copy of the refusal would shimmer on the status line: {live}"
+    )
+    assert len(noted) == 3 and noted[-1] == statuses[-1] and noted[-1][1].get("done") is True
+
+
+@pytest.mark.asyncio
+async def test_a_tool_picture_the_gate_refuses_is_shown_with_the_next_answer_text_and_not_when_the_tool_returns(
+    pipe_instance_async, monkeypatch
+):
+    import open_webui_openrouter_pipe.tools.tool_executor as tool_executor
+    from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import (
+        CHAT,
+        answer_round,
+        call,
+        install,
+        resolved_tool,
+        run,
+    )
+    from tests.test_fusion_engine import _prepare_pipe
+
+    async def processed(**_kwargs: Any):
+        return "taken", [{"type": "image", "url": "http://example.com/a.png"}], []
+
+    async def snap(**_kwargs: Any) -> str:
+        return "taken"
+
+    snap_call = call("snap", {"q": "x"}, "call-1")
+    lead_in = {"type": "message", "role": "assistant", "status": "completed",
+               "content": [{"type": "output_text", "text": "Let me look. "}]}
+    rounds = [
+        [
+            {"type": "response.output_text.delta", "delta": "Let me look. "},
+            {"type": "response.output_item.done", "item": snap_call},
+            {"type": "response.completed", "response": {"output": [lead_in, snap_call], "usage": {}}},
+        ],
+        answer_round("The picture was left out."),
+    ]
+    pipe = pipe_instance_async
+    monkeypatch.setattr(tool_executor, "_owui_process_tool_result", processed)
+    _prepare_pipe(pipe)
+    install(pipe, monkeypatch, lambda n, _request: rounds[n - 1])
+
+    chunks, _raw = await run(
+        pipe, mode="Pipeline", stream=True, metadata=dict(CHAT), owui_tools={"snap": resolved_tool("snap", snap)}
+    )
+
+    resumes = _answer_delta_at(chunks, "The picture was left out.")
+    card_at = next(
         i for i, chunk in enumerate(chunks)
-        if isinstance(chunk, dict) and (chunk.get("choices") or [{}])[0].get("delta", {}).get("content")
+        if isinstance(chunk, dict)
+        and chunk.get("type") == "response.output_item.added"
+        and chunk["item"].get("type") == "function_call_output"
     )
-    error_positions = [i for i, chunk in enumerate(chunks) if event_of(chunk).get("type") == "chat:message:error"]
-    assert not error_positions, (
-        f"the reply carried a mid-answer error frame before its answer (first answer at {answer_at}): "
-        f"{[chunks[i] for i in error_positions]}"
+    statuses = _statuses_of(chunks)
+    noted = [(i, data) for i, data in statuses if _REFUSAL_SENTENCE in data.get("description", "")]
+    live = noted[:-1]
+    assert live == [_latest_status_before(statuses, resumes)] and live[0][0] > card_at, (
+        f"the refusal was not shown once, with the answer that followed the tool (tool result at {card_at}, "
+        f"answer at {resumes}): {noted}"
+    )
+    assert live[0][1].get("done") is not False, f"the refusal would shimmer on the status line: {live}"
+    assert len(noted) == 2 and noted[-1] == statuses[-1] and noted[-1][1].get("done") is True
+
+
+@pytest.mark.asyncio
+async def test_a_refused_attachment_is_carried_by_the_closing_line_alone_when_the_reply_is_not_streamed(
+    pipe_instance_async, monkeypatch
+):
+    from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import (
+        CHAT,
+        answer_round,
+        install,
+        run,
     )
 
-    statuses = [(i, event_of(chunk)["data"]) for i, chunk in enumerate(chunks) if event_of(chunk).get("type") == "status"]
-    noted = [(i, data) for i, data in statuses if "ALLOW_INSECURE_HTTP" in data.get("description", "")]
-    assert len(noted) == 1, f"the refusal was noted {len(noted)} times: {statuses}"
-    assert noted[0] == statuses[-1], f"the note is not the last status: {statuses}"
-    assert noted[0][0] > answer_at
-    assert noted[0][1].get("done") is True
-    assert [data for _i, data in statuses if data.get("done") is True] == [noted[0][1]]
-    assert event_of(chunks[-1]).get("type") == "chat:completion"
+    pipe = pipe_instance_async
+    install(pipe, monkeypatch, lambda _n, _request: answer_round("It is a short clip."))
+
+    _answer, events = await run(pipe, mode="Pipeline", stream=False, metadata=dict(CHAT), messages=_REFUSED_CLIP)
+
+    statuses = [event["data"] for event in events if event.get("type") == "status"]
+    noted = [data for data in statuses if _REFUSAL_SENTENCE in data.get("description", "")]
+    assert noted == statuses[-1:] and noted[0].get("done") is True, (
+        f"the refusal was not carried by the closing line alone: {statuses}"
+    )
 
 
 @pytest.mark.parametrize("failure", ["in_the_loop", "handed_back", "image"])
 @pytest.mark.asyncio
-async def test_a_refused_attachment_is_noted_once_before_the_card_when_the_reply_fails(
+async def test_a_refused_attachment_is_carried_once_by_the_closing_frames_when_the_reply_fails(
     pipe_instance_async, monkeypatch, failure
 ):
     from open_webui_openrouter_pipe.core.errors import _build_openrouter_api_error
@@ -1882,23 +2031,16 @@ async def test_a_refused_attachment_is_noted_once_before_the_card_when_the_reply
             "_specs",
             {NORM: {"architecture": {"output_modalities": ["image"]}, "features": {"image_output"}}},
         )
-    messages = [{"role": "user", "content": [
-        {"type": "text", "text": "what is in this clip"},
-        {"type": "video_url", "video_url": {"url": "http://example.com/clip.mp4"}},
-    ]}]
 
     with aioresponses() as mocked:
         mocked.get(f"{BASE_URL}/images/models/{MODEL}/endpoints", payload={"endpoints": [{}]}, repeat=True)
         mocked.post(f"{BASE_URL}/images", status=500, body=refusal, repeat=True)
-        chunks, _raw = await run(pipe, mode="Pipeline", stream=True, metadata=dict(CHAT), messages=messages)
+        chunks, _raw = await run(pipe, mode="Pipeline", stream=True, metadata=dict(CHAT), messages=_REFUSED_CLIP)
 
-    events = [
-        found if isinstance(found := chunk.get("event") if isinstance(chunk, dict) else None, dict) else {}
-        for chunk in chunks
-    ]
-    statuses = [(i, e["data"]) for i, e in enumerate(events) if e.get("type") == "status"]
-    noted = [(i, data) for i, data in statuses if "ALLOW_INSECURE_HTTP" in data.get("description", "")]
-    assert len(noted) == 1, f"the refusal was noted {len(noted)} times: {statuses}"
+    events = [_event_of(chunk) for chunk in chunks]
+    statuses = _statuses_of(chunks)
+    noted = [(i, data) for i, data in statuses if _REFUSAL_SENTENCE in data.get("description", "")]
+    assert len(noted) == 1, f"the refusal was noted {len(noted)} times, not once on the closing frames: {statuses}"
     assert noted[0] == statuses[-1], f"the note is not the last status: {statuses}"
     assert noted[0][1].get("done") is True
     completion_at = next(
@@ -1906,10 +2048,9 @@ async def test_a_refused_attachment_is_noted_once_before_the_card_when_the_reply
         if e.get("type") == "chat:completion" and e["data"].get("done") is True
     )
     assert noted[0][0] < completion_at
-    assert not [
-        i for i, e in enumerate(events)
-        if i != noted[0][0] and "ALLOW_INSECURE_HTTP" in json.dumps(e)
-    ]
+    assert [
+        i for i, e in enumerate(events) if _REFUSAL_SENTENCE in json.dumps(e)
+    ] == [noted[0][0]]
 
 
 _ANSWERED_BY_URL = "https://openrouter.ai/api/v1/responses"

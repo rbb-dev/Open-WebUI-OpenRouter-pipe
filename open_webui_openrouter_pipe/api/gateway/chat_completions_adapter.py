@@ -29,7 +29,7 @@ from ...core.errors import (
 from ...core.logging_system import SessionLogger
 from ...core.request_body import StreamedJSONPayload
 from ...core.timing_logger import timed, timing_mark
-from ...core.utils import _apply_retry_after_metadata, http_timeout, note_for_the_end
+from ...core.utils import _apply_retry_after_metadata, http_timeout
 from ...core.warn_latch import warn_level
 from ...core.web_search_record import chat_route_search_item, offers_web_search
 from ...requests.debug import (
@@ -279,9 +279,7 @@ class ChatCompletionsAdapter:
         if not refusals:
             return
         notice = _tool_picture_notice(refusals)
-        if note_for_the_end(notice) or event_emitter is None:
-            return
-        await self._pipe._event_emitter_handler._emit_status(event_emitter, notice, done=False)
+        await self._pipe._event_emitter_handler._collect_or_show_notice(event_emitter, notice)
 
     def _timeout(self, effective_valves: Any) -> aiohttp.ClientTimeout:
         return http_timeout(effective_valves)

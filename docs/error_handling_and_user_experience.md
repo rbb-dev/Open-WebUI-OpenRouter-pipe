@@ -105,20 +105,30 @@ a property of the conversation, not of the frame:
   stored reply with the card; the error frame goes to the error area under the message and
   leaves the content alone. The stored record is unaffected either way — it is the answer
   plus the card, in that order.
-- **A notice the turn is not over for.** A second saved-chat case travels on
-  `chat:message:error` too, with **no `done` key**: a refusal the pipe issues before the model
-  is called — an attachment it dropped — is not the end of the turn, and the model answers past
-  it. The browser gates that branch's close on `data.done === true`, so the card is read in the
-  error area while the reply stays open, the caret keeps pulsing and Stop keeps working, and
-  the turn's own closing `chat:completion` is the one frame that finishes it. A
-  `chat:completion` carrying `error` would set `message.error` **and** `message.done`
-  regardless of its own `done`, because the browser's `handleOpenAIError` sets the close from
-  the presence of `error` and never reads that field — so a notice sent there ends the reply
-  early, badges it as a failed response, and leaves the model answering into a message the UI
-  already considers finished. On a **channel** the same notice still closes the message: the
-  channel emitter closes on any `chat:message:error` and ignores the frame's `done`, and no
-  frame the pipe can send leaves a channel message open after one. That is the host's
-  behaviour, accepted and recorded in a test rather than worked around.
+- **A notice the turn is not over for.** A refusal the pipe issues without ending the turn — an
+  attachment it dropped, or a picture a tool returned that it would not forward — leaves the model
+  to answer past it. The pipe collects the sentence and shows it as a `status` event with no `done`
+  key at the moment the first answer text of a streamed reply goes out, after any status the turn
+  has already sent, so the line under the reply reads the notice while the answer is being
+  written. The key is left out, as it is on the progress lines before it, because the status line
+  animates an entry whose `done` is exactly false and a turn the person stops sends no closing
+  line to end that animation; `done: true` is for the lines that close something, which here is
+  the closing status. The reply stays open: the turn's own closing `chat:completion` is the one
+  frame that finishes it. The sentence goes out again when answer text resumes after another
+  status entry (a server tool's line, for one) or after the turn has collected a further notice,
+  once for each start or resume and not once per piece of text. The same sentence rides the
+  turn's closing status too, so the refusal is still in the last line after the answer finishes,
+  and each copy stays in the status history behind it. A turn that ends before any answer text,
+  such as one whose provider call fails, shows it on its closing frames alone; so does a reply
+  with streaming off or a Fusion turn with the live panel, whose answer text is not streamed, and
+  a Fusion panel member's own request shows none. A `chat:completion` carrying `error` would set
+  `message.error` **and** `message.done` regardless of its own `done`, because the browser's
+  `handleOpenAIError` sets the close from the presence of `error` and never reads that field —
+  which is why the notice is a status and not an error-bearing frame: sent there it would end the
+  reply early, badge it as a failed response, and leave the model answering into a message the UI
+  already considers finished. On a **channel** the emitter has no `status` branch at all, so the
+  host drops both copies and the channel message carries no refusal notice. That is the host's
+  behaviour, accepted rather than worked around.
 - **A realtime voice call.** Open WebUI's realtime voice call treats a reply that carries no `error` as a finished
   answer and passes its text to the voice model, so a card delivered as text alone is handed over as the answer. On a
   request that is a turn of such a call (`features.voice` together with the voice mark the realtime bridge puts on the
