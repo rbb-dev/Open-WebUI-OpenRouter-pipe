@@ -1311,14 +1311,25 @@ def render_intent_disclosure_block(
     *,
     thumb_urls: list[str],
     standing_sent: bool = False,
+    video_meta: dict[str, Any] | None = None,
 ) -> str:
     if not (intent.frame_plan or intent.prompt or intent.downgrades):
         return ""
 
     try:
+        mode = intent.intent
+        if (
+            mode == "image_to_video"
+            and video_meta is not None
+            and not any(
+                attachment["kind"] == "image"
+                for attachment in collect_attachments_from_video_meta(video_meta)
+            )
+        ):
+            mode = "text_to_video"
         lines: list[str] = []
         lines.append(_serialize_kind_marker(INTENT_BLOCK_START, "1"))
-        lines.append(_serialize_kind_marker(INTENT_MODE, _safe_marker_body(intent.intent)))
+        lines.append(_serialize_kind_marker(INTENT_MODE, _safe_marker_body(mode)))
         lines.append(_serialize_kind_marker(INTENT_CONFIDENCE, _safe_marker_body(intent.confidence)))
         lines.append(_serialize_kind_marker(INTENT_LANG, _safe_marker_body(intent.language or "en")))
         for idx, entry in enumerate(intent.frame_plan):
@@ -1341,7 +1352,7 @@ def render_intent_disclosure_block(
             "image_to_video": "🎬 **Generating from attached image**",
             "text_to_video": "🎬 **Generating new video**",
             "ambiguous": "🤔 **Clarifying intent**",
-        }.get(intent.intent, "🎬 **Generating video**")
+        }.get(mode, "🎬 **Generating video**")
         lines.append(f"> {mode_label}")
         if thumb_urls:
             for url in thumb_urls:

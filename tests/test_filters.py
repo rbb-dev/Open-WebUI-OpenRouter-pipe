@@ -3038,6 +3038,8 @@ async def _send_pictures_to_a_video_model(
     frame_mode="auto",
     model_id="acme/glimmer-video-1",
     helper=None,
+    sound_files=(),
+    earlier_turns=(),
 ):
     import base64
 
@@ -3100,6 +3102,10 @@ async def _send_pictures_to_a_video_model(
                 "files": [
                     {"id": f"file-{name}", "name": name, "content_type": "image/png"}
                     for name in pictures
+                ]
+                + [
+                    {"id": f"file-{name}", "name": name, "content_type": "audio/mpeg"}
+                    for name in sound_files
                 ],
             },
             __metadata__=metadata,
@@ -3114,8 +3120,13 @@ async def _send_pictures_to_a_video_model(
         async def _bytes(file_obj, *_args, **_kwargs):
             return bare_slot(base64.b64encode(str(file_obj.id).encode()).decode())
 
+        sound_ids = {f"file-{name}" for name in sound_files}
         monkeypatch.setattr(video_module, "get_file_by_id", _file)
-        monkeypatch.setattr(video_module, "infer_file_mime_type", lambda _obj: "image/png")
+        monkeypatch.setattr(
+            video_module,
+            "infer_file_mime_type",
+            lambda file_obj: "audio/mpeg" if file_obj.id in sound_ids else "image/png",
+        )
         monkeypatch.setattr(pipe._file_gateway, "read_file_record_media", _bytes)
 
         class _Chat:
@@ -3164,7 +3175,7 @@ async def _send_pictures_to_a_video_model(
             )
             async with aiohttp.ClientSession() as session:
                 card = await pipe._ensure_video_generation_adapter().generate(
-                    body={"messages": [{"role": "user", "content": "go"}]},
+                    body={"messages": [*earlier_turns, {"role": "user", "content": "go"}]},
                     responses_body=SimpleNamespace(provider={}),
                     valves=pipe.valves,
                     session=session,
@@ -3305,3 +3316,47 @@ async def test_the_helper_saying_frames_keeps_the_frames_and_names_the_rest_on_a
         ("last_frame", _data_url_of("end.png")),
     ]
     assert "middle.png" in card, card
+
+
+def _footer_heading(card: str) -> str:
+    quoted = [line for line in card.splitlines() if line.startswith("> ")]
+    assert quoted, card
+    return quoted[0]
+
+
+@pytest.mark.asyncio
+async def test_the_footer_heading_follows_whether_the_request_sends_a_picture(monkeypatch):
+    chat = {
+        "frame_types": ["first_frame", "last_frame"],
+        "description": "Glimmer 6 makes short clips from a prompt or from a first and a last frame.",
+        "earlier_turns": [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ],
+    }
+
+    held_back, held_back_card = await _send_pictures_to_a_video_model(
+        monkeypatch,
+        **chat,
+        pictures=["start.png"],
+        sound_files=["voice.mp3"],
+        frame_mode="none",
+        helper={"intent": "image_to_video", "prompt": "a short clip"},
+    )
+    with_frame, with_frame_card = await _send_pictures_to_a_video_model(
+        monkeypatch,
+        **chat,
+        pictures=["start.png"],
+        helper={"intent": "image_to_video", "prompt": "a short clip"},
+    )
+    _, text_only_card = await _send_pictures_to_a_video_model(
+        monkeypatch,
+        **chat,
+        pictures=[],
+        helper={"intent": "text_to_video", "prompt": "a short clip"},
+    )
+
+    assert "frame_images" not in held_back and "input_references" not in held_back, held_back
+    assert [f["image_url"]["url"] for f in with_frame["frame_images"]] == [_data_url_of("start.png")]
+    assert _footer_heading(held_back_card) == _footer_heading(text_only_card), held_back_card
+    assert _footer_heading(with_frame_card) != _footer_heading(text_only_card), with_frame_card

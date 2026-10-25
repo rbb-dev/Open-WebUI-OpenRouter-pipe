@@ -1162,6 +1162,7 @@ class VideoGenerationAdapter:
                             intent=intent_result,
                             thumb_urls=thumbs,
                             standing_sent=standing_sent,
+                            video_meta=video_meta_pre,
                         )
                     self._emit_intent_telemetry(intent_result, valves=valves, chat_id=chat_id)
                 except asyncio.CancelledError:
