@@ -2340,6 +2340,7 @@ async def test_direct_uploads_warnings_emitted():
 
         metadata: dict[str, Any] = {
             "chat_id": "chat_123",
+            "message_id": "message_123",
             "model": {"id": "openai/gpt-4o-mini"},
             "openrouter_pipe": {
                 "direct_uploads_warnings": [

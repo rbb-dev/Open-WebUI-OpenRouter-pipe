@@ -137,3 +137,45 @@ def chat_usage_to_responses_usage(raw_usage: Any) -> dict[str, Any]:
             usage[key] = raw_usage[key]
 
     return usage
+
+
+_CHAT_USAGE_EXTRA_KEYS = ("cost", "is_byok", "cost_details", "cache_discount", "cache_discount_pct")
+
+
+def _is_token_count(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def pipe_usage_to_chat_usage(raw_usage: Any) -> dict[str, Any]:
+    if not isinstance(raw_usage, dict):
+        return {}
+    usage: dict[str, Any] = {}
+
+    for name, sources in (
+        ("prompt_tokens", ("prompt_tokens", "input_tokens")),
+        ("completion_tokens", ("completion_tokens", "output_tokens")),
+        ("total_tokens", ("total_tokens",)),
+    ):
+        for source in sources:
+            if _is_token_count(raw_usage.get(source)):
+                usage[name] = raw_usage[source]
+                break
+    if "total_tokens" not in usage and "prompt_tokens" in usage and "completion_tokens" in usage:
+        usage["total_tokens"] = usage["prompt_tokens"] + usage["completion_tokens"]
+
+    for name, sources in (
+        ("prompt_tokens_details", ("prompt_tokens_details", "input_tokens_details")),
+        ("completion_tokens_details", ("completion_tokens_details", "output_tokens_details")),
+    ):
+        for source in sources:
+            details = raw_usage.get(source)
+            if isinstance(details, dict) and details:
+                usage[name] = dict(details)
+                break
+
+    for key in _CHAT_USAGE_EXTRA_KEYS:
+        if key in raw_usage:
+            value = raw_usage[key]
+            usage[key] = dict(value) if isinstance(value, dict) else value
+
+    return usage

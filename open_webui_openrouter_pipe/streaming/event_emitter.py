@@ -11,6 +11,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
 from ..core.config import AUTOMATION_RUN, OWUI_CHAT_ID, REALTIME_CALL
+from ..core.costs import pipe_usage_to_chat_usage
 from ..core.errors import _channel_safe_card_text, _inline_span, channel_safe_values
 from ..core.logging_system import SessionLogger
 from ..core.utils import (
@@ -117,6 +118,54 @@ def middleware_message_delta(
             return content[len(already_on_the_queue):], content
         return content, content
     return None, already_on_the_queue
+
+
+def _chatless_error_object(error: Any) -> dict[str, Any]:
+    if isinstance(error, dict):
+        message = error.get("message")
+        if isinstance(message, str) and message:
+            return error
+        for key in ("detail", "content"):
+            text = error.get(key)
+            if isinstance(text, str) and text:
+                return {"message": text}
+        return {"message": json.dumps(error, ensure_ascii=False, default=str)}
+    return {"message": str(error)}
+
+
+def chatless_stream_frame(
+    item: Any,
+    *,
+    model_id: str,
+    include_usage: bool,
+) -> dict[str, Any] | str | None:
+    if isinstance(item, str):
+        return item
+    if not isinstance(item, dict):
+        return None
+    if isinstance(item.get("choices"), list):
+        return item
+    error = item.get("error")
+    if isinstance(error, (dict, str)) and error:
+        return {"error": _chatless_error_object(error)}
+    event = item.get("event")
+    if isinstance(event, dict):
+        if event.get("type") == "chat:message:error":
+            data = event.get("data")
+            failure = data.get("error") if isinstance(data, dict) else None
+            content = failure.get("content") if isinstance(failure, dict) else None
+            if isinstance(content, str) and content:
+                return {"error": {"message": content}}
+        return None
+    usage = item.get("usage")
+    if include_usage and isinstance(usage, dict) and "type" not in item:
+        chat_usage = pipe_usage_to_chat_usage(usage)
+        if chat_usage:
+            chunk = openai_chat_chunk_message_template(model_id)
+            chunk["choices"] = []
+            chunk["usage"] = chat_usage
+            return chunk
+    return None
 
 
 def unguarded_emitter(emitter: EventEmitter) -> EventEmitter:

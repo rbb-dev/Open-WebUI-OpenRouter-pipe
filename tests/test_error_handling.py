@@ -2036,9 +2036,57 @@ async def test_a_refused_attachment_ends_a_streamed_api_answer_and_is_not_answer
     assert _answer_text_of(streamed_chunks) == f"It is a short clip.\n\n{sentence}", (
         f"the streamed answer of an API caller did not end with the refusal: {streamed_chunks}"
     )
-    closing_at = next(i for i, chunk in enumerate(streamed_chunks) if _event_of(chunk).get("type") == "chat:completion")
-    assert _answer_delta_at(streamed_chunks, f"\n\n{sentence}") < closing_at
+    assert _answer_delta_at(streamed_chunks, f"\n\n{sentence}") == len(streamed_chunks) - 1
     assert returned["choices"][0]["message"]["content"] == _answer_text_of(streamed_chunks)
+
+
+@pytest.mark.asyncio
+async def test_a_streaming_request_with_no_chat_gets_only_what_an_openai_client_reads(
+    pipe_instance_async, monkeypatch
+):
+    from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import CHAT, install, run
+
+    answer = "Here is the answer."
+    message = {"type": "message", "role": "assistant", "status": "completed",
+               "content": [{"type": "output_text", "text": answer}]}
+    counted = {"input_tokens": 12, "output_tokens": 3, "total_tokens": 15,
+               "input_tokens_details": {"cached_tokens": 4}, "output_tokens_details": {"reasoning_tokens": 1}}
+    round_with_usage = [
+        {"type": "response.output_text.delta", "delta": answer},
+        {"type": "response.completed", "response": {"output": [message], "usage": counted}},
+    ]
+    pipe = pipe_instance_async
+    install(pipe, monkeypatch, lambda _n, _request: round_with_usage)
+    asks_for_usage = {"stream_options": {"include_usage": True}}
+
+    in_a_chat, _raw = await run(pipe, mode="Pipeline", stream=True, metadata=dict(CHAT), body_extra=asks_for_usage)
+    asked, _raw = await run(pipe, mode="Pipeline", stream=True, metadata={}, body_extra=asks_for_usage)
+    not_asked, _raw = await run(pipe, mode="Pipeline", stream=True, metadata={})
+
+    assert _answer_text_of(in_a_chat) == answer
+    assert any(_event_of(frame).get("type") == "status" for frame in in_a_chat)
+    assert any(isinstance(frame, dict) and frame.get("type") == "response.completed" for frame in in_a_chat)
+    assert any(isinstance(frame, dict) and "usage" in frame and "choices" not in frame for frame in in_a_chat)
+
+    for frames in (asked, not_asked):
+        assert all(isinstance(frame, dict) and isinstance(frame.get("choices"), list) for frame in frames), frames
+        assert _answer_text_of(frames) == answer
+    usage_chunks = [frame for frame in asked if not frame["choices"]]
+    assert [chunk["usage"] for chunk in usage_chunks] == [{
+        "prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15,
+        "prompt_tokens_details": {"cached_tokens": 4}, "completion_tokens_details": {"reasoning_tokens": 1},
+    }]
+    assert asked[-1] is usage_chunks[0]
+    assert not [frame for frame in not_asked if not frame["choices"]]
+
+    async def breaks(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("the job broke")
+
+    monkeypatch.setattr(pipe, "_handle_pipe_call", breaks)
+    failed_in_a_chat, _raw = await run(pipe, mode="Pipeline", stream=True, metadata=dict(CHAT))
+    failed_without_a_chat, _raw = await run(pipe, mode="Pipeline", stream=True, metadata={})
+    assert failed_in_a_chat == [{"error": {"detail": "Request failed. Please retry."}}]
+    assert failed_without_a_chat == [{"error": {"message": "Request failed. Please retry."}}]
 
 
 @pytest.mark.parametrize("failure", ["in_the_loop", "handed_back", "image"])

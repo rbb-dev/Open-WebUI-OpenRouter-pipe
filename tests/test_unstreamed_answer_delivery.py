@@ -395,7 +395,7 @@ async def _stream_pipe_answer(pipe: Pipe, model_id: str, prompt: str) -> list[An
         __request__=None,
         __event_emitter__=None,
         __event_call__=None,
-        __metadata__={"model": {"id": model_id}},
+        __metadata__={"model": {"id": model_id}, "chat_id": "chat-1", "message_id": "msg-1"},
         __tools__=None,
         __task__=None,
         __task_body__=None,

@@ -183,7 +183,7 @@ from .models.registry import (
     supports_tool_calling,
 )
 from .requests import NonStreamingAdapter, TaskModelAdapter
-from .requests.orchestrator import _is_api_caller
+from .requests.orchestrator import _is_api_caller, _is_chatless_caller
 from .storage.multimodal import REQUEST_VALIDATED_IPS, MultimodalHandler
 from .storage.owui_files import (
     FILE_READ_AUTH_MEMO,
@@ -197,6 +197,7 @@ from .streaming.event_emitter import (
     _PIPE_GENERATED_TEMPLATE_KEYS,
     EventEmitter,
     EventEmitterHandler,
+    chatless_stream_frame,
     openai_chat_chunk_message_template,
 )
 from .streaming.streaming_core import (
@@ -3047,7 +3048,20 @@ class Pipe:
                     with contextlib.suppress(Exception):
                         CONTINUED_REPLY.reset(stream_reply_token)
 
-            return _stream()
+            if not _is_chatless_caller(job.metadata):
+                return _stream()
+
+            stream_options = job.body.get("stream_options")
+            include_usage = isinstance(stream_options, dict) and stream_options.get("include_usage") is True
+
+            async def _standard_frames() -> AsyncGenerator[dict[str, Any] | str, None]:
+                async with contextlib.aclosing(_stream()) as frames:
+                    async for item in frames:
+                        frame = chatless_stream_frame(item, model_id=_model_id, include_usage=include_usage)
+                        if frame is not None:
+                            yield frame
+
+            return _standard_frames()
 
         await_future_token = OWUI_CHAT_ID.set(str((__metadata__ or {}).get("chat_id") or ""))
         try:
