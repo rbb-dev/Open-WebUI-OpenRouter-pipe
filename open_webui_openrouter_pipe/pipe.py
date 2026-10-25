@@ -2986,6 +2986,8 @@ class Pipe:
             _model_id = str(job.body.get("model") or "pipe")
 
             async def _next_stream_item() -> Any:
+                if not stream_queue.empty():
+                    return stream_queue.get_nowait()
                 getter = asyncio.ensure_future(stream_queue.get())
                 try:
                     await asyncio.wait({getter, future}, return_when=asyncio.FIRST_COMPLETED)

@@ -3857,6 +3857,53 @@ async def test_a_refused_automation_reply_records_why_on_its_chat_message(monkey
 
 
 @pytest.mark.asyncio
+async def test_a_stream_ends_when_its_job_is_settled_without_a_terminator(monkeypatch, pipe_instance_async) -> None:
+    pipe = pipe_instance_async
+    pipe._request_queue = asyncio.Queue()
+    jobs: list[Any] = []
+
+    async def _noop(_valves):
+        return None
+
+    monkeypatch.setattr(pipe, "_ensure_concurrency_controls", _noop)
+    monkeypatch.setattr(pipe, "_enqueue_job", lambda job: jobs.append(job) or True)
+    answer = {"choices": [{"index": 0, "delta": {"content": "hello"}}]}
+
+    async def open_stream(metadata: dict[str, Any]) -> Any:
+        return await pipe.pipe({"stream": True, "model": "m1"}, {"id": "user-1"}, None, None, None, metadata, None)
+
+    waiting = await open_stream({"chat_id": "chat-1", "message_id": "message-1"})
+    waiting_job = jobs[-1]
+    first = asyncio.ensure_future(waiting.__anext__())
+    await asyncio.sleep(0)
+    waiting_job.stream_queue.put_nowait(answer)
+    assert await asyncio.wait_for(first, 5) == answer
+
+    last = asyncio.ensure_future(waiting.__anext__())
+    await asyncio.sleep(0)
+    waiting_job.future.set_result(None)
+    finished, _ = await asyncio.wait({last}, timeout=5)
+    assert finished, "a stream waiting on an empty queue never ended after its job was settled with no terminator"
+    with pytest.raises(StopAsyncIteration):
+        last.result()
+
+    queued = await open_stream({})
+    queued_job = jobs[-1]
+    queued_job.stream_queue.put_nowait(answer)
+    queued_job.future.set_result(None)
+    frames: list[Any] = []
+
+    async def drain() -> None:
+        async for frame in queued:
+            frames.append(frame)
+
+    drained = asyncio.ensure_future(drain())
+    finished, _ = await asyncio.wait({drained}, timeout=5)
+    assert finished, "a stream with a frame still queued never ended after its job was settled with no terminator"
+    assert frames == [answer]
+
+
+@pytest.mark.asyncio
 async def test_pipe_breaker_blocks_request(monkeypatch, pipe_instance_async) -> None:
     pipe = pipe_instance_async
     pipe._request_queue = asyncio.Queue()
