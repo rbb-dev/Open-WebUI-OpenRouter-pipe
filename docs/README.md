@@ -53,6 +53,7 @@ This pipe can automatically sync Open WebUI model metadata for the OpenRouter mo
 - `UPDATE_MODEL_IMAGES` controls whether model profile images are downloaded and stored in Open WebUI.
 - `UPDATE_MODEL_DESCRIPTIONS` controls whether model descriptions are synced from the OpenRouter catalog.
 - `UPDATE_MODEL_CAPABILITIES` controls whether model capability checkboxes are synced.
+- `REMOVE_DROPPED_MODELS_AFTER_READS` controls how many complete checks in a row must all miss a model before the pipe deletes that model's Open WebUI entry (`0` keeps every entry).
 
 See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md).
 

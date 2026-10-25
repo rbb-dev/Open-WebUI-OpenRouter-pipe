@@ -93,7 +93,7 @@ The pipe accepts the following Advanced Model Parameters:
 | `openrouter_provider_ignore` | `str` (CSV) | Requests | Comma-separated provider slugs to exclude from routing. Maps to `provider.ignore`. See §2.5. |
 | `openrouter_provider_only` | `str` (CSV) | Requests | Comma-separated provider slugs to restrict routing to. Maps to `provider.only`. See §2.5. |
 | `openrouter_provider_order` | `str` (CSV) | Requests | Comma-separated ordered list of preferred provider slugs. Maps to `provider.order`. See §2.5. |
-| `disable_model_metadata_sync` | `bool-ish` | Model metadata sync | Master switch: the pipe will not “manage” this model’s settings at all (capabilities, icon, description, auto-attached integrations, default-on integrations). |
+| `disable_model_metadata_sync` | `bool-ish` | Model metadata sync | Master switch: the pipe will not “manage” this model’s settings at all (capabilities, icon, description, auto-attached integrations, default-on integrations), and will not remove its Open WebUI entry when OpenRouter stops listing the model. |
 | `disable_capability_updates` | `bool-ish` | Model metadata sync | Prevents overwriting Open WebUI capability checkboxes (`meta.capabilities`). |
 | `disable_image_updates` | `bool-ish` | Model metadata sync | Prevents overwriting the model icon/profile image (`meta.profile_image_url`). |
 | `disable_description_updates` | `bool-ish` | Model metadata sync | Prevents overwriting the model description (`meta.description`). |
@@ -266,6 +266,7 @@ This is a per-model “master kill switch” for the pipe’s Open WebUI model m
 - Pipe behavior (when truthy):
   - Skips all metadata writes for that model, even if sync valves are enabled (`UPDATE_MODEL_*`, `AUTO_ATTACH_*`, `AUTO_DEFAULT_*`).
   - This preserves operator-edited settings (icons, descriptions, capabilities, and integration toggle defaults).
+  - It also keeps the model's entry in place when OpenRouter stops listing the model: the removal behind `REMOVE_DROPPED_MODELS_AFTER_READS` skips an entry that carries this parameter.
 
 ### 2.7 `disable_capability_updates` → preserve capability checkboxes
 - Custom param: `disable_capability_updates` (bool-ish)
@@ -426,13 +427,14 @@ Controls:
 - `UPDATE_MODEL_IMAGES` (default `True`): enable/disable profile image sync.
 - `UPDATE_MODEL_DESCRIPTIONS` (default `False`): enable/disable model description sync.
 - `UPDATE_MODEL_CAPABILITIES` (default `True`): enable/disable capability checkbox sync.
+- `REMOVE_DROPPED_MODELS_AFTER_READS` (default `3`): how many complete checks of OpenRouter's model lists in a row must all miss a model before the pipe deletes that model's Open WebUI entry; `0` turns removal off, and so does a value the pipe cannot use. What a check reads, what makes it count and which entries are never removed: [Model Catalog & Routing Intelligence](model_catalog_and_routing_intelligence.md).
 - `NEW_MODEL_ACCESS_CONTROL` (default `admins`): sets the access grants applied when the pipe **inserts** a new OpenRouter model overlay into Open WebUI (existing access grants are preserved on update). One pass uses one value for all of its rows, and it is read once per pass, so a pass already running when you save the valve finishes under the value it started with. Saving it also schedules a pass, because the valve is a term of the sync key, so the value you just chose applies to every model the pipe imports next. Use `admins` to create no access grants (private), which relies on Open WebUI's `BYPASS_ADMIN_ACCESS_CONTROL` for admin access.
 Per-model opt-outs:
-- `disable_model_metadata_sync`: disables all metadata sync for the model.
+- `disable_model_metadata_sync`: disables all metadata sync for the model, and keeps its entry from being removed when OpenRouter stops listing the model.
 - `disable_image_updates`, `disable_description_updates`, `disable_capability_updates`: disable specific metadata fields for the model.
 
 Operational note:
-- This sync updates Open WebUI’s Models table using Open WebUI’s own helper APIs (not raw SQL), but it is still a **write** to Open WebUI’s model metadata. Those helpers swallow a database fault and answer that they did not save, so the pipe reads that answer: a row the helper reports as not saved is counted as a failure for that row, named in the log, and retried. Disable the valves if you want to manage model icons/capabilities manually — and note that the `web_search` and `Citations` boxes are left alone either way, so an admin’s tick or untick of either now survives every refresh and is honoured on the chat path rather than only stored.
+- This sync updates Open WebUI’s Models table using Open WebUI’s own helper APIs (not raw SQL), but it is still a **write** to Open WebUI’s model metadata. Removing the entry of a model OpenRouter no longer lists is a write as well (a delete, through Open WebUI’s own call), and `REMOVE_DROPPED_MODELS_AFTER_READS=0` switches that off on its own. Those helpers swallow a database fault and answer that they did not save, so the pipe reads that answer: a row the helper reports as not saved is counted as a failure for that row, named in the log, and retried. Disable the valves if you want to manage model icons/capabilities manually — and note that the `web_search` and `Citations` boxes are left alone either way, so an admin’s tick or untick of either now survives every refresh and is honoured on the chat path rather than only stored.
 
 ---
 

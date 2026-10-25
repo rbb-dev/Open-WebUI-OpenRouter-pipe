@@ -19,6 +19,7 @@ import asyncio
 import copy
 
 import contextlib
+import json
 import logging
 import pathlib
 import sys
@@ -28,7 +29,7 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from aioresponses import aioresponses
+from aioresponses import CallbackResult, aioresponses
 
 from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.filters import FilterManager
@@ -5211,6 +5212,12 @@ def _owned_record(family: str, owned: str):
 class _MemoryModels:
     def __init__(self) -> None:
         self.rows: dict[str, Any] = {}
+        self.deleted: list[str] = []
+
+    async def delete_model_by_id(self, model_id, db=None):
+        self.deleted.append(model_id)
+        self.rows.pop(model_id, None)
+        return True
 
     async def get_model_by_id(self, model_id, db=None):
         return self.rows.get(model_id)
@@ -5329,6 +5336,533 @@ async def test_a_sync_attaches_each_router_its_settings_and_leaves_them_when_the
     router_catalog.reset_router_catalog()
     assert await attached() == expected
     assert all(row.is_active for row in memory_functions.rows.values())
+
+
+# -----------------------------------------------------------------------------
+# Dropped models: the entry of a model OpenRouter no longer lists
+# -----------------------------------------------------------------------------
+
+_DROPPED_BASE = "https://openrouter.ai/api/v1"
+_DROPPED_CHAT = f"{_DROPPED_BASE}/models"
+_DROPPED_VIDEO = f"{_DROPPED_BASE}/videos/models"
+_DROPPED_MIRROR = "https://mirror.example.com/api/v1"
+_DROPPED_LIST_PATHS = ("/models", "/models?output_modalities=image", "/videos/models")
+
+
+def _dropped_listing(ids: list[str], **extra: Any) -> dict[str, Any]:
+    return {
+        "data": [{"id": model_id} for model_id in ids],
+        "total_count": len(ids),
+        "links": {"next": None},
+        **extra,
+    }
+
+
+class _DroppedLists:
+    def __init__(self) -> None:
+        self.answers: dict[str, tuple[int, Any]] = {}
+
+    def set(self, url: str, payload: Any, status: int = 200) -> None:
+        self.answers[url] = (status, payload)
+
+    def everything(self, chat: list[str], base: str = _DROPPED_BASE) -> None:
+        self.set(f"{base}/models", _dropped_listing(chat))
+        self.set(f"{base}/models?output_modalities=image", _dropped_listing(["example-lab/image-1"]))
+        self.set(f"{base}/videos/models", _dropped_listing(["example-lab/video-1"]))
+
+    def register(self, mocked: Any, *bases: str) -> None:
+        for base in bases or (_DROPPED_BASE,):
+            for path in _DROPPED_LIST_PATHS:
+                url = base + path
+
+                def answer(_url, _key=url, **_kwargs):
+                    status, payload = self.answers[_key]
+                    return CallbackResult(status=status, payload=payload)
+
+                mocked.get(url, callback=answer, repeat=True)
+
+
+def _dropped_row(pipe: Any, tail: str, **overrides: Any) -> Any:
+    fields: dict[str, Any] = {
+        "id": f"{pipe.id}.{tail}",
+        "user_id": "",
+        "base_model_id": None,
+        "name": tail,
+        "params": {},
+        "meta": {"openrouter_pipe": {"capabilities": {"image_output": False, "video_generation": False}}},
+        "access_grants": [],
+        "is_active": True,
+        "updated_at": 100,
+    }
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+def _dropped_add(table: Any, *rows: Any) -> None:
+    table.rows.update({row.id: row for row in rows})
+
+
+def _dropped_counting(pipe: Any, count: int) -> None:
+    pipe.valves = type(pipe.valves)(**{**pipe.valves.model_dump(), "REMOVE_DROPPED_MODELS_AFTER_READS": count})
+
+
+def _dropped_form_save(world: Any, value: Any) -> None:
+    _dropped_counting(world.pipe, value)
+    saved = world.pipe.valves.model_dump(exclude_unset=True)
+    world.stored.pop("REMOVE_DROPPED_MODELS_AFTER_READS", None)
+    if "REMOVE_DROPPED_MODELS_AFTER_READS" in saved:
+        world.stored["REMOVE_DROPPED_MODELS_AFTER_READS"] = saved["REMOVE_DROPPED_MODELS_AFTER_READS"]
+
+
+async def _dropped_check(world: Any) -> None:
+    await world.pipe._ensure_dropped_model_remover().run_pass()
+
+
+async def _dropped_presence(world: Any, row: Any, chats: list[list[str]]) -> list[bool]:
+    seen = []
+    for chat in chats:
+        world.lists.everything(chat)
+        await _dropped_check(world)
+        seen.append(row.id in world.table.rows)
+    return seen
+
+
+def _dropped_filters(ids: list[str]):
+    async def answer(function_type, active_only=False, db=None):
+        return [SimpleNamespace(id=function_id) for function_id in ids]
+
+    return answer
+
+
+def _dropped_valves_by_ids(answer: dict[str, Any]):
+    async def read(ids, db=None):
+        return dict(answer)
+
+    return read
+
+
+@pytest.fixture
+def dropped_world(pipe_instance_async, monkeypatch):
+    import open_webui.models.functions as owui_functions
+    import open_webui.models.models as owui_models
+
+    table = _MemoryModels()
+    stored = {"REMOVE_DROPPED_MODELS_AFTER_READS": 3, "MODEL_CATALOG_REFRESH_SECONDS": 3600}
+    monkeypatch.setattr(owui_models, "Models", table)
+
+    async def stored_valves(function_id, db=None):
+        return dict(stored)
+
+    monkeypatch.setattr(owui_functions.Functions, "get_function_valves_by_id", stored_valves)
+    lists = _DroppedLists()
+    lists.everything([])
+    return SimpleNamespace(
+        pipe=pipe_instance_async, table=table, stored=stored, lists=lists, functions=owui_functions.Functions
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_model_missing_from_three_complete_checks_in_a_row_loses_its_entry_on_the_third(dropped_world):
+    world = dropped_world
+    gone = _dropped_row(world.pipe, "example-lab.gone-1")
+    live = _dropped_row(world.pipe, "example-lab.live-1")
+    _dropped_add(world.table, gone, live)
+    listed = ["example-lab/live-1"]
+    listed_with_gone = listed + ["example-lab/gone-1"]
+    with aioresponses() as mocked:
+        world.lists.register(mocked)
+        seen = await _dropped_presence(world, gone, [listed, listed, listed_with_gone, listed, listed, listed])
+    assert seen == [True, True, True, True, True, False]
+    assert live.id in world.table.rows
+
+
+@pytest.mark.asyncio
+async def test_an_incomplete_or_failed_answer_never_counts_and_starts_the_count_again(dropped_world):
+    world = dropped_world
+    first = _dropped_row(world.pipe, "example-lab.gone-a")
+    live = _dropped_row(world.pipe, "example-lab.live-1")
+    _dropped_add(world.table, first, live)
+    listed = ["example-lab/live-1"]
+    with aioresponses() as mocked:
+        world.lists.register(mocked)
+        world.lists.everything(listed)
+        await _dropped_check(world)
+        await _dropped_check(world)
+        world.lists.set(_DROPPED_VIDEO, _dropped_listing([f"example-lab/video-{n}" for n in range(30)], total_count=40))
+        await _dropped_check(world)
+        world.lists.everything(listed)
+        await _dropped_check(world)
+        await _dropped_check(world)
+        assert first.id in world.table.rows
+        await _dropped_check(world)
+        assert first.id not in world.table.rows
+
+        second = _dropped_row(world.pipe, "example-lab.gone-b")
+        _dropped_add(world.table, second)
+        await _dropped_check(world)
+        await _dropped_check(world)
+        world.lists.set(_DROPPED_CHAT, {"error": {"code": 500, "message": "upstream failed"}}, status=500)
+        await _dropped_check(world)
+        world.lists.everything(listed)
+        await _dropped_check(world)
+        await _dropped_check(world)
+        assert second.id in world.table.rows
+        await _dropped_check(world)
+        assert second.id not in world.table.rows
+
+
+@pytest.mark.asyncio
+async def test_a_list_that_does_not_look_like_the_one_the_entries_came_from_removes_nothing(dropped_world):
+    world = dropped_world
+    rows = [_dropped_row(world.pipe, f"example-lab.model-{n:02d}") for n in range(51)]
+    _dropped_add(world.table, *rows)
+    every = [f"example-lab/model-{n:02d}" for n in range(51)]
+    with aioresponses() as mocked:
+        world.lists.register(mocked, _DROPPED_BASE, _DROPPED_MIRROR)
+        world.lists.everything(every[:4])
+        for _ in range(4):
+            await _dropped_check(world)
+        assert len(world.table.rows) == 51
+
+        stray = _dropped_row(world.pipe, "example-lab.gone-1")
+        _dropped_add(world.table, stray)
+        world.lists.everything(every)
+        world.lists.everything(every, _DROPPED_MIRROR)
+        seen = []
+        for round_number in range(5):
+            if round_number == 2:
+                world.pipe.valves.BASE_URL = _DROPPED_MIRROR
+            await _dropped_check(world)
+            seen.append(stray.id in world.table.rows)
+    assert seen == [True, True, True, True, False]
+
+
+@pytest.mark.asyncio
+async def test_off_means_off_for_a_zero_count_and_for_every_writing_setting_switched_off(dropped_world):
+    world = dropped_world
+    zero = _dropped_row(world.pipe, "example-lab.gone-zero")
+    quiet = _dropped_row(world.pipe, "example-lab.gone-quiet")
+    live = _dropped_row(world.pipe, "example-lab.live-1")
+    _dropped_add(world.table, zero, quiet, live)
+    world.lists.everything(["example-lab/live-1"])
+    with aioresponses() as mocked:
+        world.lists.register(mocked)
+
+        _dropped_counting(world.pipe, 0)
+        world.stored["REMOVE_DROPPED_MODELS_AFTER_READS"] = 0
+        for _ in range(4):
+            await _dropped_check(world)
+        assert not mocked.requests
+        assert zero.id in world.table.rows
+
+        _dropped_counting(world.pipe, 3)
+        world.stored["REMOVE_DROPPED_MODELS_AFTER_READS"] = 3
+        saved = {name: getattr(world.pipe.valves, name) for name in _catalog_manager._SYNC_GATE_TERMS}
+        for name in saved:
+            setattr(world.pipe.valves, name, False)
+        for _ in range(4):
+            await _dropped_check(world)
+        assert not mocked.requests
+        assert quiet.id in world.table.rows
+
+        for name, value in saved.items():
+            setattr(world.pipe.valves, name, value)
+        for _ in range(3):
+            await _dropped_check(world)
+        assert mocked.requests
+    assert zero.id not in world.table.rows and quiet.id not in world.table.rows
+    assert live.id in world.table.rows
+
+
+@pytest.mark.asyncio
+async def test_a_removal_count_the_pipe_cannot_use_switches_removal_off(dropped_world):
+    world = dropped_world
+    gone = _dropped_row(world.pipe, "example-lab.gone-1")
+    live = _dropped_row(world.pipe, "example-lab.live-1")
+    _dropped_add(world.table, gone, live)
+    world.lists.everything(["example-lab/live-1"])
+    with aioresponses() as mocked:
+        world.lists.register(mocked)
+
+        world.stored["REMOVE_DROPPED_MODELS_AFTER_READS"] = -1
+        for _ in range(4):
+            await _dropped_check(world)
+        assert not mocked.requests
+        assert gone.id in world.table.rows
+
+        _dropped_form_save(world, -1)
+        for _ in range(4):
+            await _dropped_check(world)
+        assert not mocked.requests
+        assert gone.id in world.table.rows
+
+        _dropped_form_save(world, 3)
+        for _ in range(2):
+            await _dropped_check(world)
+        assert gone.id in world.table.rows
+        await _dropped_check(world)
+    assert gone.id not in world.table.rows
+    assert live.id in world.table.rows
+
+
+@pytest.mark.asyncio
+async def test_a_check_removes_at_most_twenty_five_entries_and_the_next_check_the_rest(dropped_world):
+    world = dropped_world
+    gone = [_dropped_row(world.pipe, f"example-lab.gone-{n:02d}") for n in range(30)]
+    live = [_dropped_row(world.pipe, f"example-lab.live-{n:02d}") for n in range(30)]
+    _dropped_add(world.table, *gone, *live)
+    world.lists.everything([f"example-lab/live-{n:02d}" for n in range(30)])
+    with aioresponses() as mocked:
+        world.lists.register(mocked)
+        for _ in range(3):
+            await _dropped_check(world)
+        assert len(world.table.deleted) == 25
+        await _dropped_check(world)
+    assert len(world.table.deleted) == 30
+    assert all(row.id in world.table.rows for row in live)
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_filter_setting_read_removes_nothing(dropped_world, monkeypatch):
+    world = dropped_world
+    gone = _dropped_row(world.pipe, "example-lab.gone-1")
+    live = _dropped_row(world.pipe, "example-lab.live-1")
+    _dropped_add(world.table, gone, live)
+    world.lists.everything(["example-lab/live-1"])
+    monkeypatch.setattr(world.functions, "get_functions_by_type", _dropped_filters(["openrouter_web_tools"]))
+    monkeypatch.setattr(world.functions, "get_function_valves_by_ids", _dropped_valves_by_ids({}))
+    with aioresponses() as mocked:
+        world.lists.register(mocked)
+        for _ in range(4):
+            await _dropped_check(world)
+        assert gone.id in world.table.rows
+        monkeypatch.setattr(
+            world.functions,
+            "get_function_valves_by_ids",
+            _dropped_valves_by_ids({"openrouter_web_tools": {}}),
+        )
+        for _ in range(3):
+            await _dropped_check(world)
+    assert gone.id not in world.table.rows
+
+
+@pytest.mark.asyncio
+async def test_a_count_set_to_zero_while_a_batch_runs_stops_it_at_the_next_entry(dropped_world):
+    world = dropped_world
+    first = _dropped_row(world.pipe, "example-lab.gone-a")
+    second = _dropped_row(world.pipe, "example-lab.gone-b")
+    live = _dropped_row(world.pipe, "example-lab.live-1")
+    _dropped_add(world.table, first, second, live)
+    world.lists.everything(["example-lab/live-1"])
+    delete = world.table.delete_model_by_id
+
+    async def delete_then_switch_off(model_id, db=None):
+        result = await delete(model_id, db)
+        world.stored["REMOVE_DROPPED_MODELS_AFTER_READS"] = 0
+        return result
+
+    world.table.delete_model_by_id = delete_then_switch_off
+    with aioresponses() as mocked:
+        world.lists.register(mocked)
+        for _ in range(3):
+            await _dropped_check(world)
+    assert world.table.deleted == [first.id]
+    assert world.pipe.valves.REMOVE_DROPPED_MODELS_AFTER_READS == 3
+    assert second.id in world.table.rows
+
+
+@pytest.mark.asyncio
+async def test_a_model_list_refresh_starts_the_check_that_removes_the_entry(pipe_instance_async, monkeypatch):
+    import open_webui.models.functions as owui_functions
+    import open_webui.models.models as owui_models
+
+    pipe = pipe_instance_async
+    table = _MemoryModels()
+    gone = _dropped_row(pipe, "example-lab.gone-1")
+    _dropped_add(table, gone, _dropped_row(pipe, "example-lab.live-1"))
+    monkeypatch.setattr(owui_models, "Models", table)
+
+    async def stored_valves(function_id, db=None):
+        return {"REMOVE_DROPPED_MODELS_AFTER_READS": 1}
+
+    monkeypatch.setattr(owui_functions.Functions, "get_function_valves_by_id", stored_valves)
+    pipe.valves = type(pipe.valves)(
+        API_KEY=pipe.valves.API_KEY,
+        REMOVE_DROPPED_MODELS_AFTER_READS=1,
+        ENABLE_VIDEO_GENERATION=False,
+        ENABLE_OPENROUTER_IMAGE_GENERATION=False,
+        AUTO_INSTALL_IMAGE_GEN_FILTER=False,
+        AUTO_ATTACH_IMAGE_GEN_FILTER=False,
+        AUTO_INSTALL_IMAGE_FILTERS=False,
+        AUTO_ATTACH_IMAGE_FILTERS=False,
+    )
+    monkeypatch.setattr(pipe._ensure_catalog_manager(), "maybe_schedule_model_metadata_sync", lambda *a, **k: None)
+    with aioresponses() as mocked:
+        mocked.get(_DROPPED_CHAT, payload=_dropped_listing(["example-lab/live-1"]), repeat=True)
+        mocked.get("https://openrouter.ai/api/frontend/v1/catalog/models", payload={"data": []}, repeat=True)
+        await pipe.pipes()
+        for _ in range(300):
+            if gone.id not in table.rows:
+                break
+            await asyncio.sleep(0)
+    assert gone.id not in table.rows
+
+
+class _DroppedSqlModels:
+    def __init__(self) -> None:
+        from sqlalchemy import BigInteger, Boolean, Column, MetaData, Table, Text, create_engine
+
+        tables = MetaData()
+        self.model = Table(
+            "model", tables,
+            Column("id", Text, primary_key=True), Column("user_id", Text), Column("base_model_id", Text),
+            Column("name", Text), Column("params", Text), Column("meta", Text), Column("is_active", Boolean),
+            Column("updated_at", BigInteger),
+        )
+        self.grant = Table(
+            "access_grant", tables,
+            Column("id", Text, primary_key=True), Column("resource_type", Text), Column("resource_id", Text),
+        )
+        self.history = Table(
+            "model_history", tables, Column("id", Text, primary_key=True), Column("model_id", Text)
+        )
+        self.engine = create_engine("sqlite://")
+        tables.create_all(self.engine)
+        self.serial = 0
+
+    def seed(
+        self, model_id: str, *, owner: str = "", base: str | None = None, meta: dict | None = None,
+        params: dict | None = None, grants: int = 0, history: int = 0,
+    ) -> None:
+        with self.engine.begin() as connection:
+            connection.execute(self.model.insert(), {
+                "id": model_id, "user_id": owner, "base_model_id": base, "name": model_id,
+                "params": json.dumps(params or {}), "meta": json.dumps(meta or {}),
+                "is_active": True, "updated_at": 100,
+            })
+            for _ in range(grants):
+                self.serial += 1
+                connection.execute(
+                    self.grant.insert(),
+                    {"id": f"grant-{self.serial}", "resource_type": "model", "resource_id": model_id},
+                )
+            for _ in range(history):
+                self.serial += 1
+                connection.execute(self.history.insert(), {"id": f"history-{self.serial}", "model_id": model_id})
+
+    def count(self, table: Any, column: Any, value: str) -> int:
+        from sqlalchemy import func, select
+
+        with self.engine.connect() as connection:
+            return connection.execute(select(func.count()).select_from(table).where(column == value)).scalar_one()
+
+    def orphans(self) -> int:
+        from sqlalchemy import func, select
+
+        with self.engine.connect() as connection:
+            known = select(self.model.c.id)
+            grants = select(func.count()).select_from(self.grant).where(self.grant.c.resource_id.not_in(known))
+            history = select(func.count()).select_from(self.history).where(self.history.c.model_id.not_in(known))
+            return connection.execute(grants).scalar_one() + connection.execute(history).scalar_one()
+
+    def _build(self, record: Any, grants: int) -> Any:
+        from open_webui.models.models import ModelMeta, ModelParams
+
+        return SimpleNamespace(
+            id=record.id, user_id=record.user_id, base_model_id=record.base_model_id, name=record.name,
+            params=ModelParams(**json.loads(record.params)), meta=ModelMeta(**json.loads(record.meta)),
+            access_grants=[SimpleNamespace(principal_id="*")] * grants,
+            is_active=bool(record.is_active), updated_at=record.updated_at,
+        )
+
+    async def get_all_models(self, db=None):
+        with self.engine.connect() as connection:
+            records = connection.execute(self.model.select()).all()
+        return [self._build(record, self.count(self.grant, self.grant.c.resource_id, record.id)) for record in records]
+
+    async def get_model_by_id(self, model_id, db=None):
+        with self.engine.connect() as connection:
+            record = connection.execute(self.model.select().where(self.model.c.id == model_id)).first()
+        if record is None:
+            return None
+        return self._build(record, self.count(self.grant, self.grant.c.resource_id, model_id))
+
+    async def delete_model_by_id(self, model_id, db=None):
+        with self.engine.begin() as connection:
+            connection.execute(
+                self.grant.delete().where(self.grant.c.resource_type == "model", self.grant.c.resource_id == model_id)
+            )
+            connection.execute(self.history.delete().where(self.history.c.model_id == model_id))
+            connection.execute(self.model.delete().where(self.model.c.id == model_id))
+        return True
+
+
+@pytest.mark.asyncio
+async def test_over_the_model_tables_only_the_pipes_dropped_entries_go_with_their_grants_and_history(
+    dropped_world, monkeypatch
+):
+    import open_webui.models.config as owui_config
+    import open_webui.models.groups as owui_groups
+    import open_webui.models.models as owui_models
+
+    world = dropped_world
+    pipe_id = world.pipe.id
+
+    def mine(tail: str) -> str:
+        return f"{pipe_id}.example-lab.{tail}"
+
+    stamp = {"openrouter_pipe": {"capabilities": {"image_output": False, "video_generation": False}}}
+    sql = _DroppedSqlModels()
+    sql.seed(mine("dropped-1"), meta=stamp, grants=1, history=2)
+    sql.seed(mine("owned-dropped"), owner="admin-1", meta=stamp, history=1)
+    for tail in (
+        "live-1", "valve-named", "default-a", "default-b", "dict-keyed", "group-default", "workspace-base",
+        "filter-named", "task-model", "ordered",
+    ):
+        sql.seed(mine(tail), meta=stamp, grants=1, history=1)
+    sql.seed(mine("opted-out"), meta=stamp, params={"disable_model_metadata_sync": True}, grants=1)
+    sql.seed(mine("no-stamp"), grants=1)
+    sql.seed(f"{pipe_id}.@preset.team-draft", meta=stamp, grants=1)
+    sql.seed(f"{pipe_id}.example-lab.live-1:preset/email-copywriter", meta=stamp)
+    sql.seed("otherpipe.example-lab.dropped-2", meta=stamp, grants=1)
+    sql.seed("my-workspace-preset", owner="admin-1", base=mine("workspace-base"))
+    monkeypatch.setattr(owui_models, "Models", sql)
+
+    settings = {
+        "ui.default_models": f"{mine('default-a')},{mine('default-b')}",
+        "models.default_metadata": {mine("dict-keyed"): {"hidden": False}},
+        "task.model.default": mine("task-model"),
+        "ui.model_order_list": [mine("ordered")],
+    }
+    monkeypatch.setattr(owui_config.Config, "_rows", settings)
+    group = SimpleNamespace(data={"config": {"default_models": [mine("group-default")]}})
+    monkeypatch.setattr(owui_groups.Groups, "_groups", [group])
+    monkeypatch.setattr(world.functions, "get_functions_by_type", _dropped_filters(["openrouter_probe_filter"]))
+    monkeypatch.setattr(
+        world.functions,
+        "get_function_valves_by_ids",
+        _dropped_valves_by_ids({"openrouter_probe_filter": {"ADVISOR_MODEL": "example-lab/filter-named"}}),
+    )
+    world.stored["MODEL_ID"] = "auto, example-lab/valve-named"
+    world.pipe.valves.MODEL_ID = "auto, example-lab/valve-named"
+    world.lists.everything(["example-lab/live-1"])
+
+    seeded = {row.id for row in await sql.get_all_models()}
+    removed = {mine("dropped-1"), mine("owned-dropped"), mine("ordered")}
+    assert removed <= seeded and len(seeded) == 18
+    with aioresponses() as mocked:
+        world.lists.register(mocked)
+        await _dropped_check(world)
+        await _dropped_check(world)
+        assert {row.id for row in await sql.get_all_models()} == seeded
+        await _dropped_check(world)
+    remaining = {row.id for row in await sql.get_all_models()}
+    assert seeded - remaining == removed
+    assert sql.count(sql.grant, sql.grant.c.resource_id, mine("dropped-1")) == 0
+    assert sql.count(sql.history, sql.history.c.model_id, mine("dropped-1")) == 0
+    assert sql.count(sql.history, sql.history.c.model_id, mine("owned-dropped")) == 0
+    assert sql.orphans() == 0
+    assert sql.count(sql.grant, sql.grant.c.resource_id, mine("live-1")) == 1
 
 
 # -----------------------------------------------------------------------------

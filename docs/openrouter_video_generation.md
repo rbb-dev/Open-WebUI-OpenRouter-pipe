@@ -2979,8 +2979,12 @@ Key files:
   reconcile it; Open WebUI keeps its previous base-model list on an empty
   answer for the same reason, and the chat catalog raises and keeps its cache.
   Turning the valve off still clears the catalog outright. What is honoured is
-  the model list, not the Open WebUI model row,
-  which the model-editor flow retires.
+  the model list. The Open WebUI model row of a video model OpenRouter stopped
+  listing is a separate matter: the check behind
+  `REMOVE_DROPPED_MODELS_AFTER_READS` removes it after that many complete
+  checks in a row, and only while `ENABLE_VIDEO_GENERATION` is on, because the
+  check reads the video model list only then. With the valve off, or the count
+  at `0`, the model editor is where the row is retired.
 - [`models/catalog_manager.py`](../open_webui_openrouter_pipe/models/catalog_manager.py)
   — metadata sync that attaches and defaults filters, and remembers which
   models' catalogue descriptions mention references.

@@ -367,7 +367,12 @@ Riverflow variants, all 4 FLUX.2 variants, ByteDance Seedream 4.5.
   and only `/models` stopping to list it retires the row**. One it adds
   appears without anything being configured. A sweep that comes back
   empty retires nothing at all, and a fetch that raised changes nothing;
-  both are described under the empty-sweep note further down.
+  both are described under the empty-sweep note further down. A model that
+  stays withdrawn also loses its Open WebUI entry, after
+  `REMOVE_DROPPED_MODELS_AFTER_READS` complete checks in a row, and only
+  while the pipe reads this list (`ENABLE_OPENROUTER_IMAGE_GENERATION`, or an
+  install or attach setting of the image panels, is on); see
+  [Model Catalog & Routing Intelligence](model_catalog_and_routing_intelligence.md).
 - **Multimodal dedupe**: if a model has `text` in `output_modalities`,
   `register_image_models` skips it (those stay in the chat catalog).
 - **Master-disable**: setting `ENABLE_OPENROUTER_IMAGE_GENERATION=False`

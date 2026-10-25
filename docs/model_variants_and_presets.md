@@ -56,6 +56,8 @@ When you configure variant models:
 
 **Result:** Both the base model and its variant(s) appear as separate, fully-functional entries in the model selector.
 
+**Taking a variant out.** A variant that OpenRouter does not list itself is a virtual model, so the pipe keeps its Open WebUI entry only while `VARIANT_MODELS` or `MODEL_ID` names it. Take it out of the setting and its entry is removed after `REMOVE_DROPPED_MODELS_AFTER_READS` complete checks in a row, like the entry of any model OpenRouter no longer lists: its access grants, settings and version history go with it, and adding the variant again creates a new entry. The entry of a preset (an account's `@preset/slug` row, or a `base:preset/slug` variant) is never removed this way. See [Model Catalog & Routing Intelligence](model_catalog_and_routing_intelligence.md).
+
 ---
 
 ## Examples

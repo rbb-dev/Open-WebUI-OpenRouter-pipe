@@ -42,6 +42,7 @@ Key components you will see repeatedly:
 - `Pipe`: the Open WebUI pipe controller. Owns valves, request admission, streaming/non-streaming execution, persistence, and background workers.
 - `CompletionsBody` and `ResponsesBody`: request models that translate Open WebUI chat-completions-style payloads into OpenRouter Responses API payloads.
 - `OpenRouterModelRegistry` and `ModelFamily`: model catalog loading, normalization, and capability/supported-parameter helpers.
+- `DroppedModelRemover`: removes the Open WebUI entry of a model OpenRouter no longer lists, after complete checks in a row (`models/dropped_models.py`).
 - `SessionLogger`: per-request logging (stdout + in-memory buffer) keyed by a per-request `request_id` with `session_id`/`user_id` attached via context variables. The package logger is wired once per logger name, and a later `Pipe` re-attaches rather than re-wiring, so a hot reload cannot silence a live turn.
 
 ---

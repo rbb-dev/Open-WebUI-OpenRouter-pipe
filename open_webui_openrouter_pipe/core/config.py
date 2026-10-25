@@ -85,6 +85,7 @@ _MAX_OPENROUTER_METADATA_KEY_CHARS = 64
 _MAX_OPENROUTER_METADATA_VALUE_CHARS = 512
 
 _PIPE_METADATA_KEY = "openrouter_pipe"
+_REMOVE_DROPPED_MODELS_MAX = 24
 
 _BOOLEAN_PLACEHOLDER_RULE = (
     "A boolean placeholder renders `True` when the value is true, and its line is dropped when the "
@@ -1389,7 +1390,35 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "refresh is answered from the previous catalog rather than waiting for it, so "
             "a newly registered media model appears on the next turn; where the video catalogue has not "
             "been written yet, the request is told the video catalogue is still loading and that the next "
-            "turn will carry the model, rather than that the pipe rejected it."
+            "turn will carry the model, rather than that the pipe rejected it. "
+            "The same interval spaces the checks that remove the entries of models OpenRouter no longer "
+            "lists: one check per interval on each worker, and never closer than 10 minutes apart."
+        ),
+    )
+    REMOVE_DROPPED_MODELS_AFTER_READS: int = Field(
+        default=3,
+        ge=0,
+        le=_REMOVE_DROPPED_MODELS_MAX,
+        description=(
+            "How many complete checks of OpenRouter's model lists, in a row, must all miss a model "
+            "before the pipe deletes that model's entry from Open WebUI's model list. 0 turns removal off, "
+            "and so does a value the pipe cannot use (anything but a whole number from 0 to 24), with a "
+            "warning in the log. "
+            "Checks run at least one catalog refresh interval apart, never closer than 10 minutes, and each "
+            "worker counts in its own memory, so a restart of that worker or a reload of this pipe starts "
+            "its count again. A check counts only when every list the pipe reads came back whole: a failed, "
+            "partial or much smaller answer, or a changed base URL or API key, starts the count again. With "
+            "a count of 2 or more, one odd answer from OpenRouter cannot delete an entry. Only entries for "
+            "this pipe's own OpenRouter models are removed, and only while at least one setting that lets "
+            "the pipe write model entries is on; an entry of an image or video model is removed only while "
+            "the pipe reads that model list. "
+            "Never removed: an OpenRouter preset's entry, an entry a workspace model is built on, an entry a "
+            "setting of this pipe, of one of its OpenRouter filters or of Open WebUI names (default, pinned "
+            "and task models, group defaults and the like), and an entry carrying the "
+            "disable_model_metadata_sync advanced parameter. The picker's sort order does not keep an entry. "
+            "At most 25 entries are removed per check on each "
+            "worker. Removal is permanent: the entry's access grants, settings and version history go with it, "
+            "and a model OpenRouter lists again returns as a new entry with the default access for new models."
         ),
     )
     NEW_MODEL_ACCESS_CONTROL: Literal["public", "admins"] = Field(
@@ -1401,7 +1430,8 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "BYPASS_ADMIN_ACCESS_CONTROL for admin access; otherwise admins must be granted access explicitly. "
             "Applies only when a model is first added, to the models the pipe creates; a metadata refresh "
             "never changes an existing model's visibility, so existing access grants are kept "
-            "when it is refreshed."
+            "when it is refreshed. A model whose entry the pipe removed because OpenRouter stopped listing "
+            "it is added again when OpenRouter lists it again, and takes this value like any new model."
         ),
     )
     FREE_MODEL_FILTER: Literal["all", "only", "exclude"] = Field(

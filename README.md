@@ -72,6 +72,7 @@ Model icons + descriptions + capabilities sync automatically. Per-chat cost disp
 - **OpenRouter Web Tools** — Web Search + Web Fetch + Datetime + **Advisor** + **Subagent** + **Model Search** as one toggleable filter; tool-execution cards with citations, plus a per-request `SERVER_TOOLS_MAX_COST_USD` cap that bounds the server-tool agent loop; an internal Fusion turn is one such request per panel member plus the judge and the synthesis, each sent the whole cap, so the turn's ceiling is that multiple.
 - **Provider routing filters** — admin + user-controlled routing, fallbacks, ZDR, sort order.
 - **Router settings** — the Auto, Pareto, Switchyard and Jev routers each get settings generated from the options OpenRouter publishes: admin defaults, and the limits users may change in their own chats.
+- **Dropped models leave Open WebUI** — the entry of a model OpenRouter no longer lists is removed once three complete checks in a row all miss it (`REMOVE_DROPPED_MODELS_AFTER_READS` sets the number; `0` keeps every entry). Presets, models a setting names (not the picker's sort order) and models marked `disable_model_metadata_sync` are never removed.
 - **Direct Uploads filter** — bypass OWUI RAG; forward chat attachments as `input_file` to OpenRouter.
 
 ---

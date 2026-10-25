@@ -169,6 +169,7 @@ from .logging.session_log_manager import (
     resolve_message_id,
 )
 from .models.catalog_manager import ModelCatalogManager, every_web_tool_is_off
+from .models.dropped_models import DroppedModelRemover
 from .models.reasoning_config import ReasoningConfigManager
 from .models.registry import (
     ModelFamily,
@@ -1202,6 +1203,7 @@ class Pipe:
             valves_owner=self,
         )
         self._catalog_manager: ModelCatalogManager | None = None
+        self._dropped_model_remover: DroppedModelRemover | None = None
         self._error_formatter: ErrorFormatter | None = None
         self._reasoning_config_manager: ReasoningConfigManager | None = None
         self._nonstreaming_adapter: NonStreamingAdapter | None = None
@@ -1778,6 +1780,15 @@ class Pipe:
                 task_done_callback=_consume_background_task_exception,
             )
         return self._catalog_manager
+
+    def _ensure_dropped_model_remover(self) -> DroppedModelRemover:
+        if self._dropped_model_remover is None:
+            self._dropped_model_remover = DroppedModelRemover(
+                pipe=self,
+                logger=self.logger,
+                task_done_callback=_consume_background_task_exception,
+            )
+        return self._dropped_model_remover
 
     def _ensure_error_formatter(self) -> ErrorFormatter:
         if self._error_formatter is None:
@@ -2650,6 +2661,8 @@ class Pipe:
                 exc,
                 exc_info=True,
             )
+
+        self._ensure_dropped_model_remover().maybe_schedule()
 
         if self.valves.ENABLE_PLUGIN_SYSTEM:
             try:
@@ -3554,6 +3567,10 @@ class Pipe:
                 catalog._last_sync_gate_inputs = None
                 catalog._gate_released_since_last_pass = False
                 catalog._model_param_digest = None
+        remover = getattr(self, "_dropped_model_remover", None)
+        removal_task = remover.cancel() if remover is not None else None
+        if removal_task is not None:
+            extra_tasks.append(removal_task)
         repair = getattr(self, "_web_tools_repair_task", None)
         if repair is not None and not repair.done():
             repair.cancel()
@@ -3633,6 +3650,9 @@ class Pipe:
         if catalog_mgr is not None:
             with contextlib.suppress(Exception):
                 catalog_mgr._pipe = None  # type: ignore[assignment]
+        if remover is not None:
+            with contextlib.suppress(Exception):
+                remover._pipe = None  # type: ignore[assignment]
         slm = getattr(self, "_session_log_manager", None)
         if slm is not None:
             with contextlib.suppress(Exception):

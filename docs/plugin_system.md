@@ -1470,6 +1470,7 @@ Use `_ensure_*()` methods — safe to call, creates on first access:
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `_ensure_catalog_manager()` | `ModelCatalogManager` | Model metadata sync from OpenRouter to Open WebUI |
+| `_ensure_dropped_model_remover()` | `DroppedModelRemover` | Removes the Open WebUI entry of a model OpenRouter no longer lists, after complete checks in a row |
 | `_ensure_error_formatter()` | `ErrorFormatter` | Formats and emits error messages using templates |
 | `_ensure_reasoning_config_manager()` | `ReasoningConfigManager` | Reasoning/thinking output configuration |
 | `_ensure_nonstreaming_adapter()` | `NonStreamingAdapter` | Non-streaming OpenRouter requests |

@@ -18,7 +18,19 @@ _RENAMED_VALVES = {
     "VIDEO_INTENT_MAX_CALLS_PER_CHAT": "VIDEO_INTENT_MAX_TURNS_PER_CHAT",
     "VIDEO_INTENT_MAX_CALLS_PER_USER_DAY": "VIDEO_INTENT_MAX_TURNS_PER_USER_DAY",
 }
-_REFUSED_VALUES = {"VIDEO_FRAME_IMAGE_MIME_ALLOWLIST": ""}
+
+
+class _Refusal(typing.NamedTuple):
+    value: Any
+    effect: str
+
+
+_REFUSED = {
+    "VIDEO_FRAME_IMAGE_MIME_ALLOWLIST": _Refusal("", "which permits no frame image at all"),
+    "REMOVE_DROPPED_MODELS_AFTER_READS": _Refusal(
+        0, "which switches the removal of dropped models off until it is fixed"
+    ),
+}
 _MOVED = "its value was carried over"
 _MOVED_INTO_BLANK = "it held nothing, so the old value was carried over to it"
 _NOT_MOVED = {
@@ -145,8 +157,8 @@ def drop_unvalidatable(cls: type, values: Any) -> Any:
                 blank = _admits_none(cls, name) and isinstance(kept.get(name), str) and not kept[name].strip()
                 if blank:
                     blanked.add(name)
-                if name in _REFUSED_VALUES:
-                    kept[name] = _REFUSED_VALUES[name]
+                if name in _REFUSED:
+                    kept[name] = _REFUSED[name].value
                     substituted.add(name)
                 else:
                     kept.pop(name, None)
@@ -161,9 +173,9 @@ def drop_unvalidatable(cls: type, values: Any) -> Any:
         logger.log(
             warn_level(_warned_stale_valves, name, cooldown_s=_STALE_VALVES_WARN_EVERY_S),
             "pipe: stored setting %s (was %r) is not accepted by this release and was "
-            "left at %r, which permits no frame image at all. The pipe keeps running; "
+            "left at %r, %s. The pipe keeps running; "
             "set it again where you configure the pipe.",
-            name, values[name], _REFUSED_VALUES[name],
+            name, values[name], _REFUSED[name].value, _REFUSED[name].effect,
         )
     if len(kept) != len(values):
         stored = values
@@ -240,8 +252,8 @@ def repair_unvalidatable(cls: type, values: Any, handler: Callable[[Any], Any]) 
                 blank = _admits_none(cls, name) and isinstance(kept.get(name), str) and not kept[name].strip()
                 if blank:
                     blanked.add(name)
-                if name in _REFUSED_VALUES:
-                    kept[name] = _REFUSED_VALUES[name]
+                if name in _REFUSED:
+                    kept[name] = _REFUSED[name].value
                     substituted.add(name)
                 else:
                     kept.pop(name, None)
@@ -258,9 +270,9 @@ def repair_unvalidatable(cls: type, values: Any, handler: Callable[[Any], Any]) 
         logger.log(
             warn_level(_warned_stale_valves, name, cooldown_s=_STALE_VALVES_WARN_EVERY_S),
             "pipe: stored setting %s (was %r) is not accepted by this release and was "
-            "left at %r, which permits no frame image at all. The pipe keeps running; "
+            "left at %r, %s. The pipe keeps running; "
             "set it again where you configure the pipe.",
-            name, values[name], _REFUSED_VALUES[name],
+            name, values[name], _REFUSED[name].value, _REFUSED[name].effect,
         )
     if len(kept) != len(values):
         stored = values

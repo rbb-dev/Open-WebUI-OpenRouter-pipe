@@ -246,6 +246,10 @@ def _install_open_webui_stubs() -> None:
             return {}
 
         @staticmethod
+        async def get_function_valves_by_ids(ids, db=None):
+            return {function_id: {} for function_id in ids}
+
+        @staticmethod
         async def get_user_valves_by_id_and_user_id(id, user_id, db=None):
             return {}
 
@@ -275,6 +279,19 @@ def _install_open_webui_stubs() -> None:
         # per test; the real one reads a DB row per call and caches nothing.
         _rows: dict[str, Any] = {}
 
+        DEFAULTS: dict[str, Any] = {
+            "ui.default_models": None,
+            "ui.default_pinned_models": None,
+            "ui.model_order_list": [],
+            "models.default_metadata": {},
+            "models.default_params": {},
+            "task.model.default": "",
+            "task.model.external": "",
+            "task.model.params": {},
+            "evaluation.arena.models": [],
+            "chat.context_compaction.model": "",
+        }
+
         @staticmethod
         async def get_many(*keys: str) -> dict[str, Any]:
             return {k: _Config._rows[k] for k in keys if k in _Config._rows}
@@ -285,6 +302,18 @@ def _install_open_webui_stubs() -> None:
 
     models_config_mod.Config = _Config
     models_pkg.config = models_config_mod
+
+    groups_mod = cast(Any, _ensure_module("open_webui.models.groups"))
+
+    class _Groups:
+        _groups: list[Any] = []
+
+        @staticmethod
+        async def get_all_groups(db=None):
+            return list(_Groups._groups)
+
+    groups_mod.Groups = _Groups
+    models_pkg.groups = groups_mod
 
     chats_mod.Chats = _Chats
     models_mod.ModelForm = _ModelForm
