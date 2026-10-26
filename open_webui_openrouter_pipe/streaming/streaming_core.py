@@ -233,6 +233,7 @@ from .constants import (
     _REPLAY_DROPPED_OPENING,
     DEFERRED_REASONING_FLUSH,
     FUSION_EMBED_ATTEMPTS,
+    REASONING_REACHED_CALLER,
     ReasoningStatusThrottle,
 )
 from .event_emitter import _UNGUARDED_ATTR, REASONING_DELTA_EVENT, EventEmitter
@@ -1867,8 +1868,10 @@ class StreamingHandler:
                 _reopen_reasoning_window(key, state)
 
             async def _send_reasoning_to_a_caller_with_no_chat(text: str) -> None:
-                if chatless_reasoning and text:
-                    await event_emitter({"type": REASONING_DELTA_EVENT, "data": {"delta": text}})
+                if chatless_reasoning and thinking_box_enabled and text:
+                    accepted = await event_emitter({"type": REASONING_DELTA_EVENT, "data": {"delta": text}})
+                    if accepted is not False and retry_handoff is not None:
+                        retry_handoff[REASONING_REACHED_CALLER] = True
 
             async def _emit_reasoning_item(key: str, current_text: str, *, closing: bool = False) -> None:
                 nonlocal emitted_response_output_items
@@ -1914,7 +1917,6 @@ class StreamingHandler:
                         "item": reasoning_item,
                     }
                 )
-                await _send_reasoning_to_a_caller_with_no_chat(text[published:])
                 state["published_id"] = item_id
 
             async def _replace_published_reasoning_item(
@@ -1958,7 +1960,6 @@ class StreamingHandler:
                             "delta": tail,
                         }
                     )
-                await _send_reasoning_to_a_caller_with_no_chat(tail)
                 state["published_len"] = len(text)
                 unpublished_reasoning_keys.pop(key, None)
 
@@ -2572,6 +2573,7 @@ class StreamingHandler:
                                 _reopen_reasoning_window(key, display_state)
                                 if fusion_inner_call and event_emitter is not None:
                                     await event_emitter({"type": "fusion_inner:reasoning.delta", "data": {"delta": append}})
+                                await _send_reasoning_to_a_caller_with_no_chat(append)
                                 await _maybe_emit_reasoning_status(append)
                             if is_final and event_emitter:
                                 await _maybe_emit_reasoning_status("", force=True)
@@ -2863,6 +2865,7 @@ class StreamingHandler:
                                         display_state = _reasoning_display_state(key)
                                         _rearm_reasoning_window(key, display_state)
                                         _reopen_reasoning_window(key, display_state)
+                                        await _send_reasoning_to_a_caller_with_no_chat(append)
                                 if thinking_status_enabled:
                                     cancel_thinking()
                                     await event_emitter(
@@ -3488,6 +3491,7 @@ class StreamingHandler:
                                 opened = reasoning_display.get(key)
                                 if opened is not None:
                                     _rearm_reasoning_window(key, opened)
+                                await _send_reasoning_to_a_caller_with_no_chat(append)
                                 await _maybe_emit_reasoning_status(append)
                                 await _maybe_emit_reasoning_status("", force=True)
                             if emitter_supplied and calls_in_this_round:

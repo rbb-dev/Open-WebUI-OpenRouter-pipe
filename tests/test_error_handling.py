@@ -2121,7 +2121,7 @@ async def test_a_streaming_request_with_no_chat_gets_the_models_reasoning_as_chu
 
     assert all(isinstance(frame, dict) and isinstance(frame.get("choices"), list) for frame in shown), shown
     assert all(set(frame["choices"][0]["delta"]) <= {"content", "reasoning"} for frame in shown), shown
-    assert "".join(_reasoning_pieces_of(shown)) == "".join(thoughts)
+    assert _reasoning_pieces_of(shown) == thoughts
     last_reasoning = max(i for i, frame in enumerate(shown) if frame["choices"][0]["delta"].get("reasoning"))
     assert last_reasoning < _answer_delta_at(shown, answer)
     assert _answer_text_of(shown) == answer
@@ -2130,6 +2130,48 @@ async def test_a_streaming_request_with_no_chat_gets_the_models_reasoning_as_chu
     assert _answer_text_of(hidden) == answer
     assert _reasoning_pieces_of(in_a_chat) == []
     assert _answer_text_of(in_a_chat) == answer
+
+
+@pytest.mark.asyncio
+async def test_a_failure_after_the_reasoning_reached_a_caller_with_no_chat_is_not_retried_and_stays_an_error_frame(
+    pipe_instance_async, monkeypatch
+):
+    from open_webui_openrouter_pipe import Pipe
+    from open_webui_openrouter_pipe.core.errors import _build_openrouter_api_error
+    from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import answer_round, install, run
+
+    thoughts = ["Weigh the two offers. ", "The cheaper one wins."]
+    rejection = _build_openrouter_api_error(
+        400,
+        "Bad Request",
+        json.dumps({"error": {"message": "include_thoughts is only enabled when thinking is enabled",
+                              "code": "invalid_request_error"}}),
+    )
+    attempts: list[dict[str, Any]] = []
+
+    async def thinks_and_is_rejected_the_first_time(self, session, request_body, **_kwargs):
+        attempts.append(request_body)
+        for thought in thoughts:
+            yield {"type": "response.reasoning_text.delta", "item_id": "rs-1", "delta": thought}
+        if len(attempts) == 1:
+            raise rejection
+        for event in answer_round("Take the cheaper offer."):
+            yield event
+
+    reasoning_row = {"features": {"function_calling", "reasoning"},
+                     "supported_parameters": frozenset({"tools", "tool_choice", "temperature", "max_tokens",
+                                                        "reasoning", "include_reasoning"})}
+    pipe = pipe_instance_async
+    install(pipe, monkeypatch, lambda _n, _request: [], row=reasoning_row)
+    monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", thinks_and_is_rejected_the_first_time)
+
+    frames, _raw = await run(pipe, mode="Pipeline", stream=True, metadata={})
+
+    assert attempts[0].get("reasoning"), "the request did not ask for reasoning, so the retry that must not happen could not"
+    assert len(attempts) == 1, f"the request was sent again after its reasoning reached the caller: {len(attempts)} attempts"
+    assert _reasoning_pieces_of(frames) == thoughts
+    assert frames[-1] == {"error": {"message": "include_thoughts is only enabled when thinking is enabled", "code": 400}}
+    assert _answer_text_of(frames) == ""
 
 
 class TestAStreamWithNoChatStaysAlive:

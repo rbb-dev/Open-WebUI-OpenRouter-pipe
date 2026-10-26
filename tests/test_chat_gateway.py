@@ -226,6 +226,65 @@ async def test_chat_completions_streaming_reasoning_text_merge(pipe_instance_asy
 
 
 @pytest.mark.asyncio
+async def test_chat_completions_streaming_reasoning_carried_in_both_fields_of_a_chunk_is_sent_once(
+    pipe_instance_async,
+):
+    pipe = pipe_instance_async
+    valves = pipe.valves
+    session = pipe._create_http_session(valves)
+    thoughts = ["Weigh", " the", " two offers."]
+
+    sse_response = (
+        "".join(
+            _sse({
+                "choices": [{
+                    "delta": {
+                        "content": "",
+                        "role": "assistant",
+                        "reasoning": thought,
+                        "reasoning_details": [
+                            {"type": "reasoning.text", "text": thought, "format": "unknown", "index": 0}
+                        ],
+                    },
+                    "finish_reason": None,
+                }]
+            })
+            for thought in thoughts
+        )
+        + _sse({"choices": [{"delta": {"content": "Answer"}, "finish_reason": None}]})
+        + _sse({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+        + "data: [DONE]\n\n"
+    )
+
+    with aioresponses() as mock_http:
+        mock_http.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            body=sse_response.encode("utf-8"),
+            headers={"Content-Type": "text/event-stream"},
+            status=200,
+        )
+
+        events = []
+        async for event in pipe.send_openai_chat_completions_streaming_request(
+            session,
+            {"model": "deepseek/deepseek-r1-0528", "stream": True, "input": []},
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            valves=valves,
+        ):
+            events.append(event)
+
+        await session.close()
+
+    assert [e["delta"] for e in events if e.get("type") == "response.reasoning_text.delta"] == thoughts
+    finished = next(
+        e["item"] for e in events
+        if e.get("type") == "response.output_item.done" and e["item"].get("type") == "reasoning"
+    )
+    assert finished["content"][0]["text"] == "".join(thoughts)
+
+
+@pytest.mark.asyncio
 async def test_chat_completions_streaming_reasoning_summary(pipe_instance_async):
     """Test reasoning.summary handling."""
     pipe = pipe_instance_async

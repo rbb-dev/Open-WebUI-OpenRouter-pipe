@@ -665,6 +665,7 @@ class ChatCompletionsAdapter:
             delta_obj = delta if isinstance(delta, dict) else {}
 
             delta_reasoning_details = delta_obj.get("reasoning_details")
+            details_reasoning_text = ""
             if isinstance(delta_reasoning_details, list) and delta_reasoning_details:
                 for entry in delta_reasoning_details:
                     if not isinstance(entry, dict):
@@ -695,6 +696,7 @@ class ChatCompletionsAdapter:
                     if rtype == "reasoning.text":
                         text = entry.get("text")
                         if isinstance(text, str) and text:
+                            details_reasoning_text += text
                             reasoning_text_parts.append(text)
                             reasoning_text_seen = True
                             delivered_any = True
@@ -726,7 +728,7 @@ class ChatCompletionsAdapter:
                 if isinstance(candidate, str) and candidate.strip():
                     delta_reasoning_text = candidate
                     break
-            if delta_reasoning_text:
+            if delta_reasoning_text and delta_reasoning_text != details_reasoning_text:
                 if reasoning_item_id is None:
                     reasoning_item_id = f"reasoning-{generate_item_id()}"
                     delivered_any = True

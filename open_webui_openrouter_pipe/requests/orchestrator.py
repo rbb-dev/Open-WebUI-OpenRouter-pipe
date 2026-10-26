@@ -96,7 +96,11 @@ from ..storage.owui_files import (
     is_temporary_metadata,
 )
 from ..storage.users import get_user_by_id
-from ..streaming.constants import _REPLAY_DROPPED_OPENING, DEFERRED_REASONING_FLUSH
+from ..streaming.constants import (
+    _REPLAY_DROPPED_OPENING,
+    DEFERRED_REASONING_FLUSH,
+    REASONING_REACHED_CALLER,
+)
 from ..tools.tool_registry import (
     CALL_TOOL_NAME,
     CALL_TOOL_TOOL_ID,
@@ -2662,7 +2666,8 @@ class RequestOrchestrator:
                         retry_handoff=retry_handoff,
                     )
                 except OpenRouterAPIError as exc:
-                    if not reasoning_effort_retry_attempted:
+                    may_retry = not retry_handoff.get(REASONING_REACHED_CALLER)
+                    if may_retry and not reasoning_effort_retry_attempted:
                         error_details = {"provider_raw": exc.provider_raw}
                         if _is_reasoning_effort_error(error_details):
                             original_effort = None
@@ -2730,7 +2735,8 @@ class RequestOrchestrator:
                                     continue
 
                     if (
-                        not signature_retry_attempted
+                        may_retry
+                        and not signature_retry_attempted
                         and self._pipe._ensure_reasoning_config_manager()._should_retry_dropping_signed_reasoning(exc, responses_body)
                     ):
                         signature_retry_attempted = True
@@ -2742,7 +2748,8 @@ class RequestOrchestrator:
                         continue
 
                     if (
-                        not reasoning_retry_attempted
+                        may_retry
+                        and not reasoning_retry_attempted
                         and self._pipe._ensure_reasoning_config_manager()._should_retry_without_reasoning(exc, responses_body)
                     ):
                         reasoning_retry_attempted = True
