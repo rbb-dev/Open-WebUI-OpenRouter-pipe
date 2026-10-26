@@ -330,12 +330,13 @@ the spelling warning it does raise names it among the models the endpoints data 
 missing for rather than as a retirement. In both cases the row is not deleted, so
 settings survive if providers come back.
 
-A deactivation the pipe itself performs comes back by itself when providers return.
-An admin's own hand-switch-off survives too, and for that one switch it back on in the
-Functions list. Such a re-enable is the operator taking the row back: while the model is
-still in the routing valves the row stays on and the pipe writes nothing to it, neither
-`is_active: False` nor a new switch-off stamp, and it holds there on every later pass
-whose own write lands in a **later** second than the pipe's.
+A deactivation the pipe itself performs comes back by itself when providers return,
+also when the row's settings were edited in the meantime (see below). An admin's own
+hand-switch-off survives too, and for that one switch it back on in the Functions list.
+Such a re-enable is the operator taking the row back: while the model is still in the
+routing valves the row stays on and the pipe writes neither `is_active: False` nor a new
+switch-off stamp to it, and it holds there on every later pass whose own write lands in
+a **later** second than the pipe's.
 
 The second is the whole of it. The stamp is whole seconds, so a hand-off landing in the
 same second as the pipe's own switch-off is not told apart from it: `updated_at` still
@@ -355,6 +356,42 @@ is left off: it is the same shape as the cancelled insert above -- inert, naming
 no record to read -- and the pipe will not claim a switch-off it cannot see, because a
 filter an administrator switched off must not be switched back on by the next pass. Switch
 it on in Workspace > Functions to bring it back.
+
+The second says that somebody wrote to the row, not what they wrote. Open WebUI writes
+`updated_at` on a switch, on a saved set of valves, on a rename and on a Default Filter
+tick alike, so the second alone cannot tell a change of settings from a switch on and off.
+The write that switches a row off therefore also stores, in the row's meta beside the
+stamp, a fingerprint of its settings: the saved valve values, the name and the Default
+Filter tick. Only the fingerprint is stored, never the values. When a model-list refresh
+finds a row that carries the pipe's switch-off and was written to in a later second, it
+compares the fingerprint with the settings the row has at that moment, before anything
+else decides what to do with the row:
+
+- **The settings differ from the fingerprint: an edit.** The switch-off is still the
+  pipe's. The pipe writes the new second and a fingerprint of the new settings into the
+  row's meta, and only there, and goes on. The row is switched back on when the model
+  returns, and the same comparison applies again to any later write.
+- **The settings match the fingerprint: a switch by hand.** The row is yours. The pipe
+  removes the fingerprint from the row's meta, so a settings change made later cannot hand
+  the row back to it, and leaves the row off. Switch it on in Workspace > Functions to
+  bring it back.
+- **The row is on: you switched it on.** The pipe removes the fingerprint from the row's
+  meta and leaves the row on, so switching it off by hand later cannot read as an edit.
+
+The fingerprint goes together with the switch-off marker and the stamp, whenever the pipe
+clears those.
+
+Where this stops:
+
+- A settings change and a switch on and off by hand that fall between two model-list
+  refreshes leave the row with settings that differ from the fingerprint, so the pair
+  reads as an edit and the pipe switches the row back on that once. A switch off by hand
+  after that stays off.
+- The comparison is between the fingerprint and the settings the row has at the refresh.
+  Saving the same values again, or changing a setting and changing it back before the next
+  refresh, leaves the two equal and reads as a switch by hand.
+- A row an earlier version switched off has no fingerprint. It comes back when nothing has
+  written to it since, and stays off once an admin has written to it in a later second.
 
 Note that the entry may still be visible in the model's filter list while it is inactive.
 Open WebUI applies only the active entries, so a listed-but-inactive provider routing entry

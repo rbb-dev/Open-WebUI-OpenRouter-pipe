@@ -992,6 +992,14 @@ _PIPE_OFF_COMES_BACK = (
     "enabled again, and it comes back private rather than shared: Open WebUI puts every "
     "filter marked Global at the front of every model's list, so a row an admin made "
     "Global is made private again in the same write that re-enables it."
+    " The pipe keeps a fingerprint of the filter's settings (valve values, name and "
+    "Default Filter tick) from the moment it switches it off. A change to them afterwards "
+    "is read as an edit and the filter still comes back; switching it on or off by hand, "
+    "or saving the same values again, is read as the admin's choice and the filter stays "
+    "as the admin left it. A change and a switch by hand made between two model-list "
+    "refreshes read as an edit, so the filter comes back that once. A filter an earlier "
+    "version switched off has no fingerprint and behaves as before: a later write by an "
+    "admin leaves it off."
 )
 _ROUTING_ADMIN_OFF_STAYS_OFF = (
     " A filter switched off by hand in Open WebUI's Functions list stays off: the "

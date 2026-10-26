@@ -87,6 +87,7 @@ _PER_MODEL_INSTALL_WARN_WINDOW = 300
 
 _PIPE_OFF_META_KEY = "openrouter_pipe:switched_off_by_pipe"
 _PIPE_OFF_STAMP_META_KEY = "openrouter_pipe:switched_off_at"
+_PIPE_OFF_SETTINGS_META_KEY = "openrouter_pipe:switched_off_settings"
 _PIPE_INSTALLED_META_KEY = "openrouter_pipe:installed_by"
 _DISPLAY_NAME_MAX_CHARS = 80
 _PIPE_OFF_LANDED_AT: dict[str, int] = {}
@@ -155,6 +156,7 @@ def _merged_meta(
     elif off_by_pipe is False:
         merged.pop(_PIPE_OFF_META_KEY, None)
         merged.pop(_PIPE_OFF_STAMP_META_KEY, None)
+        merged.pop(_PIPE_OFF_SETTINGS_META_KEY, None)
     return merged
 
 
@@ -213,6 +215,28 @@ def switched_off_meta(row: Any) -> dict[str, Any]:
     return _merged_meta(row, {}, off_by_pipe=True)
 
 
+def _settings_digest(row: Any, valves: dict[str, Any]) -> str:
+    settings = {
+        "valves": valves,
+        "name": getattr(row, "name", "") or "",
+        "is_global": bool(getattr(row, "is_global", False)),
+    }
+    return hashlib.sha256(json.dumps(settings, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _stale_off_to_confirm(row: Any, owner: str) -> bool:
+    row_id = str(getattr(row, "id", "") or "")
+    return bool(
+        row_id
+        and _switched_off_by_pipe(row)
+        and isinstance(_stored_meta(row).get(_PIPE_OFF_SETTINGS_META_KEY), str)
+        and row_id not in _PIPE_OFF_SETTLING
+        and not _pipe_owns_the_off(row)
+        and _claimable_by(row, owner)
+        and _row_owner(row) in ("", owner)
+    )
+
+
 async def _live_row_or_skip(Functions, row: Any) -> Any | None:
     live = await Functions.get_function_by_id(str(getattr(row, "id", "") or ""))
     if live is None or not getattr(live, "is_active", False):
@@ -239,7 +263,33 @@ class _WriteOutcome:
         self.refused = False
 
 
+async def _with_settings_digest(Functions, function_id, updates, logger):
+    desired_meta = updates.get("meta") if isinstance(updates, dict) else None
+    if not isinstance(desired_meta, dict) or desired_meta.get(_PIPE_OFF_META_KEY) is not True:
+        return updates
+    try:
+        live = await Functions.get_function_by_id(function_id)
+        valves = await Functions.get_function_valves_by_id(function_id)
+        if live is None or not isinstance(valves, dict):
+            return updates
+        digest = _settings_digest(live, valves)
+    except Exception:
+        logger.log(
+            bounded_warn_level(
+                _warned_stale_filter_rows, f"settings_read:{function_id}", _PER_MODEL_INSTALL_WARN_WINDOW,
+            ),
+            "Could not read the settings of %s to record them with its switch-off, so a change to them "
+            "afterwards cannot be told from a switch by hand.",
+            function_id,
+            exc_info=True,
+        )
+        return updates
+    return {**updates, "meta": {**desired_meta, _PIPE_OFF_SETTINGS_META_KEY: digest}}
+
+
 async def _write_function(Functions, function_id, updates, what, logger, raised=None, *, settle: bool = False, landed_out: list | None = None, refused_out: set[str] | None = None) -> bool:
+    if settle:
+        updates = await _with_settings_digest(Functions, function_id, updates, logger)
     try:
         landed = await Functions.update_function_by_id(function_id, updates)
         if landed_out is not None:
@@ -1158,6 +1208,7 @@ class FilterManager:
                     exc_info=True,
                 )
                 raise _FilterEnumerationUnavailable(str(exc)) from exc
+            filters = await self._confirm_pipe_offs(Functions, filters)
         elif not rows.available:
             return None, _WriteOutcome()
         else:
@@ -1252,6 +1303,7 @@ class FilterManager:
                 if existing is None:
                     break
                 if matches_candidate(_stored_source(existing)) and _claimable_by(existing, owner):
+                    existing = await self._confirm_pipe_off(Functions, existing)
                     if getattr(existing, "is_active", False):
                         return str(getattr(existing, "id", "") or ""), outcome
                     if not _pipe_owns_the_off(existing):
@@ -2189,6 +2241,7 @@ class FilterManager:
                 found = rows.all_rows
             else:
                 found = await Functions.get_functions_by_type("filter", active_only=False)
+                found = await self._confirm_pipe_offs(Functions, found)
         except Exception as exc:
             self.logger.warning(
                 "Could not list the installed %s filters", log_label, exc_info=True
@@ -2985,7 +3038,7 @@ class FilterManager:
             )
             raise _FilterEnumerationUnavailable(str(exc)) from exc
         try:
-            return list(
+            rows = list(
                 await Functions.get_functions_by_type("filter", active_only=active_only)
             )
         except Exception as exc:
@@ -2995,6 +3048,72 @@ class FilterManager:
                 exc_info=True,
             )
             raise _FilterEnumerationUnavailable(str(exc)) from exc
+        return rows if active_only else await self._confirm_pipe_offs(Functions, rows)
+
+    async def _confirm_pipe_offs(self, Functions: Any, rows: list[Any]) -> list[Any]:
+        return [await self._confirm_pipe_off(Functions, row) for row in rows]
+
+    async def _confirm_pipe_off(self, Functions: Any, row: Any) -> Any:
+        owner = self._install_owner()
+        if not _stale_off_to_confirm(row, owner):
+            return row
+        row_id = str(getattr(row, "id", "") or "")
+        try:
+            live = await Functions.get_function_by_id(row_id)
+            if live is None or not _stale_off_to_confirm(live, owner):
+                return row if live is None else live
+            switched_on = bool(getattr(live, "is_active", False))
+            edited = False
+            if not switched_on:
+                valves = await Functions.get_function_valves_by_id(row_id)
+                if not isinstance(valves, dict):
+                    return live
+                edited = _settings_digest(live, valves) != _stored_meta(live)[_PIPE_OFF_SETTINGS_META_KEY]
+            if edited:
+                recorded = await _write_function(
+                    Functions,
+                    row_id,
+                    {"meta": switched_off_meta(live)},
+                    f"recording that the pipe's switch-off of {row_id} stands after its settings were changed",
+                    self.logger,
+                    settle=True,
+                )
+                if recorded:
+                    self.logger.info(
+                        "The settings of filter %r were changed after the pipe switched it off; "
+                        "the switch-off stays the pipe's to undo.",
+                        row_id,
+                    )
+            else:
+                recorded = await _write_function(
+                    Functions,
+                    row_id,
+                    {"meta": {k: v for k, v in _stored_meta(live).items() if k != _PIPE_OFF_SETTINGS_META_KEY}},
+                    f"recording that {row_id} was switched by hand after the pipe switched it off",
+                    self.logger,
+                )
+                if recorded:
+                    self.logger.info(
+                        "Filter %r was %s after the pipe switched it off; the pipe treats it as the "
+                        "admin's and leaves it as it is.",
+                        row_id,
+                        "switched on" if switched_on else "written to with its settings unchanged",
+                    )
+            if not recorded:
+                return live
+            confirmed = await Functions.get_function_by_id(row_id)
+            return live if confirmed is None else confirmed
+        except Exception:
+            self.logger.log(
+                bounded_warn_level(
+                    _warned_stale_filter_rows, f"confirm_off:{row_id}", _PER_MODEL_INSTALL_WARN_WINDOW,
+                ),
+                "Could not tell a change of the settings of filter %r from a switch by hand, so the pipe "
+                "leaves it as it is.",
+                row_id,
+                exc_info=True,
+            )
+            return row
 
     @timed
     async def ensure_openrouter_image_filter_function_ids(
@@ -4074,6 +4193,7 @@ __KEEP_WHAT_STILL_FITS__
                 all_filters = rows.all_rows
             else:
                 all_filters = await Functions.get_functions_by_type("filter", active_only=False)
+                all_filters = await self._confirm_pipe_offs(Functions, all_filters)
         except Exception:
             ids_known = False
             self.logger.exception(

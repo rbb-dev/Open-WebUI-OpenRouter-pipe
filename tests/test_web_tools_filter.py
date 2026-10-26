@@ -10,13 +10,12 @@ test guarantees the two never drift.
 """
 from __future__ import annotations
 
-import ast
 import asyncio
-import logging
 import re
 import contextvars
 import gc
 import sys
+import time
 import weakref
 from collections import OrderedDict
 from pathlib import Path
@@ -29,8 +28,6 @@ from aioresponses import aioresponses
 
 from open_webui_openrouter_pipe.core import timing_logger
 from open_webui_openrouter_pipe.core.config import (
-    _OPENROUTER_FUSION_FILTER_MARKER,
-    _OPENROUTER_IMAGE_GEN_FILTER_MARKER,
     _OPENROUTER_VIDEO_GEN_FILTER_MARKER,
     _OPENROUTER_WEB_TOOLS_FILTER_MARKER,
     OWUI_CHAT_ID,
@@ -39,7 +36,6 @@ from open_webui_openrouter_pipe.core.config import (
 from open_webui_openrouter_pipe.core.logging_system import SessionLogger
 from open_webui_openrouter_pipe.core.utils import CONTINUED_REPLY
 from open_webui_openrouter_pipe.filters.filter_manager import (
-    _PIPE_INSTALLED_META_KEY,
     FilterManager,
     _offered_web_tools,
 )
@@ -410,44 +406,17 @@ def test_no_surface_puts_a_price_on_the_model_the_subagent_delegates_to():
     assert not offenders, "\n".join(offenders)
 
 
-_CATALOG = {"data": [
-    {"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini"},
-    {"id": "anthropic/claude-sonnet-4.6", "name": "Claude Sonnet 4.6"},
-]}
-
-
 class _FunctionsTable:
-    """Open WebUI's Functions table, in memory, recording every update written to it.
-
-    Every read hands back a *fresh* object, and every write returns one. That is the
-    table's copy semantics, not decoration: `get_functions_by_type` runs its query in
-    the caller's session and returns `[FunctionModel.model_validate(function) for
-    function in result.scalars().all()]`
-    (`.external/open-webui/backend/open_webui/models/functions.py:262-270`), and
-    `update_function_by_id` issues the UPDATE, commits it, and re-reads the row with
-    `db.get` in that same session (`:398-415`). So a row read before a write is still
-    the pre-write row afterwards, and two reads of an unchanged row are two objects.
-
-    An earlier version of this double returned the stored `SimpleNamespace` and mutated
-    it in place. That aliasing is not a weaker stand-in, it is a different table: a
-    caller that enumerates the rows, writes one, and then re-reads the listing saw its
-    own write reflected back at it, which is exactly the sequence
-    `test_a_pass_does_not_revert_a_tool_the_valves_switch_on` is built around and
-    exactly what Open WebUI never gives it.
-    """
-
     def __init__(self) -> None:
+        self.now = 1_700_000_000
         self.rows: dict[str, SimpleNamespace] = {}
-        self.writes: list[tuple[str, dict[str, Any]]] = []
-        self.listings = 0
-        self.clock = 0
+        self.valves: dict[str, dict[str, Any]] = {}
 
     @staticmethod
     def _copy(row: SimpleNamespace) -> SimpleNamespace:
-        return SimpleNamespace(**vars(row))
+        return SimpleNamespace(**{**vars(row), "meta": dict(row.meta)})
 
     async def get_functions_by_type(self, type, active_only=False, db=None):
-        self.listings += 1
         return [
             self._copy(row)
             for row in self.rows.values()
@@ -460,8 +429,9 @@ class _FunctionsTable:
 
     async def insert_new_function(self, user_id, type, form_data, db=None):
         row = SimpleNamespace(
-            id=form_data.id, type=type, name=form_data.name, content=form_data.content, meta=form_data.meta,
-            is_active=False, is_global=False, updated_at=1,
+            id=form_data.id, type=type, name=form_data.name, content=form_data.content,
+            meta=form_data.meta.model_dump(), is_active=False, is_global=False,
+            updated_at=int(self.now), created_at=int(self.now),
         )
         self.rows[row.id] = row
         return self._copy(row)
@@ -470,212 +440,83 @@ class _FunctionsTable:
         row = self.rows.get(id)
         if row is None:
             return None
-        self.writes.append((id, dict(updated)))
         for key, value in dict(updated).items():
             setattr(row, key, value)
-        self.clock = max(self.clock, row.updated_at) + 1
-        row.updated_at = self.clock
+        row.updated_at = int(self.now)
         return self._copy(row)
 
     async def get_function_valves_by_id(self, id, db=None):
-        return {}
+        return dict(self.valves.get(id, {}))
 
-    async def get_user_valves_by_id_and_user_id(self, id, user_id, db=None):
-        return {}
+    def save_valves(self, id: str, valves: dict[str, Any]) -> None:
+        self.valves[id] = dict(valves)
+        self.rows[id].updated_at = int(self.now)
 
-    async def delete_function_by_id(self, id, db=None):
-        self.rows.pop(id, None)
-        return True
-
-
-def _configure(pipe, **switches: bool) -> None:
-    pipe.valves.API_KEY = "sk-test-key"
-    pipe.valves.ENABLE_VIDEO_GENERATION = False
-    pipe.valves.ENABLE_OPENROUTER_IMAGE_GENERATION = False
-    pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER = True
-    for name, value in switches.items():
-        setattr(pipe.valves, name, value)
+    async def switch(self, id: str) -> None:
+        await self.update_function_by_id(id, {"is_active": not self.rows[id].is_active})
 
 
-# ---------------------------------------------------------------------------
-# A switched-off web tool is taken out of every Web Tools filter row (D1)
-# ---------------------------------------------------------------------------
+class _TableClock:
+    def __init__(self, table: _FunctionsTable) -> None:
+        self._table = table
 
-_WEB_TOOL_KEYS = ("web_search", "web_fetch", "datetime", "advisor", "subagent", "chat_search_models")
-_KWARG_FOR_KEY = {
-    "web_search": "enable_web_search",
-    "web_fetch": "enable_web_fetch",
-    "datetime": "enable_datetime",
-    "advisor": "enable_advisor",
-    "subagent": "enable_subagent",
-    "chat_search_models": "enable_search_models",
-}
+    def time(self) -> float:
+        return self._table.now
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(time, name)
 
 
-def _render(enabled: tuple[str, ...] = _WEB_TOOL_KEYS) -> str:
-    """The pipe's own render, with exactly the web tools in `enabled` switched on."""
-    return FilterManager.render_openrouter_web_tools_filter_source(
-        **{kwarg: (key in enabled) for key, kwarg in _KWARG_FOR_KEY.items()}
-    ).strip() + "\n"
-
-
-def _store(functions, row_id, source, *, name="My web tools", is_active=True, is_global=True, updated_at=1):
-    functions.clock = max(functions.clock, updated_at)
-    functions.rows[row_id] = SimpleNamespace(
-        id=row_id, type="filter", name=name, content=source, meta={"title": "My web tools"},
-        is_active=is_active, is_global=is_global, updated_at=updated_at,
-    )
-    return functions.rows[row_id]
-
-
-def _warnings(caplog) -> list[str]:
-    return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
-
-
-"""Who receives the filter, read off the predicate rather than off a spec sheet.
-
-The last row is the one that carries the sentence: a model publishing neither `tools` nor
-`tool_choice` still receives the filter, because no code path consults tool capability for
-this attach. The image and video rows are tool-capable, so neither can tell a tool gate
-from a media gate.
-"""
-
-
-def _seed_filter_row(
-    functions: _FunctionsTable,
-    row_id: str,
-    *,
-    name: str,
-    content: str,
-    is_active: bool = True,
-    is_global: bool = False,
-    updated_at: int = 10,
-    owner: str = "",
-) -> SimpleNamespace:
-    """A row in the Functions table.
-
-    `owner` is the `openrouter_pipe:installed_by` stamp the installer writes on every row
-    it creates or maintains. A row the pipe owns carries it; a row it does not -- an
-    admin's, or another copy of the pipe's -- does not, and the off-switches select on it
-    so they never write to a row that is not theirs.
-    """
-    row = SimpleNamespace(
-        id=row_id,
-        type="filter",
-        name=name,
-        content=content,
-        meta=({_PIPE_INSTALLED_META_KEY: owner} if owner else {}),
-        is_active=is_active,
-        is_global=is_global,
-        updated_at=updated_at,
-    )
-    functions.rows[row_id] = row
-    return row
-
-
-def _foreign_filter_source() -> str:
-    """An unrelated global filter: no marker, so no installer's candidate."""
-    return (
-        "# an admin's own filter, nothing to do with the pipe\n"
-        "class Filter:\n"
-        "    def inlet(self, body):\n"
-        "        return body\n"
-    )
-
-
-# ---------------------------------------------------------------------------
-# The Fusion OFF arm and the Image Generation reactivation arm. Both are the
-# image-gen arm's shape applied to a second family, and both have to name the
-# row the installer names: the preferred id is only a preference, so a filter
-# that collided with it lives on a `_1` suffix while the arm still wrote the
-# literal.
-# ---------------------------------------------------------------------------
-
-_FUSION_ID = "openrouter_fusion"
-_FUSION_MARKER = _OPENROUTER_FUSION_FILTER_MARKER
-_IMAGE_GEN_MARKER = _OPENROUTER_IMAGE_GEN_FILTER_MARKER
-def _marked_source(marker: str) -> str:
-    return f'"""{marker}"""\nclass Filter:\n    def inlet(self, body):\n        return body\n'
-
-
-def _fusion_row(functions: _FunctionsTable, row_id: str, *, marked: bool, updated_at: int = 20):
-    return _seed_filter_row(
-        functions,
-        row_id,
-        name="OR Fusion" if marked else "Someone else's filter",
-        content=_marked_source(_FUSION_MARKER) if marked else _foreign_filter_source(),
-        updated_at=updated_at,
-    )
-
-
-_ATLAS_LINES = _ATLAS.read_text(encoding="utf-8").splitlines()
-
-
-def _atlas_row(valve: str) -> str:
-    rows = [line for line in _ATLAS_LINES if re.match(rf"^\|\s*`{valve}`\s*\|", line)]
-    assert len(rows) == 1, f"{valve}: {len(rows)} atlas rows, expected exactly one"
-    return rows[0]
-
-
-def _config_constants() -> dict:
-    tree = ast.parse(
-        (
-            Path(__file__).resolve().parents[1]
-            / "open_webui_openrouter_pipe"
-            / "core"
-            / "config.py"
-        ).read_text()
-    )
+def _routing_map(*slugs: str) -> dict[str, dict[str, Any]]:
     return {
-        node.targets[0].id: node.value.value
-        for node in tree.body
-        if isinstance(node, ast.Assign)
-        and isinstance(node.targets[0], ast.Name)
-        and isinstance(node.value, ast.Constant)
+        slug: {
+            "providers": ["alpha", "beta"],
+            "quantizations": ["fp8"],
+            "short_name": slug,
+            "provider_names": {"alpha": "Alpha", "beta": "Beta"},
+        }
+        for slug in slugs
     }
 
 
-def _valve_descriptions() -> dict[str, str]:
-    """Every ``Field(description=...)`` in config.py, read without importing the module.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "by_hand", [False, True], ids=["admin saves the valves", "admin switches it on and off"]
+)
+async def test_a_filter_the_pipe_switched_off_comes_back_after_an_admin_saved_its_settings_but_not_after_a_switch_by_hand(
+    pipe_instance_async, monkeypatch, by_hand
+):
+    import open_webui.models.functions as functions_module
 
-    Importing ``config`` pulls the whole package in; the texts are module data and
-    ``ast`` is enough. The evaluator understands the one concatenation form these
-    descriptions use, so a shared sentence constant is read rather than skipped.
-    """
-    import ast
+    from open_webui_openrouter_pipe.filters import filter_manager as fm_module
 
-    tree = ast.parse(
-        (
-            Path(__file__).resolve().parents[1]
-            / "open_webui_openrouter_pipe"
-            / "core"
-            / "config.py"
-        ).read_text()
-    )
-    constants = _config_constants()
+    table = _FunctionsTable()
+    monkeypatch.setattr(functions_module, "Functions", table)
+    monkeypatch.setattr(fm_module, "time", _TableClock(table))
+    pipe = pipe_instance_async
+    slug = "example/steady-model"
 
-    def evaluate(node):
-        if isinstance(node, ast.Constant):
-            return node.value
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-            return evaluate(node.left) + evaluate(node.right)
-        if isinstance(node, ast.Name) and node.id in constants:
-            return constants[node.id]
-        raise ValueError(ast.dump(node)[:80])
+    async def routing_pass(*listed: str) -> dict[str, str]:
+        rows = await pipe._read_filter_rows([], fresh=True)
+        mapping, _ = await pipe._ensure_filter_manager().ensure_provider_routing_filters(
+            ",".join(listed), "", _routing_map(*listed), [], pipe.id, rows
+        )
+        return mapping
 
-    out: dict[str, str] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.AnnAssign) and isinstance(node.value, ast.Call):
-            for kw in node.value.keywords:
-                if kw.arg == "description":
-                    try:
-                        out[node.target.id] = evaluate(kw.value)
-                    except ValueError:
-                        pass
-    return out
+    row_id = (await routing_pass(slug))[slug]
+    table.now += 60
+    await routing_pass()
+    assert table.rows[row_id].is_active is False
 
+    table.now += 60
+    if by_hand:
+        await table.switch(row_id)
+        table.now += 60
+        await table.switch(row_id)
+    else:
+        table.save_valves(row_id, {"ORDER": ["alpha"]})
+    table.now += 60
+    await routing_pass(slug)
 
-def _direct_uploads_module() -> ModuleType:
-    return _load_filter_from_source(
-        FilterManager.render_direct_uploads_filter_source(), "_embedded_direct_uploads_filter"
-    )
+    comes_back = not by_hand
+    assert table.rows[row_id].is_active is comes_back
