@@ -34,7 +34,7 @@ from ..core.warn_latch import warn_level
 from ..filters.image_filter_renderer import IMAGE_KNOB_TITLES
 from ..models.registry import _contract_target, _fingerprint
 from ..requests.fusion_engine import latest_user_text
-from ..requests.orchestrator import _closing_notices, _is_api_caller
+from ..requests.orchestrator import _closing_notices
 from ..storage.multimodal import (
     _NO_VERDICT,
     _PAYLOAD_ALLOWLIST_REFUSAL,
@@ -43,6 +43,7 @@ from ..storage.multimodal import (
     ADDRESS_CHECK_SECONDS,
     _address_verdict,
 )
+from ..storage.owui_files import _is_api_caller
 from ..storage.receive_spool import RECEIVE_ITEM_MAX_BYTES, ReceiveSpool
 from .image_client import OpenRouterImageClient
 from .image_types import (

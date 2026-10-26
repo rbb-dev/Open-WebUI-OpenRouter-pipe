@@ -86,6 +86,8 @@ from ..models.registry import (
 from ..storage.multimodal import Confidence, _sniff_evidence
 from ..storage.owui_chats import read_chat_owner_id
 from ..storage.owui_files import (
+    _is_api_caller,
+    _is_chatless_caller,
     get_file_by_id,
     index_referenced_file_payloads,
     infer_file_mime_type,
@@ -177,19 +179,6 @@ if TYPE_CHECKING:
 
 
 from ..models.registry import uses_dedicated_image_api
-
-
-def _is_api_caller(metadata: dict[str, Any] | None) -> bool:
-    meta = metadata or {}
-    return not (bool(meta.get("chat_id")) and bool(meta.get("message_id")))
-
-
-def _is_chatless_caller(metadata: dict[str, Any] | None) -> bool:
-    if not _is_api_caller(metadata):
-        return False
-    meta = metadata or {}
-    pipe_meta = meta.get(_PIPE_METADATA_KEY)
-    return not (isinstance(pipe_meta, dict) and pipe_meta.get("fusion_inner"))
 
 
 def _closing_notices(responses_body: Any, metadata: dict[str, Any] | None) -> list[str]:

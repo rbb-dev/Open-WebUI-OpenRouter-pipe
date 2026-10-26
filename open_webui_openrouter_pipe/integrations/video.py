@@ -72,8 +72,6 @@ from ..models.registry import OpenRouterModelRegistry
 from ..requests.fusion_engine import asks_for_help, latest_user_text
 from ..requests.orchestrator import (
     _closing_notices,
-    _is_api_caller,
-    _is_chatless_caller,
     _provider_error_response,
 )
 from ..storage.multimodal import (
@@ -84,6 +82,8 @@ from ..storage.multimodal import (
 from ..storage.owui_files import (
     NO_CHAT_ID_KEY,
     PUBLISHING_NEEDS_OWNERSHIP,
+    _is_api_caller,
+    _is_chatless_caller,
     authorize_file_publication,
     chat_latch_key,
     get_file_by_id,

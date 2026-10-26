@@ -193,3 +193,42 @@ def always_hands_back(n: int, _request: dict[str, Any]):
 def _probe(pipe: Pipe, monkeypatch) -> list[dict[str, Any]]:
     """Install the hand-back script and hand back the request list the tests bill against."""
     return install(pipe, monkeypatch, always_hands_back)
+
+
+@pytest.mark.asyncio
+async def test_a_streaming_request_with_no_chat_gets_its_own_tool_call_back_as_a_chunk_in_open_webui_mode(
+    pipe_instance_async, monkeypatch
+):
+    declared = [{"type": "function", "function": {
+        "name": "lookup", "description": "Look something up.",
+        "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
+    }}]
+    pipe = pipe_instance_async
+    requests = install(pipe, monkeypatch, lambda n, _request: calls_round(call("lookup", {"q": "x"}, f"call-{n}")))
+
+    chunks, _raw = await run(pipe, mode="Open-WebUI", stream=True, metadata={}, body_tools=declared)
+    requests_for_no_chat = len(requests)
+    in_a_chat, _raw = await run(pipe, mode="Open-WebUI", stream=True, metadata=dict(CHAT), body_tools=declared)
+
+    returned = [
+        tool_call
+        for chunk in chunks
+        if isinstance(chunk, dict)
+        for tool_call in ((chunk.get("choices") or [{}])[0].get("delta") or {}).get("tool_calls") or []
+    ]
+    assert [(c["id"], c["function"]["name"], json.loads(c["function"]["arguments"])) for c in returned] == [
+        ("call-1", "lookup", {"q": "x"})
+    ], chunks
+    assert all(isinstance(chunk, dict) and isinstance(chunk.get("choices"), list) for chunk in chunks), chunks
+    assert requests_for_no_chat == 1
+
+    assert any(
+        isinstance(frame, dict)
+        and frame.get("type") == "response.output_item.added"
+        and (frame.get("item") or {}).get("type") == "function_call"
+        for frame in in_a_chat
+    )
+    assert not any(
+        isinstance(frame, dict) and ((frame.get("choices") or [{}])[0].get("delta") or {}).get("tool_calls")
+        for frame in in_a_chat
+    )

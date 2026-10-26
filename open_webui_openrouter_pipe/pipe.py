@@ -183,11 +183,12 @@ from .models.registry import (
     supports_tool_calling,
 )
 from .requests import NonStreamingAdapter, TaskModelAdapter
-from .requests.orchestrator import _is_api_caller, _is_chatless_caller
 from .storage.multimodal import REQUEST_VALIDATED_IPS, MultimodalHandler
 from .storage.owui_files import (
     FILE_READ_AUTH_MEMO,
     OwuiFileGateway,
+    _is_api_caller,
+    _is_chatless_caller,
     is_channel_chat,
     is_temporary_chat,
     loggable_chat_id,

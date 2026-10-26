@@ -310,7 +310,8 @@ async def test_open_webui_stores_a_handed_back_call_under_the_key_it_runs(
     valves = pipe.valves.model_copy(update={"TOOL_EXECUTION_MODE": "Open-WebUI"})
     await pipe._streaming_handler._run_streaming_loop(
         ResponsesBody(model="test/model", input=[], stream=True), valves, emitter,
-        metadata={"model": {"id": "test"}, "_pipe_exposed_to_origin": exposed_to_origin},
+        metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "message-1",
+                  "_pipe_exposed_to_origin": exposed_to_origin},
         tools={}, session=cast(Any, object()), user_id="user-1",
     )
 

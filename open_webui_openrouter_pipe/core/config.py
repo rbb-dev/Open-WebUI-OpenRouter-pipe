@@ -1695,7 +1695,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "those, and its own iteration bound ends such a reply. That budget is one user's spend against one reply - two users naming "
             "the same chat and message are charged to two budgets and neither spends the other's - and it is charged "
             "in a Temporary Chat too, where only the reply's own budget is held and its chat id is not. "
-            "The pipe runs a non-streamed reply's calls and a Fusion panel model's calls in either mode. A tool the "
+            "The pipe runs a non-streamed reply's calls, a Fusion panel model's calls and the calls of a streamed "
+            "request with no chat, such as an API program's, in either mode: Open WebUI runs its tool loop only for a "
+            "request that carries a chat id and a message id. A tool the "
             "request itself declared with nothing behind it goes back to its sender instead. With 'ask' tool approval "
             "in a saved or temporary chat the pipe never runs a call itself: a streamed reply there hands every call "
             "to Open "
@@ -1737,14 +1739,14 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "which `asyncio.get_event_loop()` in the body returns: tasks, callbacks and timers created on it run on "
             "the event loop and `asyncio.run()` keeps working, but no loop is running, so `asyncio.get_running_loop()` "
             "raises, and `run_until_complete` on the stand-in fails. "
-            "The switch governs calls the pipe runs: in Open-WebUI tool mode a streamed reply's calls run in Open WebUI "
-            "and are not governed by this setting, and an `async def` tool is unaffected in both positions."
+            "The switch governs calls the pipe runs: in Open-WebUI tool mode the calls of a streamed reply in a chat run "
+            "in Open WebUI and are not governed by this setting, and an `async def` tool is unaffected in both positions."
         ),
     )
     SHOW_TOOL_CARDS: bool = Field(
         default=True,
         title="Show tool execution cards",
-        description="Show each tool the model uses as a collapsible card in the chat, with its name, arguments and result, as Open WebUI does for the tools it runs itself. As in Open WebUI's own tool loop, a picture a tool returns as image data goes only to the model; a picture Open WebUI has stored as a file, such as an MCP tool's, goes to the model and the chat, as Open WebUI does; other files go only to the chat. When off, the tools this pipe runs and OpenRouter's server tools get no card, except that a file the model shows through Open Terminal keeps its card for a person whose Open WebUI shows terminal files inline. On later turns the model still learns which tools it used, for as many earlier turns as `TOOL_TURNS_TO_REMEMBER` keeps and for the built-in ask_user questions of every earlier turn, except in a temporary chat and in a turn answered on a realtime voice call, for which the pipe keeps nothing; after Stop, it learns of the calls before the first one still running if the reply was streamed, and of none if it was not. Open WebUI draws its own cards for the calls it runs, which now means a streamed reply in Open-WebUI mode and calls approved under 'ask'. With tool cards on, a call the loop cut off at `MAX_FUNCTION_CALL_LOOPS` is shown as a card marked failed, so a round that never ran is visible rather than missing.",
+        description="Show each tool the model uses as a collapsible card in the chat, with its name, arguments and result, as Open WebUI does for the tools it runs itself. As in Open WebUI's own tool loop, a picture a tool returns as image data goes only to the model; a picture Open WebUI has stored as a file, such as an MCP tool's, goes to the model and the chat, as Open WebUI does; other files go only to the chat. When off, the tools this pipe runs and OpenRouter's server tools get no card, except that a file the model shows through Open Terminal keeps its card for a person whose Open WebUI shows terminal files inline. On later turns the model still learns which tools it used, for as many earlier turns as `TOOL_TURNS_TO_REMEMBER` keeps and for the built-in ask_user questions of every earlier turn, except in a temporary chat and in a turn answered on a realtime voice call, for which the pipe keeps nothing; after Stop, it learns of the calls before the first one still running if the reply was streamed, and of none if it was not. Open WebUI draws its own cards for the calls it runs, which now means a streamed reply in a chat in Open-WebUI mode and calls approved under 'ask'. With tool cards on, a call the loop cut off at `MAX_FUNCTION_CALL_LOOPS` is shown as a card marked failed, so a round that never ran is visible rather than missing.",
     )
     PERSIST_TOOL_RESULTS: bool = Field(
         default=False,
@@ -1895,8 +1897,8 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "wrote no `strict` - the value that endpoint already defaults to, stated rather than left to it. "
             "On the Responses route the registry and direct-tool specs the pipe advertises also carry "
             "`strict: true`, so the provider enforces the strictified schema. A tool the pipe does not "
-            "strictify (Open WebUI tool mode, a streamed reply under `ask` approval in a saved or temporary "
-            "chat, or this valve off) is sent there with an "
+            "strictify (a streamed reply in a chat in Open WebUI tool mode, a streamed reply under `ask` approval in "
+            "a saved or temporary chat, or this valve off) is sent there with an "
             "explicit `strict: false`, so that endpoint's own `true` default never applies to a schema "
             "the pipe did not strictify. The strictified schema is not "
             "renamed to meet strict mode's property-name rules, so a tool whose author gave a property a name "
@@ -3655,13 +3657,15 @@ class UserValves(BaseModel):
             "chat to Open WebUI, whatever this is set to, and offers the tools so the AI can call them; on a reply "
             "that is not streamed the tools are withheld instead, because Open WebUI cannot pause it to ask. That budget is one user's spend against one reply - two users naming the same chat and message are "
             "charged to two budgets - and it is charged in a Temporary Chat too, where only the reply's own budget is "
-            "held and its chat id is not."
+            "held and its chat id is not. A streamed request with no chat, such as an API program's, is not handed to "
+            "Open WebUI whatever this is set to: Open WebUI runs its tool loop only for a chat, so the pipe runs the "
+            "tools it can, and a tool the program declared itself goes back to the program."
         ),
     )
     SHOW_TOOL_CARDS: bool = Field(
         default=True,
         title="Show tool execution cards",
-        description="Show each tool the AI uses as a card in the chat. When off, no card appears, except for a file the AI shows through Open Terminal while Open WebUI is set to show terminal files inline; when it is not, a file the AI asks to show inline opens in the preview panel. The AI still remembers which tools it used, for as many earlier turns as Tool turns to remember keeps and for the questions it asked you through ask_user in every earlier turn, except in a temporary chat and in a turn answered on a realtime voice call, where nothing is kept; after Stop, it remembers the calls before the first one still running if the reply was streamed, and none if it was not. Open WebUI draws its own cards for the calls it runs, which now means a streamed reply in Open-WebUI mode and calls approved under 'ask'. With tool cards on, a call the loop cut off at `MAX_FUNCTION_CALL_LOOPS` is shown as a card marked failed, so a round that never ran is visible rather than missing.",
+        description="Show each tool the AI uses as a card in the chat. When off, no card appears, except for a file the AI shows through Open Terminal while Open WebUI is set to show terminal files inline; when it is not, a file the AI asks to show inline opens in the preview panel. The AI still remembers which tools it used, for as many earlier turns as Tool turns to remember keeps and for the questions it asked you through ask_user in every earlier turn, except in a temporary chat and in a turn answered on a realtime voice call, where nothing is kept; after Stop, it remembers the calls before the first one still running if the reply was streamed, and none if it was not. Open WebUI draws its own cards for the calls it runs, which now means a streamed reply in a chat in Open-WebUI mode and calls approved under 'ask'. With tool cards on, a call the loop cut off at `MAX_FUNCTION_CALL_LOOPS` is shown as a card marked failed, so a round that never ran is visible rather than missing.",
     )
     REQUEST_ZDR: bool = Field(
         default=False,

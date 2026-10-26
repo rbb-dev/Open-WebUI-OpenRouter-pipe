@@ -4182,7 +4182,7 @@ async def test_tool_assignment_with_owui_passthrough():
                 __request__=None,
                 __event_emitter__=event_emitter,
                 __event_call__=None,
-                __metadata__={"model": {"id": "openai/gpt-4o-mini"}},
+                __metadata__={"model": {"id": "openai/gpt-4o-mini"}, "chat_id": "chat-1", "message_id": "msg-1"},
                 __tools__={"my_tool": {"spec": {"name": "my_tool", "parameters": {}}}},
                 __task__=None,
                 __task_body__=None,

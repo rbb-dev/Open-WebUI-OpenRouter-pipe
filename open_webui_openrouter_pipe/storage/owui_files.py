@@ -409,6 +409,19 @@ def is_temporary_metadata(metadata: Any) -> bool:
     return isinstance(pipe_meta, dict) and pipe_meta.get("temporary_chat") is True
 
 
+def _is_api_caller(metadata: dict[str, Any] | None) -> bool:
+    meta = metadata or {}
+    return not (bool(meta.get("chat_id")) and bool(meta.get("message_id")))
+
+
+def _is_chatless_caller(metadata: dict[str, Any] | None) -> bool:
+    if not _is_api_caller(metadata):
+        return False
+    meta = metadata or {}
+    pipe_meta = meta.get(_PIPE_METADATA_KEY)
+    return not (isinstance(pipe_meta, dict) and pipe_meta.get("fusion_inner"))
+
+
 def loggable_session_id(session_id: Any) -> str:
     chat_id = OWUI_CHAT_ID.get()
     if not isinstance(chat_id, str) or not chat_id.strip():

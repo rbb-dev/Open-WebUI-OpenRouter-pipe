@@ -8,7 +8,11 @@ from typing import TYPE_CHECKING, Any
 
 from ..core.config import _EMPTY_TOOL_SCHEMA, _PIPE_METADATA_KEY
 from ..core.timing_logger import timed
-from ..storage.owui_files import is_linkable_chat, is_temporary_chat
+from ..storage.owui_files import (
+    _is_chatless_caller,
+    is_linkable_chat,
+    is_temporary_chat,
+)
 from .tool_schema import (
     _declared_parameter_names,
     _strictify_schema,
@@ -51,6 +55,8 @@ def open_webui_runs_the_calls(valves: Pipe.Valves, metadata: Any, *, stream: boo
     meta = metadata if isinstance(metadata, dict) else {}
     pipe_meta = meta.get(_PIPE_METADATA_KEY)
     if isinstance(pipe_meta, dict) and pipe_meta.get("fusion_inner"):
+        return False
+    if _is_chatless_caller(meta):
         return False
     if ask_approval_handoff(meta) and stream:
         return True

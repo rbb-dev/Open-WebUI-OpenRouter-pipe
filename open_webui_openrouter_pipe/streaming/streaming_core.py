@@ -203,6 +203,8 @@ from ..storage.multimodal import (
 )
 from ..storage.owui_chats import read_chat_message
 from ..storage.owui_files import (
+    _is_api_caller,
+    _is_chatless_caller,
     caller_may_write_chat,
     is_channel_chat,
     is_linkable_chat,
@@ -550,7 +552,6 @@ class StreamingHandler:
         retry_handoff: dict[str, Any] | None = None,
         emitter_supplied: bool | None = None,
     ):
-        from ..requests.orchestrator import _is_chatless_caller
         from ..tools.tool_executor import _request_address_budget
 
         metadata = {} if metadata is None else metadata
@@ -2350,8 +2351,6 @@ class StreamingHandler:
             if not isinstance(end_notices, list):
                 end_notices = []
             end_notices_token = ATTACHMENT_NOTICES.set(end_notices)
-            from ..requests.orchestrator import _is_api_caller
-
             if body.stream and emitter_supplied and not (fusion_inner_call or _is_api_caller(metadata)):
                 event_emitter = self._pipe._event_emitter_handler._show_notices_while_answering(
                     event_emitter, end_notices
@@ -4817,8 +4816,6 @@ class StreamingHandler:
                     if duration > 0:
                         stream_window = duration
                 if terminal or handed_back:
-                    from ..requests.orchestrator import _is_api_caller
-
                     description = self._pipe._ensure_error_formatter()._format_final_status_description(
                         elapsed=elapsed,
                         total_usage=total_usage,
@@ -4851,8 +4848,6 @@ class StreamingHandler:
                     except (asyncio.CancelledError, Exception):
                         self.logger.exception("Failed to emit final status in finally")
             elif error_occurred and terminal and not was_cancelled and not fusion_inner_call:
-                from ..requests.orchestrator import _is_api_caller
-
                 try:
                     await self._pipe._event_emitter_handler._emit_closing_notices(
                         event_emitter, body, silenced=_is_api_caller(metadata)
@@ -5406,8 +5401,6 @@ _NAMES_THE_RESPONSES_ENDPOINT = re.compile(r"\bresponses\b|\bresponse\s+(?:api|e
 
 
 def _chatless_answer_notice(body: Any, metadata: dict[str, Any] | None) -> str:
-    from ..requests.orchestrator import _is_chatless_caller
-
     notices = getattr(body, "_attachment_notices", None)
     if not (isinstance(notices, list) and _is_chatless_caller(metadata)):
         return ""
