@@ -39,7 +39,8 @@ from open_webui_openrouter_pipe.plugins.registry import PluginRegistry
 import logging
 import threading
 from open_webui_openrouter_pipe.integrations import image_catalog, video_catalog
-from tests._jumping_clock import event_loop_policy  # noqa: F401
+
+pytestmark = pytest.mark.jumping_clock
 
 # Time here is simulated, never waited out. The loop jumps its own clock to the next scheduled wake-up
 # instead of sleeping until it, so a tool that "takes 300 seconds" costs nothing while still finishing

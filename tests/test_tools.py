@@ -371,9 +371,7 @@ async def test_idle_timeout_returns_failed_output_and_continues():
 
     The clock stays real rather than the house jumping clock. The simulated loop would
     serve this arm -- both workers run to a start before the loop ever has nothing left to
-    do, so nothing is skipped -- but reaching it means importing the fixture into
-    `test_tools.py`, and the fixture is file-scoped: every other test in that file would
-    move onto the simulated clock too. This arm does not need that, so it does not pay it.
+    do, so nothing is skipped -- but this arm does not need it, so it does not use it.
 
     The tools publish an `asyncio.Event` when they start and the arm asserts both fired, so
     "the idle limit cut these two" is a claim about production rather than about how fast

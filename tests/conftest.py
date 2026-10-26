@@ -1526,6 +1526,7 @@ class _TimeTravelLoop(asyncio.SelectorEventLoop):
         super()._run_once()  # pyright: ignore[reportAttributeAccessIssue]
 
 
-class _TimeTravelPolicy(asyncio.DefaultEventLoopPolicy):
-    def new_event_loop(self):
-        return _TimeTravelLoop()
+def pytest_asyncio_loop_factories(config, item):
+    if item.get_closest_marker("jumping_clock") and not item.get_closest_marker("real_clock"):
+        return {"jumping": _TimeTravelLoop}
+    return {"real": asyncio.new_event_loop}

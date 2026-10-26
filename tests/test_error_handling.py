@@ -2174,13 +2174,8 @@ async def test_a_failure_after_the_reasoning_reached_a_caller_with_no_chat_is_no
     assert _answer_text_of(frames) == ""
 
 
+@pytest.mark.jumping_clock
 class TestAStreamWithNoChatStaysAlive:
-    @pytest.fixture
-    def event_loop_policy(self):
-        from conftest import _TimeTravelPolicy
-
-        return _TimeTravelPolicy()
-
     @pytest.mark.asyncio
     async def test_a_silent_stretch_sends_an_empty_chunk_every_interval_until_the_answer_starts(
         self, pipe_instance_async, monkeypatch

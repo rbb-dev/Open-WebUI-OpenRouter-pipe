@@ -23,9 +23,7 @@ import pytest
 
 # A `Retry-After` a retried request now waits out is charged to the jumping clock, so a header of thirty
 # seconds costs no wall-clock here and no CI run blows its timeout.
-from tests._jumping_clock import event_loop_policy  # noqa: F401
-
-pytestmark = pytest.mark.usefixtures("event_loop_policy")
+pytestmark = pytest.mark.jumping_clock
 from aioresponses import aioresponses
 
 from open_webui_openrouter_pipe import Pipe

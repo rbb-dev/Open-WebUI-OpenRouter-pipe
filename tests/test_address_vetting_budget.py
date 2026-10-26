@@ -22,7 +22,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from conftest import _TimeTravelPolicy
 from tests.pipe_limits import set_slot
 from open_webui_openrouter_pipe.integrations.provider_options import (
     MAX_URL_SCAN_DEPTH,
@@ -59,11 +58,8 @@ def _nested(levels: int) -> dict:
 
 
 # ------------------------------------------------------------- PER LOOKUP ----
+@pytest.mark.jumping_clock
 class TestAStalledLookup:
-    @pytest.fixture
-    def event_loop_policy(self):
-        return _TimeTravelPolicy()
-
     @pytest.mark.parametrize("budget", [0.2, 0.5])
     @pytest.mark.asyncio
     async def test_a_stalled_lookup_gives_up_inside_the_budget_it_was_given(self, budget):

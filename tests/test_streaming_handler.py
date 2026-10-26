@@ -34,7 +34,6 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from conftest import _TimeTravelPolicy
 from open_webui_openrouter_pipe import EncryptedStr, Pipe, ResponsesBody, _ToolExecutionContext, generate_item_id
 from open_webui_openrouter_pipe.core.config import EncryptedStr
 from open_webui_openrouter_pipe.core.errors import (
@@ -11490,12 +11489,9 @@ class TestAppendOutputBlockEmptySnippet:
         assert result == "Hello"
 
 
+@pytest.mark.jumping_clock
 class TestLaterTimeoutWithDelayedStream:
     """Tests for _later timeout path with delayed model response (lines 551-555)."""
-
-    @pytest.fixture
-    def event_loop_policy(self):
-        return _TimeTravelPolicy()
 
     @pytest.mark.asyncio
     async def test_later_timeout_fires_before_model_started(self, monkeypatch, pipe_instance_async):

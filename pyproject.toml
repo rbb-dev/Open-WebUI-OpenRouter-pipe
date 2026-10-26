@@ -39,7 +39,7 @@ test = [
   "aioresponses",
   "markdown-it-py",
   "pytest",
-  "pytest-asyncio",
+  "pytest-asyncio>=1.4.0",
   "pytest-timeout",
   "pytest-xdist"
 ]

@@ -48,9 +48,8 @@ from open_webui_openrouter_pipe.storage.owui_files import (
     authorize_file_publication,
     infer_file_mime_type,
 )
-from tests._jumping_clock import event_loop_policy  # noqa: F401
 
-pytestmark = pytest.mark.usefixtures("event_loop_policy")
+pytestmark = pytest.mark.jumping_clock
 
 MP4 = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 32
 _FLOORED_MODEL = "bytedance/seedance-2.0"

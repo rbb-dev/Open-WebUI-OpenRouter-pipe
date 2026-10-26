@@ -105,8 +105,8 @@ def main() -> int:
     if failed:
         print(f"{failed} test(s) still take more than {args.limit:g}s for their call when run alone")
         print(
-            "shrink the input, move the wait onto the jumping clock (tests/_jumping_clock.py), "
-            "or move work several tests share into one module-scoped fixture"
+            "shrink the input, move the wait onto the jumping clock (mark the test file or class "
+            "pytest.mark.jumping_clock), or move work several tests share into one module-scoped fixture"
         )
         return 1
     print(f"every test within the {args.limit:g}s limit when run alone")
