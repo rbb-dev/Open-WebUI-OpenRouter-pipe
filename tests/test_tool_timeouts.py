@@ -22,13 +22,12 @@ import inspect
 import json
 import math
 import re
-import sysconfig
 import time as _real_time
 import typing
-from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.package_sources import open_webui_package_dir
 from tests.pipe_limits import limits_for
 from aiohttp.helpers import TimerContext
 
@@ -301,7 +300,7 @@ def _open_webui_tool_wrapper():
     Importing `open_webui.utils.tools` pulls in Open WebUI's configuration, so only this one function is compiled, in a
     namespace of its own; nothing is added to `sys.modules`.
     """
-    source = Path(sysconfig.get_paths()["purelib"]) / "open_webui" / "utils" / "tools.py"
+    source = open_webui_package_dir() / "utils" / "tools.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
     node = next(
         item

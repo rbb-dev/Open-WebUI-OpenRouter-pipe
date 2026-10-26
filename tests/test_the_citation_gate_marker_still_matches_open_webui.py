@@ -21,11 +21,12 @@ a refactor from leaving one site on a literal of its own that the others no long
 from __future__ import annotations
 
 import ast
-import importlib.metadata
 import re
 from pathlib import Path
 
 import pytest
+
+from tests.package_sources import open_webui_package_dir
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _PIPE_SOURCE = _REPO_ROOT / "open_webui_openrouter_pipe" / "streaming" / "streaming_core.py"
@@ -82,7 +83,7 @@ def _upstream_tool_id_stamps(source: str | None = None) -> list[tuple[str, str]]
     file's text, which is how the rename table drives this reader over a renamed upstream.
     """
     if source is None:
-        path = Path(str(importlib.metadata.distribution("open-webui").locate_file(_UPSTREAM_RELATIVE)))
+        path = open_webui_package_dir().parent / _UPSTREAM_RELATIVE
         source = path.read_text(encoding="utf-8")
     stamps: list[tuple[str, str]] = []
     for node in ast.walk(ast.parse(source)):
@@ -160,7 +161,7 @@ def _pipe_builtin_marker() -> tuple[str, str]:
     the pin checks, so the fixtures cannot be built from a literal the gate no longer reads.
     """
     pipe_type, pipe_prefix = _pipe_gate_marker()
-    path = Path(str(importlib.metadata.distribution("open-webui").locate_file(_UPSTREAM_RELATIVE)))
+    path = open_webui_package_dir().parent / _UPSTREAM_RELATIVE
     source = path.read_text(encoding="utf-8")
     stamps = _upstream_tool_id_stamps(source)
     assert stamps, (

@@ -26,9 +26,7 @@ import __future__
 import ast
 import copy
 import re
-import sysconfig
 import time
-from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -37,6 +35,7 @@ from open_webui_openrouter_pipe import Pipe, ResponsesBody
 from open_webui_openrouter_pipe.core.utils import UNRETAINED_TOOL_RESULT
 from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
 from open_webui_openrouter_pipe.streaming import streaming_core
+from tests.package_sources import open_webui_package_dir
 from tests.test_continue_reasoning_order import _real_artifact_store
 from tests.test_continue_stores_once import _open_webui_convert_output_to_messages
 from tests.test_tool_rounds_reach_the_model_once import _open_webui_streaming_handler
@@ -75,7 +74,7 @@ def _open_webui_assembly() -> dict[str, Any]:
     the tag scan, the chunk handler's text branch and its end-of-stream cleanup, each compiled from its AST node in the
     installed `utils/middleware.py`, with the text branch and the cleanup wrapped in functions of their own."""
     namespace = _open_webui_streaming_handler()
-    source = Path(sysconfig.get_paths()["purelib"]) / "open_webui" / "utils" / "middleware.py"
+    source = open_webui_package_dir() / "utils" / "middleware.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
 
     module_level: list[ast.stmt] = [

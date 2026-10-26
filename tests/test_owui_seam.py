@@ -10,7 +10,8 @@ It NEVER imports or executes Open WebUI, which makes it:
   * fast (~0.3s) and offline — no torch/transformers/retrieval import;
   * stub-proof — the rest of the suite replaces ``open_webui`` with fakes in
     ``sys.modules`` (conftest), but this reads the real package's source files,
-    located via installed distribution metadata, not ``sys.modules``.
+    located through the installed distribution's metadata or the ``sys.path``
+    entry that holds ``open_webui``, never through ``sys.modules``.
 
 A failure means Open WebUI renamed/moved/removed a symbol we depend on — caught
 at development time, before it ships and silently breaks in production.
@@ -19,11 +20,12 @@ at development time, before it ships and silently breaks in production.
 from __future__ import annotations
 
 import ast
-import importlib.metadata
 from pathlib import Path
 
 import pytest
 from packaging.version import InvalidVersion, Version
+
+from tests.package_sources import open_webui_package_dir
 
 _OUR_PKG = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 
@@ -31,16 +33,6 @@ _OUR_PKG = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 def _is_owui(module: str) -> bool:
     """True for real Open WebUI modules, excluding our own package."""
     return module == "open_webui" or module.startswith("open_webui.")
-
-
-def _owui_base() -> Path | None:
-    """Directory of the installed ``open_webui`` package (via metadata, no import)."""
-    try:
-        dist = importlib.metadata.distribution("open-webui")
-        init = Path(str(dist.locate_file("open_webui/__init__.py")))
-    except Exception:
-        return None
-    return init.parent if init.is_file() else None
 
 
 def _catches_import_error(handler: ast.ExceptHandler) -> bool:
@@ -178,7 +170,6 @@ def _resolves(base: Path, module: str, symbol: str | None) -> bool:
     return base.joinpath(*parts, symbol).is_dir()  # namespace-package submodule
 
 
-_BASE = _owui_base()
 _IMPORTS = _our_owui_imports()
 
 _NEWER_THAN_OUR_FLOOR: dict[tuple[str, str], str] = {
@@ -186,7 +177,6 @@ _NEWER_THAN_OUR_FLOOR: dict[tuple[str, str], str] = {
 }
 
 
-@pytest.mark.skipif(_BASE is None, reason="open_webui is not installed")
 @pytest.mark.parametrize(
     "module,symbol,is_optional",
     _IMPORTS,
@@ -205,18 +195,18 @@ def test_owui_import_seam_resolves(module: str, symbol: str | None, is_optional:
     is indistinguishable from one Open WebUI deleted underneath us, which is exactly the
     drift this file exists to catch.
     """
-    assert _BASE is not None
+    base = open_webui_package_dir()
     target = module if symbol is None else f"{module}.{symbol}"
-    if _resolves(_BASE, module, symbol):
+    if _resolves(base, module, symbol):
         return
     assert is_optional, (
         f"OWUI seam drift: `{target}` (REQUIRED import) no longer resolves in the "
-        f"installed open_webui at {_BASE}. Open WebUI renamed/moved/removed it — "
+        f"installed open_webui at {base}. Open WebUI renamed/moved/removed it — "
         f"update our import before this ships."
     )
     assert symbol is not None and (module, symbol) in _NEWER_THAN_OUR_FLOOR, (
         f"OWUI seam drift: `{target}` is imported under a guard and does not resolve in "
-        f"the installed open_webui at {_BASE}, so its fallback is what runs — "
+        f"the installed open_webui at {base}, so its fallback is what runs — "
         "permanently, and silently. If Open WebUI removed it, drop our import. If it "
         "predates our floor, add it to _NEWER_THAN_OUR_FLOOR with the version that "
         "introduces it."

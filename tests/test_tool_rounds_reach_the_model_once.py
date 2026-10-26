@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from tests.package_sources import open_webui_package_dir
 from tests.test_reasoning_skeleton_replay import (
     _recorded_output,
     _stage_a,
@@ -58,11 +59,9 @@ def _open_webui_streaming_handler() -> dict[str, Any]:
     source into a namespace of their own."""
     import __future__
     import ast
-    import sysconfig
-    from pathlib import Path
     from uuid import uuid4
 
-    utils = Path(sysconfig.get_paths()["purelib"]) / "open_webui" / "utils"
+    utils = open_webui_package_dir() / "utils"
     wanted = {"handle_responses_streaming_event", "deep_merge", "output_id"}
     segments: list[str] = []
     for module in ("middleware.py", "response.py"):
@@ -119,10 +118,8 @@ def _open_webui_0_11_4_full_output(prior: list[dict[str, Any]], output: list[dic
     message's last text item and the continuation's first become one item by joining their content parts."""
     if not _FULL_OUTPUT_CODE:
         import ast
-        import sysconfig
-        from pathlib import Path
 
-        source = Path(sysconfig.get_paths()["purelib"]) / "open_webui" / "utils" / "middleware.py"
+        source = open_webui_package_dir() / "utils" / "middleware.py"
         tree = ast.parse(source.read_text(encoding="utf-8"))
         (node,) = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "full_output"]
         _FULL_OUTPUT_CODE.append(compile(ast.Module(body=[node], type_ignores=[]), str(source), "exec"))

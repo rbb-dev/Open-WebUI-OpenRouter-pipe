@@ -271,16 +271,11 @@ def test_the_open_webui_seam_resolves_the_real_symbols():
     import here resolves the stub and the check skips itself into uselessness.
     """
     import ast
-    import sysconfig
     from pathlib import Path as _Path
 
-    root = None
-    for base in (sysconfig.get_paths()["purelib"], sysconfig.get_paths()["platlib"]):
-        candidate = _Path(base) / "open_webui"
-        if candidate.is_dir():
-            root = candidate
-            break
-    assert root is not None, "the installed open_webui package could not be located on disk"
+    from tests.package_sources import open_webui_package_dir
+
+    root = open_webui_package_dir()
 
     def _params(path: _Path, qualname: str) -> list[str]:
         tree = ast.parse(path.read_text(encoding="utf-8"))

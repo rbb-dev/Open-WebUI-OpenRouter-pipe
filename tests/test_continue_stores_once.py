@@ -23,10 +23,7 @@ from __future__ import annotations
 import __future__
 import ast
 import copy
-import importlib.metadata
 import json
-import sysconfig
-from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -34,6 +31,7 @@ import pytest
 import open_webui_openrouter_pipe.streaming.streaming_core as streaming_core_mod
 from open_webui_openrouter_pipe import Pipe, ResponsesBody, generate_item_id
 from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
+from tests.package_sources import open_webui_package_dir
 from tests.test_reasoning_native_items import _events_of, _install_clock, _make_timed_stream
 
 STORED = [
@@ -277,7 +275,7 @@ def _open_webui_convert_output_to_messages():
     Importing `open_webui.utils.misc` pulls in Open WebUI's configuration, so only these functions are compiled, in a
     namespace of their own; nothing is added to `sys.modules`.
     """
-    source = Path(sysconfig.get_paths()["purelib"]) / "open_webui" / "utils" / "misc.py"
+    source = open_webui_package_dir() / "utils" / "misc.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
     wanted = {"convert_output_to_messages", "reconcile_tool_pairs", "get_content_from_message", "get_output_text"}
     module_defs = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)}

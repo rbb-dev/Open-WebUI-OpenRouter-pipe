@@ -2229,14 +2229,13 @@ async def test_a_streamed_failure_with_no_chat_on_an_anthropic_mount_reaches_the
 ):
     import ast
     import logging
-    import sysconfig
-    from pathlib import Path
     from types import SimpleNamespace
 
     from open_webui_openrouter_pipe.core.errors import UpstreamBodyUnreadable, _build_openrouter_api_error
+    from tests.package_sources import open_webui_package_dir
     from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import MODEL, NORM, install
 
-    converter_path = Path(sysconfig.get_paths()["purelib"]) / "open_webui" / "utils" / "anthropic.py"
+    converter_path = open_webui_package_dir() / "utils" / "anthropic.py"
     converter_source = converter_path.read_text(encoding="utf-8")
     converter_node = next(
         node for node in ast.parse(converter_source).body

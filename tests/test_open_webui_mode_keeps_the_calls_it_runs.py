@@ -14,21 +14,20 @@ import __future__
 import ast
 import copy
 import json
-import sysconfig
-from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
 
 import pytest
 
 from open_webui_openrouter_pipe import Pipe, ResponsesBody, generate_item_id
+from tests.package_sources import open_webui_package_dir
 from tests.test_continue_stores_once import _open_webui_convert_output_to_messages
 from tests.test_reasoning_skeleton_replay import MODEL, _stage_a, _valves
 
 
 def _open_webui_streaming_handler() -> dict[str, Any]:
     """Open WebUI's own `handle_responses_streaming_event`, compiled from the installed release."""
-    utils = Path(sysconfig.get_paths()["purelib"]) / "open_webui" / "utils"
+    utils = open_webui_package_dir() / "utils"
     wanted = {"handle_responses_streaming_event", "deep_merge", "output_id"}
     segments: list[str] = []
     for module in ("middleware.py", "response.py"):

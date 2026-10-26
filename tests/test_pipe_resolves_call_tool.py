@@ -14,8 +14,6 @@ import asyncio
 import ast
 import copy
 import json
-import sysconfig
-from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -24,6 +22,7 @@ import open_webui_openrouter_pipe.requests.orchestrator as orchestrator_mod
 import open_webui_openrouter_pipe.streaming.streaming_core as streaming_core_mod
 from open_webui_openrouter_pipe import EncryptedStr, Pipe, ResponsesBody
 from open_webui_openrouter_pipe.models.registry import ModelFamily
+from tests.package_sources import open_webui_package_dir
 from tests.test_reasoning_skeleton_replay import _recorded_output, _stage_b
 from tests.test_tools import _as_open_webui_resolves_them
 
@@ -40,7 +39,7 @@ def _open_webui_tool_search_functions() -> dict[str, Any]:
     module-level symbol to the real function, compiled the same way as this suite's other Open WebUI
     seams. Nothing is added to `sys.modules`.
     """
-    source = Path(sysconfig.get_paths()["purelib"]) / "open_webui" / "utils" / "tool_search.py"
+    source = open_webui_package_dir() / "utils" / "tool_search.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
     namespace: dict[str, Any] = {"JSONCodec": json}
     wanted = {"resolve_tool_call"}

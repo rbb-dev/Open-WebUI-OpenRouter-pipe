@@ -50,17 +50,24 @@ Install the package in editable mode (this installs runtime dependencies from `p
 (.venv) pip install -e ".[test]"
 ```
 
+The `test` extra does not install Open WebUI. Install it into the same environment (`pip install open-webui`, as `scripts/repro_venv.sh` does): most tests stand in for Open WebUI, but some read the source files of an installed copy, as the next section describes.
+
 Optional:
 
-- Install `open_webui` in the venv if you are running integration-style experiments locally. Unit tests in this repo do not require a full Open WebUI installation.
 - Install `ruff` or `flake8` if you use a linter locally.
 
 ### Open WebUI's own code in the tests
 
-Some tests read Open WebUI's own source files rather than a transcription of them. They read
-the copy of the `open-webui` package installed in the virtualenv, so they follow whichever
-Open WebUI release that environment holds. CI installs the package with the other
-dependencies and pins no version.
+Some tests read Open WebUI's own source files rather than a transcription of them, so they
+follow whichever Open WebUI release the environment holds. They parse the files and do not
+import Open WebUI, but the files have to be on disk. One helper, `open_webui_package_dir()` in
+`tests/package_sources.py`, finds them in two steps: the `open-webui` package installed in the
+environment, then, where no such package is installed, a top-level `open_webui` folder that Python
+finds on `sys.path` (set `PYTHONPATH` to the folder that contains it). Open WebUI's 0.12.4 Docker
+image has that layout: its code is in `/app/backend/open_webui`, with no package metadata, so
+`/app/backend` is the folder to put on `PYTHONPATH` there. When neither is found, each test that
+needs the files fails with one message that names both places it looked and what to change. CI
+installs the package with the other dependencies and pins no version.
 
 No test reads a checkout of Open WebUI's repository: there is nothing to clone into
 `.external/` for the suite, and CI does not fetch one.

@@ -16,17 +16,16 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import importlib.metadata
 import json
 import logging
 import mimetypes
 import os
 import re
-from pathlib import Path
 from typing import Any, Optional, cast
 
 import pytest
 
+from tests.package_sources import open_webui_package_dir
 from tests.test_tools import _as_open_webui_resolves_them
 
 FILE = {"exists": True, "path": "/home/user/t.txt", "name": "t.txt"}
@@ -37,7 +36,7 @@ CHAT = {"chat_id": "chat-1", "message_id": "m1", "session_id": "s1", "terminal_i
 def _real_owui(*names: str) -> list[Any]:
     """Open WebUI's own functions, compiled from the installed `utils/middleware.py` together with the module-level
     helpers and constants they call, which the next release may add to (0.11.4 added two)."""
-    path = Path(str(importlib.metadata.distribution("open-webui").locate_file("open_webui/utils/middleware.py")))
+    path = open_webui_package_dir() / "utils" / "middleware.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
     from starlette.responses import HTMLResponse
 
