@@ -46,6 +46,16 @@ Before tagging, commit the version bump on `dev`. The version lives in four plac
 
 Regenerate the changelog before tagging: `git cliff --tag v2.0.4 -o CHANGELOG.md` (git-cliff, configured by `cliff.toml`).
 
+CI runs every check on Python 3.12, the Python of Open WebUI's official image since 0.12.4. Open WebUI also runs on Python 3.11 (its images before 0.12.4, and installs without Docker), so before tagging, run the package suite once on Python 3.11 with the same installs as CI:
+
+```bash
+uv venv --python 3.11 /tmp/pipe-py311
+uv pip install --python /tmp/pipe-py311/bin/python torch --index-url https://download.pytorch.org/whl/cpu
+uv pip install --python /tmp/pipe-py311/bin/python open-webui -e ".[test]"
+uv pip install --python /tmp/pipe-py311/bin/python pyright==1.1.408 cairosvg pyzipper ruff==0.16.0
+PYTHONPATH=. /tmp/pipe-py311/bin/python -m pytest tests/ -q
+```
+
 The release notes open with the text of `RELEASE_NOTES_PENDING.md`, the running list of user-facing changes since the previous release, followed by the list of commits since the previous tag. When the two together would not fit in a GitHub release, the notes become a link to the file as it stands at the tag. After the tag is pushed, empty the file down to its `# Release notes pending` heading in the next commit on `dev`, so the next release starts from its own changes.
 
 ```bash
