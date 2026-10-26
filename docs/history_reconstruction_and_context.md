@@ -29,9 +29,8 @@ Inputs (high level):
     `resume_tool_calls` on the tool-approval resume path) run before the handler (which
     `chat_completion` calls), so no saved chat reaches
     `pipe.pipe(body=form_data)` carrying either key. Every message therefore groups under the same
-    key and a saved chat of any length costs **one** call, not one per turn.
-    `tests/test_b591_the_replayed_path_is_the_id_less_shape.py` drives the real host function and
-    pins this; re-check it first on any Open WebUI upgrade.
+    key and a saved chat of any length costs **one** call, not one per turn. Re-check this first on
+    any Open WebUI upgrade.
     The id-carrying shape is the pipe's **own** OpenAI-compatible gateway
     (`api/gateway/chat_completions_adapter.py`), where an external caller supplies messages that
     keep their own ids. There `message_id` scopes the store's own SELECT, so it is never widened:

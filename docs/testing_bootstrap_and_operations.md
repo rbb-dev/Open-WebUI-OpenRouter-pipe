@@ -55,29 +55,15 @@ Optional:
 - Install `open_webui` in the venv if you are running integration-style experiments locally. Unit tests in this repo do not require a full Open WebUI installation.
 - Install `ruff` or `flake8` if you use a linter locally.
 
-### Open WebUI's pinned source (`.external/`)
+### Open WebUI's own code in the tests
 
-Some tests read Open WebUI's own code rather than a transcription of it, and they read it
-from `.external/open-webui`, which is gitignored. CI checks the pinned tag into that path
-before the suite runs:
+Some tests read Open WebUI's own source files rather than a transcription of them. They read
+the copy of the `open-webui` package installed in the virtualenv, so they follow whichever
+Open WebUI release that environment holds. CI installs the package with the other
+dependencies and pins no version.
 
-```bash
-git clone --depth 1 --branch v0.12.0 https://github.com/open-webui/open-webui .external/open-webui
-```
-
-The pin is `v0.12.0`, the floor the pipe's manifest names. The clone is
-shallow and CI asks for `backend` and `src` only -- the frontend is not optional, because
-`tests/test_browser_tool_failures_count.py` reads `src/lib/apis/index.ts`.
-
-Without the tree those readers **skip**, naming the missing path, rather than failing:
-`tests/vetting_helpers.py::owui_source` is the one place that says so, and
-`tests/test_owui_source_guards.py` holds every reader of `.external/` to declaring it, so a
-checkout that has not fetched the pin is a smaller suite and never a different one. No
-reader does its work at module scope either: a module-level read is a *collection* error,
-which interrupts the run before any test executes.
-
-Do not `pip download open-webui==0.12.0` and unzip it instead. A wheel carries no
-`src/lib`, so the frontend readers would still skip while the fix looked complete.
+No test reads a checkout of Open WebUI's repository: there is nothing to clone into
+`.external/` for the suite, and CI does not fetch one.
 
 ### Pytest bootstrap behavior
 
