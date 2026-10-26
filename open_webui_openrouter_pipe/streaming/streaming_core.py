@@ -233,7 +233,7 @@ from .constants import (
     FUSION_EMBED_ATTEMPTS,
     ReasoningStatusThrottle,
 )
-from .event_emitter import _UNGUARDED_ATTR, EventEmitter
+from .event_emitter import _UNGUARDED_ATTR, REASONING_DELTA_EVENT, EventEmitter
 from .fusion_embed import (
     FusionDeliberationState,
     FusionDeltaBatcher,
@@ -550,6 +550,7 @@ class StreamingHandler:
         retry_handoff: dict[str, Any] | None = None,
         emitter_supplied: bool | None = None,
     ):
+        from ..requests.orchestrator import _is_chatless_caller
         from ..tools.tool_executor import _request_address_budget
 
         metadata = {} if metadata is None else metadata
@@ -571,6 +572,7 @@ class StreamingHandler:
 
         _loop_pipe_meta = metadata.get(_PIPE_METADATA_KEY)
         fusion_inner_call = bool(isinstance(_loop_pipe_meta, dict) and _loop_pipe_meta.get("fusion_inner"))
+        chatless_reasoning = bool(body.stream and emitter_supplied and _is_chatless_caller(metadata))
         realtime_call = REALTIME_CALL.get()
 
         async def _emit_budget_notice(text: str) -> None:
@@ -1863,6 +1865,10 @@ class StreamingHandler:
                 state["mono_open"] = _monotonic()
                 _reopen_reasoning_window(key, state)
 
+            async def _send_reasoning_to_a_caller_with_no_chat(text: str) -> None:
+                if chatless_reasoning and text:
+                    await event_emitter({"type": REASONING_DELTA_EVENT, "data": {"delta": text}})
+
             async def _emit_reasoning_item(key: str, current_text: str, *, closing: bool = False) -> None:
                 nonlocal emitted_response_output_items
                 if event_emitter is None or not thinking_box_enabled:
@@ -1907,6 +1913,7 @@ class StreamingHandler:
                         "item": reasoning_item,
                     }
                 )
+                await _send_reasoning_to_a_caller_with_no_chat(text[published:])
                 state["published_id"] = item_id
 
             async def _replace_published_reasoning_item(
@@ -1950,6 +1957,7 @@ class StreamingHandler:
                             "delta": tail,
                         }
                     )
+                await _send_reasoning_to_a_caller_with_no_chat(tail)
                 state["published_len"] = len(text)
                 unpublished_reasoning_keys.pop(key, None)
 

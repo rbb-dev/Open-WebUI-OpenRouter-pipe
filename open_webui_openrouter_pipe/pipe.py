@@ -197,6 +197,7 @@ from .streaming.event_emitter import (
     _PIPE_GENERATED_TEMPLATE_KEYS,
     EventEmitter,
     EventEmitterHandler,
+    chatless_chunk,
     chatless_stream_frame,
     openai_chat_chunk_message_template,
 )
@@ -400,6 +401,8 @@ _TOOL_CANCEL_GRACE_SECONDS: float = 5.0
 _PERSIST_DRAIN_SECONDS: float = 5.0
 
 _PD_LIVENESS_INTERVAL_S: float = 60.0
+
+_CHATLESS_KEEP_ALIVE_SECONDS: float = 15.0
 
 
 def _tool_thread_workers(handler: Any) -> int:
@@ -2983,22 +2986,28 @@ class Pipe:
 
         if wants_stream and stream_queue is not None:
             _NO_FRAME = object()
+            _QUIET = object()
             _model_id = str(job.body.get("model") or "pipe")
+            chatless = _is_chatless_caller(job.metadata)
+            sent_at = loop.time()
 
-            async def _next_stream_item() -> Any:
+            async def _next_stream_item(quiet_for: float | None) -> Any:
                 if not stream_queue.empty():
                     return stream_queue.get_nowait()
                 getter = asyncio.ensure_future(stream_queue.get())
                 try:
-                    await asyncio.wait({getter, future}, return_when=asyncio.FIRST_COMPLETED)
+                    await asyncio.wait(
+                        {getter, future}, timeout=quiet_for, return_when=asyncio.FIRST_COMPLETED
+                    )
                     if getter.done():
                         return getter.result()
-                    return _NO_FRAME
+                    return _NO_FRAME if future.done() else _QUIET
                 finally:
                     getter.cancel()
 
             @timed
             async def _stream() -> AsyncGenerator[dict[str, Any] | str, None]:
+                nonlocal sent_at
                 stream_chat_token = OWUI_CHAT_ID.set(str((job.metadata or {}).get("chat_id") or ""))
                 stream_reply_token = CONTINUED_REPLY.set(job.continued_reply)
                 reported = False
@@ -3022,8 +3031,14 @@ class Pipe:
                                     if frame is not None:
                                         yield frame
                             break
-                        item = await _next_stream_item()
+                        item = await _next_stream_item(
+                            max(0.0, sent_at + _CHATLESS_KEEP_ALIVE_SECONDS - loop.time()) if chatless else None
+                        )
                         if item is _NO_FRAME:
+                            continue
+                        if item is _QUIET:
+                            sent_at = loop.time()
+                            yield chatless_chunk(_model_id, {})
                             continue
                         stream_queue.task_done()
                         if item is None:
@@ -3050,17 +3065,19 @@ class Pipe:
                     with contextlib.suppress(Exception):
                         CONTINUED_REPLY.reset(stream_reply_token)
 
-            if not _is_chatless_caller(job.metadata):
+            if not chatless:
                 return _stream()
 
             stream_options = job.body.get("stream_options")
             include_usage = isinstance(stream_options, dict) and stream_options.get("include_usage") is True
 
             async def _standard_frames() -> AsyncGenerator[dict[str, Any] | str, None]:
+                nonlocal sent_at
                 async with contextlib.aclosing(_stream()) as frames:
                     async for item in frames:
                         frame = chatless_stream_frame(item, model_id=_model_id, include_usage=include_usage)
                         if frame is not None:
+                            sent_at = loop.time()
                             yield frame
 
             return _standard_frames()

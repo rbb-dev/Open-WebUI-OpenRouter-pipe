@@ -2089,6 +2089,97 @@ async def test_a_streaming_request_with_no_chat_gets_only_what_an_openai_client_
     assert failed_without_a_chat == [{"error": {"message": "Request failed. Please retry."}}]
 
 
+def _reasoning_pieces_of(chunks: list[Any]) -> list[str]:
+    return [
+        chunk["choices"][0]["delta"]["reasoning"]
+        for chunk in chunks
+        if isinstance(chunk, dict) and (chunk.get("choices") or [{}])[0].get("delta", {}).get("reasoning")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_streaming_request_with_no_chat_gets_the_models_reasoning_as_chunks_before_the_answer(
+    pipe_instance_async, monkeypatch
+):
+    from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import CHAT, install, run
+
+    thoughts = ["Weigh the two offers. ", "The cheaper one wins."]
+    answer = "Take the cheaper offer."
+    message = {"type": "message", "role": "assistant", "status": "completed",
+               "content": [{"type": "output_text", "text": answer}]}
+    reasoning_round = [
+        *({"type": "response.reasoning_text.delta", "item_id": "rs-1", "delta": thought} for thought in thoughts),
+        {"type": "response.output_text.delta", "delta": answer},
+        {"type": "response.completed", "response": {"output": [message], "usage": {}}},
+    ]
+    pipe = pipe_instance_async
+    install(pipe, monkeypatch, lambda _n, _request: reasoning_round)
+
+    shown, _raw = await run(pipe, mode="Pipeline", stream=True, metadata={})
+    in_a_chat, _raw = await run(pipe, mode="Pipeline", stream=True, metadata=dict(CHAT))
+    hidden, _raw = await run(pipe, mode="Pipeline", stream=True, metadata={}, THINKING_OUTPUT_MODE="status")
+
+    assert all(isinstance(frame, dict) and isinstance(frame.get("choices"), list) for frame in shown), shown
+    assert all(set(frame["choices"][0]["delta"]) <= {"content", "reasoning"} for frame in shown), shown
+    assert "".join(_reasoning_pieces_of(shown)) == "".join(thoughts)
+    last_reasoning = max(i for i, frame in enumerate(shown) if frame["choices"][0]["delta"].get("reasoning"))
+    assert last_reasoning < _answer_delta_at(shown, answer)
+    assert _answer_text_of(shown) == answer
+
+    assert _reasoning_pieces_of(hidden) == []
+    assert _answer_text_of(hidden) == answer
+    assert _reasoning_pieces_of(in_a_chat) == []
+    assert _answer_text_of(in_a_chat) == answer
+
+
+class TestAStreamWithNoChatStaysAlive:
+    @pytest.fixture
+    def event_loop_policy(self):
+        from conftest import _TimeTravelPolicy
+
+        return _TimeTravelPolicy()
+
+    @pytest.mark.asyncio
+    async def test_a_silent_stretch_sends_an_empty_chunk_every_interval_until_the_answer_starts(
+        self, pipe_instance_async, monkeypatch
+    ):
+        import asyncio
+
+        from open_webui_openrouter_pipe.pipe import _CHATLESS_KEEP_ALIVE_SECONDS as interval
+        from open_webui_openrouter_pipe.pipe import Pipe
+        from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import CHAT, answer_round, install, run
+
+        pieces = ["Take the ", "cheaper offer."]
+        pipe = pipe_instance_async
+        install(pipe, monkeypatch, lambda _n, _request: answer_round("".join(pieces)))
+
+        async def thinks_for_three_intervals_and_a_third(self, session, request_body, **_kwargs):
+            for step in range(10):
+                await asyncio.sleep(interval / 3)
+                yield {"type": "response.reasoning_text.delta", "item_id": "rs-1", "delta": f"Weigh offer {step}."}
+            for piece in pieces:
+                yield {"type": "response.output_text.delta", "delta": piece}
+                await asyncio.sleep(1)
+            yield answer_round("".join(pieces))[-1]
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", thinks_for_three_intervals_and_a_third)
+
+        def is_empty(frame: Any) -> bool:
+            return isinstance(frame, dict) and frame.get("choices") == [{"index": 0, "delta": {}, "finish_reason": None}]
+
+        without_a_chat, _raw = await run(
+            pipe, mode="Pipeline", stream=True, metadata={}, THINKING_OUTPUT_MODE="status"
+        )
+        in_a_chat, _raw = await run(
+            pipe, mode="Pipeline", stream=True, metadata=dict(CHAT), THINKING_OUTPUT_MODE="status"
+        )
+
+        assert all(isinstance(frame, dict) and isinstance(frame.get("choices"), list) for frame in without_a_chat)
+        assert [i for i, frame in enumerate(without_a_chat) if is_empty(frame)] == [0, 1, 2]
+        assert _answer_text_of(without_a_chat) == "".join(pieces)
+        assert not [frame for frame in in_a_chat if is_empty(frame)]
+
+
 @pytest.mark.parametrize("failure", ["a_provider_rejection", "a_body_that_is_not_an_openrouter_response"])
 @pytest.mark.asyncio
 async def test_a_streamed_failure_with_no_chat_on_an_anthropic_mount_reaches_the_agent_as_an_error_event(

@@ -120,6 +120,15 @@ def middleware_message_delta(
     return None, already_on_the_queue
 
 
+REASONING_DELTA_EVENT = "pipe:reasoning.delta"
+
+
+def chatless_chunk(model_id: str, delta: dict[str, Any]) -> dict[str, Any]:
+    chunk = openai_chat_chunk_message_template(model_id)
+    chunk["choices"] = [{"index": 0, "delta": delta, "finish_reason": None}]
+    return chunk
+
+
 def _chatless_error_object(error: Any) -> dict[str, Any]:
     if isinstance(error, dict):
         message = error.get("message")
@@ -156,6 +165,11 @@ def chatless_stream_frame(
             content = failure.get("content") if isinstance(failure, dict) else None
             if isinstance(content, str) and content:
                 return {"error": {"message": content}}
+        if event.get("type") == REASONING_DELTA_EVENT:
+            data = event.get("data")
+            text = data.get("delta") if isinstance(data, dict) else None
+            if isinstance(text, str) and text:
+                return chatless_chunk(model_id, {"reasoning": text})
         return None
     usage = item.get("usage")
     if include_usage and isinstance(usage, dict) and "type" not in item:

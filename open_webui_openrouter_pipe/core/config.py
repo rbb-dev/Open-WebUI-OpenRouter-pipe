@@ -1515,8 +1515,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         title="Thinking output",
         description=(
             "Controls where in-progress thinking is surfaced while a response is being generated. "
-            "'open_webui' streams reasoning in the Open WebUI reasoning box and nowhere else; "
-            "'status' shows thinking only as status messages; "
+            "'open_webui' streams reasoning in the Open WebUI reasoning box, and to a streaming API caller with no chat "
+            "as the `reasoning` field of its chunks, and nowhere else; "
+            "'status' shows thinking only as status messages, which a caller with no chat does not receive; "
             "'both' enables both outputs. "
             "The pipe's own short progress lines above a first reply - 'Thinking…' and the few that follow it - "
             "are sent at every setting of this valve, in every mode: they are the pipe saying the model has "
