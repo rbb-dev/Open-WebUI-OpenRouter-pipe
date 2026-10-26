@@ -1506,12 +1506,20 @@ class _TimeTravelLoop(asyncio.SelectorEventLoop):
     def __init__(self) -> None:
         super().__init__()
         self._skew = 0.0
+        self._executor_shutdown_pending = False
 
     def time(self) -> float:
         return super().time() + self._skew
 
+    async def shutdown_default_executor(self, *args: Any, **kwargs: Any) -> None:
+        self._executor_shutdown_pending = True
+        try:
+            await super().shutdown_default_executor(*args, **kwargs)
+        finally:
+            self._executor_shutdown_pending = False
+
     def _run_once(self) -> None:
-        if not self._ready and self._scheduled:
+        if not self._ready and self._scheduled and not self._executor_shutdown_pending:
             gap = self._scheduled[0]._when - self.time()
             if gap > 0:
                 self._skew += gap

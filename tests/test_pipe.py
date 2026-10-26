@@ -6730,14 +6730,14 @@ def test_the_pass_renews_the_lock_row_when_its_interval_has_passed(pipe_instance
         ticks.append(1)
         return real_monotonic() + 3600.0 * len(ticks)
 
-    monkeypatch.setattr(time_module, "monotonic", ever_forward)
-
-    result = pipe._session_log_manager._assemble_and_write_bundle(
-        chat_id,
-        message_id,
-        terminal=True,
-        archive_settings=(str(tmp_path), b"pw", "stored", None),
-    )
+    with monkeypatch.context() as patched:
+        patched.setattr(time_module, "monotonic", ever_forward)
+        result = pipe._session_log_manager._assemble_and_write_bundle(
+            chat_id,
+            message_id,
+            terminal=True,
+            archive_settings=(str(tmp_path), b"pw", "stored", None),
+        )
 
     assert result is True
     renewals = [
