@@ -1617,6 +1617,9 @@ async def test_build_direct_tool_server_spec_params_access_fails():
                     raise RuntimeError("Intentional failure")
                 return super().get(key, default)
 
+            def items(self):
+                raise RuntimeError("Intentional failure")
+
         registry = executor._build_direct_tool_server_registry(
             _as_open_webui_resolves_them({
                 "tool_servers": [

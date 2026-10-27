@@ -4841,6 +4841,26 @@ def test_apply_reasoning_preferences_legacy_only_sets_flag():
         pipe.shutdown()
 
 
+def test_a_request_carrying_a_reasoning_budget_gets_no_default_effort_beside_it():
+    pipe = Pipe()
+    ModelFamily.set_dynamic_specs({
+        "test.model": {"supported_parameters": ["reasoning", "include_reasoning"]}
+    })
+    try:
+        manager = pipe._ensure_reasoning_config_manager()
+        with_budget = ResponsesBody(model="test.model", input=[])
+        with_budget.reasoning = {"max_tokens": 4096}
+        manager._apply_reasoning_preferences(with_budget, pipe.Valves())
+        without_budget = ResponsesBody(model="test.model", input=[])
+        manager._apply_reasoning_preferences(without_budget, pipe.Valves())
+        assert with_budget.reasoning is not None and without_budget.reasoning is not None
+        assert with_budget.reasoning["max_tokens"] == 4096
+        assert "effort" not in with_budget.reasoning
+        assert without_budget.reasoning["effort"] == "medium"
+    finally:
+        pipe.shutdown()
+
+
 def test_retry_without_reasoning_handles_reasoning_dict():
     pipe = Pipe()
     try:

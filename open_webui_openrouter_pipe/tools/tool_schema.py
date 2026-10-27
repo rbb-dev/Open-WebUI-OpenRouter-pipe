@@ -235,22 +235,8 @@ def _declared_parameter_names(parameters: Any) -> frozenset[str]:
     return frozenset(names)
 
 
-def _advertised_root_params(parameters: Any, *, strictify: bool = True) -> set[str]:
-    if not isinstance(parameters, dict):
-        return set()
-    props = parameters.get("properties")
-    names = {k for k in props if isinstance(k, str)} if isinstance(props, dict) else set()
-    if not strictify:
-        return names
-    if "$ref" in parameters or "allOf" in parameters:
-        strict = _strictify_schema(parameters)
-        advertised = strict.get("properties") if isinstance(strict, dict) else None
-        if isinstance(advertised, dict):
-            names |= {k for k in advertised if isinstance(k, str)}
-        return names
-    if not _root_is_object(parameters):
-        names.add("value")
-    return names
+def strictified_tool_parameters(parameters: Any) -> dict[str, Any]:
+    return _strictify_schema(parameters or {"type": "object", "properties": {}})
 
 
 def merge_schema_nodes(

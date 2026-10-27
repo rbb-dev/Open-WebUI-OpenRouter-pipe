@@ -277,12 +277,20 @@ def _wake_refused_stream(job: _PipeJob) -> None:
     stream_queue = job.stream_queue
     if stream_queue is None:
         return
-    with contextlib.suppress(Exception):
-        stream_queue.put_nowait(
-            {"error": {"detail": "Server busy (503)"}, "done": True}
-        )
-    with contextlib.suppress(Exception):
-        stream_queue.put_nowait(None)
+    for record_name, record in (
+        ("503 frame", {"error": {"detail": "Server busy (503)"}, "done": True}),
+        ("end-of-stream marker", None),
+    ):
+        with contextlib.suppress(Exception):
+            try:
+                stream_queue.put_nowait(record)
+            except asyncio.QueueFull:
+                job.pipe.logger.warning(
+                    "Dropped the %s of request %s: its reply buffer is full (limit %s).",
+                    record_name,
+                    job.request_id,
+                    stream_queue.maxsize,
+                )
 
 
 _ANSWER_EVENT_TYPES = ("chat:message", "chat:message:delta", "chat:completion")

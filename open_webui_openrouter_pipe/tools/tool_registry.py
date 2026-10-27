@@ -16,6 +16,7 @@ from ..storage.owui_files import (
 from .tool_schema import (
     _declared_parameter_names,
     _strictify_schema,
+    strictified_tool_parameters,
 )
 
 if TYPE_CHECKING:
@@ -467,9 +468,7 @@ def _build_collision_safe_tool_specs_and_registry(
         spec = dict(c["spec"])
         spec["name"] = exposed_name
         if strictify and not c.get("handed_back"):
-            spec["parameters"] = _strictify_schema(
-                spec.get("parameters") or {"type": "object", "properties": {}}
-            )
+            spec["parameters"] = strictified_tool_parameters(spec.get("parameters"))
             spec["strict"] = True
         elif not c.get("handed_back") and "strict" not in spec:
             spec["strict"] = False

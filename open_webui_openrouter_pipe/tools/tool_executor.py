@@ -40,7 +40,7 @@ from ..storage.owui_files import (
 from ..storage.persistence import generate_item_id
 from ..storage.receive_spool import RECEIVE_ITEM_MAX_BYTES
 from .tool_registry import OWUI_OWNS_KEY, RESOLVER_ERROR_KEY
-from .tool_schema import _advertised_root_params, _declared_parameter_names
+from .tool_schema import _declared_parameter_names, strictified_tool_parameters
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -951,13 +951,12 @@ class ToolExecutor:
                     if not isinstance(raw_name, str) or not raw_name.strip():
                         continue
 
-                    allowed_params: set[str] = set()
                     parameters = spec.get("parameters")
-                    if isinstance(parameters, dict):
-                        if not strictify:
-                            allowed_params = set(_declared_parameter_names(parameters))
-                        else:
-                            allowed_params = _advertised_root_params(parameters, strictify=True)
+                    allowed_params = set(
+                        _declared_parameter_names(
+                            strictified_tool_parameters(parameters) if strictify else parameters
+                        )
+                    )
 
                     spec_payload = dict(spec)
                     spec_payload["name"] = raw_name

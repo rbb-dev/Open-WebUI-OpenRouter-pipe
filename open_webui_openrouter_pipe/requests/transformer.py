@@ -1733,6 +1733,7 @@ async def transform_messages_to_input(
 
         artifact_groups: dict[str | None, dict[str, dict]] = {}
         artifact_producers: dict[str | None, dict[str, str]] = {}
+        loader_failed_groups: set[str | None] = set()
         ask_user_loader = ask_user_round_loader if openwebui_model_id else None
         full_loader = artifact_loader if chat_id and openwebui_model_id else None
         unread_markers: dict[str, None] = {}
@@ -1770,6 +1771,7 @@ async def transform_messages_to_input(
                         "ask_user round loader failed for message_id=%s",
                         load_group_id, exc_info=True,
                     )
+                    loader_failed_groups.add(load_group_id)
                     return load_group_id, {}
 
             if ask_user_loader:
@@ -1803,9 +1805,11 @@ async def transform_messages_to_input(
                             payloads, producers = loaded
                         else:
                             payloads, producers = loaded, {}
+                        loader_failed_groups.discard(load_group_id)
                         return load_group_id, payloads, producers
                     except Exception:
                         logger.warning("Artifact loader failed for chat_id=%s message_id=%s", _chat_log_subject(chat_id), load_group_id, exc_info=True)
+                        loader_failed_groups.add(load_group_id)
                         return load_group_id, {}, {}
 
             pending_groups = [
@@ -3455,7 +3459,8 @@ async def transform_messages_to_input(
                             continue
                         artifact_payload = db_artifacts.get(segment["marker"])
                         if artifact_payload is None:
-                            missing_artifact_markers.append(segment["marker"])
+                            if msg_id not in loader_failed_groups:
+                                missing_artifact_markers.append(segment["marker"])
                             continue
                         if artifact_payload.get("cleared"):
                             continue
