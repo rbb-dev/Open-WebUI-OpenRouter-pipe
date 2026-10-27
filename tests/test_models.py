@@ -963,9 +963,8 @@ async def test_sync_model_metadata_logs_supported_model_counts(pipe_instance_asy
             pipe_identifier="test_pipe",
         )
 
-    mock_info.assert_called()
-    call_args = mock_info.call_args[0]
-    assert "Auto-attaching OpenRouter Web Tools filter" in call_args[0]
+    attaching = [call for call in mock_info.call_args_list if "Auto-attaching OpenRouter Web Tools filter" in call.args[0]]
+    assert len(attaching) == 1
 
 
 @pytest.mark.asyncio
@@ -1909,9 +1908,8 @@ async def test_sync_model_metadata_direct_uploads_logs_supported_count(pipe_inst
             pipe_identifier="test_pipe",
         )
 
-    mock_info.assert_called()
-    call_args = mock_info.call_args[0]
-    assert "Auto-attaching OpenRouter Direct Uploads filter" in call_args[0]
+    attaching = [call for call in mock_info.call_args_list if "Auto-attaching OpenRouter Direct Uploads filter" in call.args[0]]
+    assert len(attaching) == 1
 
 
 @pytest.mark.asyncio
@@ -5706,6 +5704,47 @@ async def test_a_model_list_refresh_starts_the_check_that_removes_the_entry(pipe
                 break
             await asyncio.sleep(0)
     assert gone.id not in table.rows
+
+
+@pytest.mark.asyncio
+async def test_entries_removed_from_open_webui_are_written_again_by_a_later_model_list_refresh(
+    pipe_instance_async, monkeypatch
+):
+    import open_webui.models.functions as owui_functions
+    import open_webui.models.models as owui_models
+
+    pipe = pipe_instance_async
+    table = _MemoryModels()
+    monkeypatch.setattr(owui_models, "Models", table)
+    monkeypatch.setattr(owui_functions, "Functions", _MemoryFunctions())
+    manager = pipe._ensure_catalog_manager()
+    expected = [f"{pipe.id}.example-lab.alpha-1", f"{pipe.id}.example-lab.beta-2"]
+
+    async def refresh_and_sync() -> None:
+        await pipe.pipes()
+        sync = manager._model_metadata_sync_task
+        if sync is not None:
+            await sync
+
+    with aioresponses() as mocked:
+        mocked.get(
+            _DROPPED_CHAT,
+            payload=_dropped_listing(["example-lab/alpha-1", "example-lab/beta-2"]),
+            repeat=True,
+        )
+        mocked.get(f"{_DROPPED_BASE}/endpoints/zdr", payload={"data": []}, repeat=True)
+        mocked.get(f"{_DROPPED_BASE}/models?output_modalities=image", payload={"data": []}, repeat=True)
+        mocked.get(_DROPPED_VIDEO, payload={"data": []}, repeat=True)
+        mocked.get(f"{_DROPPED_BASE}/presets?limit=100&offset=0", payload={"data": [], "total_count": 0}, repeat=True)
+        mocked.get("https://openrouter.ai/api/frontend/v1/catalog/models", payload={"data": []}, repeat=True)
+        await refresh_and_sync()
+        await refresh_and_sync()
+        assert sorted(table.rows) == expected
+
+        table.rows.clear()
+        manager._next_entry_check_at = 0.0
+        await refresh_and_sync()
+    assert sorted(table.rows) == expected
 
 
 class _DroppedSqlModels:

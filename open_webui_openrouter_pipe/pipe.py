@@ -2658,7 +2658,9 @@ class Pipe:
                 )
 
         try:
-            self._ensure_catalog_manager().maybe_schedule_model_metadata_sync(
+            catalog_manager = self._ensure_catalog_manager()
+            await catalog_manager.release_sync_key_when_entries_vanished()
+            catalog_manager.maybe_schedule_model_metadata_sync(
                 selected_models,
                 pipe_identifier=self.id,
                 image_gen_filter_model=image_gen_filter_model,

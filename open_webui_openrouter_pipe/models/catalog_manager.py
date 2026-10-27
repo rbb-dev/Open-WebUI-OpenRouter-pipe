@@ -252,6 +252,7 @@ _warned_fusion_filter_ensure: set[str] = set()
 _warned_direct_uploads_filter_ensure: set[str] = set()
 _warned_image_filter_ensure: set[str] = set()
 _warned_router_filter_ensure: set[str] = set()
+_warned_model_entry_check: set[str] = set()
 
 _MODEL_ROW_READ_CHUNK = 1000
 
@@ -318,6 +319,12 @@ async def _gather_in_chunks(
             )
         )
     return results
+
+
+def _evenly_spaced(ids: list[str], count: int) -> tuple[str, ...]:
+    ordered = sorted(ids)
+    take = min(count, len(ordered))
+    return tuple(ordered[index * len(ordered) // take] for index in range(take)) if take else ()
 
 
 def _stored_profile_images(
@@ -505,6 +512,15 @@ _DISABLE_PARAM_KEYS: tuple[str, ...] = (
 )
 
 _SYNC_RETRY_FLOOR_SECONDS = 60.0
+
+_MODEL_ENTRY_SAMPLE_SIZE = 5
+
+_MODEL_ENTRY_CHECK_FLOOR_SECONDS = 600.0
+
+_MODEL_ENTRY_CREATED = "created"
+_MODEL_ENTRY_UPDATED = "updated"
+_MODEL_ENTRY_KEPT = "kept"
+_MODEL_ENTRY_OUTCOMES = frozenset({_MODEL_ENTRY_CREATED, _MODEL_ENTRY_UPDATED, _MODEL_ENTRY_KEPT})
 
 _ICON_SWEEP_BUDGET_SECONDS = 45
 
@@ -1020,6 +1036,8 @@ class ModelCatalogManager:
         self._last_sync_gate_inputs: tuple[bool, ...] | None = None
         self._gate_released_since_last_pass = False
         self._model_param_digest: frozenset[tuple[str, str]] | None = None
+        self._written_model_entry_ids: tuple[str, ...] = ()
+        self._next_entry_check_at: float = 0.0
 
         self._cached_provider_map: dict[str, dict[str, Any]] = {}
         self._cached_reference_mentions: dict[str, bool] | None = None
@@ -1223,6 +1241,82 @@ class ModelCatalogManager:
         self._last_sync_gate_inputs = None
         self._gate_released_since_last_pass = False
         self._model_param_digest = None
+
+    def _entry_check_spacing(self) -> float:
+        return max(
+            float(self._pipe.valves.MODEL_CATALOG_REFRESH_SECONDS),
+            _MODEL_ENTRY_CHECK_FLOOR_SECONDS,
+        )
+
+    def _remember_written_model_entries(self, row_ids: list[str]) -> None:
+        self._written_model_entry_ids = _evenly_spaced(row_ids, _MODEL_ENTRY_SAMPLE_SIZE)
+        self._next_entry_check_at = time.monotonic() + self._entry_check_spacing()
+
+    @timed
+    async def release_sync_key_when_entries_vanished(self) -> None:
+        try:
+            await self._release_sync_key_when_entries_vanished()
+        except Exception as exc:
+            self.logger.log(
+                warn_level(_warned_model_entry_check, type(exc).__name__),
+                "Checking that the model entries this pipe wrote are still in Open WebUI failed: %s",
+                exc,
+                exc_info=True,
+            )
+
+    async def _release_sync_key_when_entries_vanished(self) -> None:
+        sample = self._written_model_entry_ids
+        if not sample or self._model_metadata_sync_key is None:
+            return
+        task = self._model_metadata_sync_task
+        if task is not None and not task.done():
+            return
+        valves = self._pipe.valves
+        if not syncs_owui_models(
+            valves, bool(valves.ADMIN_PROVIDER_ROUTING_MODELS or valves.USER_PROVIDER_ROUTING_MODELS)
+        ):
+            return
+        now = time.monotonic()
+        if now < self._next_entry_check_at:
+            return
+        self._next_entry_check_at = now + self._entry_check_spacing()
+        if not await self._model_entries_vanished(sample):
+            return
+        self.logger.info(
+            "None of the %d Open WebUI model entries this pipe checked (for example %s) is in Open "
+            "WebUI's model table any more, so the pipe writes its entries again. Settings an admin "
+            "made on the removed entries are not restored.",
+            len(sample),
+            sample[0],
+        )
+        self._release_sync_key()
+
+    async def _model_entries_vanished(self, sample: tuple[str, ...]) -> bool:
+        from open_webui.models.models import Models
+
+        if await Models.get_models_by_ids(list(sample)):
+            return False
+        every_row = await Models.get_all_models()
+        stored = {str(getattr(row, "id", "")) for row in every_row or ()}
+        return stored.isdisjoint(sample)
+
+    def _log_model_entry_outcomes(self, outcomes: dict[str, str], models: int) -> None:
+        results = list(outcomes.values())
+        self.logger.info(
+            "Open WebUI model entries after this sync: %d created, %d updated, %d left as they were, "
+            "out of %d models.",
+            results.count(_MODEL_ENTRY_CREATED),
+            results.count(_MODEL_ENTRY_UPDATED),
+            results.count(_MODEL_ENTRY_KEPT),
+            models,
+        )
+
+    async def _model_row_exists(self, models_table: Any, row_id: str) -> bool:
+        try:
+            return await models_table.get_model_by_id(row_id) is not None
+        except Exception:
+            self.logger.debug("Re-reading the model entry %s failed", row_id, exc_info=True)
+            return False
 
     def _sync_gate_inputs(self, valves: Any, provider_routing_enabled: bool) -> tuple[bool, ...]:
         return tuple(
@@ -2243,6 +2337,7 @@ class ModelCatalogManager:
                 else []
             )
             param_digest: set[tuple[str, str]] = set()
+            entry_outcomes: dict[str, str] = {}
 
             async def _apply(model: dict[str, Any]) -> None:
                 openrouter_id = model.get("id")
@@ -2461,7 +2556,7 @@ class ModelCatalogManager:
 
                 async with semaphore:
                     try:
-                        await self._update_or_insert_model_with_metadata(
+                        entry_outcome = await self._update_or_insert_model_with_metadata(
                             openwebui_model_id,
                             name,
                             capabilities,
@@ -2533,6 +2628,8 @@ class ModelCatalogManager:
                             param_digest=param_digest,
                             rows_unreadable=model_rows is _ROWS_UNREADABLE,
                         )
+                        if entry_outcome in _MODEL_ENTRY_OUTCOMES:
+                            entry_outcomes[openwebui_model_id] = entry_outcome
                     except Exception as exc:
                         sync_failures.append(openwebui_model_id)
                         self.logger.debug(
@@ -2555,6 +2652,7 @@ class ModelCatalogManager:
                         exc_info=outcome,
                     )
             self._model_param_digest = frozenset(param_digest)
+            self._log_model_entry_outcomes(entry_outcomes, len(models))
             if sync_failures:
                 self.logger.warning(
                     "Model metadata sync did not complete for %d/%d model(s); whatever the "
@@ -2565,6 +2663,7 @@ class ModelCatalogManager:
                     ", ".join(sync_failures[:5]),
                 )
                 return sync_failures
+            self._remember_written_model_entries(list(entry_outcomes))
             return None
         finally:
             with contextlib.suppress(Exception):
@@ -2745,7 +2844,7 @@ class ModelCatalogManager:
         new_model_access_control: str,
         rows_unreadable: bool = False,
         param_digest: set[tuple[str, str]] | None = None,
-    ):
+    ) -> str | None:
         from open_webui.models.models import ModelForm, ModelMeta, ModelParams, Models
 
         openwebui_model_id = (openwebui_model_id or "").strip()
@@ -2792,7 +2891,7 @@ class ModelCatalogManager:
                         param_digest.add((openwebui_model_id, key))
 
         if disable_model_metadata_sync:
-            return
+            return _MODEL_ENTRY_KEPT
 
         if disable_capability_updates:
             update_capabilities = False
@@ -3465,7 +3564,7 @@ class ModelCatalogManager:
                 getattr(existing, "params", None)
             ).get("reasoning_tags")
             if not meta_updated and existing_tags is False:
-                return
+                return _MODEL_ENTRY_KEPT
 
             meta_obj = ModelMeta(**meta_dict)
             if meta_dict.get("profile_image_url") and not _icon_was_stored(meta_obj):
@@ -3486,6 +3585,7 @@ class ModelCatalogManager:
                     f"Open WebUI did not report the write to {openwebui_model_id} as "
                     "landed, so it is counted as not written"
                 )
+            return _MODEL_ENTRY_UPDATED
 
         else:
             meta_dict = {}
@@ -3647,8 +3747,17 @@ class ModelCatalogManager:
                 access_payload=access_payload,
                 is_active=True,
             )
-            if await Models.insert_new_model(model_form, user_id="") is None:
+            try:
+                inserted = await Models.insert_new_model(model_form, user_id="")
+            except Exception:
+                if not await self._model_row_exists(Models, openwebui_model_id):
+                    raise
+                return _MODEL_ENTRY_KEPT
+            if inserted is None:
+                if await self._model_row_exists(Models, openwebui_model_id):
+                    return _MODEL_ENTRY_KEPT
                 raise _ModelWriteRefused(
                     f"Open WebUI did not report the insert of {openwebui_model_id} as "
                     "landed, so it is counted as not written"
                 )
+            return _MODEL_ENTRY_CREATED
