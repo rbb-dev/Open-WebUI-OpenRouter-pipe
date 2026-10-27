@@ -43,7 +43,7 @@ The pipe defines an `EncryptedStr` wrapper used by sensitive valves such as:
 - `ARTIFACT_ENCRYPTION_KEY`
 - `SESSION_LOG_ZIP_PASSWORD`
 
-All three share one rule for a dashboard edit: a **blank** value — empty or whitespace only — is ignored, the stored value survives untouched, and the field is named in the save's `not_saved`; only `None`, which the Clear control is the sole source of, removes what is stored.
+All three share one rule for a dashboard edit: a **blank** value — empty or whitespace only — is ignored, the stored value survives untouched, and the field is named in the save's `not_saved`; only `None`, which the Clear control is the sole source of, removes what is stored. A value that contains an invisible character is refused: U+200B ZERO WIDTH SPACE, U+2060 WORD JOINER, U+FEFF ZERO WIDTH NO-BREAK SPACE, U+00AD SOFT HYPHEN or U+180E MONGOLIAN VOWEL SEPARATOR, anywhere in the value, makes the save answer `400` with the setting's name and the code points found, never the value, and nothing in that save is written. Spaces around a value, a newline after it, and a zero-width joiner or non-joiner inside it are saved as typed.
 
 `EncryptedStr` encrypts/decrypts values using a key derived from the application secret, read exactly the way Open WebUI reads it: `WEBUI_SECRET_KEY`, or the deprecated `WEBUI_JWT_SECRET_KEY` it falls back to (a default, so an empty primary is not a fallback). Every reader in the pipe resolves the secret the same way, so a host that sets only the deprecated name encrypts rather than storing in the clear:
 

@@ -16,7 +16,7 @@ from open_webui_openrouter_pipe.core.config import EncryptedStr, Valves
 pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
 
 from open_webui_openrouter_pipe.plugins.pipe_dashboard import actions
-from open_webui_openrouter_pipe.plugins.pipe_dashboard.config_service import _ClientMessage
+from open_webui_openrouter_pipe.plugins.pipe_dashboard.config_service import _ClientInput, _ClientMessage
 
 
 def _user(uid="u1", role="user"):
@@ -523,6 +523,26 @@ async def test_config_set_invalid_value_raises_before_write(fake_functions):
             pipe, _user(), {"edits": {"REASONING_EFFORT": "bogus"}, "rev": 1000}
         )
     assert fake_functions.saved is None
+
+
+@pytest.mark.asyncio
+async def test_a_secret_edit_holding_an_invisible_character_is_refused_and_one_padded_with_spaces_is_saved(
+    fake_functions,
+):
+    fake_functions.valves = {"API_KEY": "sk-or-v1-invented-0000"}
+    pipe = _config_pipe()
+
+    with pytest.raises(_ClientInput):
+        await actions.ACTIONS["config_set"].handler(
+            pipe, _user(), {"edits": {"API_KEY": "sk-or-\u200bv1-invented-1111"}, "rev": 1000}
+        )
+    assert fake_functions.saved is None
+
+    result = await actions.ACTIONS["config_set"].handler(
+        pipe, _user(), {"edits": {"API_KEY": "  sk-or-v1-invented-1111  "}, "rev": 1000}
+    )
+    assert result["saved"] == 1
+    assert "API_KEY" not in result["not_saved"]
 
 
 @pytest.mark.asyncio

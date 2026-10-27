@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import typing
+import unicodedata
 from functools import lru_cache
 from typing import Any, NamedTuple
 
@@ -176,6 +177,14 @@ def _is_clear_edit(fld: Any, value: Any, current: dict[str, Any]) -> bool:
     return bool(is_secret(fld.annotation)) and value is None
 
 
+_INVISIBLE_SECRET_CHARACTERS = "\u200b\u2060\ufeff\u00ad\u180e"
+
+
+def _invisible_characters_in(value: str) -> list[str]:
+    found = dict.fromkeys(char for char in value if char in _INVISIBLE_SECRET_CHARACTERS)
+    return [f"U+{ord(char):04X} {unicodedata.name(char)}" for char in found]
+
+
 class _ClientMessage(RuntimeError):
     status = 500
 
@@ -331,6 +340,12 @@ def merge_for_save_with_drops(
                 continue
             if isinstance(value, str) and not value.strip():
                 continue
+            hidden = _invisible_characters_in(value) if isinstance(value, str) else []
+            if hidden:
+                raise _ClientInput(
+                    f"{key} contains characters that cannot be seen ({', '.join(hidden)}); "
+                    "remove them and enter the value again"
+                )
         _, nullable = _base_type(fld.annotation)
         if nullable and (value is None or (isinstance(value, str) and not value.strip())):
             merged.pop(key, None)
