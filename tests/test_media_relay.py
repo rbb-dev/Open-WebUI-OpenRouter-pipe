@@ -168,10 +168,11 @@ async def test_a_clip_reaches_the_request_as_a_link_rather_than_as_bytes(monkeyp
     monkeypatch.setattr(module, "relay_to_public_url", fake_relay)
 
     async def fake_file(file_id, _logger):
-        return SimpleNamespace(id=file_id, filename="holiday.mp4", user_id=_OWNER.id)
+        return SimpleNamespace(
+            id=file_id, filename="holiday.mp4", user_id=_OWNER.id, meta={"content_type": "video/mp4"}
+        )
 
     monkeypatch.setattr(module, "get_file_by_id", fake_file)
-    monkeypatch.setattr(module, "infer_file_mime_type", lambda _obj: "video/mp4")
 
     adapter = VideoGenerationAdapter.__new__(VideoGenerationAdapter)
     adapter.logger = logging.getLogger("media-relay-test")
@@ -231,14 +232,12 @@ async def test_a_reference_kind_is_offered_only_where_the_model_declares_it(
     payload = {"video": b"\x00\x00\x00\x18ftypmp42", "audio": b"ID3\x04tone"}[family]
 
     async def fake_file(file_id, _logger):
-        return SimpleNamespace(id=file_id, filename=file_id, user_id=_OWNER.id)
+        recorded = "image/png" if file_id.startswith("pair") else mime
+        return SimpleNamespace(
+            id=file_id, filename=file_id, user_id=_OWNER.id, meta={"content_type": recorded}
+        )
 
     monkeypatch.setattr(module, "get_file_by_id", fake_file)
-    monkeypatch.setattr(
-        module,
-        "infer_file_mime_type",
-        lambda obj: "image/png" if str(obj.id).startswith("pair") else mime,
-    )
 
     async def fake_relay(_session, _blob, **_kwargs):
         return "https://files.example/asset"
@@ -717,10 +716,11 @@ async def test_a_sound_file_with_nothing_to_pair_with_is_never_uploaded(monkeypa
     adapter, module, relay, _AsyncMock = _adapter_with_files(records, reads, uploads)
 
     async def _get_file(file_id, _logger):
-        return SimpleNamespace(id=file_id, filename="voice.mp3", user_id=_OWNER.id)
+        return SimpleNamespace(
+            id=file_id, filename="voice.mp3", user_id=_OWNER.id, meta={"content_type": "audio/mpeg"}
+        )
 
     monkeypatch.setattr(module, "get_file_by_id", _get_file)
-    monkeypatch.setattr(module, "infer_file_mime_type", lambda _f: "audio/mpeg")
     monkeypatch.setattr(
         VideoGenerationAdapter, "_relay_reference", relay, raising=True
     )
@@ -763,10 +763,11 @@ async def test_a_sound_file_is_kept_when_a_picture_was_attached_as_a_frame(monke
     adapter, module, relay, _AsyncMock = _adapter_with_files(records, reads, uploads)
 
     async def _get_file(file_id, _logger):
-        return SimpleNamespace(id=file_id, filename="voice.mp3", user_id=_OWNER.id)
+        return SimpleNamespace(
+            id=file_id, filename="voice.mp3", user_id=_OWNER.id, meta={"content_type": "audio/mpeg"}
+        )
 
     monkeypatch.setattr(module, "get_file_by_id", _get_file)
-    monkeypatch.setattr(module, "infer_file_mime_type", lambda _f: "audio/mpeg")
     monkeypatch.setattr(VideoGenerationAdapter, "_relay_reference", relay, raising=True)
 
     valves = Valves()
@@ -812,10 +813,11 @@ async def test_a_clip_that_cannot_be_sent_is_never_read_out_of_storage(
     adapter, module, relay, _AsyncMock = _adapter_with_files(records, reads, uploads)
 
     async def _get_file(file_id, _logger):
-        return SimpleNamespace(id=file_id, filename="clip.mp4", user_id=_OWNER.id)
+        return SimpleNamespace(
+            id=file_id, filename="clip.mp4", user_id=_OWNER.id, meta={"content_type": "video/mp4"}
+        )
 
     monkeypatch.setattr(module, "get_file_by_id", _get_file)
-    monkeypatch.setattr(module, "infer_file_mime_type", lambda _f: "video/mp4")
     monkeypatch.setattr(VideoGenerationAdapter, "_relay_reference", relay, raising=True)
 
     valves = Valves()
@@ -834,6 +836,43 @@ async def test_a_clip_that_cannot_be_sent_is_never_read_out_of_storage(
 )
 
     assert reads == expected_reads
+
+
+@pytest.mark.asyncio
+async def test_a_stored_file_with_no_recorded_type_is_never_published_under_the_type_its_name_implies(
+    monkeypatch,
+):
+    import base64 as _base64
+
+    records = {"pic-1": {"b64": _base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()}}
+    reads: list[str] = []
+    uploads: list[tuple[str, str, str]] = []
+    adapter, module, relay, _AsyncMock = _adapter_with_files(records, reads, uploads)
+
+    async def _get_file(file_id, _logger):
+        return SimpleNamespace(id=file_id, filename="clip.mp4", user_id=_OWNER.id)
+
+    monkeypatch.setattr(module, "get_file_by_id", _get_file)
+    monkeypatch.setattr(VideoGenerationAdapter, "_relay_reference", relay, raising=True)
+
+    valves = Valves()
+    valves.SEND_MEDIA_VIA_FILE_HOST = True
+    withheld: list[tuple[str, str]] = []
+
+    encoded = await adapter._encode_input_references(
+        {"input_references": [{"id": "pic-1"}], "model_id": "runway/aleph-2"},
+        valves,
+        withheld=withheld,
+        video_model={"id": "runway/aleph-2", "input_modalities": ["video", "image"]},
+        relayed=set(),
+        companions=True,
+        user_obj=_OWNER,
+        event_emitter=_a_listening_chat,
+    )
+
+    assert encoded == []
+    assert uploads == [], f"a file Open WebUI recorded no type for was published: {uploads}"
+    assert [name for name, _reason in withheld] == ["pic-1"]
 
 
 def _a_clip_on_disk(directory):
@@ -1142,7 +1181,9 @@ async def test_a_clip_below_the_models_pixel_floor_is_dropped_before_it_is_publi
     adapter, module, relay, _AsyncMock = _adapter_with_files(records, reads, uploads)
 
     async def _get_file(file_id, _logger):
-        return SimpleNamespace(id=file_id, filename="clip.mp4", user_id=_OWNER.id)
+        return SimpleNamespace(
+            id=file_id, filename="clip.mp4", user_id=_OWNER.id, meta={"content_type": "video/mp4"}
+        )
 
     async def _probe(_path):
         return VideoMetadata(
@@ -1150,7 +1191,6 @@ async def test_a_clip_below_the_models_pixel_floor_is_dropped_before_it_is_publi
         )
 
     monkeypatch.setattr(module, "get_file_by_id", _get_file)
-    monkeypatch.setattr(module, "infer_file_mime_type", lambda _f: "video/mp4")
     monkeypatch.setattr(video_module, "probe_video", _probe)
     monkeypatch.setattr(VideoGenerationAdapter, "_relay_reference", relay, raising=True)
 
@@ -1196,7 +1236,9 @@ async def test_the_floor_probe_reads_a_stored_clip_under_a_name_the_decoder_acce
     probed: list[Path] = []
 
     async def _get_file(file_id, _logger):
-        return SimpleNamespace(id=file_id, filename="clip.mp4", user_id=_OWNER.id)
+        return SimpleNamespace(
+            id=file_id, filename="clip.mp4", user_id=_OWNER.id, meta={"content_type": "video/mp4"}
+        )
 
     async def _probe(path):
         probed.append(path)
@@ -1206,7 +1248,6 @@ async def test_the_floor_probe_reads_a_stored_clip_under_a_name_the_decoder_acce
         )
 
     monkeypatch.setattr(module, "get_file_by_id", _get_file)
-    monkeypatch.setattr(module, "infer_file_mime_type", lambda _f: "video/mp4")
     monkeypatch.setattr(video_module, "probe_video", _probe)
     monkeypatch.setattr(VideoGenerationAdapter, "_relay_reference", relay, raising=True)
 

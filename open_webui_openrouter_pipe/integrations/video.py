@@ -92,6 +92,7 @@ from ..storage.owui_files import (
     is_linkable_chat,
     is_temporary_chat,
     materialize_owui_file_to_temp,
+    recorded_media_type,
 )
 from ..storage.receive_spool import RECEIVE_ITEM_MAX_BYTES
 from ..storage.video_persistence import VideoPersistence
@@ -662,8 +663,8 @@ _UNTYPED_REFERENCE = (
 )
 
 _PUBLISHING_NEEDS_A_STORED_TYPE = (
-    "Open WebUI has no media type recorded for this file, and the type your browser "
-    "declared for it is not enough to put a file on a public host under"
+    "Open WebUI has no media type recorded for this file, and neither the type your browser "
+    "declared for it nor its file name is enough to put a file on a public host"
 )
 
 _REFERENCE_KINDS: dict[str, str] = {
@@ -2824,8 +2825,8 @@ class VideoGenerationAdapter:
             if not file_obj:
                 _skip(file_id, "unreadable", "it could not be loaded from Open WebUI storage")
                 continue
-            stored_mime = usable_media_type(infer_file_mime_type(file_obj))
-            mime = stored_mime or usable_media_type(item.get("content_type"))
+            stored_mime = usable_media_type(recorded_media_type(file_obj))
+            mime = usable_media_type(infer_file_mime_type(file_obj)) or usable_media_type(item.get("content_type"))
             family = mime.split("/", 1)[0]
             kind = _REFERENCE_KINDS.get(family)
             if not kind:

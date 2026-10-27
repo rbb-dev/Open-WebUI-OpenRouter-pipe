@@ -615,7 +615,7 @@ async def materialize_owui_file_to_temp(
     return temp_path
 
 
-def infer_file_mime_type(file_obj: Any) -> str:
+def recorded_media_type(file_obj: Any) -> str:
     candidates = [
         getattr(file_obj, "mime_type", None),
         getattr(file_obj, "content_type", None),
@@ -635,6 +635,14 @@ def infer_file_mime_type(file_obj: Any) -> str:
             if normalized == "image/jpg":
                 return "image/jpeg"
             return normalized
+    return ""
+
+
+def infer_file_mime_type(file_obj: Any) -> str:
+    recorded = recorded_media_type(file_obj)
+    if recorded:
+        return recorded
+    meta = getattr(file_obj, "meta", None) or {}
     for name in (
         meta.get("name") if isinstance(meta, dict) else None,
         getattr(file_obj, "filename", None),
