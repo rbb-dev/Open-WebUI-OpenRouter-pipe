@@ -283,6 +283,52 @@ async def test_chat_completions_streaming_reasoning_carried_in_both_fields_of_a_
 
 
 @pytest.mark.asyncio
+async def test_chat_completions_streaming_reasoning_keeps_a_piece_that_is_only_whitespace_between_words(
+    pipe_instance_async,
+):
+    pipe = pipe_instance_async
+    valves = pipe.valves
+    session = pipe._create_http_session(valves)
+    thoughts = ["First idea.", "\n\n", "Second", " ", "idea."]
+
+    sse_response = (
+        "".join(
+            _sse({"choices": [{"delta": {"reasoning": thought}, "finish_reason": None}]}) for thought in thoughts
+        )
+        + _sse({"choices": [{"delta": {"content": "Answer"}, "finish_reason": None}]})
+        + _sse({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+        + "data: [DONE]\n\n"
+    )
+
+    with aioresponses() as mock_http:
+        mock_http.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            body=sse_response.encode("utf-8"),
+            headers={"Content-Type": "text/event-stream"},
+            status=200,
+        )
+
+        events = []
+        async for event in pipe.send_openai_chat_completions_streaming_request(
+            session,
+            {"model": "qwen/qwen3-235b-a22b-thinking-2507", "stream": True, "input": []},
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            valves=valves,
+        ):
+            events.append(event)
+
+        await session.close()
+
+    assert [e["delta"] for e in events if e.get("type") == "response.reasoning_text.delta"] == thoughts
+    finished = next(
+        e["item"] for e in events
+        if e.get("type") == "response.output_item.done" and e["item"].get("type") == "reasoning"
+    )
+    assert finished["content"][0]["text"] == "".join(thoughts)
+
+
+@pytest.mark.asyncio
 async def test_chat_completions_streaming_reasoning_summary(pipe_instance_async):
     """Test reasoning.summary handling."""
     pipe = pipe_instance_async

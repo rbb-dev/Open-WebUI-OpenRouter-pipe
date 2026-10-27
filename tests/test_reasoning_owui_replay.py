@@ -423,6 +423,261 @@ class TestReplayCaseC:
         assert "<think>not real</think>" in _message_text(messages[0])
 
 
+def _chunks_read_by_a_program(frames: list[Any]) -> str:
+    return "".join(
+        frame["choices"][0]["delta"]["reasoning"]
+        for frame in frames
+        if isinstance(frame, dict) and (frame.get("choices") or [{}])[0].get("delta", {}).get("reasoning")
+    )
+
+
+async def _reasoning_stored_and_read(
+    pipe: Any, monkeypatch: Any, events: list[dict], **valve_updates: Any
+) -> tuple[list[str], str]:
+    from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import CHAT, install, run
+
+    install(pipe, monkeypatch, lambda _n, _request: events)
+    in_a_chat, _raw = await run(pipe, mode="Pipeline", stream=True, metadata=dict(CHAT), **valve_updates)
+    stored = await owui_assemble([frame for frame in in_a_chat if isinstance(frame, dict)])
+    with_no_chat, _raw = await run(pipe, mode="Pipeline", stream=True, metadata={}, **valve_updates)
+    return [_summary_text(item) for item in _reasoning_items(stored)], _chunks_read_by_a_program(with_no_chat)
+
+
+class TestReplayWholeTextRepeats:
+    @pytest.mark.asyncio
+    async def test_a_piece_equal_to_the_start_or_end_of_the_text_so_far_is_kept_and_the_providers_repeat_adds_nothing(
+        self, monkeypatch, pipe_instance_async
+    ):
+        text = "First, list 1 to 9999 and then First again."
+        pieces = ["First, list 1 to 999", "9", " and then ", "First", " again."]
+        item = {"type": "reasoning", "id": "rs-1", "status": "completed", "summary": [],
+                "content": [{"type": "reasoning_text", "text": text}]}
+        events = [
+            {"type": "response.output_item.added", "output_index": 0,
+             "item": {"type": "reasoning", "id": "rs-1", "status": "in_progress", "summary": []}},
+            *({"type": "response.reasoning_text.delta", "item_id": "rs-1", "output_index": 0, "content_index": 0,
+               "delta": piece} for piece in pieces),
+            {"type": "response.reasoning_text.done", "item_id": "rs-1", "output_index": 0, "content_index": 0,
+             "text": text},
+            {"type": "response.content_part.done", "item_id": "rs-1", "output_index": 0, "content_index": 0,
+             "part": {"type": "reasoning_text", "text": text}},
+            {"type": "response.output_item.done", "output_index": 0, "item": item},
+            {"type": "response.output_text.delta", "delta": "Done."},
+            {"type": "response.completed", "response": {"output": [item], "usage": {}}},
+        ]
+
+        stored, read = await _reasoning_stored_and_read(pipe_instance_async, monkeypatch, events)
+
+        assert stored == [text]
+        assert read == text
+
+    @pytest.mark.asyncio
+    async def test_summary_parts_the_provider_repeats_joined_differently_add_nothing_to_the_streamed_text(
+        self, monkeypatch, pipe_instance_async
+    ):
+        parts = [
+            ["**Plan the route**\n\n", "Pick the ", "coast road."],
+            ["**Pack**\n\n", "Bring water."],
+        ]
+        texts = ["".join(part) for part in parts]
+        events: list[dict] = [
+            {"type": "response.output_item.added", "output_index": 0,
+             "item": {"type": "reasoning", "id": "rs-1", "status": "in_progress", "summary": []}},
+        ]
+        for index, (pieces, whole) in enumerate(zip(parts, texts)):
+            where = {"item_id": "rs-1", "output_index": 0, "summary_index": index}
+            events += [
+                {"type": "response.reasoning_summary_part.added", **where, "part": {"type": "summary_text", "text": ""}},
+                *({"type": "response.reasoning_summary_text.delta", **where, "delta": piece} for piece in pieces),
+                {"type": "response.reasoning_summary_text.done", **where, "text": whole},
+                {"type": "response.reasoning_summary_part.done", **where, "part": {"type": "summary_text", "text": whole}},
+            ]
+        item = {"type": "reasoning", "id": "rs-1", "status": "completed",
+                "summary": [{"type": "summary_text", "text": whole} for whole in texts]}
+        events += [
+            {"type": "response.output_item.done", "output_index": 0, "item": item},
+            {"type": "response.output_text.delta", "delta": "Done."},
+            {"type": "response.completed", "response": {"output": [item], "usage": {}}},
+        ]
+
+        stored, read = await _reasoning_stored_and_read(pipe_instance_async, monkeypatch, events)
+
+        assert stored == ["".join(texts)]
+        assert read == "".join(texts)
+
+    @pytest.mark.asyncio
+    async def test_a_chat_completions_summary_the_reasoning_field_repeats_reaches_the_box_and_the_program_once(
+        self, monkeypatch, pipe_instance_async
+    ):
+        import json
+
+        from aioresponses import aioresponses
+
+        from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import CHAT, install, run
+
+        def chunk(delta: dict, finish: str | None = None) -> str:
+            return f"data: {json.dumps({'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish}]})}\n\n"
+
+        pieces = ["**Check the forecast**\n\nI should", " look up", " Paris", " now."]
+        body = (
+            "".join(
+                chunk({"role": "assistant", "content": "", "reasoning": piece, "reasoning_details": [
+                    {"type": "reasoning.summary", "summary": piece, "format": "openai-responses-v1", "index": 0}
+                ]})
+                for piece in pieces
+            )
+            + chunk({"content": "Sunny."})
+            + chunk({}, "stop")
+            + "data: [DONE]\n\n"
+        )
+        pipe = pipe_instance_async
+        real_transport = Pipe.send_openrouter_streaming_request
+        install(pipe, monkeypatch, lambda _n, _request: [])
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", real_transport)
+
+        with aioresponses() as mock_http:
+            mock_http.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                body=body.encode("utf-8"),
+                headers={"Content-Type": "text/event-stream"},
+                status=200,
+                repeat=True,
+            )
+            in_a_chat, _raw = await run(
+                pipe, mode="Pipeline", stream=True, metadata=dict(CHAT), DEFAULT_LLM_ENDPOINT="chat_completions"
+            )
+            with_no_chat, _raw = await run(
+                pipe, mode="Pipeline", stream=True, metadata={}, DEFAULT_LLM_ENDPOINT="chat_completions"
+            )
+
+        stored = await owui_assemble([frame for frame in in_a_chat if isinstance(frame, dict)])
+        assert [_summary_text(item) for item in _reasoning_items(stored)] == ["".join(pieces)]
+        assert _chunks_read_by_a_program(with_no_chat) == "".join(pieces)
+
+    @pytest.mark.asyncio
+    async def test_a_summary_the_reasoning_field_repeats_reaches_the_box_once_when_the_reply_is_not_streamed_and_when_it_closes_the_stream(
+        self, monkeypatch, pipe_instance_async
+    ):
+        import json
+
+        from aioresponses import aioresponses
+
+        from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import CHAT, install, run
+
+        text = "**Check the forecast**\n\nI should look up Paris now."
+        message = {
+            "role": "assistant", "content": "Sunny.", "reasoning": text,
+            "reasoning_details": [
+                {"type": "reasoning.summary", "summary": text, "format": "openai-responses-v1", "index": 0}
+            ],
+        }
+        whole_reply = {
+            "id": "gen-1", "model": "test/model", "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 9, "total_tokens": 14},
+        }
+        closing_chunk = (
+            f"data: {json.dumps({'choices': [{'index': 0, 'message': message, 'finish_reason': 'stop'}]})}\n\n"
+            "data: [DONE]\n\n"
+        )
+        pipe = pipe_instance_async
+        real_streaming = Pipe.send_openrouter_streaming_request
+        real_whole = Pipe.send_openrouter_nonstreaming_request_as_events
+        install(pipe, monkeypatch, lambda _n, _request: [])
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", real_streaming)
+        monkeypatch.setattr(Pipe, "send_openrouter_nonstreaming_request_as_events", real_whole)
+
+        with aioresponses() as mock_http:
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            mock_http.post(url, payload=whole_reply)
+            mock_http.post(url, body=closing_chunk.encode("utf-8"), headers={"Content-Type": "text/event-stream"})
+            _answer, not_streamed = await run(
+                pipe, mode="Pipeline", stream=False, metadata=dict(CHAT), DEFAULT_LLM_ENDPOINT="chat_completions"
+            )
+            streamed, _raw = await run(
+                pipe, mode="Pipeline", stream=True, metadata=dict(CHAT), DEFAULT_LLM_ENDPOINT="chat_completions"
+            )
+
+        for frames in (not_streamed, streamed):
+            stored = await owui_assemble([frame for frame in frames if isinstance(frame, dict)])
+            assert [_summary_text(item) for item in _reasoning_items(stored)] == [text]
+
+    @pytest.mark.asyncio
+    async def test_a_whole_text_that_extends_what_was_streamed_adds_only_its_tail(
+        self, monkeypatch, pipe_instance_async
+    ):
+        item = {"type": "reasoning", "id": "rs-1", "status": "completed", "summary": [],
+                "content": [{"type": "reasoning_text", "text": "Hello world"}]}
+        events = [
+            {"type": "response.output_item.added", "output_index": 0,
+             "item": {"type": "reasoning", "id": "rs-1", "status": "in_progress", "summary": []}},
+            {"type": "response.reasoning_text.delta", "item_id": "rs-1", "output_index": 0, "delta": "Hello"},
+            {"type": "response.output_item.done", "output_index": 0, "item": item},
+            {"type": "response.output_text.delta", "delta": "Done."},
+            {"type": "response.completed", "response": {"output": [item], "usage": {}}},
+        ]
+
+        stored, read = await _reasoning_stored_and_read(pipe_instance_async, monkeypatch, events)
+
+        assert stored == ["Hello world"]
+        assert read == "Hello world"
+
+    @pytest.mark.asyncio
+    async def test_a_thought_that_arrives_whole_under_an_id_an_earlier_round_used_is_a_box_of_its_own_unless_it_is_resent(
+        self, monkeypatch, pipe_instance_async
+    ):
+        pipe = pipe_instance_async
+
+        def thought(text: str) -> dict:
+            return {"type": "reasoning", "id": "rs-1", "status": "completed",
+                    "summary": [{"type": "summary_text", "text": text}]}
+
+        def round_with_a_call(text: str, call_id: str) -> list[dict]:
+            call = {"type": "function_call", "id": call_id, "call_id": call_id, "name": "lookup",
+                    "arguments": "{}", "status": "completed"}
+            return [
+                {"type": "response.output_item.done", "output_index": 0, "item": thought(text)},
+                {"type": "response.output_item.done", "output_index": 1, "item": call},
+                {"type": "response.completed", "response": {"output": [thought(text), call], "usage": {}}},
+            ]
+
+        rounds = iter([
+            round_with_a_call("Round one thought.", "call-1"),
+            round_with_a_call("Round one thought.", "call-2"),
+            [
+                {"type": "response.output_item.done", "output_index": 0, "item": thought("Round three thought.")},
+                {"type": "response.output_text.delta", "delta": "Done."},
+                {"type": "response.completed",
+                 "response": {"output": [thought("Round three thought.")], "usage": {}}},
+            ],
+        ])
+
+        async def stream(self, session, request_body, **_kwargs):
+            for event in next(rounds):
+                yield event
+
+        async def run_tool(calls, registry):
+            return [{"type": "function_call_output", "call_id": c["call_id"], "output": "ok"} for c in calls]
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", stream)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", run_tool)
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(copy.deepcopy(event))
+
+        await pipe._streaming_handler._run_streaming_loop(
+            ResponsesBody(model="test/model", input=[], stream=True), pipe.valves, emitter,
+            metadata={"model": {"id": "test"}}, tools={"lookup": {"callable": lambda **_k: "ok"}},
+            session=cast(Any, object()), user_id="u1",
+        )
+
+        stored = await owui_assemble(emitted)
+        assert [_summary_text(item) for item in _reasoning_items(stored)] == [
+            "Round one thought.",
+            "Round three thought.",
+        ]
+
+
 SEARCH_MODEL = "anthropic/claude-haiku-5.5"
 SEARCH_ANSWER = "Dana Example is the chair of Northwind Gadgets."
 SEARCH_PAGES = [

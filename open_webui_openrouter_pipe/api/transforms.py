@@ -2641,6 +2641,18 @@ def _joined_reasoning_summaries(fragments: Iterable[str]) -> str:
     return out
 
 
+def _plain_reasoning_text(source: dict[str, Any], *, keep_whitespace: bool = False) -> str | None:
+    for key in ("reasoning", "reasoning_content"):
+        candidate = source.get(key)
+        if isinstance(candidate, str) and (candidate if keep_whitespace else candidate.strip()):
+            return candidate
+    return None
+
+
+def _plain_text_repeats_summary(plain_text: str | None, summary: str) -> bool:
+    return plain_text is not None and "".join(plain_text.split()) == "".join(summary.split())
+
+
 def _unhandled_citation_types(raw_annotations: Any) -> set[str]:
     types: set[str] = set()
     if not isinstance(raw_annotations, list):

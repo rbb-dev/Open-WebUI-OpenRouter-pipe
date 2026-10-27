@@ -55,6 +55,8 @@ from ..transforms import (
     _gate_responses_input_media,
     _joined_reasoning_summaries,
     _parse_url_citation_annotations,
+    _plain_reasoning_text,
+    _plain_text_repeats_summary,
     _responses_payload_to_chat_completions_payload,
     _unhandled_citation_types,
     chat_payload_loses_fusion_entry,
@@ -664,6 +666,7 @@ class ChatCompletionsAdapter:
             delta = choice0.get("delta") if isinstance(choice0, dict) else None
             delta_obj = delta if isinstance(delta, dict) else {}
 
+            delta_reasoning_text = _plain_reasoning_text(delta_obj, keep_whitespace=bool(reasoning_text_parts))
             delta_reasoning_details = delta_obj.get("reasoning_details")
             details_reasoning_text = ""
             if isinstance(delta_reasoning_details, list) and delta_reasoning_details:
@@ -714,20 +717,15 @@ class ChatCompletionsAdapter:
                                 reasoning_summary_parts.get(detail_key, ""), summary
                             )
                             delivered_any = True
-                            yield {
-                                "type": "response.reasoning_summary_text.done",
-                                "item_id": reasoning_item_id,
-                                "text": _joined_reasoning_summaries(
-                                    reasoning_summary_parts[k] for k in reasoning_summary_order
-                                ),
-                            }
+                            if not _plain_text_repeats_summary(delta_reasoning_text, summary):
+                                yield {
+                                    "type": "response.reasoning_summary_text.done",
+                                    "item_id": reasoning_item_id,
+                                    "text": _joined_reasoning_summaries(
+                                        reasoning_summary_parts[k] for k in reasoning_summary_order
+                                    ),
+                                }
 
-            delta_reasoning_text = None
-            for key in ("reasoning", "reasoning_content"):
-                candidate = delta_obj.get(key)
-                if isinstance(candidate, str) and candidate.strip():
-                    delta_reasoning_text = candidate
-                    break
             if delta_reasoning_text and delta_reasoning_text != details_reasoning_text:
                 if reasoning_item_id is None:
                     reasoning_item_id = f"reasoning-{generate_item_id()}"
@@ -760,6 +758,7 @@ class ChatCompletionsAdapter:
                 if isinstance(message_annotations, list) and message_annotations:
                     annotations.extend(message_annotations)
                     _record_message_annotations(message_annotations)
+                message_reasoning_text = _plain_reasoning_text(message_obj)
                 message_reasoning_details = message_obj.get("reasoning_details")
                 if (
                     isinstance(message_reasoning_details, list)
@@ -811,40 +810,36 @@ class ChatCompletionsAdapter:
                                     reasoning_summary_parts.get(detail_key, ""), summary
                                 )
                                 delivered_any = True
-                                yield {
-                                    "type": "response.reasoning_summary_text.done",
-                                    "item_id": reasoning_item_id,
-                                    "text": _joined_reasoning_summaries(
-                                        reasoning_summary_parts[k] for k in reasoning_summary_order
-                                    ),
-                                }
-                if not reasoning_text_seen:
-                    message_reasoning_text = None
-                    for key in ("reasoning", "reasoning_content"):
-                        candidate = message_obj.get(key)
-                        if isinstance(candidate, str) and candidate.strip():
-                            message_reasoning_text = candidate
-                            break
-                    if message_reasoning_text:
-                        if reasoning_item_id is None:
-                            reasoning_item_id = f"reasoning-{generate_item_id()}"
-                            delivered_any = True
-                            yield {
-                                "type": "response.output_item.added",
-                                "item": {
-                                    "type": "reasoning",
-                                    "id": reasoning_item_id,
-                                    "status": "in_progress",
-                                },
-                            }
-                        reasoning_text_parts.append(message_reasoning_text)
-                        reasoning_text_seen = True
+                                if reasoning_text_seen or not _plain_text_repeats_summary(
+                                    message_reasoning_text, summary
+                                ):
+                                    yield {
+                                        "type": "response.reasoning_summary_text.done",
+                                        "item_id": reasoning_item_id,
+                                        "text": _joined_reasoning_summaries(
+                                            reasoning_summary_parts[k] for k in reasoning_summary_order
+                                        ),
+                                    }
+                if not reasoning_text_seen and message_reasoning_text:
+                    if reasoning_item_id is None:
+                        reasoning_item_id = f"reasoning-{generate_item_id()}"
                         delivered_any = True
                         yield {
-                            "type": "response.reasoning_text.delta",
-                            "item_id": reasoning_item_id,
-                            "delta": message_reasoning_text,
+                            "type": "response.output_item.added",
+                            "item": {
+                                "type": "reasoning",
+                                "id": reasoning_item_id,
+                                "status": "in_progress",
+                            },
                         }
+                    reasoning_text_parts.append(message_reasoning_text)
+                    reasoning_text_seen = True
+                    delivered_any = True
+                    yield {
+                        "type": "response.reasoning_text.delta",
+                        "item_id": reasoning_item_id,
+                        "delta": message_reasoning_text,
+                    }
                 message_text, message_refusal = _message_answer_and_refusal(message_obj)
                 if message_refusal:
                     provider_refusal_full = message_refusal

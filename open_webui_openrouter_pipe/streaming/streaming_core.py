@@ -440,35 +440,43 @@ async def _aclose_quietly(it: AsyncGenerator[dict[str, Any], None]) -> None:
     await it.aclose()
 
 
-_REASONING_HEAD_CHARS = 1024
-
-
 class _ReasoningTextBox:
-    __slots__ = ("_text", "head", "length", "tail")
+    __slots__ = ("_text", "length", "round_ends")
 
     def __init__(self) -> None:
         self._text: str = ""
         self.length = 0
-        self.head = ""
-        self.tail = ""
+        self.round_ends: list[int] = []
+
+    @property
+    def round_start(self) -> int:
+        return self.round_ends[-1] if self.round_ends else 0
 
     def add(self, append: str) -> None:
-        if len(self.head) < _REASONING_HEAD_CHARS:
-            self.head += append[: _REASONING_HEAD_CHARS - len(self.head)]
         text = self._text
         self._text = ""
         text += append
         self._text = text
-        self.length = len(self._text)
-        self.tail = self._text[-_REASONING_HEAD_CHARS:]
+        self.length = len(text)
 
     def text(self) -> str:
         return self._text
 
-    def ends_with(self, candidate: str) -> bool:
-        if not candidate or len(candidate) > len(self.tail):
-            return False
-        return self.tail.endswith(candidate)
+    def round_text(self) -> str:
+        start = self.round_start
+        return self._text[start:] if start else self._text
+
+    def begin_round(self) -> None:
+        if self.length > self.round_start:
+            self.round_ends.append(self.length)
+
+    def repeats_an_earlier_round(self, candidate: str) -> bool:
+        start = 0
+        for end in self.round_ends:
+            if end - start == len(candidate) and self._text[start:end] == candidate:
+                return True
+            start = end
+        return False
 
 
 def _tagless_id(norm_id: str) -> str:
@@ -768,7 +776,6 @@ class StreamingHandler:
         reasoning_stream_active = False
         active_reasoning_item_id: str | None = None
         reasoning_stream_buffers: dict[str, _ReasoningTextBox] = {}
-        reasoning_summary_consumed: dict[str, str] = {}
         reasoning_display: dict[str, dict[str, Any]] = {}
         unpublished_reasoning_keys: dict[str, None] = {}
         open_reasoning_windows: dict[str, None] = {}
@@ -1771,66 +1778,34 @@ class StreamingHandler:
                     )
                 return ""
 
-            def _append_reasoning_text(
-                key: str, incoming: str, *, allow_misaligned: bool, consumed: str = ""
-            ) -> str:
-                candidate = (incoming or "")
+            def _append_reasoning_text(key: str, incoming: str, *, incremental: bool) -> str:
+                candidate = incoming or ""
                 if not candidate:
                     return ""
-                if consumed:
-                    if candidate == consumed or consumed.startswith(candidate):
-                        return ""
-                    if candidate.startswith(consumed):
-                        candidate = candidate[len(consumed) :]
-                        if not candidate:
-                            return ""
                 box = reasoning_stream_buffers.get(key)
-                if box is None or box.length == 0:
-                    append = candidate
-                elif len(candidate) == box.length:
-                    append = "" if candidate == box.text() else (candidate if allow_misaligned else "")
-                elif len(candidate) > box.length:
-                    append = (
-                        candidate[box.length :]
-                        if candidate.startswith(box.text())
-                        else (candidate if allow_misaligned else "")
-                    )
-                elif len(candidate) <= len(box.head):
-                    if box.head.startswith(candidate):
-                        append = ""
-                    else:
-                        append = "" if box.ends_with(candidate) else (candidate if allow_misaligned else "")
-                else:
-                    append = (
-                        ""
-                        if box.text().startswith(candidate) or box.text().endswith(candidate)
-                        else (candidate if allow_misaligned else "")
-                    )
+                if box is None:
+                    box = _ReasoningTextBox()
+                    reasoning_stream_buffers[key] = box
+                held = box.length - box.round_start
+                append = candidate
+                if incremental:
+                    if held and len(candidate) > held:
+                        shown = box.round_text()
+                        if shown.strip() and candidate.startswith(shown):
+                            append = candidate[held:]
+                elif box.length:
+                    append = ""
+                    if len(candidate) > box.length and candidate.startswith(box.text()):
+                        append = candidate[box.length :]
+                    elif held == 0:
+                        if candidate != box.text() and not box.repeats_an_earlier_round(candidate):
+                            append = candidate
+                    elif len(candidate) > held and candidate.startswith(box.round_text()):
+                        append = candidate[held:]
                 if append:
-                    if box is None:
-                        box = _ReasoningTextBox()
-                        reasoning_stream_buffers[key] = box
                     box.add(append)
                     unpublished_reasoning_keys[key] = None
                 return append
-
-            def _append_summary_tail(key: str, raw_text: str) -> str:
-                consumed = reasoning_summary_consumed.get(key, "")
-                if not consumed or not raw_text.startswith(consumed) or len(raw_text) <= len(consumed):
-                    return ""
-                tail = raw_text[len(consumed) :]
-                title_match = re.findall(r"\*\*(.+?)\*\*", tail)
-                title = title_match[-1].strip() if title_match else "Thinking…"
-                content = re.sub(r"\*\*(.+?)\*\*", "", tail).strip()
-                summary = title if not content else f"{title}\n{content}"
-                normalized_summary = _normalize_surrogate_chunk(summary, "reasoning") if summary else ""
-                if not normalized_summary:
-                    return ""
-                box = reasoning_stream_buffers.get(key)
-                delivered = box.text() if box is not None else ""
-                return _append_reasoning_text(
-                    key, delivered + normalized_summary, allow_misaligned=False
-                )
 
             def _reasoning_display_state(key: str) -> dict[str, Any]:
                 state = reasoning_display.get(key)
@@ -2379,7 +2354,8 @@ class StreamingHandler:
                     await _close_and_emit_reasoning_items(assistant_message)
                     active_reasoning_item_id = None
                     reasoning_stream_buffers.pop("__reasoning__", None)
-                    reasoning_summary_consumed.pop("__reasoning__", None)
+                    for earlier_round_box in reasoning_stream_buffers.values():
+                        earlier_round_box.begin_round()
                     reasoning_display.pop("__reasoning__", None)
                     unpublished_reasoning_keys.pop("__reasoning__", None)
                     open_reasoning_windows.pop("__reasoning__", None)
@@ -2564,7 +2540,7 @@ class StreamingHandler:
                                 append = _append_reasoning_text(
                                     key,
                                     normalized_delta,
-                                    allow_misaligned=is_incremental,
+                                    incremental=is_incremental,
                                 )
                             if append:
                                 note_generation_activity()
@@ -2836,7 +2812,8 @@ class StreamingHandler:
                         continue
 
                     if etype == "response.reasoning_summary_text.done":
-                        raw_text = (event.get("text") or "").strip()
+                        whole_summary = event.get("text") or ""
+                        raw_text = whole_summary.strip()
                         if raw_text:
                             title_match = re.findall(r"\*\*(.+?)\*\*", raw_text)
                             title = title_match[-1].strip() if title_match else "Thinking…"
@@ -2846,20 +2823,15 @@ class StreamingHandler:
                                 note_model_activity()
                                 key = _reasoning_stream_key(event, etype)
                                 if thinking_box_enabled:
-                                    normalized_summary = (
-                                        _normalize_surrogate_chunk(summary, "reasoning") if summary else ""
-                                    )
+                                    normalized_summary = _normalize_surrogate_chunk(whole_summary, "reasoning")
                                     append = ""
                                     if normalized_summary:
                                         append = _append_reasoning_text(
                                             key,
                                             normalized_summary,
-                                            allow_misaligned=False,
+                                            incremental=False,
                                         )
-                                    if not append:
-                                        append = _append_summary_tail(key, raw_text)
                                     if append:
-                                        reasoning_summary_consumed[key] = raw_text
                                         note_generation_activity()
                                         reasoning_stream_active = True
                                         display_state = _reasoning_display_state(key)
@@ -3481,8 +3453,7 @@ class StreamingHandler:
                                 append = _append_reasoning_text(
                                     key,
                                     normalized_snapshot,
-                                    allow_misaligned=True,
-                                    consumed=reasoning_summary_consumed.get(key, ""),
+                                    incremental=False,
                                 )
                             if append:
                                 reasoning_stream_active = True

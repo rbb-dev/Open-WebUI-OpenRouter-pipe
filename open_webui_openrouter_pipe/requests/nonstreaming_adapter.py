@@ -13,6 +13,8 @@ from ..api.transforms import (
     _gate_responses_input_media,
     _joined_reasoning_summaries,
     _parse_url_citation_annotations,
+    _plain_reasoning_text,
+    _plain_text_repeats_summary,
     _unhandled_citation_types,
     chat_payload_loses_fusion_entry,
     responses_refusal_text,
@@ -207,6 +209,7 @@ class NonStreamingAdapter:
                     reasoning_summary_parts[k] for k in reasoning_summary_order
                 )
 
+            message_reasoning_text = _plain_reasoning_text(message_obj)
             reasoning_details = message_obj.get("reasoning_details")
             if isinstance(reasoning_details, list) and reasoning_details:
                 for entry in reasoning_details:
@@ -249,19 +252,15 @@ class NonStreamingAdapter:
                             )
                             summary_pending = True
 
-            if summary_pending:
+            if summary_pending and (
+                reasoning_text_parts or not _plain_text_repeats_summary(message_reasoning_text, _joined_summary())
+            ):
                 yield {
                     "type": "response.reasoning_summary_text.done",
                     "item_id": reasoning_item_id,
                     "text": _joined_summary(),
                 }
 
-            message_reasoning_text = None
-            for key in ("reasoning", "reasoning_content"):
-                candidate = message_obj.get(key)
-                if isinstance(candidate, str) and candidate.strip():
-                    message_reasoning_text = candidate
-                    break
             if message_reasoning_text and not reasoning_text_parts:
                 if reasoning_item_id is None:
                     reasoning_item_id = f"reasoning-{generate_item_id()}"
