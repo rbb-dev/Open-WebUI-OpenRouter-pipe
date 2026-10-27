@@ -2296,6 +2296,7 @@ async def transform_messages_to_input(
                                     and not temporary_chat
                                     and remembered is None
                                     and memo_key is not None
+                                    and memo_owner is not None
                                     and picture_size
                                     <= _REUSE_DOWNLOAD_MEMO_MAX_BYTES
                                 ):

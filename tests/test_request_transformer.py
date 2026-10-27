@@ -4561,6 +4561,9 @@ def _as_streaming(inner):
     return adapter
 
 
+_NAMED_CALLER = SimpleNamespace(id="user-1")
+
+
 class TestImageReuseRegister:
     """The picture offered back when the user attaches nothing.
 
@@ -4594,7 +4597,7 @@ class TestImageReuseRegister:
 
     @staticmethod
     async def _run(pipe_instance, messages, *, emitter=None, gateway=None, downloader=None,
-                   chat_id="chat-1", safe_url=True, notices=None):
+                   chat_id="chat-1", safe_url=True, notices=None, user_obj=_NAMED_CALLER):
         with patch("open_webui_openrouter_pipe.requests.transformer.ModelFamily") as mock_family:
             mock_family.supports.return_value = True
 
@@ -4612,7 +4615,7 @@ class TestImageReuseRegister:
             pipe_instance._multimodal_handler._download_remote_url_streaming = _as_streaming(downloader) or none
             return await transform_messages_to_input(
                 pipe_instance, messages, chat_id=chat_id, event_emitter=emitter,
-                attachment_notices=notices,
+                attachment_notices=notices, user_obj=user_obj,
             )
 
     @pytest.mark.asyncio
@@ -5339,6 +5342,30 @@ class TestImageReuseRegister:
             )
 
     @pytest.mark.asyncio
+    async def test_a_caller_the_pipe_cannot_identify_is_given_a_fresh_download_on_every_request(
+        self, pipe_instance
+    ):
+        pipe_instance.valves.IMAGE_INPUT_SELECTION = "user_then_assistant"
+        downloads: list[str] = []
+
+        async def counting_download(url, *_a, **_k):
+            downloads.append(url)
+            return {"data": b"\x89PNG\r\n\x1a\n" + str(len(downloads)).encode() * 40, "mime_type": "image/png"}
+
+        messages = [
+            {"role": "assistant", "content": "Done: ![a](https://e.test/REUSED.png)"},
+            {"role": "user", "content": [{"type": "text", "text": "and now?"}]},
+        ]
+
+        shipped = []
+        for _ in range(2):
+            result = await self._run(pipe_instance, messages, downloader=counting_download, user_obj=None)
+            shipped.append(self._tag_of(self._blocks(result)[0]))
+
+        assert len(downloads) == 2
+        assert shipped == [b"1", b"2"]
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("intruder_bytes", "expect_small_downloads"),
         [(700, 2), (5_000, 1)],
@@ -5536,7 +5563,9 @@ async def test_one_chat_s_download_is_not_handed_to_another(pipe_instance):
         current["chat"] = chat
         result: Any = None
         for _ in range(3):
-            result = await transform_messages_to_input(pipe_instance, messages, chat_id=chat)
+            result = await transform_messages_to_input(
+                pipe_instance, messages, chat_id=chat, user_obj=_NAMED_CALLER
+            )
         shipped[chat] = json.dumps(result, default=wire_default)
 
     assert len(downloads) == 2, (

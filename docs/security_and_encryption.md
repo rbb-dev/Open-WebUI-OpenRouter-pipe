@@ -259,12 +259,10 @@ then let the HTTP client resolve the name again:
   answered from its in-process memo on later turns, and the memo does not stand in for
   the gate. The memo is per-person: an entry is served only to the person whose own
   turn downloaded it, so a second person on the same `(chat_id, url)` re-downloads
-  rather than being inlined the first person's bytes, and a request the pipe could
-  not resolve to a user is re-downloaded rather than being served a named person's
-  bytes. Two such unresolved requests share one partition, so a caller the pipe
-  could not resolve is re-downloaded only when a named owner wrote the entry; on
-  the unlogged empty-`user_id` path two unresolved callers can still share one entry
-  (TODO T569 in `tests/test_one_persons_reused_picture_is_never_sent_to_another.py`).
+  rather than being inlined the first person's bytes. A request the pipe could not
+  resolve to a user neither adds an entry to the memo nor is served one, so it
+  downloads the picture again on every request, and it does not replace a named
+  person's entry.
   Every turn re-checks the URL before those bytes are sent, and a URL the
   current valve values refuse is dropped from the memo and fetched through the gated
   path instead. So every byte that reaches the provider passed the gate under the valve
