@@ -447,10 +447,10 @@ this pipe **and the rows whose meta names an install of this pipe that Open WebU
 longer loads as a pipe** -- the pipe function was renamed or re-created, so its id changed
 while the rows kept the old one -- so a recordless row is claimed on the first refresh
 **on which its valve is on** and retired only from that refresh on. A copy an admin
-installed by hand keeps no record either, and is never retired. A row naming another id is
-left alone exactly while Open WebUI still loads that id as a pipe, because that is what
-makes it another live copy's row; when the question cannot be answered, the row is left
-alone as well.
+installed by hand keeps no record either, so it is claimed and retired the same way. A row
+naming another id is left alone exactly while Open WebUI still loads that id as a pipe,
+because that is what makes it another live copy's row; when the question cannot be
+answered, the row is left alone as well.
 
 Switching the Fusion or Image Generation feature valve **off** is a separate decision
 from the install valve, and it reaches a recordless row whether or not it has been
