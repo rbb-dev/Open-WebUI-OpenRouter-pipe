@@ -479,6 +479,7 @@ class DroppedModelRemover:
         name: str,
         url: str,
         headers: dict[str, str],
+        usual: int,
     ) -> list[str]:
         cause = f"list:{name}"
         try:
@@ -500,7 +501,7 @@ class DroppedModelRemover:
         if reason:
             raise _DroppedPassRefused(cause, f"the {name} list is not whole: {reason}", resets=True)
         window = self._sizes.setdefault(name, deque(maxlen=_DROPPED_SIZE_MEMORY))
-        biggest = max(window) if window else 0
+        biggest = max(max(window, default=0), usual)
         window.append(len(ids))
         allowance = max(_DROPPED_SHRINK_ALLOWANCE_FLOOR, biggest // _DROPPED_SHRINK_ALLOWANCE_DIVISOR)
         if biggest and len(ids) < biggest - allowance:
@@ -524,7 +525,8 @@ class DroppedModelRemover:
         try:
             for name, path in _DROPPED_LISTS:
                 if name in wanted:
-                    read[name] = await self._read_list(session, name, base_url + path, headers)
+                    usual = OpenRouterModelRegistry.largest_recent_list_size(name, base_url, api_key)
+                    read[name] = await self._read_list(session, name, base_url + path, headers, usual)
         finally:
             with contextlib.suppress(Exception):
                 await session.close()

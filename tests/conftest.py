@@ -1270,6 +1270,7 @@ def _reset_model_registry():
     reg._preset_read_failing = {}
     reg._preset_retry_not_before = {}
     reg._preset_retry_failures = {}
+    reg._list_sizes = {}
     ModelFamily.set_dynamic_specs(None)
     yield
 

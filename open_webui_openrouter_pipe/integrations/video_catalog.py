@@ -176,6 +176,7 @@ async def ensure_video_catalog_loaded(
             _carry_declared_input_modalities(models)
 
             OpenRouterModelRegistry.register_video_models(models)
+            OpenRouterModelRegistry.record_list_size("video", valves.BASE_URL, api_key, len(models))
             OpenRouterModelRegistry.record_media_success(api_key)
             OpenRouterModelRegistry.record_video_attempt(api_key)
             if with_modalities:

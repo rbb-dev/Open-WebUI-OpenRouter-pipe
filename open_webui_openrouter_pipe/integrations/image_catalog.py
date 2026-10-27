@@ -298,6 +298,7 @@ async def _refresh_image_models(
         return []
 
     OpenRouterModelRegistry.record_media_success(api_key)
+    OpenRouterModelRegistry.record_list_size("image", valves.BASE_URL, api_key, len(models))
     if register:
         OpenRouterModelRegistry.register_image_models(models)
         OpenRouterModelRegistry.record_image_attempt(api_key, target)

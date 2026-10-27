@@ -8,7 +8,7 @@ import re
 import threading
 import time
 import weakref
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from contextvars import ContextVar
 from copy import deepcopy
 from decimal import Decimal, InvalidOperation
@@ -375,6 +375,8 @@ _BUILD_YIELD_EVERY = 64
 _REGISTRY_CATALOG_TIMEOUT_SECONDS = 15
 _PRESET_DETAIL_CONSUMERS = 4
 _PRESET_PAGE_LIMIT = 100
+_LIST_SIZE_MEMORY = 24
+_LIST_SIZE_IDENTITIES = 4
 
 
 def _trim_credential_history(
@@ -525,6 +527,27 @@ class OpenRouterModelRegistry:
     _preset_read_failing: ClassVar[dict[str, bool]] = {}
     _preset_retry_not_before: ClassVar[dict[str, float]] = {}
     _preset_retry_failures: ClassVar[dict[str, int]] = {}
+    _list_sizes: ClassVar[dict[tuple[str, str], dict[str, deque[int]]]] = {}
+    _list_sizes_guard: ClassVar[threading.Lock] = threading.Lock()
+
+    @staticmethod
+    def _list_identity(base_url: str, api_key: str) -> tuple[str, str]:
+        return str(base_url or "").rstrip("/"), _fingerprint(api_key)
+
+    @classmethod
+    def record_list_size(cls, name: str, base_url: str, api_key: str, size: int) -> None:
+        if size <= 0:
+            return
+        identity = cls._list_identity(base_url, api_key)
+        with cls._list_sizes_guard:
+            windows = cls._list_sizes.setdefault(identity, {})
+            windows.setdefault(name, deque(maxlen=_LIST_SIZE_MEMORY)).append(size)
+            _trim_credential_history(cls._list_sizes, identity, None, _LIST_SIZE_IDENTITIES)
+
+    @classmethod
+    def largest_recent_list_size(cls, name: str, base_url: str, api_key: str) -> int:
+        windows = cls._list_sizes.get(cls._list_identity(base_url, api_key), {})
+        return max(windows.get(name, ()), default=0)
 
     @classmethod
     def content_stamp(cls) -> str:
@@ -851,6 +874,7 @@ class OpenRouterModelRegistry:
                 }
             )
 
+        listed_count = len(models)
         specs: dict[str, dict[str, Any]] = {}
         for index, (norm_id, full_model) in enumerate(raw_specs.items()):
             if index % _BUILD_YIELD_EVERY == 0:
@@ -985,6 +1009,7 @@ class OpenRouterModelRegistry:
         cls._chat_catalog_norms = chat_catalog_norms
         cls._chat_content_digest = _content_digest(chat_catalog_norms, specs)
         ModelFamily.set_dynamic_specs(specs)
+        cls.record_list_size("chat", base_url, api_key, listed_count)
 
     @classmethod
     def _record_refresh_success(cls, cache_seconds: int, api_key: str) -> None:

@@ -5416,6 +5416,26 @@ async def _dropped_check(world: Any) -> None:
     await world.pipe._ensure_dropped_model_remover().run_pass()
 
 
+async def _dropped_catalog_refresh(world: Any, chat: list[str]) -> None:
+    import aiohttp
+
+    from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+
+    world.lists.everything(chat)
+    api_key, _ = world.pipe._resolve_openrouter_api_key(world.pipe.valves)
+    OpenRouterModelRegistry._next_refresh_after = 1.0
+    OpenRouterModelRegistry._last_fetch = 0.0
+    async with aiohttp.ClientSession() as session:
+        await OpenRouterModelRegistry.ensure_loaded(
+            session,
+            base_url=_DROPPED_BASE,
+            api_key=api_key,
+            cache_seconds=3600,
+            logger=world.pipe.logger,
+            valves=world.pipe.valves,
+        )
+
+
 async def _dropped_presence(world: Any, row: Any, chats: list[list[str]]) -> list[bool]:
     seen = []
     for chat in chats:
@@ -5533,6 +5553,25 @@ async def test_a_list_that_does_not_look_like_the_one_the_entries_came_from_remo
             await _dropped_check(world)
             seen.append(stray.id in world.table.rows)
     assert seen == [True, True, True, True, False]
+
+
+@pytest.mark.asyncio
+async def test_a_list_much_smaller_than_the_usual_one_is_refused_at_its_first_check(dropped_world):
+    world = dropped_world
+    every = [f"example-lab/model-{n:02d}" for n in range(20)]
+    _dropped_add(world.table, *[_dropped_row(world.pipe, f"example-lab.model-{n:02d}") for n in range(20)])
+    with aioresponses() as mocked:
+        world.lists.register(mocked)
+        mocked.get(f"{_DROPPED_BASE}/endpoints/zdr", payload={"data": []}, repeat=True)
+        mocked.get(f"{_DROPPED_BASE}/presets?limit=100&offset=0", payload={"data": [], "total_count": 0}, repeat=True)
+        for _ in range(2):
+            await _dropped_catalog_refresh(world, every)
+            await _dropped_check(world)
+        await _dropped_catalog_refresh(world, every[:11])
+        for _ in range(3):
+            await _dropped_check(world)
+    assert world.table.deleted == []
+    assert len(world.table.rows) == 20
 
 
 @pytest.mark.asyncio
