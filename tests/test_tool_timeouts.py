@@ -504,6 +504,26 @@ async def test_ask_user_sharing_its_turn_with_another_tool_is_refused_and_the_ot
 
 
 @pytest.mark.asyncio
+async def test_ask_user_written_with_stray_spaces_is_refused_beside_another_tool_like_the_bare_name(
+    pipe_instance_async, monkeypatch
+):
+    trace: list[str] = []
+    registry = {
+        "ask_user": _builtin_ask_user(_answers_after(1, trace)),
+        "lookup": _entry(_lookup(trace), tool_type="function", name="lookup"),
+    }
+
+    outputs, _ = await _run(
+        pipe_instance_async, monkeypatch, registry, [_call("c1", " ask_user ", _ask(90_000)), _call("c2", "lookup")]
+    )
+
+    assert trace == ["looked up"]
+    assert outputs["c1"]["status"] != "completed"
+    assert "ask_user" in _text(outputs["c1"])
+    assert outputs["c2"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
 async def test_two_ask_user_calls_in_one_turn_are_both_refused(pipe_instance_async, monkeypatch):
     trace: list[str] = []
     registry = {"ask_user": _builtin_ask_user(_answers_after(1, trace))}

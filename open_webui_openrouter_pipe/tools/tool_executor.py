@@ -524,15 +524,12 @@ class ToolExecutor:
         return bool(metadata.get(OPEN_WEBUI_HAND_BACK_AVAILABLE_KEY, True))
 
     def _ask_user_refusal(self, calls: list[dict], tools: dict[str, dict[str, Any]]) -> str | None:
-        is_ask_user: list[bool] = []
-        raw_names: list[str] = []
-        for call in calls:
-            name = call.get("name")
-            raw_names.append(name if isinstance(name, str) else "")
-            is_ask_user.append(self._is_builtin_ask_user(tools.get(name.strip() if isinstance(name, str) else "")))
-        if not any(is_ask_user) or _owui_get_ask_user_tool_calls is None:
+        names = [resolved_tool_name(call) for call in calls]
+        if _owui_get_ask_user_tool_calls is None or not any(
+            self._is_builtin_ask_user(tools.get(name)) for name in names
+        ):
             return None
-        _, refusal = _owui_get_ask_user_tool_calls([{"function": {"name": name}} for name in raw_names])
+        _, refusal = _owui_get_ask_user_tool_calls([{"function": {"name": name}} for name in names])
         return refusal
 
     def _parse_tool_arguments(self, raw_args: Any) -> dict[str, Any] | None:
