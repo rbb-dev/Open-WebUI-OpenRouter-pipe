@@ -3902,7 +3902,8 @@ async def test_a_stream_ends_when_its_job_is_settled_without_a_terminator(monkey
     finished, _ = await asyncio.wait({drained}, timeout=5)
     assert finished, "a stream with a frame still queued never ended after its job was settled with no terminator"
     frames = frames_of(pieces)
-    assert len(frames) == 3 and frames[0] == answer and frames[-1] == "[DONE]", frames
+    assert len(frames) == 3 and frames[-1] == "[DONE]", frames
+    assert frames[0] == {"choices": [{"index": 0, "delta": {"role": "assistant", "content": "hello"}}]}, frames
     assert finish_reasons_of(frames) == ["stop"], frames
 
 

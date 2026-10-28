@@ -3092,6 +3092,24 @@ class Pipe:
                 held_usage: dict[str, Any] | None = None
                 failed = False
                 tool_calls_sent = False
+                completion_id = ""
+                role_pending = True
+
+                def _stamped(frame: dict[str, Any]) -> dict[str, Any]:
+                    nonlocal completion_id, role_pending
+                    choices = frame.get("choices")
+                    first = choices[0] if isinstance(choices, list) and choices else None
+                    if not isinstance(first, dict):
+                        return frame
+                    completion_id = completion_id or str(frame.get("id") or "")
+                    if completion_id:
+                        frame["id"] = completion_id
+                    if role_pending:
+                        role_pending = False
+                        delta = first.get("delta")
+                        first["delta"] = {"role": "assistant", **(delta if isinstance(delta, dict) else {})}
+                    return frame
+
                 async with contextlib.aclosing(_stream()) as frames:
                     async for item in frames:
                         frame = chatless_stream_frame(item, model_id=_model_id, include_usage=include_usage)
@@ -3104,18 +3122,17 @@ class Pipe:
                             continue
                         tool_calls_sent = tool_calls_sent or carries_tool_calls(frame)
                         sent_at = loop.time()
-                        yield frame
+                        yield _stamped(frame)
+                finish_reason = None
                 if not failed:
-                    yield chatless_chunk(
-                        _model_id,
-                        {},
-                        chatless_finish_reason(
-                            tool_calls_sent=tool_calls_sent,
-                            incomplete_reason=job.outcome.get("incomplete_reason"),
-                        ),
+                    finish_reason = chatless_finish_reason(
+                        tool_calls_sent=tool_calls_sent,
+                        incomplete_reason=job.outcome.get("incomplete_reason"),
                     )
+                    yield _stamped(chatless_chunk(_model_id, {}, finish_reason))
                 if held_usage is not None:
-                    yield held_usage
+                    held_usage["choices"] = [{"index": 0, "delta": {}, "finish_reason": finish_reason}]
+                    yield _stamped(held_usage)
 
             async def _server_sent_events() -> AsyncGenerator[str, None]:
                 try:
