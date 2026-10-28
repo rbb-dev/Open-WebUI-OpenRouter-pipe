@@ -32,6 +32,7 @@ from starlette.responses import StreamingResponse
 from sqlalchemy import Table, Column, String, Boolean, DateTime, Index, MetaData, case, func
 
 from tests.pipe_limits import limits_for, slot, set_slot
+from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import drain, finish_reasons_of, frames_of
 from open_webui_openrouter_pipe import (
     EncryptedStr,
     Pipe,
@@ -3891,16 +3892,18 @@ async def test_a_stream_ends_when_its_job_is_settled_without_a_terminator(monkey
     queued_job = jobs[-1]
     queued_job.stream_queue.put_nowait(answer)
     queued_job.future.set_result(None)
-    frames: list[Any] = []
+    pieces: list[Any] = []
 
-    async def drain() -> None:
-        async for frame in queued:
-            frames.append(frame)
+    async def read_all() -> None:
+        async for piece in queued.body_iterator:
+            pieces.append(piece)
 
-    drained = asyncio.ensure_future(drain())
+    drained = asyncio.ensure_future(read_all())
     finished, _ = await asyncio.wait({drained}, timeout=5)
     assert finished, "a stream with a frame still queued never ended after its job was settled with no terminator"
-    assert frames == [answer]
+    frames = frames_of(pieces)
+    assert len(frames) == 3 and frames[0] == answer and frames[-1] == "[DONE]", frames
+    assert finish_reasons_of(frames) == ["stop"], frames
 
 
 @pytest.mark.asyncio
@@ -4602,14 +4605,10 @@ async def test_run_streaming_loop_tolerates_null_item(monkeypatch):
                 __tools__=None,
             )
 
-            # For streaming, pipe() returns an async generator
-            # Consume it to verify null items don't cause crashes
-            chunks = []
-            async for chunk in result:  # type: ignore[misc]
-                chunks.append(chunk)
+            chunks = await drain(result)
 
-            # With null items and no content, we get minimal chunks or empty list
-            assert isinstance(chunks, list)
+            assert not any(isinstance(chunk, dict) and "error" in chunk for chunk in chunks), chunks
+            assert finish_reasons_of(chunks) == ["stop"], chunks
         finally:
             await pipe.close()
 

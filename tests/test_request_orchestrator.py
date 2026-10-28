@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from tests.media_slots import bare_slot, inlined_file
 from tests.posted_body import posted_json
+from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import drain
 import ast
 import base64
 import json
@@ -168,16 +169,16 @@ def _smart_callback(captured_payloads: list[dict], content: str = "OK",
 
 async def _consume_stream(result):
     """Consume a streaming result, handling both string and dict yields."""
+    drained = await drain(result)
+    if isinstance(drained, str):
+        return drained
     collected = []
-    if hasattr(result, "__aiter__"):
-        async for chunk in result:
-            if isinstance(chunk, str):
-                collected.append(chunk)
-            elif isinstance(chunk, dict):
-                # Some streams return event dicts
-                collected.append(str(chunk))
-    elif isinstance(result, str):
-        return result
+    for chunk in drained if isinstance(drained, list) else []:
+        if isinstance(chunk, str):
+            collected.append(chunk)
+        elif isinstance(chunk, dict):
+            # Some streams return event dicts
+            collected.append(str(chunk))
     return "".join(collected) if collected else ""
 
 

@@ -123,9 +123,11 @@ def middleware_message_delta(
 REASONING_DELTA_EVENT = "pipe:reasoning.delta"
 
 
-def chatless_chunk(model_id: str, delta: dict[str, Any]) -> dict[str, Any]:
+def chatless_chunk(
+    model_id: str, delta: dict[str, Any], finish_reason: str | None = None
+) -> dict[str, Any]:
     chunk = openai_chat_chunk_message_template(model_id)
-    chunk["choices"] = [{"index": 0, "delta": delta, "finish_reason": None}]
+    chunk["choices"] = [{"index": 0, "delta": delta, "finish_reason": finish_reason}]
     return chunk
 
 
@@ -147,9 +149,9 @@ def chatless_stream_frame(
     *,
     model_id: str,
     include_usage: bool,
-) -> dict[str, Any] | str | None:
+) -> dict[str, Any] | None:
     if isinstance(item, str):
-        return item
+        return openai_chat_chunk_message_template(model_id, item) if item else None
     if not isinstance(item, dict):
         return None
     if isinstance(item.get("choices"), list):
@@ -180,6 +182,34 @@ def chatless_stream_frame(
             chunk["usage"] = chat_usage
             return chunk
     return None
+
+
+def incomplete_reason_of(response: Any) -> str | None:
+    details = response.get("incomplete_details") if isinstance(response, dict) else None
+    reason = details.get("reason") if isinstance(details, dict) else None
+    return reason if isinstance(reason, str) else None
+
+
+def carries_tool_calls(frame: Any) -> bool:
+    choices = frame.get("choices") if isinstance(frame, dict) else None
+    first = choices[0] if isinstance(choices, list) and choices else None
+    delta = first.get("delta") if isinstance(first, dict) else None
+    return isinstance(delta, dict) and bool(delta.get("tool_calls"))
+
+
+def chatless_finish_reason(*, tool_calls_sent: bool, incomplete_reason: str | None) -> str:
+    if incomplete_reason == "max_output_tokens":
+        return "length"
+    if incomplete_reason == "content_filter":
+        return "content_filter"
+    return "tool_calls" if tool_calls_sent else "stop"
+
+
+CHATLESS_SSE_DONE = "data: [DONE]\n\n"
+
+
+def chatless_sse_event(frame: dict[str, Any]) -> str:
+    return f"data: {json.dumps(frame)}\n\n"
 
 
 def unguarded_emitter(emitter: EventEmitter) -> EventEmitter:

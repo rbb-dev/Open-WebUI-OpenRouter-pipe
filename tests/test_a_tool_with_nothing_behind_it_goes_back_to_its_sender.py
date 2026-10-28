@@ -11,17 +11,26 @@ so everything between Open WebUI's call and the HTTP request runs for real.
 
 from __future__ import annotations
 
+import ast
 import copy
+import inspect
 import json
-from collections.abc import Callable, Iterator
+import logging
+import textwrap
+import time
+import uuid
+from collections.abc import AsyncGenerator, Callable, Iterator
 from typing import Any, cast
 
 import pytest
+from pydantic import BaseModel
+from starlette.responses import StreamingResponse
 
 import open_webui_openrouter_pipe.pipe as pipe_mod
 from open_webui_openrouter_pipe import EncryptedStr, Pipe, generate_item_id
 from open_webui_openrouter_pipe.integrations import image_catalog, video_catalog
 from open_webui_openrouter_pipe.models.registry import ModelFamily
+from tests.package_sources import open_webui_package_dir
 
 MODEL = "test/model"
 NORM = "test.model"
@@ -122,11 +131,72 @@ def resolved_tool(name: str, fn, *, properties: dict[str, Any] | None = None) ->
     return {"callable": fn, "spec": spec, "type": "function", "tool_id": name}
 
 
+def open_webui_stream_content(form_data: dict[str, Any], pipe_call: Any, params: dict[str, Any]) -> Any:
+    root = open_webui_package_dir()
+    functions_text = (root / "functions.py").read_text(encoding="utf-8")
+    misc_text = (root / "utils" / "misc.py").read_text(encoding="utf-8")
+
+    def source_of(node: ast.AST, text: str) -> str:
+        return textwrap.dedent(ast.get_source_segment(text, node, padded=True) or "")
+
+    outer = next(
+        node for node in ast.parse(functions_text).body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "generate_function_chat_completion"
+    )
+    nested = {
+        node.name: node for node in ast.walk(outer) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    templates = [
+        node for node in ast.parse(misc_text).body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in ("openai_chat_message_template", "openai_chat_chunk_message_template")
+    ]
+    namespace: dict[str, Any] = {
+        "inspect": inspect, "JSONCodec": json, "BaseModel": BaseModel, "StreamingResponse": StreamingResponse,
+        "Iterator": Iterator, "AsyncGenerator": AsyncGenerator, "log": logging.getLogger("open_webui.functions"),
+        "time": time, "uuid": uuid,
+    }
+    exec("\n".join(source_of(node, misc_text) for node in templates), namespace)
+    wrapper = "\n".join(source_of(nested[name], functions_text) for name in ("process_line", "execute_pipe", "stream_content"))
+    exec("def build(form_data, pipe, params):\n" + textwrap.indent(wrapper + "\nreturn stream_content\n", "    "), namespace)
+    return namespace["build"](form_data, pipe_call, params)
+
+
+def frames_of(pieces: list[Any]) -> list[Any]:
+    frames: list[Any] = []
+    text = "".join(piece.decode("utf-8") if isinstance(piece, bytes) else piece for piece in pieces)
+    for block in text.split("\n\n"):
+        for line in block.split("\n"):
+            if line.startswith("data:"):
+                payload = line[len("data:"):].strip()
+                frames.append("[DONE]" if payload == "[DONE]" else json.loads(payload))
+    return frames
+
+
+async def drain(result: Any) -> Any:
+    if isinstance(result, StreamingResponse):
+        pieces = [piece async for piece in result.body_iterator]
+        return [frame for frame in frames_of(pieces) if frame != "[DONE]"]
+    if hasattr(result, "__aiter__"):
+        return [chunk async for chunk in cast(Any, result)]
+    return result
+
+
+def finish_reasons_of(frames: list[Any]) -> list[str]:
+    return [
+        choice["finish_reason"]
+        for frame in frames
+        if isinstance(frame, dict)
+        for choice in frame.get("choices") or []
+        if choice.get("finish_reason")
+    ]
+
+
 async def run(pipe: Pipe, *, mode: str, stream: bool, metadata: dict[str, Any] | None = None,
               body_tools: list[dict[str, Any]] | None = None, owui_tools: dict[str, Any] | None = None,
               loops: int = 4, params: dict[str, Any] | None = None, messages: list[dict[str, Any]] | None = None,
               body_extra: dict[str, Any] | None = None,
-              user: dict[str, Any] | None = None,
+              user: dict[str, Any] | None = None, wire: bool = False,
               **valve_updates: Any) -> tuple[Any, list[dict[str, Any]]]:
     valves = pipe.valves.model_copy(update={"TOOL_EXECUTION_MODE": mode, "MAX_FUNCTION_CALL_LOOPS": loops,
                                             **valve_updates})
@@ -150,18 +220,17 @@ async def run(pipe: Pipe, *, mode: str, stream: bool, metadata: dict[str, Any] |
     if body_tools is not None:
         body["tools"] = body_tools
     body.update(body_extra or {})
-    result: Any = await pipe.pipe(
-        body=body, __user__=user if user is not None else {"id": "user-1", "role": "user"},
-        __request__=None,
-        __event_emitter__=emitter if meta.get("chat_id") else None, __event_call__=None,
-        __metadata__=meta, __tools__=owui_tools,
-    )
-    if hasattr(result, "__aiter__"):
-        chunks: list[Any] = []
-        async for chunk in cast(Any, result):
-            chunks.append(chunk)
-        return chunks, events
-    return result, events
+    call_params: dict[str, Any] = {
+        "body": body, "__user__": user if user is not None else {"id": "user-1", "role": "user"},
+        "__request__": None,
+        "__event_emitter__": emitter if meta.get("chat_id") else None, "__event_call__": None,
+        "__metadata__": meta, "__tools__": owui_tools,
+    }
+    if wire:
+        sent = [piece async for piece in open_webui_stream_content(body, pipe.pipe, call_params)()]
+        return frames_of(sent), events
+    result: Any = await pipe.pipe(**call_params)
+    return await drain(result), events
 
 
 def _terminal(chunks: Any) -> bool:
@@ -232,3 +301,31 @@ async def test_a_streaming_request_with_no_chat_gets_its_own_tool_call_back_as_a
         isinstance(frame, dict) and ((frame.get("choices") or [{}])[0].get("delta") or {}).get("tool_calls")
         for frame in in_a_chat
     )
+
+
+@pytest.mark.asyncio
+async def test_a_streaming_request_with_no_chat_that_ends_on_its_own_tool_call_finishes_with_tool_calls(
+    pipe_instance_async, monkeypatch
+):
+    declared = [{"type": "function", "function": {
+        "name": "lookup", "description": "Look something up.",
+        "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
+    }}]
+    pipe = pipe_instance_async
+    install(pipe, monkeypatch, lambda n, _request: calls_round(call("lookup", {"q": "x"}, f"call-{n}")))
+
+    in_pipeline_mode, _raw = await run(
+        pipe, mode="Pipeline", stream=True, metadata={}, body_tools=declared, wire=True
+    )
+    in_open_webui_mode, _raw = await run(
+        pipe, mode="Open-WebUI", stream=True, metadata={}, body_tools=declared, wire=True
+    )
+
+    for read in (in_pipeline_mode, in_open_webui_mode):
+        assert finish_reasons_of(read) == ["tool_calls"], read
+        assert read[-1] == "[DONE]", read
+        finished_at = next(i for i, frame in enumerate(read) if finish_reasons_of([frame]))
+        assert any(
+            isinstance(frame, dict) and ((frame.get("choices") or [{}])[0].get("delta") or {}).get("tool_calls")
+            for frame in read[:finished_at]
+        ), read

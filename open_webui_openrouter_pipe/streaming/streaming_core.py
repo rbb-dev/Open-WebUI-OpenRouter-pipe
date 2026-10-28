@@ -236,7 +236,12 @@ from .constants import (
     REASONING_REACHED_CALLER,
     ReasoningStatusThrottle,
 )
-from .event_emitter import _UNGUARDED_ATTR, REASONING_DELTA_EVENT, EventEmitter
+from .event_emitter import (
+    _UNGUARDED_ATTR,
+    REASONING_DELTA_EVENT,
+    EventEmitter,
+    incomplete_reason_of,
+)
 from .fusion_embed import (
     FusionDeliberationState,
     FusionDeltaBatcher,
@@ -2304,6 +2309,7 @@ class StreamingHandler:
                 outcome_sink["was_cancelled"] = was_cancelled
                 outcome_sink["reason"] = session_log_reason or None
                 outcome_sink["answer_truncated"] = answer_truncated or None
+                outcome_sink["incomplete_reason"] = incomplete_reason_of(final_response)
 
             final_response: dict[str, Any] | None = None
             _finalise_cancelled: BaseException | None = None

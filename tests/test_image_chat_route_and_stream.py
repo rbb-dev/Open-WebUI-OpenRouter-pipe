@@ -27,6 +27,7 @@ from open_webui_openrouter_pipe.integrations.image_client import (
     OpenRouterImageClient,
 )
 from open_webui_openrouter_pipe.integrations.image_types import ImageGenerationError
+from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import drain
 from tests.test_image_api_path import _seed_contract
 
 BASE = "https://openrouter.ai/api/v1"
@@ -519,10 +520,7 @@ async def test_a_chat_image_models_settings_are_fitted_on_the_way_out_of_the_pip
                 __task__=None,
                 __task_body__=None,
             )
-            stream = cast(Any, answer)
-            if hasattr(stream, "__aiter__"):
-                async for _chunk in stream:
-                    pass
+            await drain(answer)
     finally:
         await pipe.close()
         OpenRouterModelRegistry.set_image_endpoints({})

@@ -12,6 +12,7 @@ import pytest
 from aioresponses import aioresponses
 
 from tests.pipe_limits import slot, set_slot, set_slots, TOOL_SEMAPHORE, TOOL_LIMIT, REQUEST_AND_TOOL_SLOTS
+from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import drain
 import open_webui_openrouter_pipe.pipe as pipe_module
 from open_webui_openrouter_pipe import Pipe, _PipeJob
 from open_webui_openrouter_pipe.core.config import EncryptedStr
@@ -228,9 +229,7 @@ class TestToolSemaphore:
                     __metadata__={},
                     __tools__={"lookup": {"callable": lambda **_k: "ok"}},
                 )
-                if hasattr(result, "__aiter__"):
-                    async for _ in result:
-                        pass
+                await drain(result)
         finally:
             await pipe.close()
 
@@ -344,9 +343,7 @@ class TestToolSemaphore:
                         }
                     },
                 )
-                if hasattr(result, "__aiter__"):
-                    async for _ in result:
-                        pass
+                await drain(result)
         finally:
             await pipe.close()
 

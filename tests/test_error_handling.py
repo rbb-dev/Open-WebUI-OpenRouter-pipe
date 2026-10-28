@@ -2015,6 +2015,7 @@ async def test_a_refused_attachment_ends_a_streamed_api_answer_and_is_not_answer
     from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import (
         CHAT,
         answer_round,
+        finish_reasons_of,
         install,
         run,
     )
@@ -2036,7 +2037,8 @@ async def test_a_refused_attachment_ends_a_streamed_api_answer_and_is_not_answer
     assert _answer_text_of(streamed_chunks) == f"It is a short clip.\n\n{sentence}", (
         f"the streamed answer of an API caller did not end with the refusal: {streamed_chunks}"
     )
-    assert _answer_delta_at(streamed_chunks, f"\n\n{sentence}") == len(streamed_chunks) - 1
+    assert _answer_delta_at(streamed_chunks, f"\n\n{sentence}") == len(streamed_chunks) - 2
+    assert finish_reasons_of(streamed_chunks[-1:]) == ["stop"]
     assert returned["choices"][0]["message"]["content"] == _answer_text_of(streamed_chunks)
 
 
@@ -2087,6 +2089,57 @@ async def test_a_streaming_request_with_no_chat_gets_only_what_an_openai_client_
     failed_without_a_chat, _raw = await run(pipe, mode="Pipeline", stream=True, metadata={})
     assert failed_in_a_chat == [{"error": {"detail": "Request failed. Please retry."}}]
     assert failed_without_a_chat == [{"error": {"message": "Request failed. Please retry."}}]
+
+
+@pytest.mark.asyncio
+async def test_a_streaming_request_with_no_chat_whose_answer_the_provider_cut_off_finishes_as_the_provider_ended_it(
+    pipe_instance_async, monkeypatch
+):
+    from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import finish_reasons_of, install, run
+
+    message = {"type": "message", "role": "assistant", "status": "completed",
+               "content": [{"type": "output_text", "text": "Take the"}]}
+    pipe = pipe_instance_async
+
+    for provider_reason, finish_reason in (("max_output_tokens", "length"), ("content_filter", "content_filter")):
+        cut_off = [
+            {"type": "response.output_text.delta", "delta": "Take the"},
+            {"type": "response.completed", "response": {
+                "output": [message], "usage": {}, "status": "incomplete",
+                "incomplete_details": {"reason": provider_reason}}},
+        ]
+        install(pipe, monkeypatch, lambda _n, _request, events=cut_off: events)
+
+        read, _raw = await run(pipe, mode="Pipeline", stream=True, metadata={}, wire=True)
+
+        assert finish_reasons_of(read) == [finish_reason], (provider_reason, read)
+        assert read[-1] == "[DONE]", (provider_reason, read)
+
+
+@pytest.mark.asyncio
+async def test_an_exception_inside_the_body_of_a_streamed_reply_with_no_chat_ends_it_with_an_error_frame_and_done(
+    pipe_instance_async, monkeypatch
+):
+    import open_webui_openrouter_pipe.pipe as pipe_mod
+    from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import answer_round, install, run
+
+    pipe = pipe_instance_async
+    install(pipe, monkeypatch, lambda _n, _request: answer_round("Here is the answer."))
+    translated = {"frames": 0}
+    original = pipe_mod.chatless_stream_frame
+
+    def breaks_on_the_second_frame(item, **kwargs):
+        translated["frames"] += 1
+        if translated["frames"] >= 2:
+            raise RuntimeError("a fault in the translation of a frame")
+        return original(item, **kwargs)
+
+    monkeypatch.setattr(pipe_mod, "chatless_stream_frame", breaks_on_the_second_frame)
+
+    read, _raw = await run(pipe, mode="Pipeline", stream=True, metadata={}, wire=True)
+
+    assert translated["frames"] >= 2
+    assert read[-2:] == [{"error": {"message": "Request failed. Please retry."}}, "[DONE]"], read
 
 
 def _reasoning_pieces_of(chunks: list[Any]) -> list[str]:
@@ -2228,7 +2281,7 @@ async def test_a_streamed_failure_with_no_chat_on_an_anthropic_mount_reaches_the
 
     from open_webui_openrouter_pipe.core.errors import UpstreamBodyUnreadable, _build_openrouter_api_error
     from tests.package_sources import open_webui_package_dir
-    from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import MODEL, NORM, install
+    from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import MODEL, NORM, frames_of, install
 
     converter_path = open_webui_package_dir() / "utils" / "anthropic.py"
     converter_source = converter_path.read_text(encoding="utf-8")
@@ -2270,13 +2323,13 @@ async def test_a_streamed_failure_with_no_chat_on_an_anthropic_mount_reaches_the
         __metadata__={"model": {"id": MODEL}},
         __tools__=None,
     )
-    frames = [frame async for frame in streamed]
-    assert frames == [expected], frames
+    pieces = [piece async for piece in streamed.body_iterator]
+    frames = frames_of(pieces)
+    assert frames == [expected, "[DONE]"], frames
 
     async def what_open_webui_streams():
-        for frame in frames:
-            yield f"data: {json.dumps(frame)}\n\n".encode()
-        yield b"data: [DONE]\n\n"
+        for piece in pieces:
+            yield piece.encode()
 
     sent = [piece.decode() async for piece in to_anthropic(what_open_webui_streams(), model=MODEL)]
     assert [piece.split("\n", 1)[0] for piece in sent] == ["event: message_start", "event: error"], sent

@@ -196,9 +196,13 @@ from .storage.owui_files import (
 from .storage.persistence import ArtifactStore
 from .streaming.event_emitter import (
     _PIPE_GENERATED_TEMPLATE_KEYS,
+    CHATLESS_SSE_DONE,
     EventEmitter,
     EventEmitterHandler,
+    carries_tool_calls,
     chatless_chunk,
+    chatless_finish_reason,
+    chatless_sse_event,
     chatless_stream_frame,
     openai_chat_chunk_message_template,
 )
@@ -1100,6 +1104,7 @@ class _PipeJob:
     counter_state: dict[str, bool] | None = None
     admission_refused: bool = False
     liveness_task: asyncio.Task[None] | None = None
+    outcome: dict[str, Any] = field(default_factory=dict)
 
     @property
     @timed
@@ -3082,16 +3087,49 @@ class Pipe:
             stream_options = job.body.get("stream_options")
             include_usage = isinstance(stream_options, dict) and stream_options.get("include_usage") is True
 
-            async def _standard_frames() -> AsyncGenerator[dict[str, Any] | str, None]:
+            async def _standard_frames() -> AsyncGenerator[dict[str, Any], None]:
                 nonlocal sent_at
+                held_usage: dict[str, Any] | None = None
+                failed = False
+                tool_calls_sent = False
                 async with contextlib.aclosing(_stream()) as frames:
                     async for item in frames:
                         frame = chatless_stream_frame(item, model_id=_model_id, include_usage=include_usage)
-                        if frame is not None:
-                            sent_at = loop.time()
-                            yield frame
+                        if frame is None:
+                            continue
+                        if "error" in frame:
+                            failed = True
+                        elif frame.get("choices") == [] and "usage" in frame:
+                            held_usage = frame
+                            continue
+                        tool_calls_sent = tool_calls_sent or carries_tool_calls(frame)
+                        sent_at = loop.time()
+                        yield frame
+                if not failed:
+                    yield chatless_chunk(
+                        _model_id,
+                        {},
+                        chatless_finish_reason(
+                            tool_calls_sent=tool_calls_sent,
+                            incomplete_reason=job.outcome.get("incomplete_reason"),
+                        ),
+                    )
+                if held_usage is not None:
+                    yield held_usage
 
-            return _standard_frames()
+            async def _server_sent_events() -> AsyncGenerator[str, None]:
+                try:
+                    async with contextlib.aclosing(_standard_frames()) as frames:
+                        async for frame in frames:
+                            yield chatless_sse_event(frame)
+                except Exception:
+                    self.logger.exception(
+                        "The streamed reply to a caller with no chat failed (request_id=%s)", job.request_id
+                    )
+                    yield chatless_sse_event({"error": {"message": _REQUEST_FAILED_DETAIL}})
+                yield CHATLESS_SSE_DONE
+
+            return StreamingResponse(_server_sent_events(), media_type="text/event-stream")
 
         await_future_token = OWUI_CHAT_ID.set(str((__metadata__ or {}).get("chat_id") or ""))
         try:
@@ -4096,7 +4134,7 @@ class Pipe:
         tool_token: contextvars.Token[_ToolExecutionContext | None] | None = None
         stream_queue = job.stream_queue
         reached_openrouter = False
-        outcome: dict[str, Any] = {}
+        outcome: dict[str, Any] = job.outcome
         completed = False
         deferred_result: Any = None
         permit_handed_to_manager = False
