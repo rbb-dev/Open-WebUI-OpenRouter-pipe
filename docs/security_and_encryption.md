@@ -210,8 +210,9 @@ then let the HTTP client resolve the name again:
   all, and with `ENABLE_SSRF_PROTECTION=True` they pin the validated address into the
   request. With it `False` there is no validated address to pin, so the URL goes out
   unpinned and the HTTP client resolves the name itself, outside the pipe's pools.
-  The buffered and the streaming downloader run the same gate, so a verdict against one
-  is a verdict against both. The one download exempt from that gate is the generated clip
+  A picture named by a link, a picture a model returned as a link and a generated clip
+  all go through one downloader, `_download_remote_url_streaming`, so one gate decides
+  all three. The one download exempt from that gate is the generated clip
   the pipe fetches from the admin's own `BASE_URL` origin, which is therefore the one
   unpinned fetch on this path: there is no validated address to pin it to, and a DNS
   answer for the gateway's host can change between the check and the connection. Its path
