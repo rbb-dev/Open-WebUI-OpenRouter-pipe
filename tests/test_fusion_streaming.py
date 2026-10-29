@@ -255,7 +255,10 @@ async def test_fusion_tool_card_status_suppressed(monkeypatch, pipe_instance_asy
 
 @pytest.mark.asyncio
 async def test_fusion_final_answer_streams_over_socket_and_persists_collapsed(monkeypatch, pipe_instance_async):
-    result, emitted = await _run(pipe_instance_async, monkeypatch, fusion_live_enabled=True)
+    result, emitted = await _run(
+        pipe_instance_async, monkeypatch, fusion_live_enabled=True,
+        metadata={"chat_id": "c1", "message_id": "m1"},
+    )
     fusion_answer = "".join(
         (e["data"]["event"].get("delta") or e["data"]["event"].get("text") or "")
         for e in emitted if e.get("type") == "fusion:event"
@@ -295,7 +298,10 @@ async def test_fusion_emits_native_message_item_with_clean_answer(monkeypatch, p
     handed carries the answer panel too. This used to pin the opposite -- that the item
     carried the bare answer -- which is the defect H3305-1 fixed.
     """
-    result, emitted = await _run(pipe_instance_async, monkeypatch, fusion_live_enabled=True)
+    result, emitted = await _run(
+        pipe_instance_async, monkeypatch, fusion_live_enabled=True,
+        metadata={"chat_id": "c1", "message_id": "m1"},
+    )
 
     added, done = _native_message_items(emitted)
     assert len(added) == 1
@@ -471,7 +477,7 @@ async def test_fusion_delta_preamble_excluded_from_answer(monkeypatch, pipe_inst
         emitted.append(event)
 
     result = await pipe_instance_async._streaming_handler._run_streaming_loop(
-        body, pipe_instance_async.valves, emitter, metadata={}, tools={},
+        body, pipe_instance_async.valves, emitter, metadata={"chat_id": "c1", "message_id": "m1"}, tools={},
         session=cast(Any, object()), user_id="u", fusion_live_enabled=True,
     )
     assert "The answer is 42." in (result or "")

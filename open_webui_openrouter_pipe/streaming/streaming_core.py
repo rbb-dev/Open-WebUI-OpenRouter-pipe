@@ -587,7 +587,9 @@ class StreamingHandler:
 
         _loop_pipe_meta = metadata.get(_PIPE_METADATA_KEY)
         fusion_inner_call = bool(isinstance(_loop_pipe_meta, dict) and _loop_pipe_meta.get("fusion_inner"))
-        chatless_reasoning = bool(body.stream and emitter_supplied and _is_chatless_caller(metadata))
+        streams_to_a_caller_with_no_chat = bool(
+            body.stream and emitter_supplied and _is_chatless_caller(metadata)
+        )
         realtime_call = REALTIME_CALL.get()
 
         async def _emit_budget_notice(text: str) -> None:
@@ -845,6 +847,7 @@ class StreamingHandler:
             reasoning_throttle = ReasoningStatusThrottle()
 
             fusion_armed = bool(fusion_live_enabled)
+            holds_answer_until_turn_end = fusion_armed and streams_to_a_caller_with_no_chat
             fusion_state = FusionDeliberationState() if fusion_armed else None
             fusion_batcher = FusionDeltaBatcher() if fusion_armed else None
             fusion_embed_emitted = False
@@ -1516,7 +1519,7 @@ class StreamingHandler:
                 joined = join_answer_and_card(assistant_message, block)
                 delta = joined[len(assistant_message):]
                 assistant_message = joined
-                if event_emitter:
+                if event_emitter and not holds_answer_until_turn_end:
                     await _open_message()
                     await event_emitter({"type": "chat:message:delta", "data": {"content": delta}})
 
@@ -1848,7 +1851,7 @@ class StreamingHandler:
                 _reopen_reasoning_window(key, state)
 
             async def _send_reasoning_to_a_caller_with_no_chat(text: str) -> None:
-                if chatless_reasoning and thinking_box_enabled and text:
+                if streams_to_a_caller_with_no_chat and thinking_box_enabled and text:
                     accepted = await event_emitter({"type": REASONING_DELTA_EVENT, "data": {"delta": text}})
                     if accepted is not False and retry_handoff is not None:
                         retry_handoff[REASONING_REACHED_CALLER] = True
@@ -2109,10 +2112,11 @@ class StreamingHandler:
                     reasoning_anchor_state["chars_at_last_chunk"] = len(current_text)
                 marker_delta = current_text[msg_before:]
                 if body.stream:
-                    await _open_message()
-                    await _publish_turn_frame(
-                        {"type": "chat:message:delta", "data": {"content": marker_delta}}
-                    )
+                    if not holds_answer_until_turn_end:
+                        await _open_message()
+                        await _publish_turn_frame(
+                            {"type": "chat:message:delta", "data": {"content": marker_delta}}
+                        )
                 elif content_handed_back:
                     self.logger.warning(
                         "Committed artifact row(s) left unaddressed: the content was handed back before its "
@@ -3490,7 +3494,7 @@ class StreamingHandler:
                             assistant_message += _continuation_lead(assistant_message)
                             for snippet in image_markdowns:
                                 assistant_message = _append_output_block(assistant_message, snippet)
-                            if event_emitter:
+                            if event_emitter and not holds_answer_until_turn_end:
                                 image_delta = assistant_message[msg_before:]
                                 await _open_message()
                                 await _publish_turn_frame(
@@ -4942,7 +4946,7 @@ class StreamingHandler:
                 fusion_armed and fusion_state is not None and fusion_state.fusion_index is not None
                 and assistant_message and not error_occurred and not was_cancelled
             ):
-                if not realtime_call:
+                if not (realtime_call or _is_chatless_caller(metadata)):
                     assistant_message = (
                         '<details type="fusion_answer" done="true">\n'
                         '<summary>Final answer</summary>\n\n'
@@ -4978,6 +4982,22 @@ class StreamingHandler:
                         self.logger.debug(
                             "Failed to emit fusion answer output item", exc_info=True
                         )
+
+            if (
+                holds_answer_until_turn_end and assistant_message
+                and terminal and not error_occurred and not was_cancelled
+            ):
+                try:
+                    await event_emitter(
+                        {"type": "chat:message:delta", "data": {"content": assistant_message}}
+                    )
+                except (asyncio.CancelledError, Exception) as _exc:
+                    if isinstance(_exc, asyncio.CancelledError):
+                        _finalise_cancelled = _finalise_cancelled or _exc
+                    self.logger.debug(
+                        "Failed to send the Fusion answer to a caller with no chat", exc_info=True
+                    )
+            holds_answer_until_turn_end = False
 
             if (
                 fusion_armed and fusion_state is not None and fusion_state.fusion_index is not None

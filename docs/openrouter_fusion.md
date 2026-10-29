@@ -336,6 +336,13 @@ back to the model), while the visible surface stays the panel.
 On a realtime voice call the answer is published as plain text, with no `<details>` wrapper, because Open WebUI's
 realtime voice call hands a message's text to the voice model as it stands.
 
+A program that calls a Fusion model without a chat (no `chat_id` or no `message_id`: a script, a coding agent, or any
+other program that calls Open WebUI's API) has no panel to fold the answer under. It gets the bare answer too, as it gets
+the text of Open WebUI's own models, and none of the panel's events. Streamed, the answer arrives as one chunk of answer
+text when the deliberation ends, followed by the finish chunk and, when the request asks for usage, the usage chunk; not
+streamed, it is the reply's `message.content`. A chat other than a realtime voice call keeps the answer inside the
+`<details>` wrapper.
+
 While the panel deliberates, each model's card is **live**: its status line becomes a ticker showing
 the tail of whatever that model is currently producing plus a running word count, streamed from
 the engine's per-token panel events (batched by the pipe to a few updates per second per model).

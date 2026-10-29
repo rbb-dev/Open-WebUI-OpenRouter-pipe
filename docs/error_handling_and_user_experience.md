@@ -120,8 +120,8 @@ a property of the conversation, not of the frame:
   turn's closing status too, so the refusal is still in the last line after the answer finishes,
   and each copy stays in the status history behind it. A turn that ends before any answer text,
   such as one whose provider call fails, shows it on its closing frames alone; so does a reply
-  with streaming off or a Fusion turn with the live panel, whose answer text is not streamed, and
-  a Fusion panel member's own request shows none. A `chat:completion` carrying `error` would set
+  with streaming off or a Fusion turn with the live panel in a chat, whose answer text is not
+  streamed, and a Fusion panel member's own request shows none. A `chat:completion` carrying `error` would set
   `message.error` **and** `message.done` regardless of its own `done`, because the browser's
   `handleOpenAIError` sets the close from the presence of `error` and never reads that field —
   which is why the notice is a status and not an error-bearing frame: sent there it would end the
@@ -130,7 +130,9 @@ a property of the conversation, not of the frame:
   host drops both copies and the channel message carries no refusal notice. That is the host's
   behaviour, accepted rather than worked around. A caller with no chat has no status line, so on a
   reply from a text model the sentence ends its answer text instead: in the returned body when it
-  does not stream, and as the last text before the stream closes when it does.
+  does not stream, and as the last text before the stream closes when it does. A Fusion reply is no
+  exception: its answer reaches such a caller as one chunk when the turn ends, and the sentence
+  follows it.
 - **A realtime voice call.** Open WebUI's realtime voice call treats a reply that carries no `error` as a finished
   answer and passes its text to the voice model, so a card delivered as text alone is handed over as the answer. On a
   request that is a turn of such a call (`features.voice` together with the voice mark the realtime bridge puts on the

@@ -2149,6 +2149,65 @@ async def test_a_streaming_request_with_no_chat_whose_answer_the_provider_cut_of
 
 
 @pytest.mark.asyncio
+async def test_a_streaming_request_with_no_chat_to_a_fusion_model_gets_the_answer_a_request_that_does_not_stream_gets(
+    pipe_instance_async, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    import open_webui_openrouter_pipe.pipe as pipe_mod
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+    from open_webui_openrouter_pipe.models.registry import ModelFamily
+    from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import (
+        CHAT,
+        ROW_WITH_TOOLS,
+        answer_round,
+        finish_reasons_of,
+        install,
+        run,
+    )
+    from tests.test_fusion_engine import VALID_ANALYSIS, _prepare_pipe
+
+    answer = "The sky is blue because air scatters blue light."
+    rounds = ["Draft A.", json.dumps(VALID_ANALYSIS), answer]
+    pipe = pipe_instance_async
+    requests = install(pipe, monkeypatch, lambda n, _request: answer_round(rounds[n - 1]))
+    rows = [
+        {"id": "openrouter/fusion", "name": "Fusion", "norm_id": "openrouter.fusion"},
+        {"id": "openai/gpt-5-nano", "name": "Nano", "norm_id": "openai.gpt-5-nano"},
+    ]
+    monkeypatch.setattr(pipe_mod.OpenRouterModelRegistry, "list_models", lambda: rows)
+    ModelFamily.set_dynamic_specs({row["norm_id"]: dict(ROW_WITH_TOOLS) for row in rows})
+    _prepare_pipe(pipe)
+    monkeypatch.setattr(FilterManager, "collect_installed_web_tools_config", AsyncMock(return_value=None))
+    ask = {
+        "model": "openrouter.fusion",
+        "plugins": [{"id": "fusion", "analysis_models": ["openai/gpt-5-nano"], "model": "openai/gpt-5-nano"}],
+    }
+
+    streamed, _raw = await run(pipe, mode="Pipeline", stream=True, metadata={}, wire=True, body_extra=ask)
+    requests.clear()
+    returned, _raw = await run(pipe, mode="Pipeline", stream=False, metadata={}, body_extra=ask)
+    requests.clear()
+    in_a_chat, _raw = await run(pipe, mode="Pipeline", stream=True, metadata=dict(CHAT), body_extra=ask)
+
+    assert _answer_text_of(streamed) == answer, streamed
+    assert finish_reasons_of(streamed) == ["stop"] and streamed[-1] == "[DONE]", streamed
+    assert returned["choices"][0]["message"]["content"] == answer, returned
+
+    chat_answers = [
+        frame["item"]["content"][0]["text"]
+        for frame in in_a_chat
+        if isinstance(frame, dict)
+        and frame.get("type") == "response.output_item.added"
+        and (frame.get("item") or {}).get("type") == "message"
+        and (frame["item"].get("content") or [{}])[0].get("text")
+    ]
+    assert _answer_text_of(in_a_chat) == "", in_a_chat
+    assert len(chat_answers) == 1 and chat_answers[0].startswith('<details type="fusion_answer"'), chat_answers
+    assert answer in chat_answers[0], chat_answers
+
+
+@pytest.mark.asyncio
 async def test_an_exception_inside_the_body_of_a_streamed_reply_with_no_chat_ends_it_with_an_error_frame_and_done(
     pipe_instance_async, monkeypatch
 ):
