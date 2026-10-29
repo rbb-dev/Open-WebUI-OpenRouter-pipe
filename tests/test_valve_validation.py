@@ -105,9 +105,6 @@ class TestUserValveInheritNormalization:
             pipe.shutdown()
 
 
-class TestValveNumericBounds:
-    """Tests for valve numeric constraints."""
-
 class TestValveEnvironmentDefaults:
     """Tests for valve defaults from environment variables."""
 
@@ -184,3 +181,11 @@ class TestValveValidation:
         assert valves.model_dump(exclude_unset=True) == {"SESSION_LOG_ZIP_COMPRESSION": "bzip2"}
         warned = emitted(caplog, level=logging.WARNING, containing="SESSION_LOG_ZIP_COMPRESSLEVEL")
         assert len(warned) == 1
+
+    def test_a_cap_stored_under_its_old_name_is_carried_to_the_new_name(self) -> None:
+        valves = Pipe.Valves(
+            VIDEO_INTENT_MAX_CALLS_PER_CHAT=7,
+            VIDEO_INTENT_MAX_CALLS_PER_USER_DAY=11,
+        )
+        assert valves.VIDEO_INTENT_MAX_TURNS_PER_CHAT == 7
+        assert valves.VIDEO_INTENT_MAX_TURNS_PER_USER_DAY == 11

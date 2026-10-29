@@ -37,7 +37,6 @@ from .valve_salvage import (
     _VALVE_SCHEMA_CACHE,  # noqa: F401
     _valve_schema,  # noqa: F401
     _warned_stale_valves,  # noqa: F401
-    drop_unvalidatable,  # noqa: F401
     is_secret_field,
     repair_unvalidatable,
 )

@@ -249,6 +249,33 @@ def test_uses_task_model_adapter_excludes_moa(pipe_instance):
     assert adapter._uses_task_model_adapter(None) is False
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("task", ["context_compaction", "memory_review"])
+async def test_a_refused_task_whose_reply_is_consumed_as_content_returns_nothing(
+    pipe_instance_async, task
+):
+    pipe = pipe_instance_async
+    pipe._warmup_failed = True
+
+    result = await pipe.pipe(
+        body={
+            "model": "openai/gpt-4o-mini",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+        },
+        __user__={"id": "u1"},
+        __request__=None,
+        __event_emitter__=None,
+        __event_call__=None,
+        __metadata__={},
+        __tools__=None,
+        __task__=task,
+        __task_body__=None,
+    )
+
+    assert result == ""
+
+
 # ============================================================================
 # Test _run_task_model_request - Line 141 (session is None)
 # ============================================================================

@@ -16,12 +16,12 @@ Housekeeping tasks split three ways by **what happens to the value the pipe retu
 | Category | Kinds | What the return value becomes |
 | --- | --- | --- |
 | **Persisted** | `title_generation`, `tags_generation`, `follow_up_generation` | A card a person reads in a field. The pipe's card is the whole answer, and a refusal is shown as itself. |
-| **Content-consumed** | `context_compaction`, `memory_review` | Prose Open WebUI feeds back to the model. Nobody displays it, and **any truthy value is stored as the chat's own memory**. |
+| **Content-consumed** | `context_compaction`, `memory_review` | Data Open WebUI reads and nobody displays. A `context_compaction` reply that is not empty becomes the conversation summary fed back to the model; a `memory_review` reply is read as JSON memory operations that Open WebUI applies to the user's memories. |
 | **Display-string** | `query_generation`, `emoji_generation`, `autocomplete_generation`, and anything else not in the two sets above | A string a person reads; a refusal that is not a card is not useful, so it is `""`. |
 
-The middle category is the one to understand. The `context_compaction` sub-turn's return value becomes `contextSummary` and then the model-visible `[CONVERSATION SUMMARY]`, and `memory_review` feeds the same store. The summary step in `utils/context_compaction.py` takes the pipe's answer **if one is non-empty** and only re-derives a summary from the messages themselves when it is not — so returning an error sentence here converts Open WebUI's designed degradation into a corrupt summary that *looks* like a successful compaction and is then served to the model as fact.
+The middle category is the one to understand. The `context_compaction` sub-turn's return value becomes `contextSummary` and then the model-visible `[CONVERSATION SUMMARY]`. The summary step in `utils/context_compaction.py` takes the pipe's answer **if one is non-empty** and only re-derives a summary from the messages themselves when it is not — so returning an error sentence here converts Open WebUI's designed degradation into a corrupt summary that *looks* like a successful compaction and is then served to the model as fact. The `memory_review` reply is read in `utils/memory.py` as JSON: the text from the first `{` to the last `}` is decoded and its `operations` list (`add`, `replace`, `move`, `remove`) is applied to the user's memories when Open WebUI accepts every operation in it. A reply with no such object, one that does not decode, or a list with one operation Open WebUI refuses (an unknown action, or a `replace`, `move` or `remove` without a memory id) applies nothing.
 
-So a refused content-consumed kind returns `""`. That is Open WebUI's own degradation, not a new one: an empty summary is declined and re-derived, and the turn continues on full chat history. **The failure is visible only in the backend log**, as `Task model attempt N/M failed`. It is caught and answered inside the task adapter, before the request loop can build an HTTP error, so no caller ever sees an envelope for these two. If a compaction silently looks wrong, read the backend log; nothing appears in a browser console.
+So a refused content-consumed kind returns `""`. That is Open WebUI's own degradation, not a new one: an empty summary is declined and re-derived, and the turn continues on full chat history; an empty memory review applies no operation. **The failure is visible only in the backend log**, as `Task model attempt N/M failed`. It is caught and answered inside the task adapter, before the request loop can build an HTTP error, so no caller ever sees an envelope for these two. If a compaction silently looks wrong, read the backend log; nothing appears in a browser console.
 
 ---
 
@@ -120,7 +120,7 @@ and never with a stub:
 | Class | What a pre-enqueue refusal returns |
 | --- | --- |
 | **Persisted** | the card, as for any other refusal of that kind |
-| **Content-consumed** (`context_compaction`, `memory_review`) | `""`, re-derived by Open WebUI, for the reason the table above gives |
+| **Content-consumed** (`context_compaction`, `memory_review`) | `""`: Open WebUI re-derives the summary, and a memory review applies no operation, for the reason the table above gives |
 | **Display-string**, and any other task-adapter kind | the refusal sentence |
 | A kind whose name carries `follow`, `tag` or `title` but is not one of the three persisted kinds | the stub. No kind in Open WebUI's `TASKS` enum is in this class — `title_generation`, `follow_up_generation` and `tags_generation` are all persisted and checked first — so this row is a guard kept for a future kind, and it is documented so nobody reads the arm as dead code. |
 

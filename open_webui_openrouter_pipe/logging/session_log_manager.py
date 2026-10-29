@@ -560,10 +560,6 @@ _TASK_QUALIFIERS = frozenset(
 )
 
 
-def _known_task_names() -> frozenset[str]:
-    return _TASK_QUALIFIERS
-
-
 _INTENT_TASK_RE = re.compile(r"^video_intent_v\d+$")
 
 
