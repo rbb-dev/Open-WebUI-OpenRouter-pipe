@@ -1716,3 +1716,44 @@ async def test_a_fusion_member_whose_stored_advisor_names_a_model_the_user_canno
     )
     assert refused == [], [call.get("tools") for call in refused]
     assert isinstance(answer, str) and answer.startswith("advisor card:") and advisor in answer, answer
+
+
+@pytest.mark.asyncio
+async def test_a_turn_with_the_fusion_filter_on_an_ordinary_model_carries_the_fusion_tool_and_is_checked_for_the_panel_it_names(
+    orchestrator_and_pipe, monkeypatch
+):
+    import open_webui.utils.models as owui_models
+
+    from open_webui_openrouter_pipe.core.fusion_defaults import (
+        DEFAULT_FUSION_PRESET,
+        FUSION_PRESET_PANELS,
+    )
+    from open_webui_openrouter_pipe.models.registry import sanitize_model_id
+    from tests.test_fusion_filter import _inlet
+
+    orchestrator, pipe = orchestrator_and_pipe
+    chat_model = "openai/gpt-4o-mini"
+    member = "openai/gpt-4.1-nano"
+    default_panel = FUSION_PRESET_PANELS[DEFAULT_FUSION_PRESET]
+    refused_rows = {f"test-pipe.{sanitize_model_id(model)}" for model in default_panel}
+
+    async def refuse_the_default_panel(user, model, model_info=None, db=None):
+        if model["id"] in refused_rows:
+            raise Exception("Model not found")
+
+    monkeypatch.setattr(owui_models, "check_model_access", refuse_the_default_panel)
+
+    body = _inlet(
+        {"model": chat_model, "messages": [{"role": "user", "content": "hi"}], "stream": False},
+        valves={"FUSION_ANALYSIS_MODELS": member, "FUSION_JUDGE_MODEL": member},
+        allow_non_fusion=True,
+    )
+    captured, _ = await _turn_through_the_orchestrator(
+        orchestrator, pipe, body=body, catalogue=[chat_model, member, *default_panel]
+    )
+
+    assert len(captured) == 1, captured
+    assert {"type": "openrouter:fusion"} in (captured[0].get("tools") or []), captured[0].get("tools")
+    assert any(
+        p.get("id") == "fusion" and p.get("analysis_models") == [member] for p in captured[0]["plugins"]
+    ), captured[0]["plugins"]

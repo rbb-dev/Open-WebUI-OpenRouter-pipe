@@ -73,17 +73,20 @@ def models_the_request_would_use(
         if not hosted or not plan.judge_from_preset:
             add(plan.judge_model, "judge")
 
-    def add_fusion_tool(tool: dict[str, Any]) -> None:
+    def add_fusion_tool(tool: dict[str, Any], configured_by: dict[str, Any] | None) -> None:
         parameters = tool.get("parameters")
         parameters = parameters if isinstance(parameters, dict) else {}
-        add_fusion_run(
-            {
-                "id": "fusion",
-                "analysis_models": parameters.get("analysis_models"),
-                "model": parameters.get("model"),
-            },
-            hosted=True,
-        )
+        named_by_tool = {
+            key: parameters[key] for key in ("analysis_models", "model") if parameters.get(key)
+        }
+        named_by_entry = {
+            key: value for key, value in (configured_by or {}).items() if key != "enabled"
+        }
+        for run in (
+            {**named_by_tool, **named_by_entry},
+            {**named_by_entry, **named_by_tool},
+        ):
+            add_fusion_run({"id": "fusion", **run}, hosted=True)
 
     def add_model_naming_tools(candidates: Any) -> None:
         if not isinstance(candidates, list):
@@ -97,6 +100,7 @@ def models_the_request_would_use(
             if role is not None and isinstance(parameters, dict):
                 add(parameters.get("model"), role)
 
+    configured_by: dict[str, Any] | None = None
     if fusion_on:
         if internal:
             add_fusion_run(find_fusion_entry(plugins), hosted=False)
@@ -105,6 +109,7 @@ def models_the_request_would_use(
             if entry is None:
                 entry = find_fusion_entry(saved_plugins)
             if entry is not None and entry.get("enabled") is not False:
+                configured_by = entry
                 add_fusion_run(entry, hosted=True)
     if internal:
         add_model_naming_tools(member_tools)
@@ -113,12 +118,12 @@ def models_the_request_would_use(
     sent_tools = [tool for tool in tools if isinstance(tool, dict)] if isinstance(tools, list) else []
     for tool in sent_tools:
         if tool.get("type") == FUSION_SERVER_TOOL_TYPE and fusion_on:
-            add_fusion_tool(tool)
+            add_fusion_tool(tool, configured_by)
     add_model_naming_tools(sent_tools)
     if fusion_on and not any(tool.get("type") == FUSION_SERVER_TOOL_TYPE for tool in sent_tools):
         for tool in saved_tools:
             if isinstance(tool, dict) and tool.get("type") == FUSION_SERVER_TOOL_TYPE:
-                add_fusion_tool(tool)
+                add_fusion_tool(tool, configured_by)
     return wanted
 
 

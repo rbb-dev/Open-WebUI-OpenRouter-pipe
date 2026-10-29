@@ -43,10 +43,11 @@ you added yourself, or by another install — the pipe installs and maintains it
 writes into the filter's code rather than by its id. A row the pipe itself wrote under an Open WebUI 0.12
 per-load id is not another install's: the pipe rewrites it in place, id and settings kept, and settles any
 numbered copy of it (see "Copies made under a per-load id" in [Provider Routing](openrouter_provider_routing.md)).
-It injects a `{"id": "fusion", …}` entry into the request's `plugins`
-array (the same mechanism as the Web Tools filter). It acts on the fusion models — `openrouter/fusion`,
-`openrouter/fusion-flash`, and any `:tag` variant or `:preset/…` form of them — and —
-unless an admin opts in — no-ops on every other model.
+It writes a `{"id": "fusion", …}` entry into the request's `plugins` array. It acts on the fusion
+models — `openrouter/fusion`, `openrouter/fusion-flash`, and any `:tag` variant or `:preset/…` form
+of them — and, unless an admin opts in, leaves the request of every other model unchanged. When an
+admin opts in, it also adds OpenRouter's `openrouter:fusion` tool to the `tools` of a request for a
+model that is not a fusion model.
 
 The filter has two distinct roles:
 
@@ -55,22 +56,34 @@ The filter has two distinct roles:
    the pipe forces deliberation on every fusion-model chat request, so `Always run Fusion` is
    redundant there.
 2. **On any other model (admin opt-in via `ALLOW_ON_NON_FUSION_MODELS`): fusion as an add-on
-   tool.** The filter offers OpenRouter's fusion plugin to an ordinary model, which then decides
-   per prompt whether to deliberate — unless the user turns `Always run Fusion` on, which is the
-   only place that switch has an effect. This add-on scope is scoped by the master switch in the
-   other direction too: with `ENABLE_OPENROUTER_FUSION` **on**, a Fusion entry on a non-fusion
-   model is honoured; with it **off**, that entry is removed there as well.
+   tool.** The filter adds OpenRouter's `openrouter:fusion` tool to an ordinary model's request,
+   together with the `fusion` entry that carries the preset, panel, judge and tool budget the user
+   chose. The model then decides per prompt whether to call the tool and deliberate — unless the
+   user turns `Always run Fusion` on, which is the only place that switch has an effect. A request
+   that already carries an `openrouter:fusion` tool keeps its own, and one whose Fusion entry is
+   `enabled: false` gets none. This add-on scope is scoped by the master switch in the other
+   direction too: with `ENABLE_OPENROUTER_FUSION` **on**, the entry and the tool on a non-fusion
+   model are honoured; with it **off**, both are removed there as well.
+
+Per OpenRouter, a `fusion` plugin entry configures a Fusion run that the `openrouter/fusion` model slug
+or the `openrouter:fusion` tool starts; the entry does not start one itself. Sent to a model that is
+not a fusion model without the tool, the entry is refused with HTTP 400 and a message that names those
+two ways to start Fusion (measured on 2026-10-30 against OpenRouter, with one small model). That is why
+the filter sends both. A program that sends its own `{"id": "fusion"}` entry to a model that is not a
+fusion model, without the tool, gets that refusal back, as it does through an OpenRouter connection
+that Open WebUI makes itself: the pipe passes the program's `plugins` through and does not add the
+tool to a request on its own.
 
 ### Activation is guaranteed by the pipe
 
-OpenRouter's fusion aliases answer as a plain single model on `/responses` unless the request
-carries an explicit `{"id": "fusion"}` plugins entry — and even with it, invoking the deliberation
-tool is left to the model's discretion, which in practice means it randomly answers plain. A
-dedicated deliberation model that only sometimes deliberates is useless, so the pipe guarantees it:
-every fusion-model chat request gets the plugins entry AND `tool_choice: "required"`. **Fusion
-models always deliberate.** This holds even with the filter detached — the filter **configures**
-Fusion (panel, judge); it does not gate it. The `openrouter:fusion` **server tool** on your own
-model is a different surface and stays optional by design. Exceptions, in the pipe:
+OpenRouter leaves invoking the deliberation tool to the model's discretion unless the request sets
+`tool_choice: "required"`, which in practice means it randomly answers plain. A dedicated
+deliberation model that only sometimes deliberates is useless, so the pipe guarantees it: every
+fusion-model chat request gets the `{"id": "fusion"}` plugins entry AND `tool_choice: "required"`.
+**Fusion models always deliberate.** This holds even with the filter detached — the filter
+**configures** Fusion (panel, judge); it does not gate it. The `openrouter:fusion` **server tool**
+on an ordinary model is a different surface and stays optional by design (the filter's second role
+above). Exceptions, in the pipe:
 
 - housekeeping/task requests (title, tags, follow-up generation) get neither the entry nor the
   forcing — a chat title must not bill a full deliberation panel;
@@ -79,7 +92,7 @@ model is a different surface and stays optional by design. Exceptions, in the pi
   or synthesis runs for it, whatever `ENABLE_OPENROUTER_FUSION` says. This is named rather than
   folded into the bullet above because the pipe gates it on its own task name, not on "is this
   a task": a task name the pipe has not seen does not inherit the exemption silently;
-- with `ENABLE_OPENROUTER_FUSION` off, nothing is injected or forced, and an activating
+- with `ENABLE_OPENROUTER_FUSION` off, nothing is injected or forced, and a
   `{"id": "fusion"}` entry the request already carries is removed before anything is sent, and so is
   an `openrouter:fusion` entry in its `tools` — on any model and on either engine — so the master
   switch genuinely turns Fusion off. A task or title request never carries either, whatever the
@@ -138,22 +151,22 @@ only to OWUI-native function tools you attach yourself: with those present, the 
 
 Both the filter and the pipe leave a caller-supplied `tool_choice` / `function_call` untouched, and
 skip forcing when the Fusion plugin is explicitly `enabled:false` (requiring a tool with no active
-Fusion would just force some other tool).
+Fusion would just force some other tool); on a non-fusion model the filter then adds no Fusion tool
+either.
 
 There is one case with no escape hatch at all: a **non-fusion** model with *Always run Fusion* on
-and **no other tool in the request**. Nothing injects the Fusion tool on a model that is not the
-alias, so `required` would be a requirement the model cannot meet. The pipe drops the forced
-requirement for that turn rather than sending it. The Fusion plugin entry is still added, so the
-model can still call Fusion voluntarily — the request simply does not insist that it does.
+and **no other tool in the request**. The Fusion tool the filter adds is the only tool, so
+`required` can be met only by calling it, and the model deliberates on every message.
 
-There is a second, mirror-image case: a **fusion** model whose Fusion plugin entry is explicitly
-`enabled: false`, with **no other tool in the request**. An entry the caller switched off is not a
-server-injected Fusion tool, so the requirement has nothing to satisfy it there either, and the
-pipe drops it the same way — on the `/responses` leg and on the `/chat/completions` fallback. The
-entry itself is still sent: on the OpenRouter engine it configures what Fusion would deliberate
-with if it ran, and removing it would change the run rather than the requirement. An entry with no
-`enabled` key at all is still active, which is the shape the filter and every other caller
-produce.
+The pipe drops a `tool_choice="required"` from a request that carries no tool at all, rather than
+send a requirement nothing can meet. A fusion model with an active Fusion entry is the exception,
+because OpenRouter injects the Fusion tool there. A **fusion** model whose Fusion plugin entry is
+explicitly `enabled: false` is not: with **no other tool in the request**, an entry the caller
+switched off is not a server-injected Fusion tool, so the requirement has nothing to satisfy it, and
+the pipe drops it — on the `/responses` leg and on the `/chat/completions` fallback. The entry itself
+is still sent: on the OpenRouter engine it configures what Fusion would deliberate with if it ran,
+and removing it would change the run rather than the requirement. An entry with no `enabled` key at
+all is still active, which is the shape the filter and every other caller produce.
 
 ## Engine backends
 
@@ -182,8 +195,8 @@ Behaviour shared by both engines:
   a plain model call, and nothing to click.
 - Task/title generation requests never deliberate.
 - The *Always run Fusion* user toggle is inert on fusion models for both engines, and
-  the add-on server-tool surface on non-fusion models always uses OpenRouter's plugin
-  regardless of `FUSION_BACKEND`.
+  the add-on surface on non-fusion models runs on OpenRouter's hosted Fusion, through the
+  `openrouter:fusion` tool, whichever `FUSION_BACKEND` is set.
 
 On the internal engine the three stages are prompted by admin-editable templates
 (`FUSION_PANEL_SYSTEM_PROMPT`, `FUSION_JUDGE_SYSTEM_PROMPT`,
@@ -233,7 +246,7 @@ wiring. They are documented alongside the other pipe valves in
 
 | Valve | Default | Effect |
 |-------|---------|--------|
-| `ENABLE_OPENROUTER_FUSION` | `True` | Master switch; installs the filter, auto-wires it to the fusion models only, and gates the pipe's activation injection. `False` deactivates the installed filter on the next `pipes()` call, stops injecting the Fusion plugin entry, and removes an activating `{"id": "fusion"}` entry and an `openrouter:fusion` tool entry the request already carried, on any model and either engine — Fusion is then fully off — and a task or title request never carries either, and neither does a MoA merge. While it is on, a user also needs access in Open WebUI to the models a deliberation calls (see [Who may use which model](#who-may-use-which-model)). `AUTO_INSTALL_FUSION_FILTER` is the install valve for that family. Setting it back to `True` re-activates a filter the pipe itself switched off whose family's install valve is still on, on the next `pipes()` call — including an install-by-hand copy, which nothing else brings back; a row that valve has retired stays off until that valve comes back on. A row the pipe re-arms comes back private rather than shared: Open WebUI puts every filter marked Global at the front of every model's list, so a row an admin made Global is made private again in the same write that re-enables it. The pipe keeps a fingerprint of the filter's settings (valve values, name and Default Filter tick) from the moment it switches it off. A change to them afterwards is read as an edit and the filter still comes back; switching it on or off by hand, or saving the same values again, is read as the admin's choice and the filter stays as the admin left it. A change and a switch by hand made between two model-list refreshes read as an edit, so the filter comes back that once. A filter an earlier version switched off has no fingerprint and behaves as before: a later write by an admin leaves it off. A filter an admin switched off by hand — after the pipe had switched it off — stays off. |
+| `ENABLE_OPENROUTER_FUSION` | `True` | Master switch; installs the filter, auto-wires it to the fusion models only, and gates the pipe's injection of the Fusion plugin entry and `tool_choice`. `False` deactivates the installed filter on the next `pipes()` call, stops injecting the Fusion plugin entry, and removes a `{"id": "fusion"}` entry and an `openrouter:fusion` tool entry the request already carried, on any model and either engine — Fusion is then fully off — and a task or title request never carries either, and neither does a MoA merge. While it is on, a user also needs access in Open WebUI to the models a deliberation calls (see [Who may use which model](#who-may-use-which-model)). `AUTO_INSTALL_FUSION_FILTER` is the install valve for that family. Setting it back to `True` re-activates a filter the pipe itself switched off whose family's install valve is still on, on the next `pipes()` call — including an install-by-hand copy, which nothing else brings back; a row that valve has retired stays off until that valve comes back on. A row the pipe re-arms comes back private rather than shared: Open WebUI puts every filter marked Global at the front of every model's list, so a row an admin made Global is made private again in the same write that re-enables it. The pipe keeps a fingerprint of the filter's settings (valve values, name and Default Filter tick) from the moment it switches it off. A change to them afterwards is read as an edit and the filter still comes back; switching it on or off by hand, or saving the same values again, is read as the admin's choice and the filter stays as the admin left it. A change and a switch by hand made between two model-list refreshes read as an edit, so the filter comes back that once. A filter an earlier version switched off has no fingerprint and behaves as before: a later write by an admin leaves it off. A filter an admin switched off by hand — after the pipe had switched it off — stays off. |
 | `AUTO_INSTALL_FUSION_FILTER` | `True` | Install/update the filter function in OWUI. It also delivers the filter's own fixes: they live in the stored row rather than in the pipe, so with it off an installed row keeps whatever code it already had. |
 | `AUTO_ATTACH_FUSION_FILTER` | `True` | Attach the filter to the fusion models **only** (never other models) — including their `:tag` variant and `:preset/…` rows. Neither does a pass that could not install the panel because Open WebUI refused the write: the attached filter and the default it carried stay, and the install is tried again at the next pass. |
 | `AUTO_DEFAULT_FUSION_FILTER` | `True` | Pre-enable the filter per chat on the fusion models (does not force Fusion to run). |
@@ -255,7 +268,7 @@ catalog fetch tries again. Neither does a pass that could not install the panel 
 
 OpenRouter documents a faster `openrouter/fusion-flash` alias (the `general-fast` preset pinned as its
 own model), but it is not live on the API yet. The pipe already treats it as a full member of the
-fusion model family — endpoint forcing, the live panel, filter auto-wiring, the activation injection,
+fusion model family — endpoint forcing, the live panel, filter auto-wiring, the plugin-entry injection,
 and `tool_choice: "required"` all apply automatically once OpenRouter ships it and it appears in the
 catalog. Filter updates reach installed deployments via `AUTO_INSTALL_FUSION_FILTER`; attach-only
 deployments (auto-install off) keep their existing filter copy, which does not recognize flash until
@@ -278,8 +291,8 @@ runs smaller than the one that was asked for, and no model is substituted.
 |---|---|
 | Internal engine | Every panel model and the judge. The judge also repairs its own analysis and writes the final answer. Also the advisor and subagent models the user's Web Tools settings name, because the panel members, the judge and the final answer are sent with those tools. |
 | OpenRouter engine, or Fusion added to another model | The panel the request names. When it names none: the default panel (the three models OpenRouter documents for it, the same three as `general-high`) and, when the request names a preset, that preset's panel. The judge only when the request names one. Otherwise OpenRouter chooses the analyst (its documentation says the outer model that handles the request), and the pipe has no model name to ask about. |
-| An `openrouter:fusion` tool in the request | Its `analysis_models` and `model`, with the same defaults. |
-| A request that references an OpenRouter preset | On the OpenRouter engine, and for Fusion added to another model: the Fusion panel the preset saves, as a plugin entry or as a tool entry, unless the request carries its own. On the internal engine: the panel the pipe runs, as in the first row. |
+| An `openrouter:fusion` tool in the request | Its `analysis_models` and `model`, with the same defaults, read together with the request's Fusion entry (the Fusion filter sends both): a model either one names is checked, and the default panel only when neither names a panel. |
+| A request that references an OpenRouter preset | On the OpenRouter engine, and for Fusion added to another model: the Fusion panel the preset saves, as a plugin entry or as a tool entry, unless the request carries its own. A saved entry also configures a tool the request sends. On the internal engine: the panel the pipe runs, as in the first row. |
 
 Where the panel comes from (the Fusion filter, the request body or a preset) does not change the
 check. A request that switches Fusion off with `{"id": "fusion", "enabled": false}` is a plain model
@@ -448,12 +461,12 @@ chat that uses the filter.
 
 | Valve | Default | Effect |
 |-------|---------|--------|
-| `ALLOW_ON_NON_FUSION_MODELS` | `False` | **Off (default):** the filter acts only on the fusion models — `openrouter/fusion`, `openrouter/fusion-flash` and their `:tag` / `:preset/…` / `~` forms. If you attach it to **any other model**, its inlet returns immediately and injects nothing — no Fusion plugin, no `tool_choice` forcing — so a user's *Preset / Panel / Judge / **Always run Fusion*** settings have **no effect** on that model. **On:** the filter adds the Fusion panel (and forcing, if the user enabled *Always run Fusion*) to **any** model it is attached to. This valve is the **only** way to use Fusion on a **non-fusion** model: manually attach the filter to that model, then turn this on. (The model must also support tool calling, since forcing sets `tool_choice="required"` — though the forcing is dropped for a single turn that offers no tool at all.) |
+| `ALLOW_ON_NON_FUSION_MODELS` | `False` | **Off (default):** the filter acts only on the fusion models — `openrouter/fusion`, `openrouter/fusion-flash` and their `:tag` / `:preset/…` / `~` forms. If you attach it to **any other model**, its inlet returns immediately and injects nothing — no Fusion plugin entry, no Fusion tool, no `tool_choice` forcing — so a user's *Preset / Panel / Judge / **Always run Fusion*** settings have **no effect** on that model. **On:** the filter adds the Fusion plugin entry that carries the user's settings, and OpenRouter's `openrouter:fusion` tool (and forcing, if the user enabled *Always run Fusion*), to **any** model it is attached to. Fusion then runs when the model calls the tool, and *Always run Fusion* requires a tool call on every message. To get Fusion on a **non-fusion** model through this filter, manually attach the filter to that model, then turn this on. The model must support tool calling, because Fusion is a tool the model calls, and each call runs the whole panel, which bills like several model calls (see OpenRouter's pricing). |
 | `priority` | `0` | Filter execution order. OWUI runs a chat's attached filters sorted by `(priority, id)`, lowest first. |
 
 > **Gotcha:** attaching the filter to another model and enabling *Always run Fusion* does **nothing**
-> while `ALLOW_ON_NON_FUSION_MODELS` is `False` — the inlet bails out before it can inject the plugin
-> or set `tool_choice`. Turn this valve on first.
+> while `ALLOW_ON_NON_FUSION_MODELS` is `False` — the inlet bails out before it can add the plugin
+> entry, the Fusion tool or `tool_choice`. Turn this valve on first.
 
 ## What a deliberation looks like
 

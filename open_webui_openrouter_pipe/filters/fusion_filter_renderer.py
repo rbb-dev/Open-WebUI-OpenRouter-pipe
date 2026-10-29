@@ -104,8 +104,14 @@ __PRIORITY_FIELD__
             description=(
                 "Off (default): this filter acts only on the fusion models — "
                 "`openrouter/fusion`, `openrouter/fusion-flash` and their `:tag` / "
-                "`:preset/…` / `~` forms — and no-ops if attached to anything else. "
-                "On: it adds the Fusion panel to any model it is attached to."
+                "`:preset/…` / `~` forms — and leaves the request unchanged if attached "
+                "to anything else. "
+                "On: it also acts on any other model it is attached to, where Fusion becomes "
+                "a tool the model decides to call. The request then carries OpenRouter's "
+                "Fusion tool along with the preset, panel and judge the user chose. Each "
+                "call runs the whole panel, which bills like several model calls (see "
+                "OpenRouter's pricing). It needs a model that supports tool calling and "
+                "the pipe's `Enable OpenRouter Fusion` setting on."
             ),
         )
 
@@ -170,12 +176,12 @@ __KEEP_WHAT_STILL_FITS__
                 "guaranteed on both engines (the OpenRouter engine via tool_choice="
                 "'required'; the internal engine always deliberates). It matters only "
                 "when an admin has attached this filter to a non-fusion model "
-                "(ALLOW_ON_NON_FUSION_MODELS). There — Off (default): the model decides "
+                "(ALLOW_ON_NON_FUSION_MODELS), where Fusion is a tool the model may decline. "
+                "There — Off (default): the model decides "
                 "whether the prompt needs the multi-model panel, so some replies answer "
                 "directly with no panel run. On: force the panel every message. Only "
                 "reliable when Fusion is the only tool in the request; other tool "
-                "integrations let the model satisfy the forcing with a different tool. The pipe "
-                "drops the requirement for a turn that has no tool at all."
+                "integrations let the model satisfy the forcing with a different tool."
             ),
         )
 
@@ -257,6 +263,20 @@ __KEEP_WHAT_STILL_FITS__
                 plugins.append(cfg)
                 body["plugins"] = plugins
 
+            any_fusion_disabled = any(
+                isinstance(p, dict) and p.get("id") == "fusion" and p.get("enabled") is False
+                for p in plugins
+            )
+
+            if not is_fusion and not any_fusion_disabled:
+                tools = body.get("tools")
+                if tools is None:
+                    tools = []
+                if isinstance(tools, list) and not any(
+                    isinstance(t, dict) and t.get("type") == "openrouter:fusion" for t in tools
+                ):
+                    body["tools"] = [*tools, {"type": "openrouter:fusion"}]
+
             if uv.FUSION_FORCE_TOOL_CALL:
                 # Force Fusion by requiring a tool call, exactly as OpenRouter
                 # documents. On the openrouter/fusion alias Fusion is the only
@@ -265,10 +285,6 @@ __KEEP_WHAT_STILL_FITS__
                 # documented behaviour). Skip when the caller already chose a tool,
                 # a legacy function_call is present, or a Fusion plugin is disabled.
                 tc_unset = ("tool_choice" not in body) or (body.get("tool_choice") is None)
-                any_fusion_disabled = any(
-                    isinstance(p, dict) and p.get("id") == "fusion" and p.get("enabled") is False
-                    for p in plugins
-                )
                 if tc_unset and "function_call" not in body and not any_fusion_disabled:
                     body["tool_choice"] = "required"
             return body
