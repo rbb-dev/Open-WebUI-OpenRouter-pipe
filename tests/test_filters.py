@@ -3401,8 +3401,11 @@ async def _send_pictures_to_a_video_model(
     helper=None,
     sound_files=(),
     earlier_turns=(),
+    model_extra=None,
+    earlier_clip_frame=False,
 ):
     import base64
+    import io
 
     import aiohttp
     from aioresponses import CallbackResult
@@ -3424,6 +3427,7 @@ async def _send_pictures_to_a_video_model(
         "supported_aspect_ratios": ["16:9"],
         "supported_resolutions": ["720p"],
         "allowed_passthrough_parameters": [],
+        **(model_extra or {}),
     }
     row = {
         "slug": model_id,
@@ -3495,6 +3499,35 @@ async def _send_pictures_to_a_video_model(
                 return ""
 
         cast(Any, pipe._ensure_video_generation_adapter())._persistence = _Chat()
+        if earlier_clip_frame:
+            from PIL import Image
+
+            frame_png = io.BytesIO()
+            Image.new("RGB", (64, 64), (12, 34, 56)).save(frame_png, "PNG")
+
+            async def _storage(request, user_obj):
+                return request, user_obj
+
+            monkeypatch.setattr(pipe._file_gateway, "resolve_storage_context", _storage)
+            monkeypatch.setattr(
+                pipe._file_gateway,
+                "upload_to_owui_storage",
+                AsyncMock(return_value="frame-of-the-earlier-clip"),
+            )
+            monkeypatch.setattr(
+                pipe._ensure_video_generation_adapter(),
+                "_resolve_owui_file_path",
+                AsyncMock(return_value=Path("/nonexistent/earlier-clip.mp4")),
+            )
+            monkeypatch.setattr(
+                video_module,
+                "extract_frame",
+                AsyncMock(
+                    return_value=SimpleNamespace(
+                        image_bytes=frame_png.getvalue(), width=64, height=64, downgrade_note=""
+                    )
+                ),
+            )
         asked: list[dict] = []
         if helper is not None:
             _OwuiConfig._rows["task.model.default"] = "task-llm"
@@ -3543,7 +3576,7 @@ async def _send_pictures_to_a_video_model(
                     event_emitter=None,
                     metadata=metadata,
                     user={"id": "user-1"},
-                    request=None,
+                    request=object() if earlier_clip_frame else None,
                     user_obj=SimpleNamespace(id="user-1", email="u@example.com", name="u"),
                     normalized_model_id=model_id.replace("/", "."),
                     api_model_id=model_id,
@@ -3685,6 +3718,12 @@ def _footer_heading(card: str) -> str:
     return quoted[0]
 
 
+def _carried_a_picture(sent: dict) -> bool:
+    return bool(sent.get("frame_images")) or any(
+        entry.get("type") == "image_url" for entry in sent.get("input_references", [])
+    )
+
+
 @pytest.mark.asyncio
 async def test_the_footer_heading_follows_whether_the_request_sends_a_picture(monkeypatch):
     chat = {
@@ -3716,8 +3755,61 @@ async def test_the_footer_heading_follows_whether_the_request_sends_a_picture(mo
         pictures=[],
         helper={"intent": "text_to_video", "prompt": "a short clip"},
     )
+    read_as_new, read_as_new_card = await _send_pictures_to_a_video_model(
+        monkeypatch,
+        **chat,
+        pictures=["start.png"],
+        helper={"intent": "text_to_video", "prompt": "a short clip"},
+    )
+    skipped, skipped_card = await _send_pictures_to_a_video_model(
+        monkeypatch,
+        frame_types=[],
+        description="Glimmer 7 makes short clips from a prompt.",
+        model_extra={"input_modalities": ["text"]},
+        earlier_turns=chat["earlier_turns"],
+        pictures=["start.png"],
+        helper={"intent": "image_to_video", "prompt": "a short clip"},
+    )
+    continues_the_clip = {
+        **chat,
+        "earlier_turns": [
+            {"role": "user", "content": "make a cat video"},
+            {"role": "assistant", "content": "<video>/api/v1/files/earlier-clip/content</video>"},
+        ],
+        "pictures": [],
+        "helper": {
+            "intent": "continue_prior_video",
+            "prompt": "the cat keeps walking",
+            "frame_plan": [
+                {"source": "prior_video_last_frame", "source_index": -1, "timestamp_seconds": None, "target": "first_frame"},
+            ],
+        },
+    }
+    no_frame_of_the_clip, no_frame_of_the_clip_card = await _send_pictures_to_a_video_model(
+        monkeypatch, **continues_the_clip
+    )
+    frame_of_the_clip, frame_of_the_clip_card = await _send_pictures_to_a_video_model(
+        monkeypatch, **continues_the_clip, earlier_clip_frame=True
+    )
 
     assert "frame_images" not in held_back and "input_references" not in held_back, held_back
     assert [f["image_url"]["url"] for f in with_frame["frame_images"]] == [_data_url_of("start.png")]
-    assert _footer_heading(held_back_card) == _footer_heading(text_only_card), held_back_card
-    assert _footer_heading(with_frame_card) != _footer_heading(text_only_card), with_frame_card
+    assert [f["image_url"]["url"] for f in read_as_new["frame_images"]] == [_data_url_of("start.png")]
+    assert not _carried_a_picture(skipped) and "file-start.png" in skipped_card, skipped_card
+    assert not _carried_a_picture(no_frame_of_the_clip), no_frame_of_the_clip
+    assert [f["frame_type"] for f in frame_of_the_clip["frame_images"]] == ["first_frame"]
+    new_video_heading = _footer_heading(text_only_card)
+    picture_heading = _footer_heading(with_frame_card)
+    assert picture_heading != new_video_heading
+    for sent, card in (
+        (held_back, held_back_card),
+        (with_frame, with_frame_card),
+        (read_as_new, read_as_new_card),
+        (skipped, skipped_card),
+        (no_frame_of_the_clip, no_frame_of_the_clip_card),
+    ):
+        expected = picture_heading if _carried_a_picture(sent) else new_video_heading
+        assert _footer_heading(card) == expected, (sent, card)
+    assert _footer_heading(frame_of_the_clip_card) not in (picture_heading, new_video_heading), (
+        frame_of_the_clip_card
+    )

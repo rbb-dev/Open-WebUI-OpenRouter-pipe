@@ -8,7 +8,7 @@ import re
 import time
 import unicodedata
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -207,6 +207,36 @@ class VideoIntentResult:
     task_model_absent: bool = False
     attachments_words: str = ""
     attachments_as: str = "not_said"
+    extracted_frame_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class RequestContents:
+    picture: bool
+    previous_video: bool
+
+
+def request_contents_of(
+    intent: VideoIntentResult, inputs: Iterable[tuple[str, str]]
+) -> RequestContents:
+    pictures = {file_id for file_id, family in inputs if file_id and family == "image"}
+    return RequestContents(
+        picture=bool(pictures),
+        previous_video=bool(pictures.intersection(intent.extracted_frame_ids)),
+    )
+
+
+_MODES_THE_REQUEST_DECIDES = frozenset(
+    {"text_to_video", "image_to_video", "modify_prior_video", "continue_prior_video"}
+)
+
+
+def _mode_the_request_carries(mode: str, contents: RequestContents) -> str:
+    if mode not in _MODES_THE_REQUEST_DECIDES:
+        return mode
+    if contents.previous_video and mode in ("modify_prior_video", "continue_prior_video"):
+        return mode
+    return "image_to_video" if contents.picture else "text_to_video"
 
 
 def _intent_block_end_match(content: str, start: re.Match[str]) -> re.Match[str] | None:
@@ -1202,24 +1232,21 @@ _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
     ),
     "intent_downgraded_due_to_explicit_attachments": "Used your uploaded frame instead of an inferred one.",
     "image_to_video_without_attachment_downgraded_to_text": (
-        "The attachment this turn was to animate was not there, so the video was made "
-        "from your words alone."
+        "This looked like a request for a video made from a picture, but no attached "
+        "picture was sent with this video."
     ),
     "forced_empty_frame_plan_for_text_to_video": (
-        "The frames you asked for were not used, so the video was made from your words "
-        "alone."
+        "This looked like a request for a new video, so the frames planned from your "
+        "message were not used."
     ),
     "modify_prior_video_dropped_to_text_no_frame_support": (
-        "Your request to change the previous video had no frame left to work from, so "
-        "the new video was made from your words alone."
+        "Your request to change the previous video had no frame left to work from."
     ),
     "continue_prior_video_dropped_to_text_no_frame_support": (
-        "Your request to continue the previous video had no frame left to work from, so "
-        "the new video was made from your words alone."
+        "Your request to continue the previous video had no frame left to work from."
     ),
     "ambiguous_without_clarification_downgraded_to_text": (
-        "No reference was chosen and no clarifying question was asked, so the video was "
-        "made from your words alone."
+        "No reference was chosen and no clarifying question was asked."
     ),
     "clarification_capped_max_reached": "Proceeding with best-effort interpretation.",
     "clarification_options_dropped": (
@@ -1311,22 +1338,15 @@ def render_intent_disclosure_block(
     *,
     thumb_urls: list[str],
     standing_sent: bool = False,
-    video_meta: dict[str, Any] | None = None,
+    contents: RequestContents | None = None,
 ) -> str:
     if not (intent.frame_plan or intent.prompt or intent.downgrades):
         return ""
 
     try:
-        mode = intent.intent
-        if (
-            mode == "image_to_video"
-            and video_meta is not None
-            and not any(
-                attachment["kind"] == "image"
-                for attachment in collect_attachments_from_video_meta(video_meta)
-            )
-        ):
-            mode = "text_to_video"
+        mode: str = intent.intent
+        if contents is not None:
+            mode = _mode_the_request_carries(mode, contents)
         lines: list[str] = []
         lines.append(_serialize_kind_marker(INTENT_BLOCK_START, "1"))
         lines.append(_serialize_kind_marker(INTENT_MODE, _safe_marker_body(mode)))

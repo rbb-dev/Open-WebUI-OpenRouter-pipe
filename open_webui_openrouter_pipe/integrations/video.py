@@ -136,6 +136,7 @@ from .video_intent import (
     emit_telemetry_log,
     render_clarification_message,
     render_intent_disclosure_block,
+    request_contents_of,
     resolve_intent,
     resolve_intent_user_setting,
     resolve_reference_items,
@@ -619,6 +620,13 @@ def _plan_names_something_needing_storage(frame_plan: list[Any]) -> bool:
     return any(entry.source != "uploaded_attachment" for entry in frame_plan)
 
 
+def _planned_inputs(video_meta: dict[str, Any]) -> list[tuple[str, str]]:
+    return [
+        (_clean_str(attachment["id"]), attachment["kind"])
+        for attachment in collect_attachments_from_video_meta(video_meta)
+    ]
+
+
 _FILE_HOST_RECORD = (
     "> **Your {kind} {was} uploaded to {host}.** Anyone holding the link can open "
     "{it}, {retention}.\n"
@@ -894,11 +902,17 @@ class VideoGenerationAdapter:
         submitted = False
         job_id = ""
         disclosure_block = ""
+        intent_footer: tuple[str, list[str], bool] | None = None
         withheld_record_written = False
         withheld: list[tuple[str, str]] = []
+        sent_inputs: list[tuple[str, str]] = []
         relayed_families: set[tuple[str, str]] = set()
         maybe_stored_families: set[tuple[str, str]] = set()
         bg_task: asyncio.Task[VideoLifecycleResult] | None = None
+        intent_chat_id = chat_id if isinstance(chat_id, str) else ""
+        intent_user_id = user_id if isinstance(user_id, str) else ""
+        intent_message_id = message_id if isinstance(message_id, str) else ""
+        intent_metadata = metadata if isinstance(metadata, dict) else None
 
         try:
             existing = await self._get_active_task(key)
@@ -1015,9 +1029,9 @@ class VideoGenerationAdapter:
                 prompt=prompt,
                 body=body,
                 video_meta=video_meta_pre,
-                metadata=metadata if isinstance(metadata, dict) else None,
-                chat_id=chat_id if isinstance(chat_id, str) else "",
-                user_id=user_id if isinstance(user_id, str) else "",
+                metadata=intent_metadata,
+                chat_id=intent_chat_id,
+                user_id=intent_user_id,
             ):
                 try:
                     await self._emit_status(
@@ -1030,21 +1044,19 @@ class VideoGenerationAdapter:
                         valves=valves,
                         request=request,
                         user_obj=user_obj or user,
-                        chat_id=chat_id if isinstance(chat_id, str) else "",
+                        chat_id=intent_chat_id,
                         logger=self.logger,
                         fallback_prompt_text=prompt,
-                        metadata=metadata if isinstance(metadata, dict) else None,
+                        metadata=intent_metadata,
                     )
                     self._intent_record_call(
-                        chat_id if isinstance(chat_id, str) else "",
-                        user_id if isinstance(user_id, str) else "",
+                        intent_chat_id,
+                        intent_user_id,
                         valves=valves,
                     )
                     if intent_result.classifier_failed:
                         if not intent_result.task_model_absent:
-                            self._intent_record_failure(
-                                user_id if isinstance(user_id, str) else ""
-                            )
+                            self._intent_record_failure(intent_user_id)
                             self.logger.warning(
                                 "video_intent classifier_failed=True; reason=%s; "
                                 "breaker tripped",
@@ -1135,8 +1147,8 @@ class VideoGenerationAdapter:
                         video_meta=video_meta_pre,
                         request=request,
                         user_obj=user_obj,
-                        chat_id=chat_id if isinstance(chat_id, str) else "",
-                        message_id=message_id if isinstance(message_id, str) else "",
+                        chat_id=intent_chat_id,
+                        message_id=intent_message_id,
                         reused_frame_index=reused_frame_pref,
                         video_model=video_model,
                         valves=valves,
@@ -1163,8 +1175,11 @@ class VideoGenerationAdapter:
                             intent=intent_result,
                             thumb_urls=thumbs,
                             standing_sent=standing_sent,
-                            video_meta=video_meta_pre,
+                            contents=request_contents_of(
+                                intent_result, _planned_inputs(video_meta_pre)
+                            ),
                         )
+                        intent_footer = (disclosure_block, thumbs, standing_sent)
                     self._emit_intent_telemetry(intent_result, valves=valves, chat_id=chat_id)
                 except asyncio.CancelledError:
                     raise
@@ -1172,7 +1187,7 @@ class VideoGenerationAdapter:
                     self.logger.warning(
                         "video_intent classifier failed (degrade-open): %s", exc, exc_info=True
                     )
-                    self._intent_record_failure(user_id if isinstance(user_id, str) else "")
+                    self._intent_record_failure(intent_user_id)
                     latch_key = chat_latch_key(chat_id)
                     log_key = self._intent_notice_key(chat_id) or "<not retained>"
                     already = self._intent_was_failure_notified(latch_key)
@@ -1197,6 +1212,7 @@ class VideoGenerationAdapter:
                                 })
                     intent_result = None
                     disclosure_block = ""
+                    intent_footer = None
 
             if not user_slot_acquired:
                 (
@@ -1220,6 +1236,7 @@ class VideoGenerationAdapter:
             )
             frame_images = await self._encode_frame_images(
                 video_meta, video_model, valves, user_obj=user_obj or user,
+                sent=sent_inputs,
             )
             try:
                 input_references = await self._encode_input_references(
@@ -1227,11 +1244,15 @@ class VideoGenerationAdapter:
                     video_model=video_model, relayed=relayed_families,
                     maybe_stored=maybe_stored_families,
                     event_emitter=event_emitter, vetted=vetted_addresses,
+                    sent=sent_inputs,
                 )
             finally:
                 disclosure_block = self._with_the_file_host_record(
                     disclosure_block, valves, relayed_families, maybe_stored_families
                 )
+            disclosure_block = self._with_the_final_intent_block(
+                disclosure_block, intent_result, intent_footer, sent_inputs
+            )
             if not prompt.strip():
                 content = self._build_failure_content(
                     job_id="",
@@ -2734,6 +2755,7 @@ class VideoGenerationAdapter:
         valves: Any,
         *,
         user_obj: Any = None,
+        sent: list[tuple[str, str]] | None = None,
     ) -> list[dict[str, Any]]:
         raw_frames = video_meta.get("frame_images")
         if not isinstance(raw_frames, list) or not raw_frames:
@@ -2778,6 +2800,8 @@ class VideoGenerationAdapter:
                 }
             )
             seen_file_ids.add(file_id)
+        if sent is not None:
+            sent.extend((file_id, "image") for file_id in seen_file_ids)
         return encoded
 
     async def _encode_input_references(
@@ -2793,6 +2817,7 @@ class VideoGenerationAdapter:
         companions: bool = False,
         event_emitter: Any = None,
         vetted: dict[str, bool | None] | None = None,
+        sent: list[tuple[str, str]] | None = None,
     ) -> list[dict[str, Any]]:
         raw = resolve_reference_items(video_meta)
         if not raw:
@@ -2925,6 +2950,8 @@ class VideoGenerationAdapter:
                         relayed.add((entry.family, host))
                     continue
                 encoded.append({"type": entry.kind, entry.kind: {"url": entry.media}})
+        if sent is not None:
+            sent.extend((entry.file_id, entry.family) for entry in accepted)
         return encoded
 
     @staticmethod
@@ -3167,6 +3194,26 @@ class VideoGenerationAdapter:
             return ""
         found = _RELAY_BLOCK_REGION_RE.search(persisted)
         return found.group(0) if found else ""
+
+    @staticmethod
+    def _with_the_final_intent_block(
+        disclosure_block: str,
+        intent: VideoIntentResult | None,
+        footer: tuple[str, list[str], bool] | None,
+        sent: list[tuple[str, str]],
+    ) -> str:
+        if footer is None or intent is None:
+            return disclosure_block
+        planned_block, thumbs, standing_sent = footer
+        final_block = render_intent_disclosure_block(
+            intent=intent,
+            thumb_urls=thumbs,
+            standing_sent=standing_sent,
+            contents=request_contents_of(intent, sent),
+        )
+        if not final_block:
+            return disclosure_block
+        return final_block + disclosure_block[len(planned_block):]
 
     @classmethod
     def _with_the_withheld_record(
@@ -3780,6 +3827,7 @@ class VideoGenerationAdapter:
                         continue
 
                     intent.frames_extracted += 1
+                    intent.extracted_frame_ids.append(frame_file_id)
 
                     if entry.target in ("first_frame", "last_frame"):
                         extracted = entry.target
