@@ -2289,12 +2289,7 @@ async def transform_messages_to_input(
                                     path=await asyncio.to_thread(current_send_spool().adopt, held_path),
                                 )
                                 picture_size = picture_slot.raw_len or 0
-                                if mode == "reuse" and memo_key is not None:
-                                    request_memo[memo_key] = (
-                                        memo_owner,
-                                        held_path,
-                                        held_mime or "",
-                                    )
+                                memo_path = held_path
                                 if (
                                     mode == "reuse"
                                     and not temporary_chat
@@ -2312,9 +2307,16 @@ async def transform_messages_to_input(
                                     ):
                                         _reuse_download_memo.popitem(last=False)
                                         held = _reuse_download_memo.held
+                                    memo_path = _claim_memo_picture(held_path)
                                     _reuse_download_memo[memo_key] = (
                                         memo_owner,
-                                        _claim_memo_picture(held_path),
+                                        memo_path,
+                                        held_mime or "",
+                                    )
+                                if mode == "reuse" and memo_key is not None:
+                                    request_memo[memo_key] = (
+                                        memo_owner,
+                                        memo_path,
                                         held_mime or "",
                                     )
                                 url = picture_slot

@@ -5586,3 +5586,40 @@ async def test_one_chat_s_download_is_not_handed_to_another(pipe_instance):
         f"{len(downloads) - before} fetches for two turns); keying them under a common "
         "empty string is process-global sharing under a new name, which is the defect"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_picture_cited_twice_in_one_request_is_downloaded_once(pipe_instance):
+    url = "https://example.invalid/cited-twice.png"
+    downloads: list[str] = []
+
+    async def counting_download(requested, *_a, **_k):
+        downloads.append(requested)
+        return {"data": b"\x89PNG\r\n\x1a\nAAAAAAAA", "mime_type": "image/png"}
+
+    async def none(*_a, **_k):
+        return None
+
+    async def permit(*_a, **_k):
+        return True
+
+    pipe_instance._file_gateway.resolve_storage_context = none
+    pipe_instance._file_gateway.inline_owui_file_id = none
+    pipe_instance._multimodal_handler._is_safe_url = permit
+    pipe_instance._multimodal_handler._download_remote_url_streaming = _as_streaming(counting_download)
+
+    picture = {"type": "image_url", "image_url": {"url": url}}
+    await transform_messages_to_input(
+        pipe_instance,
+        [
+            {"role": "user", "content": [picture, {"type": "text", "text": "what is this"}]},
+            {"role": "assistant", "content": "A cat."},
+            {"role": "user", "content": [picture, {"type": "text", "text": "and this one again"}]},
+            {"role": "assistant", "content": "The same cat."},
+            {"role": "user", "content": [{"type": "text", "text": "and its colour?"}]},
+        ],
+        chat_id="chat-1",
+        user_obj=_NAMED_CALLER,
+    )
+
+    assert downloads == [url]

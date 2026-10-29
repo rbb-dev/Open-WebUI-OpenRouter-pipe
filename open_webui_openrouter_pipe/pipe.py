@@ -218,6 +218,7 @@ from .tools.tool_executor import (
     _ToolExecutionContext,
     resolved_tool_name,
 )
+from .tools.tool_schema import _declared_parameter_names
 
 if TYPE_CHECKING:
     from .api.gateway.chat_completions_adapter import ChatCompletionsAdapter
@@ -278,24 +279,28 @@ def _drop_task(task: asyncio.Task | None) -> None:
                 task.cancel()
 
 
-def _wake_refused_stream(job: _PipeJob) -> None:
+def _put_refusal_record(job: _PipeJob, record_name: str, record: dict[str, Any] | None) -> None:
     stream_queue = job.stream_queue
     if stream_queue is None:
         return
+    try:
+        stream_queue.put_nowait(record)
+    except asyncio.QueueFull:
+        job.pipe.logger.warning(
+            "Dropped the %s of request %s: its reply buffer is full (limit %s).",
+            record_name,
+            job.request_id,
+            stream_queue.maxsize,
+        )
+
+
+def _wake_refused_stream(job: _PipeJob) -> None:
     for record_name, record in (
         ("503 frame", {"error": {"detail": "Server busy (503)"}, "done": True}),
         ("end-of-stream marker", None),
     ):
         with contextlib.suppress(Exception):
-            try:
-                stream_queue.put_nowait(record)
-            except asyncio.QueueFull:
-                job.pipe.logger.warning(
-                    "Dropped the %s of request %s: its reply buffer is full (limit %s).",
-                    record_name,
-                    job.request_id,
-                    stream_queue.maxsize,
-                )
+            _put_refusal_record(job, record_name, record)
 
 
 _ANSWER_EVENT_TYPES = ("chat:message", "chat:message:delta", "chat:completion")
@@ -4020,15 +4025,9 @@ class Pipe:
 
     @staticmethod
     def _put_streaming_refusal(job: _PipeJob, detail: str | None = None) -> None:
-        stream_queue = job.stream_queue
-        if stream_queue is None:
-            return
-        items = (None,) if detail is None else ({"error": {"detail": detail}}, None)
-        for item in items:
-            try:
-                stream_queue.put_nowait(item)
-            except asyncio.QueueFull:
-                return
+        if detail is not None:
+            _put_refusal_record(job, "error frame", {"error": {"detail": detail}})
+        _put_refusal_record(job, "end-of-stream marker", None)
 
     @staticmethod
     def _admission_failed(
@@ -5476,7 +5475,7 @@ class Pipe:
         origin_name = str(item.tool_cfg.get("origin_name") or tool_name)
         declared = item.tool_cfg.get("declared_params")
         if declared is None:
-            declared = ((item.tool_cfg.get("spec") or {}).get("parameters") or {}).get("properties") or {}
+            declared = _declared_parameter_names((item.tool_cfg.get("spec") or {}).get("parameters"))
         call_args = (
             {key: value for key, value in item.args.items() if key in declared} if isinstance(item.args, dict) else {}
         )
