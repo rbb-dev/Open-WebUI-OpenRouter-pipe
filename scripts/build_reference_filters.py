@@ -36,8 +36,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 # (filename under filters/, FilterManager renderer name, its kwargs).
-# One definition: tests/test_reference_filters_are_regenerable.py reads THIS table
-# rather than restating it, and tests/test_web_tools_filter.py renders through it.
+# One definition: tests/test_web_tools_filter.py renders through THIS table rather
+# than restating it.
 REFERENCE_FILTERS: tuple[tuple[str, str, dict[str, object]], ...] = (
     (
         "openrouter_web_tools.py",

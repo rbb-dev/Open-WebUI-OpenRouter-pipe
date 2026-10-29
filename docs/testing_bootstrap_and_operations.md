@@ -85,34 +85,18 @@ You do not need to import any bootstrap module in individual test files.
 
 A probe subprocess that imports the real `open_webui` must be given its own `DATA_DIR`: the import builds a chromadb store under it, so a probe that inherits the ambient one races every concurrent collection for the same directory. The assignment must be **unconditional** — `os.environ['DATA_DIR'] = ...`, not `setdefault`. The parent process exports `DATA_DIR` and `tests/owui_stubs.py` sets it before any test runs, so a child always inherits a set value and a `setdefault` there is a line that reads compliant and does nothing.
 
-Give it from a fixture rather than at module import — a process-wide timeout does not cover a module-import probe, so a probe that costs tens of seconds there runs entirely outside the budget CI enforces on tests. `pytest.ini` sets no `--timeout` of its own; the only per-test ceiling in this repository is `--timeout=60` in `.github/workflows/verify.yml`, so "the budget the suite enforces" describes a CI run and not a local or agent run. `tests/test_a_test_module_starts_no_probe_at_import.py` is the census that keeps a module-scope probe from being added, and `tests/test_a_probe_script_path_is_not_shared_across_workers.py` is the one that keeps a probe's *script* off a path another worker can name.
+Give it from a fixture rather than at module import — a process-wide timeout does not cover a module-import probe, so a probe that costs tens of seconds there runs entirely outside the budget CI enforces on tests.
 
 A test module may not construct a `Pipe` at import time; `Pipe.id` is a class attribute and needs no instance. `Pipe.__init__` wires the package logger, claims the id in `_LifecycleRegistry` and starts the session-log machinery, so an import-time `Pipe()` decides the logger baseline of every later test in the same worker in an order the collector chooses.
 
 That budget also stops at the end of the run. The timeout cannot cover interpreter shutdown, where `concurrent.futures.thread._python_exit` joins every `ThreadPoolExecutor` worker with `t.join()` and the alarm has already been reset — so a test that leaves a non-daemon thread running hangs the process instead of failing a test, and the symptom is a wall rather than a name. `tests/conftest.py` therefore names those threads separately and fails the session with the node ids, which is why a leak is reported against the test that caused it rather than against whichever one ran next.
-
-### Measuring an allocation peak (`tests/_scoped_allocation.py`)
-
-An allocation-peak row asks "how many payload-sized buffers were live at once", and the only instrument CPython offers is `tracemalloc`. `tracemalloc.start()` takes only `nframe` — there is no filtered or sampled snapshot on this interpreter — so `get_traced_memory()` reports the **whole process**, and any other thread in the same pytest worker that allocates while a window is open is inside the number. On a farm shared with about seventy agents that is not a rounding error: one 4 MiB buffer held by a neighbouring test's worker for the window moved a matching-arm peak from 1.01x to 2.01x, against a bound of 1.1x.
-
-`gc.collect()`, `gc.freeze()` and `gc.disable()` do not fix it (measured on this tree: 7/10, 10/10, 6/10 and 8/10 breaches with and without each), and a sampled snapshot measures 0.00x, because the buffers are freed before a sample lands. **A fresh interpreter is what makes the peak per-test**: a number measured in a process that was started for it cannot contain another test's leftover work.
-
-So `tests/_scoped_allocation.py` measures in a child — `scoped_peak(measure)` is the window, `scoped_peaks(module, registry, rows)` runs it. The conventions, all of which the helper depends on:
-
-- **One interpreter per file, not per row.** `scoped_peaks` answers every row the calling module registers, and the calling fixture is `scope="module"`. One interpreter per measurement costs ~2.43 s each against ~2.5 s for a whole file, most of which is importing the pipe.
-- **An arm is a `Pipe`-taking callable returning `(warm_up, measure)`**, two zero-argument async callables. The warm-up runs before the window opens, exactly where an in-process test ran it; returning it rather than running it is what keeps the warm-up out of the peak.
-- **`_turn`, `_specs` and `_sent` stay in the test module.** The child imports the module and calls the registered arm, so there is one definition of the turn under test.
-- **`owui_stubs` is imported before anything from the package**, and this is load-bearing rather than stylistic: the suite installs its own `open_webui` stand-ins, and a child that reaches the real one logs an `ImportError` for `STORAGE_PROVIDER`, catches it and **exits 0** — reporting a number from a different code path with nothing to say so. `PROBE-DONE` on stderr is the companion guard: a child that died before printing reports nothing rather than an empty answer.
-- **An arm reports what the parent still has to assert.** `digest_urls` carries a URL across the boundary as a length and a SHA-256 (with its head for the failure message), so a cost row can still prove the picture that reached the provider is the one that was attached — a cost row is satisfied by refusing — without moving megabytes of base64 over stdout. It hashes in slices rather than through one `url.encode()`, because the digest is taken inside the window and a whole-payload copy would put the measuring harness in the number.
-
-A new peak row goes in the file whose arm registry already exists; a new file gets its own registry and a module-scoped fixture. The bounds do not move when an instrument changes: they are what the arm is held to, not what the instrument is.
 
 ### Running tests
 
 Run a single file first, then the full suite. Both inherit the timeout above; a caller does not need to supply one.
 
 ```bash
-PYTHONPATH=. .venv/bin/pytest tests/test_multimodal_inputs.py -q
+PYTHONPATH=. .venv/bin/pytest tests/test_multimodal.py -q
 PYTHONPATH=. .venv/bin/pytest tests -q
 ```
 
@@ -128,20 +112,13 @@ on a change.
 
 The suite is organized by subsystem. Common entry points:
 
-- `tests/test_multimodal_inputs.py`: multimodal URL/data handling and SSRF-related input guards (HTTPS-only defaults; HTTP allowlist coverage).
+- `tests/test_multimodal.py`: multimodal URL/data handling and SSRF-related input guards (HTTPS-only defaults; HTTP allowlist coverage).
 - `tests/test_request_identifiers.py`: `SEND_*` valves and OpenRouter identifier mapping.
-- `tests/test_session_log_storage.py`: encrypted session log storage skip rules and archive behavior.
-- `tests/test_tool_schema.py`: strict tool schema transformations.
+- `tests/test_session_logs.py`: encrypted session log storage skip rules and archive behavior.
+- `tests/test_tools.py`: tool execution, including the strict tool schema transformations.
 - `tests/test_direct_tool_servers.py`: Open WebUI Direct Tool Servers (Socket.IO `execute:tool`) wiring.
 - `tests/test_transform_messages.py`: history reconstruction/marker replay behavior.
-- `tests/test_pipe_guards.py`: admission controls, breakers, and runtime guards.
-- `tests/test_a_free_form_items_is_not_sealed_shut.py`: worked example of the probe-subprocess convention above — a real `open_webui` import, run from a session fixture over its own `TemporaryDirectory` under a file-scoped `pytest.mark.timeout` — and, in the rows that need a scratch directory rather than a private one, of the per-test `tmp_path` convention: prefer `tmp_path` over `tempfile.mkdtemp` wherever the code that needs the directory runs in this process, because `tmp_path` belongs to the pytest process that created it and is removed when that process exits, normally or killed. A `mkdtemp` is only unavoidable where the work happens in a child, and there the parent's `tmp_path` is handed over through the child's environment.
-- `tests/test_dashboard_socket_isolation.py`: worked example of the per-test reset convention — registers a pipe in `dashboard_socket._pipe_getters`, `http_routes._routes_get_pipes` and `dashboard_publisher._pd_snapshot_getters` (all keyed by `Pipe.id`, through conftest's `arm_dashboard_pipe`) and sets the process-wide `_registered`/`_resync` in one test, then reads them back in the next, so conftest's `_reset_dashboard_socket_state` has a witness.
-- `tests/test_module_state_census.py`: the inventory of every module-level container the package writes, and why each is either reset per test or exempt — the guard that makes a new container a reviewed row rather than a silent leak.
-- `tests/test_channel_error_cards.py`, `tests/test_a_channel_card_carries_nobody_elsses_identity.py`: a second instance of the same convention, obeying the same rule. Each writes its driver scripts into a per-process `tempfile.mkdtemp` directory, and hands the child a `DATA_DIR` of its own through `own_data_dir()` in `tests/conftest.py` — once in the child's `env` and once as an argv the prelude hard-assigns before its first `open_webui` import, so neither guard is the one a later simplification can quietly drop. The census is `tests/test_a_probe_script_path_is_not_shared_across_workers.py`.
-- `tests/test_a_test_module_starts_no_probe_at_import.py`: the census for the convention itself — no collected test module may start a subprocess, await an event loop, sleep, or import the real `open_webui` at module scope.
-- `tests/test_a_test_module_does_not_leave_a_stub_module_rebound.py`: no test may rebind an attribute of an `open_webui` module without a `monkeypatch` or a `finally` that restores it.
-- `tests/test_a_process_wide_record_is_reset_between_tests.py`: every module-level container that one function writes and another reads to decide something is cleared between tests.
+- `tests/test_concurrency_limits.py`, `tests/test_circuit_breaker.py`: admission controls (the request queue and semaphores) and the request, tool and database breakers.
 
 ---
 

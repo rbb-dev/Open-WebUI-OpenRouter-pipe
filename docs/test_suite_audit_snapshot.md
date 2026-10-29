@@ -2065,6 +2065,8 @@ about the tree. The rows repaired after that date say so where they differ.
 
 ## `tests/test_reasoning.py`
 
+This file was removed in commit 5c6b043f, together with the `ReasoningTracker` class that most of its rows tested.
+
 | Test Name | Description | What It Tests | Code Under Test | Mocks/Fixtures | Assertions | Drift Risk | Check Done | Codex Notes | Codex TODO |
 |-----------|-------------|---------------|-----------------|----------------|------------|------------|------------|-------------|------------|
 | test_get_storage_context_caches_result | Tests storage context caching mechanism | Verifies _get_storage_context caches result from pipe._resolve_storage_context | ReasoningTracker._get_storage_context (lines 109-113) | _StubPipe with mocked _resolve_storage_context_returns | Verifies cached result persists across calls | Low - Pure caching logic | ✓ | Covers cache hit scenario | None |
