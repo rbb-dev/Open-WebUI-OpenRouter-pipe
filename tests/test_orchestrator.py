@@ -1884,7 +1884,7 @@ class TestFusionLiveGate:
 
     async def _run_call_site(self, orchestrator, pipe, mock_valves, mock_session,
                              *, task=None, fusion_enabled=True, metadata=None,
-                             plugins=None, model="openrouter/fusion"):
+                             plugins=None, tools=None, model="openrouter/fusion"):
         mock_valves.ENABLE_OPENROUTER_FUSION = fusion_enabled
         # Off, so the `context-compression` entry the pipe appends to every request by default
         # (`api/transforms.py:1974`) is not in the plugin list these rows compare against: the
@@ -1917,6 +1917,7 @@ class TestFusionLiveGate:
                 "messages": [{"role": "user", "content": "hi"}],
                 "stream": True,
                 **({"plugins": plugins} if plugins is not None else {}),
+                **({"tools": tools} if tools is not None else {}),
             },
             __user__={"id": "u"},
             __request__=None,
@@ -1968,6 +1969,16 @@ class TestFusionLiveGate:
                                              fusion_enabled=False,
                                              plugins=[{"id": "fusion"}])
         assert self._fusion_entries(captured["body"]) == []
+
+    @pytest.mark.asyncio
+    async def test_call_site_removes_a_raw_fusion_tool_with_master_switch_off(
+        self, orchestrator_and_pipe, mock_valves, mock_session
+    ):
+        orchestrator, pipe = orchestrator_and_pipe
+        captured = await self._run_call_site(orchestrator, pipe, mock_valves, mock_session,
+                                             fusion_enabled=False, model="openai/gpt-4o",
+                                             tools=[{"type": "openrouter:fusion"}])
+        assert [t for t in captured["body"].tools or [] if t.get("type") == "openrouter:fusion"] == []
 
     _PANEL_ENTRY = {
         "id": "fusion",

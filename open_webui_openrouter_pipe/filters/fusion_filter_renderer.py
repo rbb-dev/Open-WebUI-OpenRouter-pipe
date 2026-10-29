@@ -120,7 +120,9 @@ __KEEP_WHAT_STILL_FITS__
                 "= a frontier trio with a frontier judge; 'general-budget' = a faster "
                 "trio with the same frontier judge; 'general-fast' = that same faster "
                 "trio with a quicker judge (lowest latency). Empty = general-high. "
-                "Explicit panel/judge below override a preset."
+                "Explicit panel/judge below override a preset. You need access in Open WebUI "
+                "to the models the preset uses: one you cannot use stops the turn with a "
+                "message that names it."
             ),
         )
         FUSION_ANALYSIS_MODELS: str = Field(
@@ -133,7 +135,8 @@ __KEEP_WHAT_STILL_FITS__
                 "error naming the limit and how many models arrived. Empty = use the preset / "
                 "Fusion default panel. A video- or image-generation model "
                 "named here is not answered from as a media job on a panel, judge or "
-                "synthesis turn; it answers the question as an ordinary chat call."
+                "synthesis turn; it answers the question as an ordinary chat call. "
+                "A model you cannot use in Open WebUI stops the turn with a message that names it."
             ),
         )
         FUSION_JUDGE_MODEL: str = Field(
@@ -141,7 +144,8 @@ __KEEP_WHAT_STILL_FITS__
             title="Judge model",
             description=(
                 "Model that reviews the panel's answers and writes the final analysis. "
-                "Empty = Fusion default."
+                "Empty = Fusion default. You need access to it in Open WebUI: a judge you "
+                "cannot use stops the turn with a message that names it."
             ),
         )
         FUSION_MAX_TOOL_CALLS: int = Field(

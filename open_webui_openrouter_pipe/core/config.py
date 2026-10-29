@@ -564,6 +564,39 @@ DEFAULT_FUSION_PANEL_TOO_LARGE_TEMPLATE = (
     "{{/if}}\n"
 )
 
+DEFAULT_FUSION_MODEL_ACCESS_TEMPLATE = (
+    "### 🔒 Some Fusion models are not available to you\n\n"
+    "Fusion uses the panel and judge set in your Fusion settings, and its default models for anything "
+    "left empty there. Your account cannot use some of them in Open WebUI, so Fusion did not run and "
+    "nothing was sent to any model.\n\n"
+    "{{#if reason}}\n"
+    "**Not available to you:** `{reason}`\n"
+    "{{/if}}\n"
+    "**Error ID:** `{error_id}`\n\n"
+    "**What to do:**\n"
+    "- Ask your admin to give you access to the models Fusion uses\n"
+    "- Or choose a panel and a judge you can use, in your OpenRouter Fusion settings\n"
+    "{{#if support_email}}\n"
+    "\n**Support:** {support_email}\n"
+    "{{/if}}\n"
+)
+
+DEFAULT_ADVISOR_SUBAGENT_MODEL_ACCESS_TEMPLATE = (
+    "### 🔒 A model this request names is not available to you\n\n"
+    "The advisor or subagent tool of this request names a model that your account cannot use in "
+    "Open WebUI, so the request was not sent to any model.\n\n"
+    "{{#if reason}}\n"
+    "**Not available to you:** `{reason}`\n"
+    "{{/if}}\n"
+    "**Error ID:** `{error_id}`\n\n"
+    "**What to do:**\n"
+    "- Ask your admin to give you access to that model\n"
+    "- Or switch the advisor and subagent off in your OpenRouter Web Tools settings\n"
+    "{{#if support_email}}\n"
+    "\n**Support:** {support_email}\n"
+    "{{/if}}\n"
+)
+
 DEFAULT_DIRECT_UPLOAD_FAILURE_TEMPLATE = (
     "### ⚠️ Direct Upload Issue\n\n"
     "OpenRouter Direct Uploads could not be applied to this request.\n\n"
@@ -1445,7 +1478,10 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "Applies only when a model is first added, to the models the pipe creates; a metadata refresh "
             "never changes an existing model's visibility, so existing access grants are kept "
             "when it is refreshed. A model whose entry the pipe removed because OpenRouter stopped listing "
-            "it is added again when OpenRouter lists it again, and takes this value like any new model."
+            "it is added again when OpenRouter lists it again, and takes this value like any new model. "
+            "Fusion, the advisor and the subagent call further models on a user's behalf, and the pipe asks "
+            "Open WebUI whether that user may use the panel, judge, advisor and subagent models they name, so "
+            "with 'admins' those models need grants too, not only the model the user picked."
         ),
     )
     FREE_MODEL_FILTER: Literal["all", "only", "exclude"] = Field(
@@ -2325,6 +2361,38 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             + _CHANNEL_CARD_RULE
         ),
     )
+    FUSION_MODEL_ACCESS_TEMPLATE: str = Field(
+        default=DEFAULT_FUSION_MODEL_ACCESS_TEMPLATE,
+        description=(
+            "Markdown template used when a Fusion turn would call a model the user cannot use in Open WebUI: a "
+            "panel model, or the judge, which also writes the final answer on the internal engine. Before any "
+            "model is called, the pipe asks Open WebUI whether the user may use each of them, the way Open WebUI "
+            "decides a direct chat with that model, and a refusal on any one of them stops the turn with this card. "
+            "The check runs on both engines, for a panel that comes from the Fusion filter, from the request itself "
+            "or from an OpenRouter preset; on the OpenRouter engine a judge the request does not name is "
+            "OpenRouter's own default and is not checked. "
+            "Available variables: {requested_model} and {reason}, which lists the refused models by role, plus "
+            "standard context variables like {error_id}, {timestamp}, {session_id}, {user_id}, {support_email}, "
+            "and {support_url}."
+            + _CHANNEL_CARD_RULE
+        ),
+    )
+    ADVISOR_SUBAGENT_MODEL_ACCESS_TEMPLATE: str = Field(
+        default=DEFAULT_ADVISOR_SUBAGENT_MODEL_ACCESS_TEMPLATE,
+        description=(
+            "Markdown template used when the advisor or subagent tool of a request names a model the user cannot "
+            "use in Open WebUI, whether an admin set that model in the Web Tools filter or the request names it "
+            "itself. The request is stopped before it is sent, so nothing is sent to any model. A Fusion turn on "
+            "the internal engine counts too: its panel members, judge and final answer carry the advisor and "
+            "subagent from the user's Web Tools settings, so those models are checked before the first call. "
+            "Each of those calls is checked again on its own, and one refused there shows the reason on its "
+            "card instead of this message. "
+            "Available variables: {requested_model} and {reason}, which lists the refused models by tool, plus "
+            "standard context variables like {error_id}, {timestamp}, {session_id}, {user_id}, {support_email}, "
+            "and {support_url}."
+            + _CHANNEL_CARD_RULE
+        ),
+    )
 
     AUTHENTICATION_ERROR_TEMPLATE: str = Field(
         default=DEFAULT_AUTHENTICATION_ERROR_TEMPLATE,
@@ -2805,11 +2873,11 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     )
     ENABLE_ADVISOR: bool = Field(
         default=True,
-        description="Enable the OpenRouter Advisor server tool (consult a higher-intelligence model mid-generation). When disabled, advisor toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter this pipe maintains (one it installed, or one carrying no install record) that still offers it is rewritten from the current switches, so it offers exactly the tools those switches enable, whether it is on or off, at the next model-list refresh, or after the first message that still asks for it.",
+        description="Enable the OpenRouter Advisor server tool (consult a higher-intelligence model mid-generation). A user who switches it on needs access, in Open WebUI, to the model set in ADVISOR_MODEL on the Web Tools filter; without it the request stops with a message and nothing is sent. When disabled, advisor toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter this pipe maintains (one it installed, or one carrying no install record) that still offers it is rewritten from the current switches, so it offers exactly the tools those switches enable, whether it is on or off, at the next model-list refresh, or after the first message that still asks for it.",
     )
     ENABLE_SUBAGENT: bool = Field(
         default=True,
-        description="Enable the OpenRouter Subagent server tool (delegate tasks to a worker model an admin chooses). When disabled, subagent toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter this pipe maintains (one it installed, or one carrying no install record) that still offers it is rewritten from the current switches, so it offers exactly the tools those switches enable, whether it is on or off, at the next model-list refresh, or after the first message that still asks for it.",
+        description="Enable the OpenRouter Subagent server tool (delegate tasks to a worker model an admin chooses). A user who switches it on needs access, in Open WebUI, to the worker model set in SUBAGENT_MODEL on the Web Tools filter; without it the request stops with a message and nothing is sent. When disabled, subagent toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter this pipe maintains (one it installed, or one carrying no install record) that still offers it is rewritten from the current switches, so it offers exactly the tools those switches enable, whether it is on or off, at the next model-list refresh, or after the first message that still asks for it.",
     )
     ENABLE_SEARCH_MODELS: bool = Field(
         default=True,
@@ -3011,16 +3079,19 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             + _PIPE_OFF_COMES_BACK
             + _ADMIN_OFF_STAYS_OFF
             + " Turning it off deactivates the installed filter on the next model-list refresh,"
-            + " and a `{\"id\": \"fusion\"}` plugin entry the request already carries is removed"
-            + " before anything is sent - on any model and either engine - so an entry a filter"
-            + " row, a saved chat or a direct API caller brought along cannot deliberate;"
-            + " a task or title request never carries one, whatever the valve says, and neither"
+            + " and a `{\"id\": \"fusion\"}` plugin entry or an `openrouter:fusion` tool entry the request"
+            + " already carries is removed before anything is sent - on any model and either engine - so an"
+            + " entry a filter row, a saved chat or a direct API caller brought along cannot deliberate;"
+            + " a task or title request never carries either, whatever the valve says, and neither"
             + " does a MoA merge (`moa_response_generation`), which is one ordinary model call even"
             + " on a Fusion aggregator — so the off"
             + " state does not wait for that refresh;"
             + " AUTO_INSTALL_FUSION_FILTER is the install valve for that family. Turning it back on re-activates a"
             + " filter the pipe itself switched off whose family's install valve is still on; a row that valve has"
             + " retired stays off until that valve comes back on."
+            + " While it is on, a user needs access in Open WebUI to the panel and judge models a deliberation"
+            + " calls: one they cannot use stops the turn with a message before any model is called, except a"
+            + " judge the OpenRouter engine picks itself because the request names none."
         ),
     )
     AUTO_INSTALL_FUSION_FILTER: bool = Field(
@@ -3044,7 +3115,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     FUSION_BACKEND: Literal["openrouter", "internal"] = Field(
         default="internal",
         title="Fusion Backend",
-        description="Which engine runs deliberation for the dedicated fusion models. 'openrouter': requests go to OpenRouter's hosted Fusion — the panel and judge execute on their servers. 'internal': the pipe runs the same panel → judge → synthesis flow itself as ordinary pipe model calls, so panel members can use every Open WebUI tool that user has (knowledge bases, tool servers, pipe server tools), every dial (ZDR, reasoning effort, cost attribution) applies per member, and one member failing does not kill the whole stream. The live panel UI is identical on both backends.",
+        description="Which engine runs deliberation for the dedicated fusion models. 'openrouter': requests go to OpenRouter's hosted Fusion — the panel and judge execute on their servers. 'internal': the pipe runs the same panel → judge → synthesis flow itself as ordinary pipe model calls, so panel members can use every Open WebUI tool that user has (knowledge bases, tool servers, pipe server tools), every dial (ZDR, reasoning effort, cost attribution) applies per member, and one member failing does not kill the whole stream. The live panel UI is identical on both backends. Both backends check, before any model is called, that the user may use the panel models and the judge in Open WebUI; on 'openrouter' a judge the request does not name is OpenRouter's own default and is not checked.",
     )
     FUSION_PANEL_SYSTEM_PROMPT: str = Field(
         default=DEFAULT_FUSION_PANEL_SYSTEM_PROMPT,

@@ -1526,3 +1526,193 @@ async def test_one_fusion_turn_reads_the_chat_row_once_for_the_owner_check(
         "that verdict instead of looking again."
     )
     assert captured, "no model call happened, so the count proves nothing about the stages"
+
+
+async def _turn_through_the_orchestrator(orchestrator, pipe, *, body, catalogue, role="user"):
+    import aiohttp
+    from aioresponses import aioresponses
+
+    from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+    from tests.test_request_orchestrator import _smart_callback
+
+    pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
+    captured: list[dict] = []
+
+    async def emitter(event):
+        return None
+
+    with aioresponses() as http:
+        http.post(
+            "https://openrouter.ai/api/v1/responses",
+            callback=_smart_callback(captured, "Response"),
+            repeat=True,
+        )
+        http.get(
+            "https://openrouter.ai/api/v1/models",
+            payload={"data": [{"id": model, "name": model} for model in catalogue]},
+            repeat=True,
+        )
+        http.get("https://openrouter.ai/api/v1/endpoints/zdr", payload={"data": []}, repeat=True)
+        http.get(
+            "https://openrouter.ai/api/v1/presets?offset=0&limit=100",
+            payload={"data": [], "total_count": 0},
+            repeat=True,
+        )
+        async with aiohttp.ClientSession() as session:
+            await OpenRouterModelRegistry.ensure_loaded(
+                session,
+                base_url=pipe.valves.BASE_URL,
+                api_key="sk-test-key",
+                cache_seconds=60,
+                logger=pipe.logger,
+                valves=pipe.valves,
+            )
+            result = await orchestrator.process_request(
+                body=body,
+                __user__={"id": "user_123", "role": role},
+                __request__=None,
+                __event_emitter__=emitter,
+                __event_call__=None,
+                __metadata__={
+                    "model": {"id": "test-pipe.openrouter.fusion"},
+                    "chat_id": "chat-1",
+                    "message_id": "m-1",
+                },
+                __tools__=None,
+                __task__=None,
+                __task_body__=None,
+                valves=pipe.valves,
+                session=session,
+                openwebui_model_id="test-pipe.openrouter.fusion",
+                pipe_identifier="test-pipe",
+                allowlist_norm_ids=set(),
+                enforced_norm_ids=set(),
+                catalog_norm_ids=set(),
+                features={},
+            )
+    return captured, result
+
+
+@pytest.mark.asyncio
+async def test_a_fusion_turn_calls_no_model_the_user_cannot_use_and_names_the_ones_it_refused(
+    orchestrator_and_pipe, monkeypatch
+):
+    import open_webui.utils.models as owui_models
+
+    from open_webui_openrouter_pipe.core.fusion_defaults import (
+        DEFAULT_FUSION_PRESET,
+        FUSION_PRESET_JUDGES,
+        FUSION_PRESET_PANELS,
+    )
+    from open_webui_openrouter_pipe.models.registry import sanitize_model_id
+
+    orchestrator, pipe = orchestrator_and_pipe
+    panel = FUSION_PRESET_PANELS[DEFAULT_FUSION_PRESET]
+    judge = FUSION_PRESET_JUDGES[DEFAULT_FUSION_PRESET]
+    refused_row = f"test-pipe.{sanitize_model_id(judge)}"
+
+    async def refuse_the_judge(user, model, model_info=None, db=None):
+        if model["id"] == refused_row:
+            raise Exception("Model not found")
+
+    monkeypatch.setattr(owui_models, "check_model_access", refuse_the_judge)
+
+    captured, result = await _turn_through_the_orchestrator(
+        orchestrator,
+        pipe,
+        body={
+            "model": "openrouter/fusion",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+        },
+        catalogue=["openrouter/fusion", *panel],
+    )
+
+    assert captured == [], [call.get("model") for call in captured]
+    assert isinstance(result, str) and judge in result, result
+    assert all(member not in result for member in panel if member != judge), result
+
+
+@pytest.mark.asyncio
+async def test_a_request_whose_advisor_and_subagent_name_models_the_user_cannot_use_is_stopped_before_it_is_sent(
+    orchestrator_and_pipe, monkeypatch
+):
+    import open_webui.utils.models as owui_models
+
+    from open_webui_openrouter_pipe.models.registry import sanitize_model_id
+
+    orchestrator, pipe = orchestrator_and_pipe
+    chat_model = "openai/gpt-4o-mini"
+    advisor = "~anthropic/claude-opus-latest"
+    worker = "~google/gemini-pro-latest"
+    refused_rows = {f"test-pipe.{sanitize_model_id(model)}" for model in (advisor, worker)}
+
+    async def refuse_the_named_models(user, model, model_info=None, db=None):
+        if model["id"] in refused_rows:
+            raise Exception("Model not found")
+
+    monkeypatch.setattr(owui_models, "check_model_access", refuse_the_named_models)
+
+    captured, result = await _turn_through_the_orchestrator(
+        orchestrator,
+        pipe,
+        body={
+            "model": chat_model,
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+            "tools": [
+                {"type": "openrouter:advisor", "parameters": {"model": advisor}},
+                {"type": "openrouter:subagent", "parameters": {"model": worker}},
+            ],
+        },
+        catalogue=[chat_model, advisor, worker],
+    )
+
+    assert captured == [], [call.get("tools") for call in captured]
+    assert isinstance(result, str) and advisor in result and worker in result, result
+
+
+@pytest.mark.asyncio
+async def test_a_fusion_member_whose_stored_advisor_names_a_model_the_user_cannot_use_is_not_sent(
+    orchestrator_and_pipe, monkeypatch
+):
+    import open_webui.utils.models as owui_models
+
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+    from open_webui_openrouter_pipe.models.registry import sanitize_model_id
+
+    orchestrator, pipe = orchestrator_and_pipe
+    member = "openai/gpt-4.1-nano"
+    advisor = "~anthropic/claude-opus-latest"
+    refused_rows: set[str] = set()
+
+    async def refuse_the_listed_rows(user, model, model_info=None, db=None):
+        if model["id"] in refused_rows:
+            raise Exception("Model not found")
+
+    monkeypatch.setattr(owui_models, "check_model_access", refuse_the_listed_rows)
+    monkeypatch.setattr(
+        FilterManager,
+        "collect_installed_web_tools_config",
+        AsyncMock(return_value=({"advisor": {"model": advisor}}, [])),
+    )
+    body = {
+        "model": "openrouter/fusion",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": False,
+        "plugins": [{"id": "fusion", "analysis_models": [member], "model": member}],
+    }
+
+    permitted, _ = await _turn_through_the_orchestrator(
+        orchestrator, pipe, body=copy.deepcopy(body), catalogue=["openrouter/fusion", member, advisor]
+    )
+    assert permitted and all(call.get("tools") for call in permitted), permitted
+
+    refused_rows.add(f"test-pipe.{sanitize_model_id(advisor)}")
+    pipe.valves.FUSION_MODEL_ACCESS_TEMPLATE = "fusion card: {reason}"
+    pipe.valves.ADVISOR_SUBAGENT_MODEL_ACCESS_TEMPLATE = "advisor card: {reason}"
+    refused, answer = await _turn_through_the_orchestrator(
+        orchestrator, pipe, body=copy.deepcopy(body), catalogue=["openrouter/fusion", member, advisor]
+    )
+    assert refused == [], [call.get("tools") for call in refused]
+    assert isinstance(answer, str) and answer.startswith("advisor card:") and advisor in answer, answer

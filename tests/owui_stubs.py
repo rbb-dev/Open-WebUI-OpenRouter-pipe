@@ -444,6 +444,8 @@ def _install_open_webui_stubs() -> None:
         env_mod.SRC_LOG_LEVELS = {}
     if not hasattr(env_mod, "WEBUI_AUTH_TRUSTED_EMAIL_HEADER"):
         env_mod.WEBUI_AUTH_TRUSTED_EMAIL_HEADER = None
+    if not hasattr(env_mod, "BYPASS_MODEL_ACCESS_CONTROL"):
+        env_mod.BYPASS_MODEL_ACCESS_CONTROL = False
     open_webui.env = env_mod
 
     misc_mod = cast(Any, _ensure_module("open_webui.utils.misc"))
@@ -926,6 +928,14 @@ def _install_open_webui_stubs() -> None:
     access_control_pkg.files = access_control_files_mod
     utils_pkg.access_control = access_control_pkg
 
+    models_util_mod = cast(Any, _ensure_module("open_webui.utils.models"))
+
+    async def _check_model_access(_user, _model, model_info=None, db=None):
+        return None
+
+    models_util_mod.check_model_access = _check_model_access
+    utils_pkg.models = models_util_mod
+
     open_webui.utils = utils_pkg
 
     config_mod = cast(Any, _ensure_module("open_webui.config"))
@@ -938,6 +948,7 @@ def _install_open_webui_stubs() -> None:
     # inventing it here is the only reason the pipe's dead branch stayed alive.
     config_mod.RAG_FILE_MAX_SIZE = _ConfigValue(None)
     config_mod.BYPASS_EMBEDDING_AND_RETRIEVAL = _ConfigValue(False)
+    config_mod.BYPASS_ADMIN_ACCESS_CONTROL = True
     open_webui.config = config_mod
 
     constants_mod = cast(Any, _ensure_module("open_webui.constants"))

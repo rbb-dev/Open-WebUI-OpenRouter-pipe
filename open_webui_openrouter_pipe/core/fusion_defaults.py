@@ -319,7 +319,7 @@ def has_active_fusion_entry(plugins: Any) -> bool:
 def resolve_fusion_run(entry: dict[str, Any] | None) -> FusionRunPlan:
     data = entry if isinstance(entry, dict) else {}
     preset = data.get("preset")
-    if preset not in FUSION_PRESET_PANELS:
+    if not isinstance(preset, str) or preset not in FUSION_PRESET_PANELS:
         preset = DEFAULT_FUSION_PRESET
     raw_models = data.get("analysis_models")
     panel: tuple[str, ...] = ()

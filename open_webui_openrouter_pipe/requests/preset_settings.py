@@ -68,6 +68,10 @@ class PresetSettings:
             name for name in names if getattr(body, name, None) is not None
         )
 
+    def saved_list(self, field: str) -> list[Any]:
+        entries = self.saved.get(field) if self.saved is not None else None
+        return entries if isinstance(entries, list) else []
+
     def saves(self, fields: frozenset[str]) -> bool:
         return self.saved is not None and not fields.isdisjoint(self.saved)
 

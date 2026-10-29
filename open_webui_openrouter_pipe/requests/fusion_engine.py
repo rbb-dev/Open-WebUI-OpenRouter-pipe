@@ -91,6 +91,33 @@ def _inner_metadata(metadata: Any) -> dict[str, Any]:
     return base
 
 
+def member_server_tools(
+    server_tools_config: tuple[dict[str, Any], list[dict[str, Any]]] | None,
+    turn_tools: Any,
+) -> Any:
+    tools_cfg = server_tools_config[0] if server_tools_config is not None else None
+    if not tools_cfg:
+        return turn_tools
+    merged = copy.deepcopy(tools_cfg)
+    if isinstance(turn_tools, dict):
+        merged.update(copy.deepcopy(turn_tools))
+    return merged
+
+
+async def read_installed_web_tools_config(
+    pipe: Any, user_id: str
+) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    try:
+        return await pipe._ensure_filter_manager().collect_installed_web_tools_config(user_id)
+    except Exception:
+        pipe.logger.warning(
+            "Could not read the installed web tools configuration; fusion inner calls "
+            "will run without them",
+            exc_info=True,
+        )
+        return None
+
+
 class FusionMemberResult(NamedTuple):
     model: str
     content: str
@@ -211,13 +238,11 @@ async def run_fusion_member(
     turn_tools = pipe_meta.get("server_tools")
     turn_stop = pipe_meta.get("stop_server_tools_when")
     pipe_meta.pop("direct_uploads_warnings", None)
+    effective_tools = member_server_tools(server_tools_config, turn_tools)
+    if effective_tools is not turn_tools:
+        pipe_meta["server_tools"] = effective_tools
     if server_tools_config is not None:
-        tools_cfg, stop_when = server_tools_config
-        if tools_cfg:
-            merged = copy.deepcopy(tools_cfg)
-            if isinstance(turn_tools, dict):
-                merged.update(copy.deepcopy(turn_tools))
-            pipe_meta["server_tools"] = merged
+        stop_when = server_tools_config[1]
         if stop_when and not isinstance(turn_stop, list):
             pipe_meta["stop_server_tools_when"] = copy.deepcopy(stop_when)
     identifier_metadata = {
@@ -587,17 +612,7 @@ async def run_internal_fusion(
     synthesis_prompt = resolve_fusion_prompt(
         getattr(valves, "FUSION_SYNTHESIS_SYSTEM_PROMPT", ""), DEFAULT_FUSION_SYNTHESIS_SYSTEM_PROMPT
     )
-    try:
-        web_tools_config = await pipe._ensure_filter_manager().collect_installed_web_tools_config(
-            invocation.user_id
-        )
-    except Exception:
-        pipe.logger.warning(
-            "Could not read the installed web tools configuration; fusion inner calls "
-            "will run without them",
-            exc_info=True,
-        )
-        web_tools_config = None
+    web_tools_config = await read_installed_web_tools_config(pipe, invocation.user_id)
     item_id = f"st_fusion_internal_{uuid.uuid4().hex[:12]}"
     total_usage: dict[str, Any] = {}
     live_queue: asyncio.Queue = asyncio.Queue()

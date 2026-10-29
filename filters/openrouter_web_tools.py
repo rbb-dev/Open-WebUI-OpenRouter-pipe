@@ -126,11 +126,11 @@ class Filter:
         )
         ADVISOR_MODEL: str = Field(
             default="",
-            description="Advisor model to consult (any OpenRouter model). Empty uses the chat's own model.",
+            description="Advisor model to consult (any OpenRouter model). Empty uses the chat's own model. Users who switch the advisor on need access to this model in Open WebUI; without it their request stops with a message.",
         )
         SUBAGENT_MODEL: str = Field(
             default="",
-            description="Worker model for delegated subagent tasks. Empty uses the chat's own model.",
+            description="Worker model for delegated subagent tasks. Empty uses the chat's own model. Users who switch the subagent on need access to this worker model in Open WebUI; without it their request stops with a message.",
         )
         SERVER_TOOLS_MAX_COST_USD: float = Field(
             default=0.0,

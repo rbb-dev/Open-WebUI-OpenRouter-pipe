@@ -115,7 +115,19 @@ from .fusion_engine import (
     FusionInnerInvocation,
     asks_for_help,
     latest_user_text,
+    member_server_tools,
+    read_installed_web_tools_config,
     run_internal_fusion,
+)
+from .model_access import (
+    FUSION_SERVER_TOOL_TYPE,
+    MODEL_NAMING_TOOL_ROLES,
+    describe_unavailable_models,
+    models_the_request_would_use,
+    models_the_user_may_not_use,
+    names_a_fusion_model,
+    refusal_sentence,
+    user_for_access_check,
 )
 from .preset_settings import (
     MODALITY_FIELDS,
@@ -570,6 +582,19 @@ def _fusion_plugin_stripped(plugins: Any, *, fusion_enabled: bool) -> list[Any] 
     return None
 
 
+def _fusion_tool_stripped(tools: Any, *, fusion_enabled: bool) -> list[Any] | None:
+    if fusion_enabled:
+        return None
+    items = tools if isinstance(tools, list) else []
+    kept = [
+        t for t in items
+        if not (isinstance(t, dict) and t.get("type") == FUSION_SERVER_TOOL_TYPE)
+    ]
+    if len(kept) != len(items):
+        return kept
+    return None
+
+
 _PER_MODEL_WARN_WINDOW = 300
 
 _warned_chat_provider_keys: OrderedDict[str, None] = OrderedDict()
@@ -799,6 +824,15 @@ def _strip_switched_off_server_tools(responses_body: ResponsesBody, valves: Any)
         responses_body.web_search_options = None
 
 
+def _wanted_server_tools(server_tools: dict[str, Any], valves: Any) -> dict[str, Any]:
+    switched_off = _switched_off_server_tool_types(valves)
+    return {
+        key: value
+        for key, value in server_tools.items()
+        if not isinstance(key, str) or _server_tool_type(key) not in switched_off
+    }
+
+
 def _apply_server_tools_metadata(
     responses_body: ResponsesBody,
     metadata: Any,
@@ -809,7 +843,6 @@ def _apply_server_tools_metadata(
     model_resolver: Any = None,
 ) -> list[tuple[str, Any]]:
     _strip_switched_off_server_tools(responses_body, valves)
-    switched_off = _switched_off_server_tool_types(valves)
     pipe_meta = (metadata or {}).get(_PIPE_METADATA_KEY, {})
     if not isinstance(pipe_meta, dict):
         return []
@@ -817,11 +850,7 @@ def _apply_server_tools_metadata(
     server_tools = pipe_meta.get("server_tools", {})
     if isinstance(server_tools, dict) and server_tools:
         tools_list = list(responses_body.tools or [])
-        wanted_server_tools = {
-            key: value
-            for key, value in server_tools.items()
-            if not isinstance(key, str) or _server_tool_type(key) not in switched_off
-        }
+        wanted_server_tools = _wanted_server_tools(server_tools, valves)
         entries, superseded = _build_server_tool_entries(
             wanted_server_tools,
             records=records,
@@ -947,6 +976,87 @@ class RequestOrchestrator:
             model_id, valves=valves
         )
         return bool(forced and selected == endpoint)
+
+    async def _tools_naming_a_model_for_fusion_calls(
+        self, *, valves: Pipe.Valves, metadata: Any, user_id: str
+    ) -> list[dict[str, Any]]:
+        installed = await read_installed_web_tools_config(self._pipe, user_id)
+        pipe_meta = metadata.get(_PIPE_METADATA_KEY) if isinstance(metadata, dict) else None
+        turn_tools = pipe_meta.get("server_tools") if isinstance(pipe_meta, dict) else None
+        effective = member_server_tools(installed, turn_tools)
+        if not isinstance(effective, dict):
+            return []
+        naming = {
+            key: value
+            for key, value in _wanted_server_tools(effective, valves).items()
+            if isinstance(key, str) and _server_tool_type(key) in MODEL_NAMING_TOOL_ROLES
+        }
+        entries, _superseded = _build_server_tool_entries(naming)
+        return entries
+
+    async def _refusal_for_unavailable_models(
+        self,
+        *,
+        responses_body: ResponsesBody,
+        valves: Pipe.Valves,
+        internal: bool,
+        fusion_on: bool,
+        saved_plugins: list[Any],
+        saved_tools: list[Any],
+        user: Any,
+        user_id: str,
+        metadata: Any,
+        pipe_identifier: str,
+        enforced_norm_ids: set[str],
+        catalog_norm_ids: set[str],
+        event_emitter: EventEmitter | None,
+        outcome_sink: dict[str, Any] | None,
+    ) -> str | None:
+        member_tools = (
+            await self._tools_naming_a_model_for_fusion_calls(
+                valves=valves, metadata=metadata, user_id=user_id
+            )
+            if internal
+            else None
+        )
+        wanted = models_the_request_would_use(
+            plugins=responses_body.plugins,
+            tools=responses_body.tools,
+            member_tools=member_tools,
+            saved_plugins=saved_plugins,
+            saved_tools=saved_tools,
+            internal=internal,
+            fusion_on=fusion_on,
+            pipe_id=pipe_identifier,
+        )
+        if not wanted:
+            return None
+        unavailable = await models_the_user_may_not_use(
+            self._pipe,
+            pipe_id=pipe_identifier,
+            user=user,
+            wanted=wanted,
+            restricted_by_pipe=lambda norm: bool(catalog_norm_ids) and norm not in enforced_norm_ids,
+            catalogue_known=bool(catalog_norm_ids),
+        )
+        if not unavailable:
+            return None
+        fusion = names_a_fusion_model(unavailable)
+        summary = describe_unavailable_models(unavailable, judge_writes_the_answer=internal)
+        sentence = refusal_sentence(summary, fusion=fusion)
+        if outcome_sink is not None:
+            outcome_sink["member_refusal_reason"] = sentence
+        return await self._pipe._ensure_error_formatter()._emit_templated_error(
+            event_emitter,
+            template=(
+                valves.FUSION_MODEL_ACCESS_TEMPLATE
+                if fusion
+                else valves.ADVISOR_SUBAGENT_MODEL_ACCESS_TEMPLATE
+            ),
+            variables={"requested_model": responses_body.model or "", "reason": summary},
+            log_message=sentence,
+            log_level=logging.WARNING,
+        )
 
     @timed
     async def process_request(
@@ -1976,6 +2086,14 @@ class RequestOrchestrator:
             self.logger.debug(
                 "Removed the fusion plugin entry: fusion is off for this request"
             )
+        stripped_fusion_tools = _fusion_tool_stripped(
+            responses_body.tools, fusion_enabled=fusion_live and not fusion_task_request
+        )
+        if stripped_fusion_tools is not None:
+            responses_body.tools = stripped_fusion_tools or None
+            self.logger.debug(
+                "Removed the openrouter:fusion tool: fusion is off for this request"
+            )
         injected_plugins = _fusion_plugin_injection(
             responses_body.model,
             responses_body.plugins,
@@ -2508,14 +2626,37 @@ class RequestOrchestrator:
                 )
             return shown
 
-        try:
-            if _fusion_internal_divert(
-                responses_body.model,
-                responses_body.plugins,
+        fusion_internal = _fusion_internal_divert(
+            responses_body.model,
+            responses_body.plugins,
+            valves=valves,
+            is_fusion_task_request=fusion_task_request,
+            metadata=__metadata__,
+        )
+        if not fusion_task_request:
+            access_refusal = await self._refusal_for_unavailable_models(
+                responses_body=responses_body,
                 valves=valves,
-                is_fusion_task_request=fusion_task_request,
+                internal=fusion_internal,
+                fusion_on=bool(valves.ENABLE_OPENROUTER_FUSION) and not fusion_inner,
+                saved_plugins=preset_settings.saved_list("plugins"),
+                saved_tools=preset_settings.saved_list("tools"),
+                user=user_for_access_check(
+                    user_model, user_id=user_id, role=__user__.get("role")
+                ),
+                user_id=user_id,
                 metadata=__metadata__,
-              ):
+                pipe_identifier=pipe_identifier,
+                enforced_norm_ids=enforced_norm_ids,
+                catalog_norm_ids=catalog_norm_ids,
+                event_emitter=__event_emitter__,
+                outcome_sink=outcome_sink,
+            )
+            if access_refusal is not None:
+                return access_refusal
+
+        try:
+            if fusion_internal:
                 if CONTINUED_REPLY.get() is not None:
                     self.logger.info("Continue declined: internal Fusion replies cannot be continued")
                     await self._pipe._event_emitter_handler._emit_notification(
