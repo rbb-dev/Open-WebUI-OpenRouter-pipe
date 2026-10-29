@@ -963,6 +963,15 @@ def _pipe_id_from_module_name(module_name: str) -> str:
     return tail.group(1) if tail else candidate
 
 
+def _is_install_of(candidate: str, owner: str) -> bool:
+    if not candidate or not owner:
+        return False
+    if candidate == owner:
+        return True
+    tail = _FUNCTION_ID_TAIL_RE.fullmatch(candidate)
+    return tail is not None and tail.group(1) == owner
+
+
 def _detect_runtime_pipe_id(default: str, module_name: str) -> str:
     if isinstance(module_name, str) and module_name.startswith(_FUNCTION_MODULE_PREFIX):
         candidate = _pipe_id_from_module_name(module_name)

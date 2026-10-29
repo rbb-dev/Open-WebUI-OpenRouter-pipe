@@ -114,7 +114,6 @@ from .core.circuit_breaker import CircuitBreaker
 from .core.config import (
     _DEFAULT_PIPE_ID,
     _DIRECT_UPLOADS_FILTER_MARKER,
-    _FUNCTION_ID_TAIL_RE,
     _OPENROUTER_CATEGORIES,
     _OPENROUTER_TITLE,
     AUTOMATION_RUN,
@@ -126,6 +125,7 @@ from .core.config import (
     Valves,
     _detect_runtime_pipe_id,
     _is_a_legal_referer_value,
+    _is_install_of,
     _select_openrouter_http_referer,
     parse_user_valves,
 )
@@ -488,9 +488,7 @@ class _LifecycleRegistry:
     def pop_per_load_entries(self, pipe_id: str) -> list[Pipe]:
         with self._lock:
             keys = [
-                key
-                for key in self._current
-                if (tail := _FUNCTION_ID_TAIL_RE.match(key)) is not None and tail.group(1) == pipe_id
+                key for key in self._current if key != pipe_id and _is_install_of(key, pipe_id)
             ]
             refs = [self._current.pop(key) for key in keys]
         return [previous for ref in refs if (previous := ref()) is not None]
@@ -1020,6 +1018,7 @@ _WEB_TOOLS_REPAIR_ABANDONED_LIMIT = 3
 _WEB_TOOLS_REPAIR_RETRY_FLOOR_S = 30.0
 _LEGACY_VIDEO_FILTER_ID = "openrouter_video_openrouter_video"
 _WARMUP_RETRY_SECONDS = 300.0
+_PER_LOAD_LEFTOVERS_RETRY_SECONDS = 300.0
 _REDIS_RETRY_SECONDS = 300.0
 _USER_VALVE_CACHE_MAX = 512
 _warned_user_valves: set[str] = set()
@@ -1264,6 +1263,8 @@ class Pipe:
         )
 
         self._stale_filter_ids_pruned = False
+        self._per_load_leftovers_removed = False
+        self._per_load_leftovers_retry_after = 0.0
         self._generation_complete_dispatched: set[str] = set()
         self._provider_routing_filters_installed = False
         self._provider_routing_rows_probed = False
@@ -2432,6 +2433,34 @@ class Pipe:
                 raise
         return ok
 
+    async def _remove_per_load_leftovers(self, pass_cache: list) -> None:
+        try:
+            removed = await self._ensure_catalog_manager().remove_per_load_model_rows()
+            rows = await self._read_filter_rows(pass_cache)
+            unsettled: set[str] = set()
+            copies = await self._ensure_filter_manager().remove_per_load_duplicates(rows, unsettled)
+            if copies:
+                pass_cache.clear()
+            if removed or copies:
+                self.logger.info(
+                    "Removed %d model row(s) and %d filter copy(ies) written under an Open WebUI 0.12 "
+                    "per-load id.",
+                    removed,
+                    copies,
+                )
+            self._per_load_leftovers_removed = rows is not None and not unsettled
+        except Exception as exc:
+            level = warn_level(_warned_pipes_maintenance, f"per_load_rows:{type(exc).__name__}")
+            self.logger.log(
+                level,
+                "Startup removal of the model rows and filter copies written under an Open WebUI 0.12 "
+                "per-load id failed: %s",
+                exc,
+                exc_info=True,
+            )
+        if not self._per_load_leftovers_removed:
+            self._per_load_leftovers_retry_after = time.monotonic() + _PER_LOAD_LEFTOVERS_RETRY_SECONDS
+
     @timed
     async def pipes(self):
         self._active_pipes_calls += 1
@@ -2540,6 +2569,8 @@ class Pipe:
             level = warn_level(_warned_pipes_maintenance, f"catalog_cached:{type(refresh_error).__name__}")
             self.logger.log(level, "Serving %d cached OpenRouter model(s) due to refresh failure.", len(available_models))
         pass_cache: list = []
+        if not self._per_load_leftovers_removed and time.monotonic() >= self._per_load_leftovers_retry_after:
+            await self._remove_per_load_leftovers(pass_cache)
         switch_rows = await self._deactivate_switched_off_filters(pass_cache)
         if refresh_error and not available_models:
             return []
@@ -2628,19 +2659,6 @@ class Pipe:
             await self._run_routing_pass("", "", selected_models, install=False, rows=read_rows)
 
         if not self._stale_filter_ids_pruned:
-            try:
-                removed = await self._ensure_catalog_manager().remove_per_load_model_rows()
-                copies = await self._ensure_filter_manager().remove_per_load_duplicates(read_rows)
-                if removed or copies:
-                    self.logger.info(
-                        "Removed %d model row(s) and %d filter copy(ies) written under an Open WebUI 0.12 "
-                        "per-load id.",
-                        removed,
-                        copies,
-                    )
-            except Exception as exc:
-                level = warn_level(_warned_pipes_maintenance, f"per_load_rows:{type(exc).__name__}")
-                self.logger.log(level, "Startup removal of per-load model rows failed: %s", exc, exc_info=True)
             try:
                 count = await self._ensure_catalog_manager().prune_stale_openrouter_filter_ids()
                 self._stale_filter_ids_pruned = True

@@ -3847,6 +3847,53 @@ async def test_rows_written_under_a_per_load_id_are_removed_through_open_webui(p
     assert removed == 1
 
 
+@pytest.mark.asyncio
+async def test_a_removed_filter_copy_is_replaced_by_the_original_in_every_model_that_carries_it(pipe_instance_async) -> None:
+    from open_webui.models.models import ModelMeta
+
+    pipe = pipe_instance_async
+    carrying = _make_model_for_bulk_prune("carries_the_copy", ["openrouter_fusion_1"])
+    carrying.meta = ModelMeta(
+        filterIds=["openrouter_fusion", "openrouter_fusion_1", "other_filter", "openrouter_web_tools_1"],
+        defaultFilterIds=["openrouter_fusion_1"],
+        openrouter_pipe={
+            "fusion_filter_ids": ["openrouter_fusion_1"],
+            "web_tools_filter_id": "openrouter_web_tools_1",
+            "web_tools_default_seeded": True,
+        },
+    )
+    models = [carrying, _make_model_for_bulk_prune("carries_something_else", ["other_filter"])]
+    written: dict[str, Any] = {}
+
+    async def _capture(model_id, form):
+        written[model_id] = form
+        return SimpleNamespace(id=model_id)
+
+    async def _read(model_id, db=None):
+        return next((model for model in models if model.id == model_id), None)
+
+    with patch("open_webui.models.models.Models.get_all_models", new=AsyncMock(return_value=models)), \
+         patch("open_webui.models.models.Models.get_model_by_id", new=_read), \
+         patch("open_webui.models.models.Models.update_model_by_id", new=AsyncMock(side_effect=_capture)), \
+         patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
+         patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
+         patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
+        updated = await pipe._ensure_catalog_manager().repoint_filter_ids(
+            {"openrouter_fusion_1": "openrouter_fusion", "openrouter_web_tools_1": "openrouter_web_tools"}
+        )
+
+    assert updated == 1
+    assert list(written) == ["carries_the_copy"]
+    meta = dict(written["carries_the_copy"].meta)
+    assert meta["filterIds"] == ["openrouter_fusion", "other_filter", "openrouter_web_tools"]
+    assert meta["defaultFilterIds"] == ["openrouter_fusion"]
+    assert meta["openrouter_pipe"] == {
+        "fusion_filter_ids": ["openrouter_fusion"],
+        "web_tools_filter_id": "openrouter_web_tools",
+        "web_tools_default_seeded": True,
+    }
+
+
 def test_startup_prune_flag_prevents_repeat_calls(pipe_instance) -> None:
     """The _stale_filter_ids_pruned flag should prevent repeat bulk prune calls."""
     pipe = pipe_instance

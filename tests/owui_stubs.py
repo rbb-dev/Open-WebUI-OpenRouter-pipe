@@ -216,6 +216,10 @@ def _install_open_webui_stubs() -> None:
             return None
 
         @staticmethod
+        async def get_users(filter=None, sort=None, skip=None, limit=None, db=None):
+            return {"users": [], "total": 0}
+
+        @staticmethod
         async def insert_new_user(id, name, email, profile_image_url='/user.png', role='pending', username=None, oauth=None, db=None):
             return type('UserModel', (), {'id': id, 'name': name, 'email': email, 'role': role, 'profile_image_url': profile_image_url})()
 

@@ -88,6 +88,38 @@ def _normalize_id_list(meta_dict: dict, key: str) -> list[str]:
     return normalized
 
 
+def _renamed_ids(entries: list[Any], renames: dict[str, str]) -> list[Any]:
+    if not any(isinstance(entry, str) and entry in renames for entry in entries):
+        return entries
+    renamed = [renames.get(entry, entry) if isinstance(entry, str) else entry for entry in entries]
+    if all(isinstance(entry, str) for entry in renamed):
+        return _dedupe_preserve_order(renamed)
+    return renamed
+
+
+def _meta_with_renamed_filter_ids(meta_dict: dict, renames: dict[str, str]) -> dict | None:
+    updates: dict[str, Any] = {}
+    for key in ("filterIds", "defaultFilterIds"):
+        current = meta_dict.get(key)
+        if isinstance(current, list):
+            renamed = _renamed_ids(current, renames)
+            if renamed is not current:
+                updates[key] = renamed
+    pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
+    if isinstance(pipe_meta, dict):
+        pipe_updates: dict[str, Any] = {}
+        for key, value in pipe_meta.items():
+            if isinstance(value, str) and value in renames:
+                pipe_updates[key] = renames[value]
+            elif isinstance(value, list):
+                renamed = _renamed_ids(value, renames)
+                if renamed is not value:
+                    pipe_updates[key] = renamed
+        if pipe_updates:
+            updates[_PIPE_METADATA_KEY] = {**pipe_meta, **pipe_updates}
+    return {**meta_dict, **updates} if updates else None
+
+
 _MAKER_SOURCE_KIND = "maker"
 _FRONTEND_SOURCE_KIND = "frontend"
 _APPLY_YIELD_EVERY = 64
@@ -253,6 +285,7 @@ _warned_direct_uploads_filter_ensure: set[str] = set()
 _warned_image_filter_ensure: set[str] = set()
 _warned_router_filter_ensure: set[str] = set()
 _warned_model_entry_check: set[str] = set()
+_warned_filter_repoint: set[str] = set()
 
 _MODEL_ROW_READ_CHUNK = 1000
 
@@ -2781,6 +2814,56 @@ class ModelCatalogManager:
             )
             updated += 1
 
+        return updated
+
+    async def repoint_filter_ids(self, renames: dict[str, str]) -> int:
+        from open_webui.models.models import ModelForm, ModelMeta, ModelParams, Models
+
+        if not renames:
+            return 0
+        updated = 0
+        refused: list[str] = []
+        for model in await Models.get_all_models():
+            meta = model.meta
+            if not meta or _meta_with_renamed_filter_ids(meta.model_dump(), renames) is None:
+                continue
+            fresh = await Models.get_model_by_id(model.id)
+            if fresh is None or fresh.meta is None:
+                continue
+            meta_dict = _meta_with_renamed_filter_ids(fresh.meta.model_dump(), renames)
+            if meta_dict is None:
+                continue
+            try:
+                form = self._build_model_form(
+                    model_form_cls=ModelForm,
+                    id=model.id,
+                    base_model_id=fresh.base_model_id,
+                    name=fresh.name,
+                    meta=ModelMeta(**meta_dict),
+                    params=_params_unchanged(ModelParams, fresh.params),
+                    access_payload=None,
+                    is_active=fresh.is_active,
+                )
+                if await Models.update_model_by_id(model.id, form) is None:
+                    raise _ModelWriteRefused(
+                        f"Open WebUI did not report the write to {model.id} as landed"
+                    )
+            except Exception as exc:
+                refused.append(model.id)
+                self.logger.log(
+                    warn_level(_warned_filter_repoint, model.id),
+                    "Model '%s' could not be moved from a filter copy to the filter it copies, so "
+                    "the copy stays: Open WebUI would not save the model: %s",
+                    model.id,
+                    exc,
+                    exc_info=True,
+                )
+                continue
+            updated += 1
+        if refused:
+            raise _ModelWriteRefused(
+                f"{len(refused)} model(s) could not be moved to the surviving filter ids"
+            )
         return updated
 
     @timed

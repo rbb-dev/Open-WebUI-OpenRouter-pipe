@@ -429,6 +429,18 @@ installed copies each manage the models in their own valve lists and neither rew
 disables, or re-enables the other's entries. A model missing from a copy's list is
 missing because that copy's admin does not use it, not because the filter was retired.
 
+Both records name the install by its function id. Open WebUI 0.12 runs a function's code
+under a module name that changes on every load, `function_<id>_<32 hex digits>`, and a pipe
+that took that whole name as its id (a loader file from release 2.7.3 or earlier does, when
+only its pinned version is changed) wrote its rows under the function id followed by `_` and
+the 32 digits. A record equal to the pipe's id, or to the pipe's id followed by `_` and 32
+lowercase hexadecimal digits, names this pipe. A record that names any other id names
+another install, an id that only begins with this pipe's id included (`<id>_2`, or
+`<id>_extra_` followed by 32 digits). One rule makes that decision wherever the pipe reads
+either record. A routing row whose `OWUI_PIPE_OWNER` names this pipe under a per-load id is
+managed like any row this pipe owns: while its model is in the routing valve lists, the
+next refresh rewrites it in place, owner line included.
+
 Ownership also decides what happens to a hand edit. A row a copy owns is kept current: an
 edit to its stored source is reverted on the next model-list refresh, because the row is
 regenerated rather than left to drift. Customise provider routing through the valve
@@ -450,7 +462,12 @@ while the rows kept the old one -- so a recordless row is claimed on the first r
 installed by hand keeps no record either, so it is claimed and retired the same way. A row
 naming another id is left alone exactly while Open WebUI still loads that id as a pipe,
 because that is what makes it another live copy's row; when the question cannot be
-answered, the row is left alone as well.
+answered, the row is left alone as well. A row whose record names this pipe under a per-load
+id is not another id: it is this pipe's own. With its `AUTO_INSTALL_*` valve on and its
+feature enabled, the next refresh rewrites it in place -- its id, its settings and the
+models attached to it stay, the record becomes the pipe's id, and the per-load id it came
+from is kept in the row's meta as `openrouter_pipe:taken_over_from`. With the valve off, it
+is retired like any row the pipe installed.
 
 Switching the Fusion or Image Generation feature valve **off** is a separate decision
 from the install valve, and it reaches a recordless row whether or not it has been
@@ -477,14 +494,51 @@ canonical id back removes the row holding it and lets the next refresh install a
 one.
 
 A row stamped with a *previous* id of this pipe — the pipe function was renamed or
-re-created, so the id changed while the rows kept the old one — is retired when its
-`AUTO_INSTALL_*` valve is off, and the refresh names that row, the id it carries and the
-valve now holding it off, so the duplicate can be found and deleted. Nothing re-claims it:
-the row stays retired, and re-publishing the model with its valve **on** installs a second
-live row beside it under a numbered id, which the refresh names in the log too. Two copies
-of the pipe installed side by side produce a different line — the row is left alone, and
-the log says the id is still loaded as a pipe — and that difference is the whole point:
-the string on the row is the same either way.
+re-created, so the id changed while the rows kept the old one; a per-load id of this pipe
+is not one, see above — is retired when its `AUTO_INSTALL_*` valve is off, and the refresh
+names that row, the id it carries and the valve now holding it off, so the duplicate can
+be found and deleted. Nothing re-claims it: the row stays retired, and re-publishing the
+model with its valve **on** installs a second live row beside it under a numbered id, which
+the refresh names in the log too. Two copies of the pipe installed side by side produce a
+different line — the row is left alone, and the log says the id is still loaded as a
+pipe — and that difference is the whole point: the string on the row is the same either
+way.
+
+### Copies made under a per-load id
+
+A pipe that has run under a per-load id can leave a numbered copy of a filter beside the
+original: `openrouter_fusion_1` beside `openrouter_fusion` in Workspace ▸ Functions, for
+example. The first model-list refresh after each start of the pipe settles them, before that
+refresh installs, switches on or off, or repairs any filter.
+
+A row is a copy of another row when its id is the other row's id followed by `_` and a
+number, the two carry the same name, the copy's record names this pipe, the original's record
+names this pipe or is absent, and at least one of the two was written under a per-load id
+(its record names one, or its `openrouter_pipe:taken_over_from` does). For each copy that
+passes the checks below, the pipe first moves the settings each user saved on the copy (a
+user's own values for the filter, such as a Fusion panel or Web Tools switches) to the
+original, then moves every model that lists the copy to the original -- the model's
+Integrations entry (`filterIds`), its default-on entry (`defaultFilterIds`) and the pipe's own
+records on the model -- and then deletes the copy. A copy whose users' settings could not all
+be moved is left as it is, and so are the models that list it.
+
+A user who already has settings saved on the original keeps them, and the settings on the
+copy are left out for that user. The pipe reads and saves the settings through Open WebUI's
+own functions, and leaves the copy's entries in each user's settings, as Open WebUI does when
+a function is deleted. When two copies of one original hold settings for the same user, the
+settings on the copy with the higher number are the ones moved.
+
+A copy is kept, and named once in the log, when settings were saved on it (its Valves), when
+it was made Global, when the original is switched off by hand (a switch-off the pipe made
+itself counts as on), or when a record names a pipe id that Open WebUI still loads as a pipe.
+The pipe looks at such a copy again the next time it starts.
+
+A copy is also kept, and named once in the log, when the pipe cannot read what it needs to
+decide (the list of loaded pipes, the copy's settings or the list of users), when Open WebUI
+will not read or save the settings of a user who saved settings on it, and when Open WebUI
+will not delete it. When Open WebUI will not save one of the models, nothing is deleted.
+After any of these failures the step runs again at a later model-list refresh, no sooner than
+five minutes after the failed one.
 ---
 
 ## Troubleshooting

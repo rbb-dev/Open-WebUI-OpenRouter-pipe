@@ -1740,13 +1740,20 @@ class TestProviderRoutingStaleValueHealing:
 from types import SimpleNamespace
 
 
+_STORED_USER_VALVES_PREFIX = "enc:"
+
+
 class _FakeFunctionsTable:
     store: dict = {}
+    user_valves: dict = {}
+    refuse_user_writes = False
 
     @classmethod
     def reset(cls):
         cls.store = {}
         cls.update_count = 0
+        cls.user_valves = {}
+        cls.refuse_user_writes = False
 
     @classmethod
     async def get_functions_by_type(cls, function_type, active_only=False):
@@ -1789,6 +1796,46 @@ class _FakeFunctionsTable:
     @classmethod
     async def delete_function_by_id(cls, function_id):
         return cls.store.pop(function_id, None) is not None
+
+    @classmethod
+    async def get_function_valves_by_ids(cls, ids, db=None):
+        return {i: (getattr(cls.store[i], "valves", None) or {}) for i in ids if i in cls.store}
+
+    @classmethod
+    async def get_user_valves_by_id_and_user_id(cls, function_id, user_id, db=None):
+        stored = cls.user_valves.get(user_id, {}).get(function_id)
+        if isinstance(stored, str):
+            return json.loads(stored[len(_STORED_USER_VALVES_PREFIX):])
+        return {}
+
+    @classmethod
+    async def update_user_valves_by_id_and_user_id(cls, function_id, user_id, valves, db=None):
+        if cls.refuse_user_writes or user_id not in cls.user_valves:
+            return None
+        cls.user_valves[user_id][function_id] = _STORED_USER_VALVES_PREFIX + json.dumps(valves, sort_keys=True)
+        return valves
+
+
+class _FakeUsersTable:
+    @classmethod
+    async def get_users(cls, filter=None, sort=None, skip=None, limit=None, db=None):
+        ordered = sorted(_FakeFunctionsTable.user_valves)
+        chosen = ordered[skip or 0 :][: len(ordered) if limit is None else limit]
+        return {
+            "users": [
+                SimpleNamespace(
+                    id=user_id,
+                    settings=SimpleNamespace(
+                        model_dump=lambda user_id=user_id: {
+                            "ui": {},
+                            "functions": {"valves": dict(_FakeFunctionsTable.user_valves[user_id])},
+                        }
+                    ),
+                )
+                for user_id in chosen
+            ],
+            "total": len(ordered),
+        }
 
 
 class TestProviderRoutingEndToEndOverlay:
@@ -3012,21 +3059,335 @@ async def test_only_copies_installed_under_a_per_load_id_are_removed(monkeypatch
         _row("openrouter_image_filter_recraft_recraft_v4_1", "Recraft V4.1", per_load),
         _row("someone_elses_filter", "Theirs", "another_pipe"),
         _row("someone_elses_filter_1", "Theirs", per_load),
+        _row("openrouter_web_tools", "OR Web Tools", per_load),
+        _row("openrouter_web_tools_1", "OR Web Tools", owner),
+        _row("openrouter_direct_uploads", "OR Direct Uploads", per_load),
+        _row("openrouter_direct_uploads_1", "OR Direct Uploads", per_load),
+        _row("openrouter_image_gen", "OR Image Gen", per_load),
+        _row("openrouter_image_gen_1", "OR Image Gen", owner),
+        _row("openrouter_router_openrouter_auto", "OR Router", owner),
+        _row("openrouter_router_openrouter_auto_1", "OR Router", per_load),
+        _row("openrouter_video_gen", "OR Video Gen", per_load),
+        _row("openrouter_video_gen_1", "OR Video Gen", owner),
+        _row("openrouter_video_vendor_clip_3", "Clip", per_load),
+        _row("openrouter_video_vendor_clip_3_1", "Clip", per_load),
     ]
-    _FakeFunctionsTable.store["openrouter_fusion_2"].is_active = False
+    store = _FakeFunctionsTable.store
+    store["openrouter_video_vendor_clip_3"].content = "VIDEO_MODEL_ID = 'vendor/clip-3'\n"
+    store["openrouter_video_vendor_clip_3_1"].content = "VIDEO_MODEL_ID = 'vendor/clip-3-1'\n"
+    store["openrouter_fusion_2"].is_active = False
+    store["openrouter_direct_uploads_1"].valves = {"DIRECT_FILE_MIME_ALLOWLIST": "text/plain"}
+    store["openrouter_image_gen"].is_active = False
+    store["openrouter_router_openrouter_auto_1"].is_global = True
+    store["openrouter_video_gen"].is_active = False
+    store["openrouter_video_gen"].meta[_PIPE_OFF_META_KEY] = True
     try:
         removed = await pipe._ensure_filter_manager().remove_per_load_duplicates(_FilterRows(rows, None, True))
     finally:
         await pipe.close()
 
-    assert removed == 2
-    assert sorted(_FakeFunctionsTable.store) == [
+    assert removed == 4
+    assert sorted(store) == [
+        "openrouter_direct_uploads",
+        "openrouter_direct_uploads_1",
         "openrouter_fusion",
         "openrouter_image_filter_recraft_recraft_v4",
         "openrouter_image_filter_recraft_recraft_v4_1",
+        "openrouter_image_gen",
+        "openrouter_image_gen_1",
+        "openrouter_router_openrouter_auto",
+        "openrouter_router_openrouter_auto_1",
+        "openrouter_video_gen",
+        "openrouter_video_vendor_clip_3",
+        "openrouter_video_vendor_clip_3_1",
+        "openrouter_web_tools",
         "someone_elses_filter",
         "someone_elses_filter_1",
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_filter_stamped_with_the_pipes_id_and_a_per_load_tail_is_taken_over_in_place(monkeypatch):
+    import open_webui.models.functions as functions_module
+
+    from open_webui_openrouter_pipe.core.config import (
+        _OPENROUTER_FUSION_FILTER_MARKER,
+        _OPENROUTER_WEB_TOOLS_FILTER_MARKER,
+    )
+
+    _FakeFunctionsTable.reset()
+    monkeypatch.setattr(functions_module, "Functions", _FakeFunctionsTable)
+    pipe = Pipe()
+    owner = pipe.id
+    tail = "0123456789abcdef0123456789abcdef"
+
+    def _stale_row(function_id: str, name: str, marker: str, stamp: str) -> None:
+        _FakeFunctionsTable.store[function_id] = SimpleNamespace(
+            id=function_id,
+            name=name,
+            content=f"{marker}\nclass Filter:\n    pass\n",
+            meta={_PIPE_INSTALLED_META_KEY: stamp},
+            is_active=True,
+            is_global=False,
+            updated_at=1,
+        )
+
+    _stale_row("openrouter_fusion", "OpenRouter Fusion", _OPENROUTER_FUSION_FILTER_MARKER, f"{owner}_{tail}")
+    _stale_row("openrouter_web_tools", "OR Web Tools", _OPENROUTER_WEB_TOOLS_FILTER_MARKER, f"another_pipe_{tail}")
+    manager = pipe._ensure_filter_manager()
+    try:
+        fusion_id, _unresolved = await manager.ensure_openrouter_fusion_filter_function_id()
+        web_tools_id = await manager.ensure_openrouter_web_tools_filter_function_id()
+    finally:
+        await pipe.close()
+
+    store = _FakeFunctionsTable.store
+    assert fusion_id == "openrouter_fusion"
+    assert "def inlet" in store["openrouter_fusion"].content
+    assert store["openrouter_fusion"].meta[_PIPE_INSTALLED_META_KEY] == owner
+    assert "openrouter_fusion_1" not in store
+    assert web_tools_id == "openrouter_web_tools_1"
+    assert store["openrouter_web_tools"].meta[_PIPE_INSTALLED_META_KEY] == f"another_pipe_{tail}"
+    assert "def inlet" not in store["openrouter_web_tools"].content
+
+
+@pytest.mark.asyncio
+async def test_the_settings_each_user_saved_on_a_copy_move_to_the_original_before_the_copy_is_deleted(monkeypatch):
+    import open_webui.models.functions as functions_module
+    import open_webui.models.models as models_module
+    import open_webui.models.users as users_module
+    from open_webui.models.models import ModelMeta
+
+    from open_webui_openrouter_pipe.filters import filter_manager as filter_manager_module
+    from open_webui_openrouter_pipe.filters.filter_manager import _FilterRows
+
+    _FakeFunctionsTable.reset()
+    monkeypatch.setattr(functions_module, "Functions", _FakeFunctionsTable)
+    monkeypatch.setattr(users_module, "Users", _FakeUsersTable)
+    monkeypatch.setattr(filter_manager_module, "_USER_SCAN_PAGE_SIZE", 2)
+    carrying = SimpleNamespace(
+        id="carries_the_copy",
+        base_model_id=None,
+        name="Carries the copy",
+        meta=ModelMeta(filterIds=["openrouter_fusion_2"], defaultFilterIds=["openrouter_fusion_2"]),
+        params={},
+        is_active=True,
+    )
+    re_pointed: list[str] = []
+
+    async def _read_model(model_id, db=None):
+        return carrying
+
+    async def _save_model(model_id, form):
+        re_pointed.append(model_id)
+        carrying.meta = form.meta
+        return SimpleNamespace(id=model_id)
+
+    monkeypatch.setattr(models_module.Models, "get_all_models", AsyncMock(return_value=[carrying]))
+    monkeypatch.setattr(models_module.Models, "get_model_by_id", _read_model)
+    monkeypatch.setattr(models_module.Models, "update_model_by_id", _save_model)
+    pipe = Pipe()
+    owner = pipe.id
+
+    for function_id, stamp in (
+        ("openrouter_fusion", f"{owner}_0123456789abcdef0123456789abcdef"),
+        ("openrouter_fusion_1", owner),
+        ("openrouter_fusion_2", owner),
+    ):
+        _FakeFunctionsTable.store[function_id] = SimpleNamespace(
+            id=function_id,
+            name="OpenRouter Fusion",
+            content="",
+            meta={_PIPE_INSTALLED_META_KEY: stamp},
+            is_active=True,
+            is_global=False,
+        )
+
+    def _stored(values: dict) -> str:
+        return _STORED_USER_VALVES_PREFIX + json.dumps(values, sort_keys=True)
+
+    already_on_the_original = _stored({"FUSION_PRESET": "mine"})
+    _FakeFunctionsTable.user_valves = {
+        "u1": {
+            "openrouter_fusion_1": _stored({"FUSION_PRESET": "older"}),
+            "openrouter_fusion_2": _stored({"FUSION_PRESET": "newer"}),
+        },
+        "u2": {
+            "openrouter_fusion_1": _stored({"FUSION_PRESET": "copy"}),
+            "openrouter_fusion": already_on_the_original,
+        },
+        "u3": {"openrouter_fusion_1": _stored({"FUSION_PRESET": "only"})},
+        "u4": {"some_other_filter": _stored({"unrelated": 1})},
+    }
+    manager = pipe._ensure_filter_manager()
+
+    def _table() -> _FilterRows:
+        return _FilterRows(list(_FakeFunctionsTable.store.values()), None, True)
+
+    try:
+        _FakeFunctionsTable.refuse_user_writes = True
+        unsettled_while_refused: set[str] = set()
+        removed_while_refused = await manager.remove_per_load_duplicates(_table(), unsettled_while_refused)
+        kept_while_refused = sorted(_FakeFunctionsTable.store)
+        re_pointed_while_refused = list(re_pointed)
+        filter_ids_while_refused = list(dict(carrying.meta)["filterIds"])
+        _FakeFunctionsTable.refuse_user_writes = False
+        unsettled: set[str] = set()
+        removed = await manager.remove_per_load_duplicates(_table(), unsettled)
+    finally:
+        await pipe.close()
+
+    saved = _FakeFunctionsTable.user_valves
+    assert removed_while_refused == 0
+    assert unsettled_while_refused == {"openrouter_fusion_1", "openrouter_fusion_2"}
+    assert kept_while_refused == ["openrouter_fusion", "openrouter_fusion_1", "openrouter_fusion_2"]
+    assert re_pointed_while_refused == []
+    assert filter_ids_while_refused == ["openrouter_fusion_2"]
+    assert removed == 2
+    assert not unsettled
+    assert re_pointed == ["carries_the_copy"]
+    assert dict(carrying.meta)["filterIds"] == ["openrouter_fusion"]
+    assert dict(carrying.meta)["defaultFilterIds"] == ["openrouter_fusion"]
+    assert sorted(_FakeFunctionsTable.store) == ["openrouter_fusion"]
+    assert await _FakeFunctionsTable.get_user_valves_by_id_and_user_id("openrouter_fusion", "u1") == {
+        "FUSION_PRESET": "newer"
+    }
+    assert saved["u2"]["openrouter_fusion"] == already_on_the_original
+    assert await _FakeFunctionsTable.get_user_valves_by_id_and_user_id("openrouter_fusion", "u3") == {
+        "FUSION_PRESET": "only"
+    }
+    assert "openrouter_fusion" not in saved["u4"]
+    assert "openrouter_fusion_1" in saved["u1"]
+
+
+def _stage_the_first_refresh_after_an_upgrade(monkeypatch, pipe):
+    import open_webui.models.functions as functions_module
+    import open_webui.models.models as models_module
+    from open_webui.models.models import ModelMeta
+
+    from open_webui_openrouter_pipe import pipe as pipe_module
+    from open_webui_openrouter_pipe.core.config import (
+        _OPENROUTER_FUSION_FILTER_MARKER,
+        _OPENROUTER_WEB_TOOLS_FILTER_MARKER,
+    )
+
+    owner = pipe.id
+    _FakeFunctionsTable.reset()
+    for function_id, name, marker, stamp, updated_at in (
+        ("openrouter_fusion", "OpenRouter Fusion", _OPENROUTER_FUSION_FILTER_MARKER, f"{owner}_0123456789abcdef0123456789abcdef", 1),
+        ("openrouter_fusion_1", "OpenRouter Fusion", _OPENROUTER_FUSION_FILTER_MARKER, owner, 2),
+        ("openrouter_web_tools", "OR Web Tools", _OPENROUTER_WEB_TOOLS_FILTER_MARKER, f"{owner}_0123456789abcdef0123456789abcdef", 1),
+        ("openrouter_web_tools_1", "OR Web Tools", _OPENROUTER_WEB_TOOLS_FILTER_MARKER, owner, 2),
+    ):
+        _FakeFunctionsTable.store[function_id] = SimpleNamespace(
+            id=function_id,
+            name=name,
+            content=f"{marker}\nclass Filter:\n    pass\n",
+            meta={_PIPE_INSTALLED_META_KEY: stamp},
+            is_active=True,
+            is_global=False,
+            updated_at=updated_at,
+        )
+    carrying = SimpleNamespace(
+        id="carries_the_copies",
+        base_model_id=None,
+        name="Carries the copies",
+        meta=ModelMeta(
+            filterIds=["openrouter_fusion_1", "openrouter_web_tools_1"],
+            defaultFilterIds=["openrouter_fusion_1"],
+        ),
+        params={},
+        is_active=True,
+    )
+    saves = {"refused": False}
+
+    async def _read(model_id, db=None):
+        return carrying
+
+    async def _save(model_id, form):
+        if saves["refused"]:
+            return None
+        carrying.meta = form.meta
+        return SimpleNamespace(id=model_id)
+
+    async def _no_stored_settings(function_id, db=None):
+        return {}
+
+    monkeypatch.setattr(functions_module, "Functions", _FakeFunctionsTable)
+    monkeypatch.setattr(pipe_module, "_PER_LOAD_LEFTOVERS_RETRY_SECONDS", 0.0)
+    monkeypatch.setattr(_FakeFunctionsTable, "get_function_valves_by_id", _no_stored_settings, raising=False)
+    monkeypatch.setattr(models_module.Models, "get_all_models", AsyncMock(return_value=[carrying]))
+    monkeypatch.setattr(models_module.Models, "get_model_by_id", _read)
+    monkeypatch.setattr(models_module.Models, "update_model_by_id", _save)
+    monkeypatch.setattr(pipe, "_maybe_start_startup_checks", lambda: None)
+    monkeypatch.setattr(pipe, "_maybe_start_redis", lambda: None)
+    monkeypatch.setattr(pipe, "_maybe_start_cleanup", lambda: None)
+    monkeypatch.setattr(pipe, "_resolve_openrouter_api_key", lambda _valves: (None, None))
+    monkeypatch.setattr(
+        pipe_module.OpenRouterModelRegistry, "list_models", lambda: [{"id": "m1", "name": "Model m1", "norm_id": "m1"}]
+    )
+    monkeypatch.setattr(pipe, "_select_models", lambda _model_id, models: models)
+    monkeypatch.setattr(pipe, "_apply_model_filters", lambda models, _valves: models)
+    monkeypatch.setattr(pipe._ensure_catalog_manager(), "maybe_schedule_model_metadata_sync", lambda *_a, **_k: None)
+    return carrying, saves
+
+
+@pytest.mark.asyncio
+async def test_the_first_model_list_refresh_settles_the_copies_before_it_installs_any_filter(monkeypatch):
+    pipe = Pipe()
+    carrying, _saves = _stage_the_first_refresh_after_an_upgrade(monkeypatch, pipe)
+    try:
+        await pipe.pipes()
+    finally:
+        await pipe.close()
+
+    store = _FakeFunctionsTable.store
+    assert "openrouter_fusion_1" not in store
+    assert "openrouter_web_tools_1" not in store
+    assert store["openrouter_fusion"].meta[_PIPE_INSTALLED_META_KEY] == pipe.id
+    assert store["openrouter_web_tools"].meta[_PIPE_INSTALLED_META_KEY] == pipe.id
+    assert dict(carrying.meta)["filterIds"] == ["openrouter_fusion", "openrouter_web_tools"]
+    assert dict(carrying.meta)["defaultFilterIds"] == ["openrouter_fusion"]
+
+
+@pytest.mark.asyncio
+async def test_a_refresh_that_could_not_read_or_save_what_it_needs_removes_no_copy_and_a_later_one_removes_them(
+    monkeypatch,
+):
+    pipe = Pipe()
+    carrying, saves = _stage_the_first_refresh_after_an_upgrade(monkeypatch, pipe)
+    real_rows_by_type = _FakeFunctionsTable.get_functions_by_type
+    pipes_readable = {"now": False}
+
+    async def _rows_by_type(function_type, active_only=False):
+        if function_type == "pipe" and not pipes_readable["now"]:
+            raise RuntimeError("function table unreadable")
+        return await real_rows_by_type(function_type, active_only)
+
+    monkeypatch.setattr(_FakeFunctionsTable, "get_functions_by_type", _rows_by_type)
+
+    def _copies_left() -> list[str]:
+        return sorted(function_id for function_id in _FakeFunctionsTable.store if function_id.endswith("_1"))
+
+    try:
+        await pipe.pipes()
+        left_while_the_loaded_pipes_were_unreadable = _copies_left()
+        pipes_readable["now"] = True
+        saves["refused"] = True
+        await pipe.pipes()
+        left_after_the_refusal = _copies_left()
+        saves["refused"] = False
+        await pipe.pipes()
+    finally:
+        await pipe.close()
+
+    store = _FakeFunctionsTable.store
+    assert left_while_the_loaded_pipes_were_unreadable == ["openrouter_fusion_1", "openrouter_web_tools_1"]
+    assert left_after_the_refusal == ["openrouter_fusion_1", "openrouter_web_tools_1"]
+    assert "openrouter_fusion_1" not in store
+    assert "openrouter_web_tools_1" not in store
+    assert store["openrouter_web_tools"].meta[_PIPE_INSTALLED_META_KEY] == pipe.id
+    assert dict(carrying.meta)["filterIds"] == ["openrouter_fusion", "openrouter_web_tools"]
 
 
 async def _send_pictures_to_a_video_model(

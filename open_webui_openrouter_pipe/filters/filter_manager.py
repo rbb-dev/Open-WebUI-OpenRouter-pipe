@@ -34,6 +34,7 @@ from ..core.config import (
     _PROVIDER_ROUTING_MAX_PROVIDERS,
     _PROVIDER_ROUTING_ORDER_PERMUTATION_MAX,
     _PROVIDER_SLUG_PATTERN,
+    _is_install_of,
 )
 from ..core.timing_logger import timed
 from ..core.utils import (
@@ -89,6 +90,7 @@ _PIPE_OFF_META_KEY = "openrouter_pipe:switched_off_by_pipe"
 _PIPE_OFF_STAMP_META_KEY = "openrouter_pipe:switched_off_at"
 _PIPE_OFF_SETTINGS_META_KEY = "openrouter_pipe:switched_off_settings"
 _PIPE_INSTALLED_META_KEY = "openrouter_pipe:installed_by"
+_PIPE_TAKEN_OVER_FROM_META_KEY = "openrouter_pipe:taken_over_from"
 _DISPLAY_NAME_MAX_CHARS = 80
 _PIPE_OFF_LANDED_AT: dict[str, int] = {}
 _PIPE_OFF_SETTLING: OrderedDict[str, None] = OrderedDict()
@@ -136,11 +138,78 @@ def _installed_by(row: Any) -> str:
 
 
 def _owned_by(row: Any, owner: str) -> bool:
-    return _installed_by(row) == owner
+    return _is_install_of(_installed_by(row), owner)
 
 
 def _claimable_by(row: Any, owner: str) -> bool:
-    return _installed_by(row) in ("", owner)
+    stamp = _installed_by(row)
+    return stamp == "" or _is_install_of(stamp, owner)
+
+
+def _stamped_by_a_per_load_id_of(row: Any, owner: str) -> bool:
+    stamp = _installed_by(row)
+    return stamp != owner and _is_install_of(stamp, owner)
+
+
+def _taken_over_from(row: Any) -> str:
+    value = _stored_meta(row).get(_PIPE_TAKEN_OVER_FROM_META_KEY)
+    return value if isinstance(value, str) else ""
+
+
+def _written_under_a_per_load_id_of(row: Any, owner: str) -> bool:
+    return any(
+        stamp != owner and _is_install_of(stamp, owner)
+        for stamp in (_installed_by(row), _taken_over_from(row))
+    )
+
+
+_MODEL_IDENTITY_LINE_RE = re.compile(r"^([A-Z][A-Z0-9_]*MODEL_ID) = (.+)$", re.MULTILINE)
+
+
+def _model_identity(row: Any) -> tuple[tuple[str, str], ...]:
+    content = getattr(row, "content", None)
+    if not isinstance(content, str):
+        return ()
+    return tuple(sorted(_MODEL_IDENTITY_LINE_RE.findall(content)))
+
+
+_USER_SCAN_PAGE_SIZE = 200
+
+
+def _newest_copy_first(removable: dict[str, str]) -> list[tuple[str, str]]:
+    by_number = sorted(removable.items(), key=lambda item: (len(item[0]), item[0]), reverse=True)
+    return sorted(by_number, key=lambda item: item[1])
+
+
+def _user_valve_function_ids(user: Any) -> frozenset[str]:
+    settings = getattr(user, "settings", None)
+    dump = getattr(settings, "model_dump", None)
+    data = dump() if callable(dump) else settings
+    functions = data.get("functions") if isinstance(data, dict) else None
+    valves = functions.get("valves") if isinstance(functions, dict) else None
+    return frozenset(valves) if isinstance(valves, dict) else frozenset()
+
+
+async def _move_one_users_settings(
+    Functions: Any, user_id: str, original_id: str, copy_ids: list[str]
+) -> tuple[str | None, bool]:
+    current = await Functions.get_user_valves_by_id_and_user_id(original_id, user_id)
+    if current is None:
+        return None, False
+    if current:
+        return None, True
+    for copy_id in copy_ids:
+        valves = await Functions.get_user_valves_by_id_and_user_id(copy_id, user_id)
+        if valves is None:
+            return None, False
+        if not valves:
+            continue
+        if await Functions.update_user_valves_by_id_and_user_id(original_id, user_id, valves) is None:
+            return None, False
+        if await Functions.get_user_valves_by_id_and_user_id(original_id, user_id) != valves:
+            return None, False
+        return copy_id, True
+    return None, True
 
 
 def _merged_meta(
@@ -233,7 +302,7 @@ def _stale_off_to_confirm(row: Any, owner: str) -> bool:
         and row_id not in _PIPE_OFF_SETTLING
         and not _pipe_owns_the_off(row)
         and _claimable_by(row, owner)
-        and _row_owner(row) in ("", owner)
+        and _routing_row_is_ours(row, owner)
     )
 
 
@@ -764,6 +833,11 @@ def _row_owner(row: Any) -> str:
             _, _, raw = line.partition("=")
             return raw.strip().strip('"').strip("'")
         start = idx + 1
+
+
+def _routing_row_is_ours(row: Any, owner: str) -> bool:
+    row_owner = _row_owner(row)
+    return row_owner == "" or _is_install_of(row_owner, owner)
 
 
 def _routing_display_names(model_info: dict[str, Any]) -> tuple[str, dict[str, str]]:
@@ -1429,9 +1503,11 @@ class FilterManager:
 
         existing_content = _stored_source(chosen)
         if getattr(self.valves, auto_install_valve, False):
-            desired_meta = _manifest_id_for(
-                {**desired_meta, _PIPE_INSTALLED_META_KEY: self._install_owner()}, function_id
-            )
+            per_load_stamp = _installed_by(chosen) if _stamped_by_a_per_load_id_of(chosen, owner) else ""
+            record = {_PIPE_INSTALLED_META_KEY: owner}
+            if per_load_stamp:
+                record[_PIPE_TAKEN_OVER_FROM_META_KEY] = per_load_stamp
+            desired_meta = _manifest_id_for({**desired_meta, **record}, function_id)
             switch_on = _switch_on(chosen)
             if not switch_on:
                 self.logger.log(
@@ -1445,6 +1521,7 @@ class FilterManager:
                     function_id,
                     _unconfirmed_switch_off_clause(chosen),
                 )
+            landed = False
             if existing_content != desired_source:
                 self._validate_before_write(desired_source, log_label)
                 live = await Functions.get_function_by_id(function_id)
@@ -1464,13 +1541,14 @@ class FilterManager:
                     self.logger,
                     refused_out=refused_out,
                 ):
+                    landed = True
                     self.logger.info("Updating %s: %s", log_label, function_id)
             else:
                 needs_write = _row_needs_update(chosen, desired_name, desired_meta)
                 if needs_write:
                     live = await Functions.get_function_by_id(function_id)
                     row = live if live is not None else chosen
-                    await _write_function(
+                    landed = await _write_function(
                         Functions,
                         function_id,
                         {
@@ -1484,6 +1562,14 @@ class FilterManager:
                         self.logger,
                         refused_out=refused_out,
                     )
+            if landed and per_load_stamp:
+                self.logger.info(
+                    "Took over the %s %r, which the pipe installed under the Open WebUI 0.12 "
+                    "per-load id %r.",
+                    log_label,
+                    function_id,
+                    per_load_stamp,
+                )
         elif existing_content != desired_source:
             self.logger.log(
                 bounded_warn_level(
@@ -2274,7 +2360,7 @@ class FilterManager:
                         _installed_by(row),
                     )
                 continue
-            if marker in retired_valves and owner and _installed_by(row) == owner:
+            if marker in retired_valves and owner and _owned_by(row, owner):
                 continue
             live = await _live_row(Functions, row)
             if await _write_function(
@@ -2872,7 +2958,99 @@ class FilterManager:
             )
         )
 
-    async def remove_per_load_duplicates(self, rows: _FilterRows | None) -> int:
+    def _log_copy_kept(self, copy_id: str, base_id: str, reason: str) -> None:
+        self.logger.log(
+            bounded_warn_level(
+                _warned_stale_filter_rows, f"per_load_copy_kept:{copy_id}", _PER_MODEL_INSTALL_WARN_WINDOW,
+            ),
+            "Left the filter %r in place: it is a numbered copy of %r left behind when the pipe "
+            "ran under an Open WebUI 0.12 per-load id, but %s.",
+            copy_id,
+            base_id,
+            reason,
+        )
+
+    async def _users_holding_settings_of(
+        self, copies: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], list[str]] | None:
+        holders: dict[tuple[str, str], list[str]] = {}
+        skip = 0
+        try:
+            from open_webui.models.users import Users
+
+            while True:
+                page = await Users.get_users(
+                    sort={"order_by": "email", "direction": "asc"},
+                    skip=skip,
+                    limit=_USER_SCAN_PAGE_SIZE,
+                )
+                users = page["users"]
+                total = page["total"]
+                for user in users:
+                    user_id = getattr(user, "id", None)
+                    entries = _user_valve_function_ids(user)
+                    if not isinstance(user_id, str) or not entries:
+                        continue
+                    for copy_id, original_id in copies:
+                        if copy_id in entries and original_id not in entries:
+                            holders.setdefault((user_id, original_id), []).append(copy_id)
+                skip += len(users)
+                if not users or skip >= total:
+                    return holders
+        except Exception:
+            self.logger.log(
+                bounded_warn_level(
+                    _warned_stale_filter_rows, "per_load_copy_users_read", _PER_MODEL_INSTALL_WARN_WINDOW,
+                ),
+                "The list of users could not be read, so the settings users saved on the numbered filter "
+                "copies left behind when the pipe ran under an Open WebUI 0.12 per-load id cannot be "
+                "moved, and the copies are left in place.",
+                exc_info=True,
+            )
+            return None
+
+    async def _move_users_settings(self, Functions: Any, removable: dict[str, str]) -> dict[str, str]:
+        holders = await self._users_holding_settings_of(_newest_copy_first(removable))
+        if holders is None:
+            return dict.fromkeys(
+                removable,
+                "the list of users could not be read, so the settings users saved on it cannot be moved",
+            )
+        moved: dict[str, int] = {}
+        unmoved: dict[str, int] = {}
+        for (user_id, original_id), copy_ids in holders.items():
+            try:
+                source, ok = await _move_one_users_settings(Functions, user_id, original_id, copy_ids)
+            except Exception:
+                self.logger.log(
+                    bounded_warn_level(
+                        _warned_stale_filter_rows, "per_load_copy_user_move", _PER_MODEL_INSTALL_WARN_WINDOW,
+                    ),
+                    "The settings a user saved on a numbered filter copy could not be moved to the "
+                    "filter it copies, so the copy is left in place.",
+                    exc_info=True,
+                )
+                source, ok = None, False
+            if not ok:
+                for copy_id in copy_ids:
+                    unmoved[copy_id] = unmoved.get(copy_id, 0) + 1
+            elif source is not None:
+                moved[source] = moved.get(source, 0) + 1
+        for copy_id, count in moved.items():
+            self.logger.info(
+                "Moved the saved settings of %d user(s) from the filter %r to %r.",
+                count,
+                copy_id,
+                removable[copy_id],
+            )
+        return {
+            copy_id: f"the settings of {count} user(s) saved on it could not be moved to {removable[copy_id]!r}"
+            for copy_id, count in unmoved.items()
+        }
+
+    async def remove_per_load_duplicates(
+        self, rows: _FilterRows | None, unsettled_out: set[str] | None = None
+    ) -> int:
         owner = self._install_owner()
         table = rows.all_rows if rows is not None else None
         if not owner or not table:
@@ -2881,11 +3059,10 @@ class FilterManager:
             from open_webui.models.functions import Functions
         except ImportError:
             return 0
-        per_load_stamp = re.compile(rf"^{re.escape(owner)}_[0-9a-f]{{32}}$")
         by_id = {str(getattr(row, "id", "") or ""): row for row in table}
-        removed = 0
+        numbered: dict[str, str] = {}
         for function_id, row in by_id.items():
-            if per_load_stamp.match(_installed_by(row)) is None:
+            if not _owned_by(row, owner):
                 continue
             base_id, _, number = function_id.rpartition("_")
             base = by_id.get(base_id)
@@ -2894,19 +3071,94 @@ class FilterManager:
                 or base is None
                 or not _claimable_by(base, owner)
                 or getattr(base, "name", None) != getattr(row, "name", None)
+                or _model_identity(base) != _model_identity(row)
+                or not (
+                    _written_under_a_per_load_id_of(row, owner)
+                    or _written_under_a_per_load_id_of(base, owner)
+                )
             ):
                 continue
-            live = await Functions.get_function_by_id(function_id)
-            if live is None or per_load_stamp.match(_installed_by(live)) is None:
+            numbered[function_id] = base_id
+        copies = {
+            copy_id: base_id for copy_id, base_id in numbered.items() if base_id not in numbered
+        }
+        if not copies:
+            return 0
+        live_installs = await self._live_pipe_installs(Functions)
+        try:
+            saved = await Functions.get_function_valves_by_ids(sorted(copies))
+        except Exception:
+            self.logger.log(
+                bounded_warn_level(
+                    _warned_stale_filter_rows, "per_load_copy_settings_read", _PER_MODEL_INSTALL_WARN_WINDOW,
+                ),
+                "The settings of the numbered filter copies left behind when the pipe ran under an "
+                "Open WebUI 0.12 per-load id could not be read, so the copies are left in place.",
+                exc_info=True,
+            )
+            saved = None
+        removable: dict[str, str] = {}
+        for copy_id, base_id in copies.items():
+            copy, base = by_id[copy_id], by_id[base_id]
+            recorded = {
+                stamp for stamp in (_installed_by(copy), _installed_by(base)) if stamp and stamp != owner
+            }
+            retry = False
+            if live_installs is None:
+                reason, retry = "the pipe functions Open WebUI has loaded could not be read", True
+            elif recorded & live_installs:
+                reason = f"Open WebUI still loads {min(recorded & live_installs)!r} as a pipe"
+            elif not isinstance(saved, dict) or copy_id not in saved:
+                reason, retry = "its settings could not be read", True
+            elif saved[copy_id]:
+                reason = "settings were saved on it"
+            elif getattr(copy, "is_global", False):
+                reason = "it was made Global"
+            elif not _switch_on(base):
+                reason = f"{base_id!r} is switched off"
+            else:
+                removable[copy_id] = base_id
                 continue
-            if await Functions.delete_function_by_id(function_id):
+            self._log_copy_kept(copy_id, base_id, reason)
+            if retry and unsettled_out is not None:
+                unsettled_out.add(copy_id)
+        if not removable:
+            return 0
+        unmoved = await self._move_users_settings(Functions, removable)
+        for copy_id, reason in unmoved.items():
+            self._log_copy_kept(copy_id, removable[copy_id], reason)
+            if unsettled_out is not None:
+                unsettled_out.add(copy_id)
+        ready = {copy_id: base_id for copy_id, base_id in removable.items() if copy_id not in unmoved}
+        if not ready:
+            return 0
+        await self._pipe._ensure_catalog_manager().repoint_filter_ids(ready)
+        removed = 0
+        for copy_id, base_id in ready.items():
+            live = await Functions.get_function_by_id(copy_id)
+            if live is None or not _owned_by(live, owner) or getattr(live, "is_global", False):
+                continue
+            if await Functions.delete_function_by_id(copy_id):
                 removed += 1
                 self.logger.warning(
-                    "Removed the filter %r: a copy of %r the pipe installed under an Open WebUI 0.12 "
-                    "per-load id.",
-                    function_id,
+                    "Removed the filter %r: a numbered copy of %r left behind when the pipe ran under "
+                    "an Open WebUI 0.12 per-load id.",
+                    copy_id,
                     base_id,
                 )
+            else:
+                self.logger.log(
+                    bounded_warn_level(
+                        _warned_stale_filter_rows, f"per_load_copy_not_deleted:{copy_id}", _PER_MODEL_INSTALL_WARN_WINDOW,
+                    ),
+                    "Open WebUI would not delete the filter %r, a numbered copy of %r left behind when "
+                    "the pipe ran under an Open WebUI 0.12 per-load id; the pipe tries again at a later "
+                    "model-list refresh.",
+                    copy_id,
+                    base_id,
+                )
+                if unsettled_out is not None:
+                    unsettled_out.add(copy_id)
         return removed
 
     async def retire_families_whose_install_valve_is_off(
@@ -3845,7 +4097,7 @@ __KEEP_WHAT_STILL_FITS__
             existing = existing_filters.get(slug)
             if existing is None or slug in undeliverable_slugs:
                 continue
-            if _row_owner(existing) not in ("", pipe_identifier):
+            if not _routing_row_is_ours(existing, pipe_identifier):
                 continue
             if getattr(existing, "is_global", False):
                 global_rows.add(slug)
@@ -4337,7 +4589,7 @@ __KEEP_WHAT_STILL_FITS__
             if not providers:
                 if slug in not_fetched:
                     skipped_id = getattr(existing_filters.get(slug), "id", "")
-                    if skipped_id and _row_owner(existing_filters.get(slug)) in ("", pipe_identifier):
+                    if skipped_id and _routing_row_is_ours(existing_filters.get(slug), pipe_identifier):
                         slug_to_filter_id[slug] = skipped_id
                     self.logger.debug(
                         "Provider routing slug %s was not fetched this cycle; "
@@ -4400,7 +4652,7 @@ __KEEP_WHAT_STILL_FITS__
             if existing:
                 existing_id = getattr(existing, "id", "")
                 existing_content = (getattr(existing, "content", "") or "").strip() + "\n"
-                if _row_owner(existing) not in ("", pipe_identifier):
+                if not _routing_row_is_ours(existing, pipe_identifier):
                     existing_id = getattr(existing, "id", "")
                     if existing_id:
                         slug_to_filter_id[slug] = existing_id
@@ -4530,7 +4782,7 @@ __KEEP_WHAT_STILL_FITS__
         disabled = 0
         for orphan in orphan_filters:
             orphan_id = getattr(orphan, "id", "")
-            if orphan_id and _row_owner(orphan) in ("", pipe_identifier):
+            if orphan_id and _routing_row_is_ours(orphan, pipe_identifier):
                 if _is_already_switched_off(orphan):
                     continue
                 live = await _live_row(Functions, orphan)
@@ -4550,7 +4802,7 @@ __KEEP_WHAT_STILL_FITS__
         for slug, existing in existing_filters.items():
             if slug in undeliverable or slug not in all_models:
                 existing_id = getattr(existing, "id", "")
-                if existing_id and _row_owner(existing) in ("", pipe_identifier):
+                if existing_id and _routing_row_is_ours(existing, pipe_identifier):
                     if slug in all_models and _operator_re_enabled_the_pipe_off(existing):
                         continue
                     if not getattr(existing, "is_active", False):

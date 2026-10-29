@@ -40,7 +40,10 @@ The pipe ships a dedicated Open WebUI filter, **OpenRouter Fusion** (`openrouter
 Fusion's options as UI knobs. When the canonical id `openrouter_fusion` is already taken — by a filter
 you added yourself, or by another install — the pipe installs and maintains its row under
 `openrouter_fusion_1`, `openrouter_fusion_2` and so on, and identifies that row by the source marker it
-writes into the filter's code rather than by its id. It injects a `{"id": "fusion", …}` entry into the request's `plugins`
+writes into the filter's code rather than by its id. A row the pipe itself wrote under an Open WebUI 0.12
+per-load id is not another install's: the pipe rewrites it in place, id and settings kept, and settles any
+numbered copy of it (see "Copies made under a per-load id" in [Provider Routing](openrouter_provider_routing.md)).
+It injects a `{"id": "fusion", …}` entry into the request's `plugins`
 array (the same mechanism as the Web Tools filter). It acts on the fusion models — `openrouter/fusion`,
 `openrouter/fusion-flash`, and any `:tag` variant or `:preset/…` form of them — and —
 unless an admin opts in — no-ops on every other model.
