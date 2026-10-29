@@ -329,3 +329,57 @@ async def test_a_streaming_request_with_no_chat_that_ends_on_its_own_tool_call_f
             isinstance(frame, dict) and ((frame.get("choices") or [{}])[0].get("delta") or {}).get("tool_calls")
             for frame in read[:finished_at]
         ), read
+
+
+@pytest.mark.asyncio
+async def test_a_request_with_no_chat_that_names_an_open_webui_tool_gets_each_call_back_and_the_pipe_runs_none(
+    pipe_instance_async, monkeypatch
+):
+    ran: list[str] = []
+
+    async def lookup(q: str) -> str:
+        ran.append(q)
+        return "found"
+
+    registry = {"lookup": resolved_tool("lookup", lookup)}
+    declared = [{"type": "function", "function": {
+        "name": "lookup", "description": "lookup tool",
+        "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
+    }}]
+    pipe = pipe_instance_async
+    requests = install(
+        pipe, monkeypatch,
+        lambda n, _request: calls_round(call("lookup", {"q": "x"}, f"call-{n}")) if n == 1 else answer_round("done"),
+    )
+
+    for mode in ("Pipeline", "Open-WebUI"):
+        for stream in (True, False):
+            requests.clear()
+            result, _raw = await run(
+                pipe, mode=mode, stream=stream, metadata={}, body_tools=declared, owui_tools=registry, wire=stream
+            )
+            if stream:
+                returned = [
+                    tool_call
+                    for frame in result
+                    if isinstance(frame, dict)
+                    for tool_call in ((frame.get("choices") or [{}])[0].get("delta") or {}).get("tool_calls") or []
+                ]
+                finished = finish_reasons_of(result)
+            else:
+                choice = result["choices"][0]
+                returned = choice["message"]["tool_calls"]
+                finished = [choice["finish_reason"]]
+            where = (mode, stream)
+            assert [(c["id"], c["function"]["name"], json.loads(c["function"]["arguments"])) for c in returned] == [
+                ("call-1", "lookup", {"q": "x"})
+            ], (where, result)
+            assert finished == ["tool_calls"], (where, result)
+            assert len(requests) == 1, where
+            assert offered(requests[0]) == ["function:lookup"], where
+            assert ran == [], where
+
+    requests.clear()
+    await run(pipe, mode="Pipeline", stream=True, metadata=dict(CHAT), body_tools=declared, owui_tools=registry)
+    assert ran == ["x"]
+    assert outputs_in(requests[1]) == ["found"]

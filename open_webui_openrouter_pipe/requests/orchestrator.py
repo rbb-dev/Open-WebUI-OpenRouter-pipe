@@ -1491,9 +1491,14 @@ class RequestOrchestrator:
         owui_tool_passthrough = open_webui_runs_the_calls(
             valves, __metadata__, stream=bool(completions_body.stream)
         )
+        hand_every_call_back = _is_chatless_caller(__metadata__)
         incoming_tools_raw = body.get("tools")
         incoming_tools = _chat_tools_to_responses_tools(incoming_tools_raw)
-        strictify = valves.ENABLE_STRICT_TOOL_CALLING and (not owui_tool_passthrough)
+        strictify = (
+            valves.ENABLE_STRICT_TOOL_CALLING
+            and (not owui_tool_passthrough)
+            and (not hand_every_call_back)
+        )
 
         owui_registry: dict[str, dict[str, Any]] = {}
         if isinstance(__tools__, dict):
@@ -1529,6 +1534,7 @@ class RequestOrchestrator:
         unreachable_direct_names = frozenset(
             name for name, cfg in owui_registry.items()
             if cfg.get("direct") is True and cfg.get("callable") is None
+            and not hand_every_call_back
         )
         owui_registry = {name: cfg for name, cfg in owui_registry.items() if name not in unreachable_direct_names}
         if unreachable_direct_names and not owui_tool_passthrough:
@@ -1654,6 +1660,7 @@ class RequestOrchestrator:
                 builtin_ask_user_names=builtin_ask_user_names,
                 deferred_tool_names=deferred_tool_names,
                 register_call_tool_runner=call_tool_gate_on,
+                hand_every_call_back=hand_every_call_back,
             )
         else:
             tools, exec_registry, exposed_to_origin = [], {}, {}

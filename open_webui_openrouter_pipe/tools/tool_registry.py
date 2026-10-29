@@ -235,6 +235,7 @@ def _build_collision_safe_tool_specs_and_registry(
     builtin_ask_user_names: set[str] | None = None,
     deferred_tool_names: frozenset[str] | None = None,
     register_call_tool_runner: bool = False,
+    hand_every_call_back: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], dict[str, str]]:
     from .tool_executor import is_builtin_ask_user, is_owui_builtin
 
@@ -245,6 +246,7 @@ def _build_collision_safe_tool_specs_and_registry(
     direct_registry = direct_registry or {}
     builtin_registry = builtin_registry or {}
     deferred_tool_names = deferred_tool_names or frozenset()
+    offers_tools_it_does_not_run = owui_tool_passthrough or hand_every_call_back
 
     owui_entries: list[tuple[str, dict[str, Any]]] = [
         (key, entry) for key, entry in owui_registry.items() if isinstance(entry, dict)
@@ -324,7 +326,7 @@ def _build_collision_safe_tool_specs_and_registry(
         if same_name_entries > 1:
             log.debug("Skipping request tool %s: %d registry tools share the name.", origin_name, same_name_entries)
             continue
-        handed_back = owui_tool_passthrough or not runnable
+        handed_back = offers_tools_it_does_not_run or not runnable
         if handed_back:
             spec = {**raw_tool, "name": origin_name}
         else:
@@ -358,7 +360,7 @@ def _build_collision_safe_tool_specs_and_registry(
         origin_name = spec["name"]
         if origin_name in carried_by_registry:
             continue
-        if (not owui_tool_passthrough) and tool_cfg.get("callable") is None:
+        if (not offers_tools_it_does_not_run) and tool_cfg.get("callable") is None:
             continue
         candidates.append(
             {
@@ -383,7 +385,7 @@ def _build_collision_safe_tool_specs_and_registry(
         else:
             origin_name = key if isinstance(key, str) and key.strip() else spec["name"]
         spec["name"] = origin_name
-        if (not owui_tool_passthrough) and tool_cfg.get("callable") is None:
+        if (not offers_tools_it_does_not_run) and tool_cfg.get("callable") is None:
             continue
         candidates.append(
             {
@@ -407,10 +409,10 @@ def _build_collision_safe_tool_specs_and_registry(
             continue
         tool_cfg = _pick_executor(origin_name)
         runnable = isinstance(tool_cfg, dict) and tool_cfg.get("callable") is not None
-        if (not owui_tool_passthrough) and (not tool_cfg or tool_cfg.get("callable") is None):
+        if (not offers_tools_it_does_not_run) and (not tool_cfg or tool_cfg.get("callable") is None):
             log.debug("Skipping unexecutable extra tool %s (no callable).", origin_name)
             continue
-        if not (owui_tool_passthrough or not runnable):
+        if not (offers_tools_it_does_not_run or not runnable):
             carried = _bound_description_and_parameters(_bound_spec(tool_cfg))
             if carried:
                 spec = {**spec, **carried}
@@ -481,7 +483,7 @@ def _build_collision_safe_tool_specs_and_registry(
         tool_cfg = c.get("tool_cfg")
         if (
             register_call_tool_runner
-            and not owui_tool_passthrough
+            and not offers_tools_it_does_not_run
             and isinstance(tool_cfg, dict)
             and tool_cfg.get("tool_id") == CALL_TOOL_TOOL_ID
         ):
@@ -491,7 +493,7 @@ def _build_collision_safe_tool_specs_and_registry(
             runner["exposed_name"] = exposed_name
             runner["source"] = tool_cfg.get("source", tool_cfg)
             exec_registry[exposed_name] = runner
-        if not isinstance(tool_cfg, dict) or tool_cfg.get("callable") is None:
+        if hand_every_call_back or not isinstance(tool_cfg, dict) or tool_cfg.get("callable") is None:
             continue
         if owui_tool_passthrough and (tool_cfg.get("direct") is True or is_owui_builtin(tool_cfg)):
             log.debug("Skipping registry entry %s (Open WebUI runs this one).", exposed_name)

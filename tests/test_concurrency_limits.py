@@ -331,7 +331,7 @@ class TestToolSemaphore:
                     __request__=None,
                     __event_emitter__=None,
                     __event_call__=None,
-                    __metadata__={},
+                    __metadata__={"chat_id": "chat-1", "message_id": "message-1"},
                     __tools__={
                         "delegate_task": {
                             "callable": _slow,
