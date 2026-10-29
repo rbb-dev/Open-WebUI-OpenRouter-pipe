@@ -446,6 +446,8 @@ def _install_open_webui_stubs() -> None:
         env_mod.WEBUI_AUTH_TRUSTED_EMAIL_HEADER = None
     if not hasattr(env_mod, "BYPASS_MODEL_ACCESS_CONTROL"):
         env_mod.BYPASS_MODEL_ACCESS_CONTROL = False
+    if not hasattr(env_mod, "AIOHTTP_CLIENT_TIMEOUT"):
+        env_mod.AIOHTTP_CLIENT_TIMEOUT = None
     open_webui.env = env_mod
 
     misc_mod = cast(Any, _ensure_module("open_webui.utils.misc"))

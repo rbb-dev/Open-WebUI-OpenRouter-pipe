@@ -142,14 +142,24 @@ _VETTED_CONNECTION_LIMIT_PER_HOST = 10
 
 _VETTED_DNS_CACHE_SECONDS = 300
 
-_REMOTE_DOWNLOAD_CONNECT_CAP_SECONDS = 60
-_REMOTE_DOWNLOAD_READ_SECONDS = 60.0
-
 _BASE64_DECODE_QUANTUM_CHARS = 1024 * 1024
 
 
-def _seeded_connect_budget(seeded: int) -> int:
-    return min(int(seeded), _REMOTE_DOWNLOAD_CONNECT_CAP_SECONDS)
+def _open_webui_download_limit() -> float | None:
+    try:
+        from open_webui.env import AIOHTTP_CLIENT_TIMEOUT
+    except ImportError:
+        return None
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "open_webui.env failed to import for a reason other than absence; "
+            "downloads of pictures and clips run without a time limit",
+            exc_info=True,
+        )
+        return None
+    if not isinstance(AIOHTTP_CLIENT_TIMEOUT, (int, float)):
+        return None
+    return AIOHTTP_CLIENT_TIMEOUT if AIOHTTP_CLIENT_TIMEOUT > 0 else None
 
 
 def _decode_strict_base64(payload: str) -> bytes | None:
@@ -851,7 +861,6 @@ class MultimodalHandler:
         *,
         chunk_size: int = 1024 * 1024,
         max_size_bytes: int | None = None,
-        timeout_seconds: int | None = None,
         mime_allowlist: set[str] | None = None,
         extra_headers: dict[str, str] | None = None,
         trusted_base_url: str | None = None,
@@ -895,11 +904,8 @@ class MultimodalHandler:
         initial_delay = self.valves.REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS
         max_retry_time = self.valves.REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS
 
-        if timeout_seconds is None:
-            timeout_seconds = self.valves.HTTP_CONNECT_TIMEOUT_SECONDS
-        if timeout_seconds is None:
-            timeout_seconds = 60
-        connect_budget = _seeded_connect_budget(timeout_seconds)
+        limit = _open_webui_download_limit()
+        limit_timer = asyncio.timeout(limit)
 
         effective_max = RECEIVE_ITEM_MAX_BYTES if max_size_bytes is None else max_size_bytes
 
@@ -907,150 +913,161 @@ class MultimodalHandler:
         start_time = time.perf_counter()
 
         try:
-            async for attempt_info in AsyncRetrying(
-                retry=retry_if_exception_type(
-                    (_RetryableHTTPStatusError, httpx.NetworkError, httpx.TimeoutException)
-                ),
-                stop=stop_after_attempt(max_retries + 1),
-                wait=_RetryWait(
-                    wait_exponential(
-                        multiplier=initial_delay,
-                        min=min(initial_delay, max_retry_time),
-                        max=max_retry_time,
+            async with limit_timer:
+                async for attempt_info in AsyncRetrying(
+                    retry=retry_if_exception_type(
+                        (_RetryableHTTPStatusError, httpx.NetworkError, httpx.TimeoutException)
                     ),
-                    max_delay=max_retry_time,
-                ),
-                reraise=True,
-            ):
-                with attempt_info:
-                    attempt += 1
-                    elapsed = time.perf_counter() - start_time
-                    if attempt > 1 and elapsed > max_retry_time:
-                        self.logger.warning(
-                            "Streaming download retry timeout exceeded for %s after %.1fs", loggable_link(url), elapsed
-                        )
-                        if refused is not None:
-                            refused[url] = "retry_timeout"
-                        return None
-                    if attempt > 1:
-                        self.logger.info(
-                            "Streaming retry attempt %d/%d for %s after %.1fs",
-                            attempt - 1, max_retries, loggable_link(url), elapsed
-                        )
-
-                    dest_path.parent.mkdir(parents=True, exist_ok=True)
-                    if dest_path.exists():
-                        dest_path.unlink()
-
-                    request_headers = dict(extra_headers) if extra_headers else {}
-                    request_headers.update(pin_headers)
-                    async with (
-                        httpx.AsyncClient(timeout=httpx.Timeout(connect=connect_budget, read=_REMOTE_DOWNLOAD_READ_SECONDS, write=connect_budget, pool=connect_budget)) as client,
-                        client.stream(
-                            "GET",
-                            request_url,
-                            headers=request_headers or None,
-                            extensions=pin_extensions or None,
-                        ) as response,
-                    ):
-                        try:
-                            response.raise_for_status()
-                        except httpx.HTTPStatusError as exc:
-                            retryable, retry_after = _classify_retryable_http_error(exc)
-                            if retryable:
-                                raise _RetryableHTTPStatusError(exc, retry_after=retry_after) from exc
-                            if refused is not None:
-                                refused[url] = "http_error"
-                            raise
-
-                        mime_type = response.headers.get("content-type", "").split(";")[0].lower().strip()
-                        if mime_type == "image/jpg":
-                            mime_type = "image/jpeg"
-
-                        content_length = response.headers.get("content-length")
-                        if content_length:
-                            try:
-                                if int(content_length) > effective_max:
-                                    self.logger.warning(
-                                        "Remote streaming target %s exceeds configured limit per Content-Length "
-                                        "(%s bytes > %s bytes); aborting.",
-                                        loggable_link(url), content_length, effective_max,
-                                    )
-                                    if refused is not None:
-                                        refused[url] = "too_large"
-                                    raise RemoteDownloadRefused(
-                                        reason="the download is larger than the configured size limit"
-                                    )
-                            except ValueError:
-                                pass
-
-                        written = 0
-                        sniff_buffer = bytearray()
-                        sniffed_mime: str | None = mime_type
-                        with dest_path.open("wb") as fh:
-                            async for chunk in response.aiter_bytes(chunk_size=chunk_size):
-                                if not chunk:
-                                    continue
-                                projected = written + len(chunk)
-                                if projected > effective_max:
-                                    size_mb = projected / (1024 * 1024)
-                                    limit_mb = effective_max / (1024 * 1024)
-                                    self.logger.warning(
-                                        "Streaming download %s exceeds limit "
-                                        "(%.1fMB > %.1fMB); aborting.",
-                                        loggable_link(url), size_mb, limit_mb
-                                    )
-                                    if refused is not None:
-                                        refused[url] = "too_large"
-                                    raise RemoteDownloadRefused(
-                                        reason="the download is larger than the configured size limit"
-                                    )
-                                if len(sniff_buffer) < _SNIFF_PREFIX_BYTES:
-                                    sniff_buffer.extend(
-                                        chunk[: _SNIFF_PREFIX_BYTES - len(sniff_buffer)]
-                                    )
-                                fh.write(chunk)
-                                written = projected
-
-                        if mime_allowlist is not None:
-                            sniffed_mime = resolve_download_type(
-                                sniffed_mime,
-                                _sniff_evidence(bytes(sniff_buffer)),
-                                mime_allowlist,
+                    stop=stop_after_attempt(max_retries + 1),
+                    wait=_RetryWait(
+                        wait_exponential(
+                            multiplier=initial_delay,
+                            min=min(initial_delay, max_retry_time),
+                            max=max_retry_time,
+                        ),
+                        max_delay=max_retry_time,
+                    ),
+                    reraise=True,
+                ):
+                    with attempt_info:
+                        attempt += 1
+                        elapsed = time.perf_counter() - start_time
+                        if attempt > 1 and elapsed > max_retry_time:
+                            self.logger.warning(
+                                "Streaming download retry timeout exceeded for %s after %.1fs", loggable_link(url), elapsed
                             )
-                            if sniffed_mime not in mime_allowlist:
-                                self.logger.warning(
-                                    "Streaming download MIME %r (declared %r) not in allowlist %r; aborting.",
-                                    sniffed_mime, mime_type, sorted(mime_allowlist),
-                                )
+                            if refused is not None:
+                                refused[url] = "retry_timeout"
+                            return None
+                        if attempt > 1:
+                            self.logger.info(
+                                "Streaming retry attempt %d/%d for %s after %.1fs",
+                                attempt - 1, max_retries, loggable_link(url), elapsed
+                            )
+
+                        dest_path.parent.mkdir(parents=True, exist_ok=True)
+                        if dest_path.exists():
+                            dest_path.unlink()
+
+                        request_headers = dict(extra_headers) if extra_headers else {}
+                        request_headers.update(pin_headers)
+                        async with (
+                            httpx.AsyncClient(timeout=None) as client,
+                            client.stream(
+                                "GET",
+                                request_url,
+                                headers=request_headers or None,
+                                extensions=pin_extensions or None,
+                            ) as response,
+                        ):
+                            try:
+                                response.raise_for_status()
+                            except httpx.HTTPStatusError as exc:
+                                retryable, retry_after = _classify_retryable_http_error(exc)
+                                if retryable:
+                                    raise _RetryableHTTPStatusError(exc, retry_after=retry_after) from exc
                                 if refused is not None:
-                                    refused[url] = "mime_not_allowed"
-                                raise RemoteDownloadRefused(
-                                    reason="the download's media type is not in the allowlist"
+                                    refused[url] = "http_error"
+                                raise
+
+                            mime_type = response.headers.get("content-type", "").split(";")[0].lower().strip()
+                            if mime_type == "image/jpg":
+                                mime_type = "image/jpeg"
+
+                            content_length = response.headers.get("content-length")
+                            if content_length:
+                                try:
+                                    if int(content_length) > effective_max:
+                                        self.logger.warning(
+                                            "Remote streaming target %s exceeds configured limit per Content-Length "
+                                            "(%s bytes > %s bytes); aborting.",
+                                            loggable_link(url), content_length, effective_max,
+                                        )
+                                        if refused is not None:
+                                            refused[url] = "too_large"
+                                        raise RemoteDownloadRefused(
+                                            reason="the download is larger than the configured size limit"
+                                        )
+                                except ValueError:
+                                    pass
+
+                            written = 0
+                            sniff_buffer = bytearray()
+                            sniffed_mime: str | None = mime_type
+                            with dest_path.open("wb") as fh:
+                                async for chunk in response.aiter_bytes(chunk_size=chunk_size):
+                                    if not chunk:
+                                        continue
+                                    projected = written + len(chunk)
+                                    if projected > effective_max:
+                                        size_mb = projected / (1024 * 1024)
+                                        limit_mb = effective_max / (1024 * 1024)
+                                        self.logger.warning(
+                                            "Streaming download %s exceeds limit "
+                                            "(%.1fMB > %.1fMB); aborting.",
+                                            loggable_link(url), size_mb, limit_mb
+                                        )
+                                        if refused is not None:
+                                            refused[url] = "too_large"
+                                        raise RemoteDownloadRefused(
+                                            reason="the download is larger than the configured size limit"
+                                        )
+                                    if len(sniff_buffer) < _SNIFF_PREFIX_BYTES:
+                                        sniff_buffer.extend(
+                                            chunk[: _SNIFF_PREFIX_BYTES - len(sniff_buffer)]
+                                        )
+                                    fh.write(chunk)
+                                    written = projected
+
+                            if mime_allowlist is not None:
+                                sniffed_mime = resolve_download_type(
+                                    sniffed_mime,
+                                    _sniff_evidence(bytes(sniff_buffer)),
+                                    mime_allowlist,
                                 )
+                                if sniffed_mime not in mime_allowlist:
+                                    self.logger.warning(
+                                        "Streaming download MIME %r (declared %r) not in allowlist %r; aborting.",
+                                        sniffed_mime, mime_type, sorted(mime_allowlist),
+                                    )
+                                    if refused is not None:
+                                        refused[url] = "mime_not_allowed"
+                                    raise RemoteDownloadRefused(
+                                        reason="the download's media type is not in the allowlist"
+                                    )
 
-                    if attempt > 1:
-                        self.logger.info(
-                            "Successfully streamed %s (%d bytes) after %d attempt(s)",
-                            loggable_link(url), written, attempt
-                        )
+                        if attempt > 1:
+                            self.logger.info(
+                                "Successfully streamed %s (%d bytes) after %d attempt(s)",
+                                loggable_link(url), written, attempt
+                            )
 
-                    return {
-                        "path": dest_path,
-                        "mime_type": sniffed_mime or mime_type,
-                        "url": url,
-                        "size_bytes": written,
-                    }
+                        return {
+                            "path": dest_path,
+                            "mime_type": sniffed_mime or mime_type,
+                            "url": url,
+                            "size_bytes": written,
+                        }
         except RemoteDownloadRefused:
             raise
         except Exception:
             elapsed = time.perf_counter() - start_time
-            self.logger.exception(
-                "Failed streaming download of %s after %d attempt(s) in %.1fs",
-                loggable_link(url),
-                attempt,
-                elapsed,
-            )
+            if limit_timer.expired():
+                self.logger.warning(
+                    "Streaming download of %s did not finish within Open WebUI's "
+                    "AIOHTTP_CLIENT_TIMEOUT (%g s) and was cut after %d attempt(s) in %.1fs",
+                    loggable_link(url),
+                    limit,
+                    attempt,
+                    elapsed,
+                )
+            else:
+                self.logger.exception(
+                    "Failed streaming download of %s after %d attempt(s) in %.1fs",
+                    loggable_link(url),
+                    attempt,
+                    elapsed,
+                )
             if refused is not None:
                 refused.setdefault(url, "transport_error")
             return None

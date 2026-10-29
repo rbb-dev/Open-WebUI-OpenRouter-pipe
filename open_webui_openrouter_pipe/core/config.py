@@ -1268,7 +1268,7 @@ class Valves(BaseModel):
         default=45,
         ge=5,
         le=300,
-        description="Maximum total time in seconds to spend on retry attempts. Retries will stop if this time limit is exceeded. It also caps any single retry wait, including one a server asked for in a Retry-After header.",
+        description="Maximum total time in seconds to spend on retry attempts. Retries will stop if this time limit is exceeded. It also caps any single retry wait, including one a server asked for in a Retry-After header. It does not limit how long one attempt takes: a whole download, retries included, is held to Open WebUI's AIOHTTP_CLIENT_TIMEOUT environment variable, and has no time limit while that is unset.",
     )
 
     TRANSIENT_RETRY_MAX_ATTEMPTS: int = Field(

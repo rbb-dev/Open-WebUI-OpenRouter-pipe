@@ -369,6 +369,7 @@ address a user typed is never exempt.
 Even when a URL passes SSRF checks, downloads are constrained by:
 - the pipe's fixed 2 GiB per-item receive ceiling on every download, and the cap the Open WebUI admin last saved under Admin → Settings → Documents → Max Upload Size, which binds on the storage leg whether or not Open WebUI’s RAG bypass is on (that flag switches off embedding, not the admin’s ceiling)
 - `REMOTE_DOWNLOAD_*` retry/time budget valves
+- Open WebUI's `AIOHTTP_CLIENT_TIMEOUT` environment variable, when set: a download that has not finished within that many seconds, retries included, is cut. Unset, which is Open WebUI's default, the pipe applies no time limit to a download
 
 The three transport fetches carry their own fixed caps, because none of them is
 operator-configurable and each follows redirects, so the body is chosen by whatever the

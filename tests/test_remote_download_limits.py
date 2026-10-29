@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from typing import Any, Self
 
 import httpx
@@ -714,3 +715,91 @@ async def test_a_compatible_brand_can_answer_something_other_than_mp4(
     assert result is not None and result["mime_type"] == "audio/mp4", (
         f"the compatible-brand scan did not reach offset 32: {result}"
     )
+
+
+class _SlowResponse:
+    status_code = 200
+    headers = {"content-type": "image/png"}
+
+    def __init__(self, gaps: list[float], read_timeout: float | None) -> None:
+        self._gaps = gaps
+        self._read_timeout = read_timeout
+
+    def raise_for_status(self) -> None:
+        return None
+
+    async def aiter_bytes(self, chunk_size: int = 0):
+        for gap in self._gaps:
+            if self._read_timeout is not None and gap > self._read_timeout:
+                await asyncio.sleep(self._read_timeout)
+                raise httpx.ReadTimeout("no data arrived within the read timeout")
+            await asyncio.sleep(gap)
+            yield b"x" * 10
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> bool:
+        return False
+
+
+class _SlowServerClient:
+    def __init__(self, gaps: list[float], timeout: Any, attempts: list[int]) -> None:
+        self._gaps = gaps
+        self._read_timeout = httpx.Timeout(timeout).read
+        self._attempts = attempts
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> bool:
+        return False
+
+    def stream(self, _method: str, _url: str, **_kwargs: Any) -> _SlowResponse:
+        self._attempts.append(1)
+        return _SlowResponse(self._gaps, self._read_timeout)
+
+
+@pytest.mark.jumping_clock
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("limit", "gaps", "finishes"),
+    [
+        (None, [90.0, 40.0, 40.0, 40.0, 40.0], True),
+        (150, [40.0, 40.0, 40.0, 40.0, 40.0, 40.0], False),
+    ],
+    ids=["limit-unset", "limit-set"],
+)
+async def test_a_download_stops_at_open_webuis_time_limit_and_runs_on_without_one(
+    pipe_instance_async, tmp_path, monkeypatch, limit, gaps, finishes
+):
+    from open_webui_openrouter_pipe.storage import multimodal as mm
+
+    monkeypatch.setattr(sys.modules["open_webui.env"], "AIOHTTP_CLIENT_TIMEOUT", limit)
+    attempts: list[int] = []
+    monkeypatch.setattr(
+        mm.httpx,
+        "AsyncClient",
+        lambda **kw: _SlowServerClient(gaps, kw.get("timeout", 5.0), attempts),
+        raising=True,
+    )
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+
+    result = await _download(pipe_instance_async, tmp_path)
+
+    elapsed = loop.time() - started
+    if finishes:
+        assert result is not None, (
+            f"a download that went silent for {gaps[0]:.0f}s and took {sum(gaps):.0f}s in all was "
+            "abandoned although Open WebUI sets no download limit"
+        )
+        assert result["size_bytes"] == 10 * len(gaps)
+        assert elapsed >= sum(gaps)
+    else:
+        assert result is None, (
+            f"a download that needs {sum(gaps):.0f}s finished although Open WebUI limits "
+            f"downloads to {limit}s"
+        )
+        assert limit <= elapsed < limit + 1, f"the download ended after {elapsed:.1f}s, not at {limit}s"
+        assert len(attempts) == 1, "a download the limit cut was started again"

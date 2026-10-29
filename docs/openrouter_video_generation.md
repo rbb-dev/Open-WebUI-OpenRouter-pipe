@@ -2608,6 +2608,11 @@ The download step failed mid-stream or wrote zero bytes. Check:
   ordinary private gateway is not the cause; a cleartext `http://` gateway is, unless
   `ALLOW_INSECURE_HTTP` is on with the host allowlisted. Check the log line
   `Remote streaming download blocked by security policy` for the reason.
+- Open WebUI's `AIOHTTP_CLIENT_TIMEOUT` is not cutting the clip. When that environment
+  variable is set on Open WebUI, a clip that has not finished arriving within that many
+  seconds is cut, retries included, and the log line says
+  `did not finish within Open WebUI's AIOHTTP_CLIENT_TIMEOUT`. Unset, which is Open WebUI's
+  default, the pipe applies no time limit to the download.
 - Downstream storage (`STORAGE_PROVIDER`) is healthy and writable.
 - The pipe process has filesystem write permission to its temp dir.
 
