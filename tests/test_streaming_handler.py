@@ -13498,3 +13498,94 @@ async def test_a_refusal_from_chat_completions_or_an_unstreamed_reply_stays_a_bl
             if event.get("type") == "chat:message:delta"
         )
         assert shown == expected
+
+
+def _assistant_text_message(text):
+    return {
+        "type": "message",
+        "role": "assistant",
+        "status": "completed",
+        "content": [{"type": "output_text", "text": text, "annotations": []}],
+    }
+
+
+TWO_TEXT_MESSAGES = [_assistant_text_message("First."), _assistant_text_message("Second.")]
+
+TWO_TEXT_MESSAGES_NOT_STREAMED = {
+    "payload": {
+        "id": "resp-1",
+        "status": "completed",
+        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        "output": TWO_TEXT_MESSAGES,
+    },
+}
+
+TWO_TEXT_MESSAGES_STREAMED = {
+    "body": "".join(
+        "data: " + json.dumps(event) + "\n\n"
+        for event in (
+            *(
+                event
+                for message in TWO_TEXT_MESSAGES
+                for event in (
+                    {"type": "response.output_item.added", "item": {**message, "status": "in_progress", "content": []}},
+                    {"type": "response.output_text.delta", "delta": message["content"][0]["text"]},
+                    {"type": "response.output_item.done", "item": message},
+                )
+            ),
+            {"type": "response.completed", "response": {"output": TWO_TEXT_MESSAGES, "usage": {}}},
+        )
+    ).encode()
+    + b"data: [DONE]\n\n",
+    "headers": {"Content-Type": "text/event-stream"},
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stream", "reply"),
+    [
+        pytest.param(False, TWO_TEXT_MESSAGES_NOT_STREAMED, id="reply-not-streamed"),
+        pytest.param(True, TWO_TEXT_MESSAGES_STREAMED, id="reply-streamed"),
+    ],
+)
+async def test_the_text_of_two_message_items_is_separated_by_a_newline(pipe_instance_async, stream, reply):
+    from aioresponses import aioresponses
+
+    pipe = pipe_instance_async
+    body = ResponsesBody(model="test/model", input=[], stream=stream)
+    emitted: list[dict] = []
+
+    async def emitter(event):
+        emitted.append(event)
+
+    runner = (
+        pipe._streaming_handler._run_streaming_loop
+        if stream
+        else pipe._streaming_handler._run_nonstreaming_loop
+    )
+    session = pipe._create_http_session(pipe.valves)
+    try:
+        with aioresponses() as http:
+            http.post("https://openrouter.ai/api/v1/responses", status=200, **reply)
+            result = await runner(
+                body,
+                pipe.valves,
+                emitter,
+                metadata={"model": {"id": "test"}},
+                tools={},
+                session=cast(Any, session),
+                user_id="user-123",
+                endpoint_override="responses",
+            )
+    finally:
+        await session.close()
+
+    assert result == "First.\nSecond."
+    if stream:
+        shown = "".join(
+            (event.get("data") or {}).get("content", "")
+            for event in emitted
+            if event.get("type") == "chat:message:delta"
+        )
+        assert shown == result

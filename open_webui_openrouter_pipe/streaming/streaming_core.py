@@ -577,6 +577,7 @@ class StreamingHandler:
         continuation_newline_pending = bool(body._continues_after_marker)
         refusal_pending: list[str] = []
         refusal_block_end = -1
+        message_item_ended = False
         continues_after_text = not continuation_newline_pending and bool((CONTINUED_REPLY.get() or "").strip())
         continues_reply = continuation_newline_pending or continues_after_text
         if event_emitter is None:
@@ -2095,10 +2096,17 @@ class StreamingHandler:
                 return refusal
 
             def _text_lead(current_text: str) -> str:
+                nonlocal message_item_ended
                 lead = _continuation_lead(current_text)
-                if lead or len(current_text) != refusal_block_end:
+                follows_a_message_item = message_item_ended
+                message_item_ended = False
+                if lead:
                     return lead
-                return "\n\n"
+                if len(current_text) == refusal_block_end:
+                    return "\n\n"
+                if follows_a_message_item and current_text and not current_text.endswith("\n"):
+                    return "\n"
+                return ""
 
             async def _append_assistant_hidden_markers(current_text: str, markers: list[str]) -> str:
                 if not markers or realtime_call:
@@ -2361,6 +2369,7 @@ class StreamingHandler:
 
                 if loop_index > 0:
                     retry_barrier_crossed = True
+                    message_item_ended = False
                     await _close_and_emit_reasoning_items(assistant_message)
                     active_reasoning_item_id = None
                     reasoning_stream_buffers.pop("__reasoning__", None)
@@ -3025,6 +3034,7 @@ class StreamingHandler:
                                 reasoning_anchor_state["chars_at_last_chunk"] = len(
                                     assistant_message
                                 )
+                            message_item_ended = True
                             continue
 
                         should_persist = False
