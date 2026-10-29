@@ -112,11 +112,11 @@ except ImportError:
 from .api.gateway.responses_adapter import _drop_backlog_latch, _FailureCharge
 from .core.circuit_breaker import CircuitBreaker
 from .core.config import (
+    _DEFAULT_PIPE_ID,
     _DIRECT_UPLOADS_FILTER_MARKER,
     _FUNCTION_ID_TAIL_RE,
     _OPENROUTER_CATEGORIES,
     _OPENROUTER_TITLE,
-    _PIPE_RUNTIME_ID,
     AUTOMATION_RUN,
     OWUI_CHAT_ID,
     OWUI_REQUEST,
@@ -124,6 +124,7 @@ from .core.config import (
     EncryptedStr,
     UserValves,
     Valves,
+    _detect_runtime_pipe_id,
     _is_a_legal_referer_value,
     _select_openrouter_http_referer,
     parse_user_valves,
@@ -1118,7 +1119,7 @@ class _PipeJob:
 
 
 class Pipe:
-    id: str = _PIPE_RUNTIME_ID or "open_webui_openrouter_pipe"
+    id: str = _DEFAULT_PIPE_ID
 
     Valves = Valves
     UserValves = UserValves
@@ -1138,6 +1139,10 @@ class Pipe:
         frozenset[str],
         dict[str, str],
     ] | None = None
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        cls.id = _detect_runtime_pipe_id(cls.id, cls.__module__)
 
     @timed
     def __init__(self):

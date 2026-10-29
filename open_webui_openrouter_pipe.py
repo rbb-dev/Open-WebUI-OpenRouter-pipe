@@ -12,17 +12,10 @@ license: MIT
 """
 
 from open_webui_openrouter_pipe import Pipe as BasePipe
-from open_webui_openrouter_pipe.core.config import _pipe_id_from_module_name
-
-_MODULE_PREFIX = "function_"
-_runtime_id = (
-    _pipe_id_from_module_name(__name__)
-    if __name__.startswith(_MODULE_PREFIX)
-    else BasePipe.id
-)
 
 
 class Pipe(BasePipe):
-    id = _runtime_id
+    pass
+
 
 __all__ = ["Pipe"]

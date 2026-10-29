@@ -1101,11 +1101,8 @@ del _install_package_alias
 
 def _render_entry_point() -> str:
     return '''
-_MODULE_PREFIX = "function_"
-_runtime_id = _pipe_id_from_module_name(__name__) if __name__.startswith(_MODULE_PREFIX) else Pipe.id
-
 class _BundledPipe(Pipe):
-    id = _runtime_id
+    pass
 
 Pipe = _BundledPipe  # type: ignore[misc]
 
@@ -1359,13 +1356,11 @@ def _generate_compressed_runtime() -> str:
 def _generate_compressed_entry_point() -> str:
     return """\
 from open_webui_openrouter_pipe import Pipe as BasePipe
-from open_webui_openrouter_pipe.core.config import _pipe_id_from_module_name
 
-_MODULE_PREFIX = "function_"
-_runtime_id = _pipe_id_from_module_name(__name__) if __name__.startswith(_MODULE_PREFIX) else BasePipe.id
 
 class Pipe(BasePipe):
-    id = _runtime_id
+    pass
+
 
 __all__ = ["Pipe"]
 """

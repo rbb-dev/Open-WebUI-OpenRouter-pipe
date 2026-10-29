@@ -963,16 +963,13 @@ def _pipe_id_from_module_name(module_name: str) -> str:
     return tail.group(1) if tail else candidate
 
 
-def _detect_runtime_pipe_id(default: str = _DEFAULT_PIPE_ID) -> str:
-    module_name = globals().get("__name__", "")
+def _detect_runtime_pipe_id(default: str, module_name: str) -> str:
     if isinstance(module_name, str) and module_name.startswith(_FUNCTION_MODULE_PREFIX):
         candidate = _pipe_id_from_module_name(module_name)
         if candidate:
             return candidate
     return default
 
-
-_PIPE_RUNTIME_ID = _detect_runtime_pipe_id()
 
 def _is_template_valve(name: Any) -> bool:
     return isinstance(name, str) and name.endswith("_TEMPLATE")

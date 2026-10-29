@@ -1192,13 +1192,13 @@ import sys
 import types
 import io
 import logging
+import uuid
 from typing import Any, Dict, TYPE_CHECKING, cast
 
 import httpx
 import pytest
 
 import open_webui_openrouter_pipe as ow
-from open_webui_openrouter_pipe.core import config as ow_config
 
 if TYPE_CHECKING:
     from aiohttp import ClientResponse
@@ -1218,27 +1218,87 @@ def _install_logger(monkeypatch):
     return stream
 
 
-def test_detect_runtime_pipe_id_from_module_prefix(monkeypatch):
-    monkeypatch.setitem(ow_config.__dict__, "__name__", "function_demo.plugin")
-    assert ow._detect_runtime_pipe_id("fallback") == "demo.plugin"
+def test_detect_runtime_pipe_id_from_module_prefix():
+    assert ow._detect_runtime_pipe_id("fallback", "function_demo.plugin") == "demo.plugin"
 
 
-def test_detect_runtime_pipe_id_default(monkeypatch):
-    # The reader is core/config.py's own globals(), which is what the sibling above
-    # patches. Pointing this at the package __init__ patched a module the function never
-    # reads AND broke the lazy __getattr__, which resolves submodules relative to
-    # __name__: the test failed when it was the only node collected.
-    monkeypatch.setitem(ow_config.__dict__, "__name__", "open_webui_openrouter_pipe.pipe")
-    assert ow._detect_runtime_pipe_id("fallback") == "fallback"
+def test_detect_runtime_pipe_id_default():
+    assert ow._detect_runtime_pipe_id("fallback", "open_webui_openrouter_pipe.pipe") == "fallback"
 
 
-def test_detect_runtime_pipe_id_strips_the_reload_suffix(monkeypatch):
-    monkeypatch.setitem(
-        ow_config.__dict__,
-        "__name__",
-        "function_demo.plugin_0123456789abcdef0123456789abcdef",
-    )
-    assert ow._detect_runtime_pipe_id("fallback") == "demo.plugin"
+def test_detect_runtime_pipe_id_strips_the_reload_suffix():
+    module_name = "function_demo.plugin_0123456789abcdef0123456789abcdef"
+    assert ow._detect_runtime_pipe_id("fallback", module_name) == "demo.plugin"
+
+
+_LOADER_FILE_2_7_3 = '''from open_webui_openrouter_pipe import Pipe as BasePipe
+
+_MODULE_PREFIX = "function_"
+_runtime_id = __name__[len(_MODULE_PREFIX) :] if __name__.startswith(_MODULE_PREFIX) else BasePipe.id
+
+
+class Pipe(BasePipe):
+    id = _runtime_id
+
+__all__ = ["Pipe"]
+'''
+
+
+@pytest.mark.asyncio
+async def test_an_old_loader_file_gets_the_function_id_under_a_per_load_module_name():
+    from aioresponses import aioresponses
+
+    from open_webui_openrouter_pipe import EncryptedStr
+    from tests.test_request_orchestrator import _consume_stream, _smart_callback
+
+    function_id = "openrouter_responses_pipe"
+    module = types.ModuleType(f"function_{function_id}_{uuid.uuid4().hex}")
+    exec(_LOADER_FILE_2_7_3, module.__dict__)
+    pipe = module.Pipe()
+
+    async def _emit(_event):
+        pass
+
+    captured: list[dict] = []
+    try:
+        assert pipe.id == function_id
+        pipe.valves.API_KEY = EncryptedStr("test-api-key")
+        pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
+        model = f"{function_id}.example-lab.alpha-1"
+        with aioresponses() as http:
+            http.post(
+                "https://openrouter.ai/api/v1/responses",
+                callback=_smart_callback(captured, "OK"),
+                repeat=True,
+            )
+            http.get(
+                "https://openrouter.ai/api/v1/models",
+                payload={"data": [{"id": "example-lab/alpha-1", "name": "Alpha 1"}]},
+                repeat=True,
+            )
+            http.get(
+                "https://openrouter.ai/api/v1/endpoints/zdr", payload={"data": []}, repeat=True
+            )
+            result = await pipe.pipe(
+                body={
+                    "model": model,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                },
+                __user__={"id": "u1", "valves": ow.Pipe.UserValves()},
+                __request__=None,
+                __event_emitter__=_emit,
+                __event_call__=None,
+                __metadata__={"model": {"id": model}},
+                __tools__=None,
+                __task__=None,
+                __task_body__=None,
+            )
+            await _consume_stream(result)
+    finally:
+        await pipe.close()
+
+    assert [payload["model"] for payload in captured] == ["example-lab/alpha-1"]
 
 
 def test_render_error_template_handles_conditionals():

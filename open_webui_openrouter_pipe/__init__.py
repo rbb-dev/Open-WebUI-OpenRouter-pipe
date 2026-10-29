@@ -26,7 +26,6 @@ if TYPE_CHECKING:
     )
     from .core.config import (
         _OPENROUTER_REFERER,
-        _PIPE_RUNTIME_ID,
         DEFAULT_AUTHENTICATION_ERROR_TEMPLATE,
         DEFAULT_INSUFFICIENT_CREDITS_TEMPLATE,
         DEFAULT_NETWORK_TIMEOUT_TEMPLATE,
@@ -130,7 +129,6 @@ __all__ = [
     "_OPEN_WEBUI_CONFIG_MODULE",
     "_PAYLOAD_FLAG_LZ4",
     "_PAYLOAD_FLAG_PLAIN",
-    "_PIPE_RUNTIME_ID",
     "ArtifactStore",
     "CompletionsBody",
     "EncryptedStr",
@@ -218,7 +216,6 @@ _LAZY_IMPORTS = {
     "Valves": (".core.config", "Valves"),
     "UserValves": (".core.config", "UserValves"),
     "EncryptedStr": (".core.config", "EncryptedStr"),
-    "_PIPE_RUNTIME_ID": (".core.config", "_PIPE_RUNTIME_ID"),
     "_OPENROUTER_REFERER": (".core.config", "_OPENROUTER_REFERER"),
     "DEFAULT_OPENROUTER_ERROR_TEMPLATE": (".core.config", "DEFAULT_OPENROUTER_ERROR_TEMPLATE"),
     "DEFAULT_NETWORK_TIMEOUT_TEMPLATE": (".core.config", "DEFAULT_NETWORK_TIMEOUT_TEMPLATE"),
