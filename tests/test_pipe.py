@@ -9977,6 +9977,40 @@ class TestFilterAutoInstallationPaths:
             pipe.shutdown()
 
     @pytest.mark.asyncio
+    async def test_the_multiple_candidates_warning_repeats_only_when_the_set_of_rows_changes(self, caplog):
+        pipe = Pipe()
+        try:
+            from open_webui_openrouter_pipe.core.config import _OPENROUTER_WEB_TOOLS_FILTER_MARKER
+
+            def row(row_id, updated_at):
+                filter_row = MagicMock()
+                filter_row.id = row_id
+                filter_row.updated_at = updated_at
+                filter_row.content = f"{_OPENROUTER_WEB_TOOLS_FILTER_MARKER}\nclass Filter:\n    pass"
+                return filter_row
+
+            rows = [row("filter1", 1), row("filter2", 2)]
+            mock_functions_class = MagicMock()
+            mock_functions_class.get_functions_by_type = AsyncMock(return_value=rows)
+            mock_module = MagicMock()
+            mock_module.Functions = mock_functions_class
+
+            def warnings() -> list[str]:
+                return [msg for msg in caplog.messages if "Multiple OpenRouter Web Tools filter candidates" in msg]
+
+            with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
+                pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER = False
+                with caplog.at_level(logging.WARNING):
+                    for _ in range(3):
+                        await pipe._ensure_filter_manager().ensure_openrouter_web_tools_filter_function_id()
+                    assert len(warnings()) == 1
+                    rows.append(row("filter3", 3))
+                    await pipe._ensure_filter_manager().ensure_openrouter_web_tools_filter_function_id()
+                    assert len(warnings()) == 2
+        finally:
+            pipe.shutdown()
+
+    @pytest.mark.asyncio
     async def test_web_tools_filter_get_function_by_id_error_propagates(self):
         """A raise from get_function_by_id must surface, not be swallowed.
 

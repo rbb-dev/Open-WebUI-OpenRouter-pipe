@@ -1696,7 +1696,10 @@ completed since install. Check:
 ### Two `openrouter_image_gen` entries in Admin → Functions
 
 A duplicate — `openrouter_image_gen` and `openrouter_image_gen_1` — is
-surfaced by a `Multiple ... candidates found` warning in the pipe's log. The
+surfaced by a `Multiple ... candidates found` warning in the pipe's log, written
+once for a given set of rows after each restart and again when the set changes
+(a repeat of the same set is written at `DEBUG`, and a set the pipe has forgotten
+out of its 300 most recent filter-row warnings is written again). The
 pipe uses the **active, most recently updated** of the two, and it reads the
 selected model from that same row, so a duplicate left behind by an older
 version does not change which model is drawn. Delete the one you do not want

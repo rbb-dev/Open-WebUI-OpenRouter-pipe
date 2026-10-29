@@ -1350,7 +1350,13 @@ class FilterManager:
                     candidates, effective_marker, prefer_id=prefer_id, tie_break_id=tie_break_id
                 )
             if len(candidates) > 1:
-                self.logger.warning(
+                candidate_ids = ",".join(sorted(str(getattr(f, "id", "") or "") for f in candidates))
+                self.logger.log(
+                    bounded_warn_level(
+                        _warned_stale_filter_rows,
+                        f"candidates:{log_label}:{candidate_ids}",
+                        _PER_MODEL_INSTALL_WARN_WINDOW,
+                    ),
                     "Multiple %s candidates found (%d); using '%s'.",
                     log_label, len(candidates), getattr(chosen, "id", ""),
                 )

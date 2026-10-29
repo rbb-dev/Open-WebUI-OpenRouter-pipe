@@ -2680,8 +2680,11 @@ a fresh job.
 
 Log warning. Indicates two or more filter rows match the marker for the
 same model. The pipe uses the active, most recently updated one, which is
-also the row the "Multiple ... candidates found" warning names. Manually
-delete duplicates from Admin → Functions if you want to clean up.
+also the row the "Multiple ... candidates found" warning names. The warning is
+written once for a given set of rows after each restart, and again when the set
+changes; a repeat of the same set is written at `DEBUG`. The pipe remembers the
+300 most recent filter-row warnings, so a set it has forgotten since is written
+again. Manually delete duplicates from Admin → Functions if you want to clean up.
 
 ### Chat reload after disconnect shows duplicate video
 
