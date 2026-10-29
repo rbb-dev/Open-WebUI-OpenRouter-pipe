@@ -49,9 +49,11 @@ pytestmark = pytest.mark.jumping_clock
 import tenacity
 from aioresponses import aioresponses, CallbackResult
 
+import open_webui_openrouter_pipe.pipe as pipe_mod
 from open_webui_openrouter_pipe import Pipe, OpenRouterAPIError
 from open_webui_openrouter_pipe.api.gateway import responses_adapter
 from open_webui_openrouter_pipe.api.gateway.responses_adapter import ResponsesAdapter
+from open_webui_openrouter_pipe.integrations import image_catalog, video_catalog
 
 
 def _sse(obj: dict[str, Any]) -> str:
@@ -485,42 +487,83 @@ async def test_responses_streaming_error_4xx_non_special(pipe_instance_async):
     assert exc_info.value.status == 405
 
 
+ROUTES = [
+    (endpoint, stream, chat)
+    for endpoint in ("responses", "chat_completions")
+    for stream in (True, False)
+    for chat in (True, False)
+]
+
+
+async def _records_of_a_failed_turn(pipe, session, caplog, route, failure):
+    endpoint, stream, chat = route
+    url = {
+        "responses": "https://openrouter.ai/api/v1/responses",
+        "chat_completions": "https://openrouter.ai/api/v1/chat/completions",
+    }[endpoint]
+    valves = pipe.valves.model_copy(update={"DEFAULT_LLM_ENDPOINT": endpoint})
+    metadata = {"model": {"id": "m1"}}
+    if chat:
+        metadata.update({"chat_id": "chat-1", "message_id": "message-1"})
+
+    async def emitter(event):
+        pass
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING), aioresponses() as mock_http:
+        if failure == "refusal":
+            mock_http.post(
+                url,
+                payload={"error": {"message": "The attached picture is larger than this provider accepts", "code": 413}},
+                status=413,
+                repeat=True,
+            )
+        else:
+            mock_http.post(url, exception=ValueError("frame handler fault"), repeat=True)
+        await pipe._handle_pipe_call(
+            {"stream": stream, "model": "m1", "messages": [{"role": "user", "content": "hi"}]},
+            {}, None, emitter, None, metadata, None, None, None,
+            session=session, valves=valves,
+        )
+    return [
+        (record.levelno, record.exc_info is not None)
+        for record in emitted(caplog, min_level=logging.WARNING)
+    ]
+
+
 @pytest.mark.asyncio
-async def test_the_stream_logs_a_provider_refusal_as_a_warning_and_a_fault_with_its_traceback(
-    pipe_instance_async, caplog
+async def test_a_refusal_writes_one_warning_and_a_fault_one_traceback_on_every_route(
+    monkeypatch, pipe_instance_async, caplog
 ):
     pipe = pipe_instance_async
-    valves = pipe.valves
-    session = pipe._create_http_session(valves)
 
-    async def failed_stream(expected, **mocked):
-        caplog.clear()
-        with caplog.at_level(logging.WARNING), aioresponses() as mock_http:
-            mock_http.post("https://openrouter.ai/api/v1/responses", **mocked)
-            with pytest.raises(expected):
-                async for _ in pipe.send_openai_responses_streaming_request(
-                    session,
-                    {"model": "openai/gpt-4o", "stream": True, "input": []},
-                    api_key="test-key",
-                    base_url="https://openrouter.ai/api/v1",
-                    valves=valves,
-                ):
-                    pass
-        return [
-            (record.levelno, record.exc_info is not None)
-            for record in emitted(caplog, min_level=logging.WARNING)
-        ]
+    async def loaded(*_args, **_kwargs):
+        return None
 
-    refused = await failed_stream(
-        OpenRouterAPIError,
-        payload={"error": {"message": "The attached picture is larger than this provider accepts", "code": 413}},
-        status=413,
+    monkeypatch.setattr(pipe, "_resolve_openrouter_api_key", lambda _valves: ("sk-test", None))
+    monkeypatch.setattr(pipe._artifact_store, "_ensure_artifact_store", lambda *_a, **_k: None)
+    monkeypatch.setattr(pipe_mod.OpenRouterModelRegistry, "ensure_loaded", loaded)
+    monkeypatch.setattr(
+        pipe_mod.OpenRouterModelRegistry, "list_models",
+        lambda: [{"id": "m1", "name": "Model m1", "norm_id": "m1"}],
     )
-    faulted = await failed_stream(ValueError, exception=ValueError("frame handler fault"))
-    await session.close()
+    monkeypatch.setattr(image_catalog, "ensure_image_catalog_loaded", loaded)
+    monkeypatch.setattr(video_catalog, "ensure_video_catalog_loaded", loaded)
+    session = pipe._create_http_session(pipe.valves)
+    refused = {}
+    faulted = {}
+    try:
+        for route in ROUTES:
+            refused[route] = await _records_of_a_failed_turn(pipe, session, caplog, route, "refusal")
+            records = await _records_of_a_failed_turn(pipe, session, caplog, route, "fault")
+            faulted[route] = [record for record in records if record[1]]
+    finally:
+        await session.close()
 
-    assert refused == [(logging.WARNING, False)]
-    assert faulted == [(logging.ERROR, True)]
+    assert {"refused": refused, "faulted": faulted} == {
+        "refused": {route: [(logging.WARNING, False)] for route in ROUTES},
+        "faulted": {route: [(logging.ERROR, True)] for route in ROUTES},
+    }
 
 
 @pytest.mark.asyncio

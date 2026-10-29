@@ -950,6 +950,13 @@ class RequestOrchestrator:
     ) -> None:
         if is_sign_in_failure(exc):
             self._pipe._note_auth_failure()
+        if isinstance(exc, UpstreamBodyUnreadable):
+            self.logger.error(
+                "Unreadable upstream body from %s (Content-Type: %s): %s",
+                exc.endpoint, exc.content_type, exc.body_excerpt[:200],
+            )
+        else:
+            self._pipe._ensure_error_formatter()._log_provider_rejection(exc)
         if fusion_inner:
             return
         await self._pipe._dispatch_generation_complete(
@@ -2923,10 +2930,6 @@ class RequestOrchestrator:
                 )
                 if escape is not None:
                     await self._note_provider_failure(exc, fusion_inner=fusion_inner)
-                    self.logger.error(
-                        "Unreadable upstream body from %s (Content-Type: %s): %s",
-                        exc.endpoint, exc.content_type, exc.body_excerpt[:200],
-                    )
                     return escape
 
             if _is_chatless_caller(__metadata__) and responses_body.stream:

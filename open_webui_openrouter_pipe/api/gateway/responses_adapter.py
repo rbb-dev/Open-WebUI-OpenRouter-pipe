@@ -28,7 +28,6 @@ from ...core.errors import (
     _build_openrouter_api_error,
     _ChatRetryWait,
     _classify_retryable_openrouter_error,
-    _provider_log_subject,
     is_sign_in_failure,
     refused_by_data_policy,
 )
@@ -429,7 +428,7 @@ class ResponsesAdapter:
         passthrough_deltas = delta_char_limit <= 0 and idle_flush_ms <= 0
         requested_model = request_body.get("model")
         charge_failure = _once_only_charge(self._pipe, breaker_key, charge_holder)
-        producer_reported = False
+        producer_awaited = False
 
         def _raise_in_band_error(current: dict[str, Any] | None):
             if current is None:
@@ -442,7 +441,6 @@ class ResponsesAdapter:
 
         @timed
         async def _producer() -> None:
-            nonlocal producer_reported
             seq = 0
             first_chunk_received = False
 
@@ -706,18 +704,10 @@ class ResponsesAdapter:
                                 if not delivered_any:
                                     raise aiohttp.ClientPayloadError("OpenRouter sent no user-visible events on /responses")
                             except Exception as producer_exc:
-                                if isinstance(producer_exc, OpenRouterAPIError):
-                                    if is_sign_in_failure(producer_exc):
-                                        self._pipe._note_auth_failure()
-                                    self.logger.warning(
-                                        "Producer received an error reply while streaming from OpenRouter: %s",
-                                        _provider_log_subject(producer_exc),
-                                    )
-                                else:
-                                    self.logger.exception(
-                                        "Producer encountered error while streaming from OpenRouter"
-                                    )
-                                producer_reported = True
+                                if isinstance(producer_exc, OpenRouterAPIError) and is_sign_in_failure(
+                                    producer_exc
+                                ):
+                                    self._pipe._note_auth_failure()
                                 if accepted and not body_complete and not isinstance(
                                     producer_exc, OpenRouterAPIError
                                 ):
@@ -916,6 +906,7 @@ class ResponsesAdapter:
             for item in final_queue:
                 yield item
 
+            producer_awaited = True
             await producer_task
             if not stream_ended:
                 charge_failure()
@@ -927,7 +918,7 @@ class ResponsesAdapter:
                     task.cancel()
             results = await asyncio.gather(producer_task, *worker_tasks, return_exceptions=True)
             for idx, result in enumerate(results):
-                if idx == 0 and producer_reported:
+                if idx == 0 and producer_awaited:
                     continue
                 if isinstance(result, Exception) and not isinstance(result, asyncio.CancelledError):
                     task_name = "producer" if idx == 0 else f"worker-{idx - 1}"

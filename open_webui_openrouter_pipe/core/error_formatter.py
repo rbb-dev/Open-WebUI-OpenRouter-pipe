@@ -431,6 +431,13 @@ class ErrorFormatter:
             return None
         return self._build_streaming_openrouter_error(event_data, requested_model=requested_model)
 
+    def _log_provider_rejection(self, exc: OpenRouterAPIError, error_id: str | None = None) -> None:
+        self.logger.warning(
+            "%sOpenRouter rejected the request: %s",
+            f"[{error_id}] " if error_id else "",
+            _provider_log_subject(exc),
+        )
+
     @timed
     async def _report_openrouter_error(
         self,
@@ -475,11 +482,7 @@ class ErrorFormatter:
         retry_after_hint = _resolve_retry_after_seconds(exc.metadata)
         if retry_after_hint is not None and context_defaults.get("retry_after_seconds") is None:
             context_defaults["retry_after_seconds"] = retry_after_hint
-        self.logger.warning(
-            "[%s] OpenRouter rejected the request: %s",
-            error_id,
-            _provider_log_subject(exc),
-        )
+        self._log_provider_rejection(exc, error_id)
         model_display, diagnostics, metrics = _resolve_error_model_context(
             exc,
             normalized_model_id=normalized_model_id,

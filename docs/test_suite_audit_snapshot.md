@@ -2635,6 +2635,8 @@ about the tree. The rows repaired after that date say so where they differ.
 
 ## `tests/test_sse_parser.py`
 
+This file and the `SSEParser` class it tested were removed in commit 34b30a36, so no row below names a test that exists. The log levels that the two producer rows (`test_producer_auth_error_logs_warning`, `test_producer_non_auth_error_logs_error`) described are held, for the code that reads the stream today, where a failure is reported, by `test_a_refusal_writes_one_warning_and_a_fault_one_traceback_on_every_route` in `tests/test_responses.py`.
+
 | Test Name | Description | What It Tests | Code Under Test | Mocks/Fixtures | Assertions | Drift Risk | Check Done | Codex Notes | Codex TODO |
 |-----------|-------------|---------------|-----------------|----------------|------------|------------|------------|-------------|------------|
 | test_parse_sse_stream_cleans_up_on_early_break | Verify tasks are cancelled when consumer breaks early from async for | Task cancellation during cleanup when consumer exits async iteration early | SSEParser.parse_sse_stream() cleanup logic (lines 158, 161, 167-168) | _FakeSession with 100 chunks and 0.1s delays, _FakeContent | len(events_received) >= 2 | LOW - Core cleanup mechanism | YES | Tests critical cleanup path when consumer breaks early; ensures no task leaks | None |
