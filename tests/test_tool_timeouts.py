@@ -5,8 +5,8 @@ ordinary per-call, batch or idle limits. An ask_user call that shares its turn w
 Open WebUI refuses it, because the browser can only show one prompt at a time. A tool that times out or raises tells
 the model what happened.
 
-The limits involved are minutes long. While a turn runs, every relative timeout asyncio offers is scaled down by
-``SCALE`` and the fake tools sleep on the same scale, so the executor's real timers run unmodified, only faster.
+The limits involved are minutes long. The file runs on the suite's jumping clock, which skips ahead to the loop's next
+timer, so none of them is waited out and the executor's real timers run unmodified.
 """
 
 from __future__ import annotations
@@ -16,7 +16,6 @@ import ast
 import asyncio
 import collections
 from collections.abc import AsyncIterator
-import contextlib
 import functools
 import inspect
 import json
@@ -27,6 +26,7 @@ import typing
 from typing import Any
 
 import pytest
+from conftest import _TimeTravelLoop
 from tests.package_sources import open_webui_package_dir
 from tests.pipe_limits import limits_for
 from aiohttp.helpers import TimerContext
@@ -42,41 +42,7 @@ from open_webui_openrouter_pipe.integrations import image_catalog, video_catalog
 
 pytestmark = pytest.mark.jumping_clock
 
-# Time here is simulated, never waited out. The loop jumps its own clock to the next scheduled wake-up
-# instead of sleeping until it, so a tool that "takes 300 seconds" costs nothing while still finishing
-# after one that takes 295. Ordering is exact because the jump is to a timer the loop already holds --
-# there is no race to lose. This replaced a scaled real clock whose margins shrank with the scale: at
-# 0.01 the file took 156 s, at 0.002 34 s, and at 0.001 it failed two runs in three.
-SCALE = 1.0
 NEVER = 100_000
-
-
-class _TimeTravelLoop(asyncio.SelectorEventLoop):
-    """An event loop that advances to the next timer rather than waiting for it.
-
-    `_scheduled` is the loop's own heap of pending wake-ups. When nothing is runnable, the earliest of
-    those is the only thing that can happen next, so moving the clock there changes what the loop does
-    next by exactly nothing -- except that it costs no real time.
-    """
-
-    # CPython internals typeshed does not declare. Naming them states what this clock rests on;
-    # `test_the_event_loop_internals_the_jumping_clock_rests_on_still_exist` fails if one goes away.
-    _ready: Any
-    _scheduled: Any
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._skew = 0.0
-
-    def time(self) -> float:
-        return super().time() + self._skew
-
-    def _run_once(self) -> None:
-        if not self._ready and self._scheduled:
-            gap = self._scheduled[0]._when - self.time()
-            if gap > 0:
-                self._skew += gap
-        super()._run_once()  # pyright: ignore[reportAttributeAccessIssue]
 
 
 def test_the_event_loop_internals_the_jumping_clock_rests_on_still_exist():
@@ -90,12 +56,6 @@ def test_the_event_loop_internals_the_jumping_clock_rests_on_still_exist():
         assert callable(asyncio.SelectorEventLoop._run_once)  # pyright: ignore[reportAttributeAccessIssue]
     finally:
         loop.close()
-
-
-@contextlib.contextmanager
-def _scaled_clock(_monkeypatch):
-    """Kept so the call sites read unchanged; the loop itself supplies the simulated time."""
-    yield
 
 
 def _builtin_ask_user(tool, exposed: str = "ask_user") -> dict[str, Any]:
@@ -162,7 +122,7 @@ def _call(call_id: str, name: str, arguments: str = "{}") -> dict[str, Any]:
 def _answers_after(seconds: float, trace: list[str]):
     async def tool(**_kwargs):
         trace.append("asked")
-        await asyncio.sleep(seconds * SCALE)
+        await asyncio.sleep(seconds)
         trace.append("answered")
         return json.dumps({"status": "answered", "answers": {"q1": {"label": "A"}}})
 
@@ -225,16 +185,15 @@ async def _run_with(pipe, monkeypatch, registry, calls, *, maxsize=50, workers=5
     loop = asyncio.get_running_loop()
     started = loop.time()
     try:
-        with _scaled_clock(monkeypatch):
-            outputs = await executor._execute_function_calls(calls, registry)
-            if drain:
-                await asyncio.sleep(drain * SCALE)
+        outputs = await executor._execute_function_calls(calls, registry)
+        if drain:
+            await asyncio.sleep(drain)
     finally:
         pipe._TOOL_CONTEXT.reset(token)
         for worker in context.workers:
             worker.cancel()
         await asyncio.gather(*context.workers, return_exceptions=True)
-    return {output["call_id"]: output for output in outputs}, (loop.time() - started) / SCALE
+    return {output["call_id"]: output for output in outputs}, loop.time() - started
 
 
 # --- ask_user keeps its prompt window -------------------------------------------------------------------------------
@@ -340,7 +299,7 @@ def _open_webui_builtin_ask_user(opened_for: list[Any]):
 
     async def browser(event: dict[str, Any]) -> dict[str, Any]:
         opened_for.append(event["data"]["timeout_ms"])
-        await asyncio.sleep((event["data"]["timeout_ms"] / 1000 - 5) * SCALE)
+        await asyncio.sleep(event["data"]["timeout_ms"] / 1000 - 5)
         return {"status": "answered", "answers": {"q1": {"label": "A"}}}
 
     return ask_user, browser
@@ -694,7 +653,7 @@ async def test_a_tool_failure_that_is_not_an_exception_tells_the_model_what_happ
 
 def _takes(seconds: float, name: str, trace: list):
     async def tool(**_kwargs):
-        await asyncio.sleep(seconds * SCALE)
+        await asyncio.sleep(seconds)
         trace.append(name)
         return f"{name} done"
 
@@ -737,7 +696,7 @@ async def test_a_tool_card_is_emitted_when_its_call_finishes_before_the_calls_be
 def _works_for(seconds: float, trace: list[str]):
     async def tool(**_kwargs):
         trace.append("started")
-        await asyncio.sleep(seconds * SCALE)
+        await asyncio.sleep(seconds)
         trace.append("finished")
         return "done"
 
@@ -758,7 +717,7 @@ async def _run_job(pipe, monkeypatch, registry, calls, *, model_seconds: float =
     seen: dict[str, Any] = {}
 
     async def call_the_model_and_run_its_tools(*_args, **_kwargs):
-        await asyncio.sleep(model_seconds * SCALE)
+        await asyncio.sleep(model_seconds)
         if on_complete is not None:
             pipe._TOOL_CONTEXT.get().on_complete = on_complete
         seen["outputs"] = await pipe._ensure_tool_executor()._execute_function_calls(calls, registry)
@@ -779,8 +738,7 @@ async def _run_job(pipe, monkeypatch, registry, calls, *, model_seconds: float =
         future=asyncio.get_running_loop().create_future(),
         valves=valves,
     )
-    with _scaled_clock(monkeypatch):
-        await pipe._execute_pipe_job(job)
+    await pipe._execute_pipe_job(job)
     assert job.future.result() == "turn finished"
     return {output["call_id"]: output for output in seen["outputs"]}
 
@@ -864,10 +822,10 @@ async def _run_job_rounds(pipe, monkeypatch, registry, rounds, **valve_changes):
 
     async def the_model_works_round_after_round(*_args, **_kwargs):
         for think_seconds, calls, write_seconds in rounds:
-            await asyncio.sleep(think_seconds * SCALE)
+            await asyncio.sleep(think_seconds)
             for output in await pipe._ensure_tool_executor()._execute_function_calls(calls, registry):
                 outputs[output["call_id"]] = output
-            await asyncio.sleep(write_seconds * SCALE)
+            await asyncio.sleep(write_seconds)
         return "turn finished"
 
     monkeypatch.setattr(pipe, "_handle_pipe_call", the_model_works_round_after_round)
@@ -885,8 +843,7 @@ async def _run_job_rounds(pipe, monkeypatch, registry, rounds, **valve_changes):
         future=asyncio.get_running_loop().create_future(),
         valves=valves,
     )
-    with _scaled_clock(monkeypatch):
-        await pipe._execute_pipe_job(job)
+    await pipe._execute_pipe_job(job)
     assert job.future.result() == "turn finished"
     return outputs
 
@@ -973,9 +930,9 @@ async def test_an_ask_user_waiting_for_a_worker_past_the_idle_limit_still_opens_
 
 def _records_when_it_ran(ran: list[tuple[str, float, float]]):
     async def tool(label: str = "", seconds: float = 0, **_kwargs):
-        began = asyncio.get_running_loop().time() / SCALE
-        await asyncio.sleep(seconds * SCALE)
-        ran.append((label, began, asyncio.get_running_loop().time() / SCALE))
+        began = asyncio.get_running_loop().time()
+        await asyncio.sleep(seconds)
+        ran.append((label, began, asyncio.get_running_loop().time()))
         return f"{label} done"
 
     return tool
@@ -1107,23 +1064,22 @@ async def test_inside_a_fusion_answer_each_models_calls_run_one_after_another_wh
     loop = asyncio.get_running_loop()
     token = pipe._TOOL_CONTEXT.set(outer)
     try:
-        with _scaled_clock(monkeypatch):
-            started = loop.time()
-            results = await asyncio.gather(
-                *(
-                    run_fusion_member(
-                        pipe,
-                        invocation,
-                        model=model,
-                        messages=invocation.messages,
-                        system_prompt="PANEL PROMPT",
-                        max_tool_calls=8,
-                        live_queue=None,
-                    )
-                    for model in ("panel/a", "panel/b")
+        started = loop.time()
+        results = await asyncio.gather(
+            *(
+                run_fusion_member(
+                    pipe,
+                    invocation,
+                    model=model,
+                    messages=invocation.messages,
+                    system_prompt="PANEL PROMPT",
+                    max_tool_calls=8,
+                    live_queue=None,
                 )
+                for model in ("panel/a", "panel/b")
             )
-            elapsed = (loop.time() - started) / SCALE
+        )
+        elapsed = loop.time() - started
     finally:
         pipe._TOOL_CONTEXT.reset(token)
 
@@ -1155,7 +1111,7 @@ async def test_an_ask_user_opens_at_once_while_another_request_holds_every_tool_
     registry = {"ask_user": _builtin_ask_user(_answers_after(85, trace))}
 
     async def the_other_request_finishes():
-        await asyncio.sleep(slot_freed_at * SCALE)
+        await asyncio.sleep(slot_freed_at)
         held.release()
 
     other_request = asyncio.ensure_future(the_other_request_finishes())
@@ -1202,7 +1158,7 @@ async def test_the_round_limit_still_ends_a_started_call_whose_body_ignores_the_
     async def stubborn(**_kwargs):
         while not finish.is_set():
             try:
-                await asyncio.sleep(NEVER * SCALE)
+                await asyncio.sleep(NEVER)
             except asyncio.CancelledError:
                 pass
 
@@ -1231,7 +1187,7 @@ def _takes_as_long_as_asked():
     async def fetch(seconds: float = 0, fails: str = "", **_kwargs):
         if fails:
             return await _fails_past_the_retry_wrapper(fails)()
-        await asyncio.sleep(seconds * SCALE)
+        await asyncio.sleep(seconds)
         return f"fetched after {seconds:g}s"
 
     return fetch
@@ -1291,7 +1247,7 @@ class _NotesWhenToolResultsArrive(PluginBase):
         self.arrivals: list[float] = []
 
     async def on_tool_result(self, tool_name, status, **kwargs):
-        self.arrivals.append(self._loop.time() / SCALE)
+        self.arrivals.append(self._loop.time())
 
 
 @pytest.mark.asyncio
@@ -1309,7 +1265,7 @@ async def test_plugins_hear_about_each_tool_result_when_that_call_finishes(
     pipe.valves = pipe.valves.model_copy(update={"ENABLE_PLUGIN_SYSTEM": True})
     registry = {"fetch": _entry(_takes_as_long_as_asked(), tool_type="function", name="fetch")}
     calls = [_call("quick", "fetch", json.dumps({"seconds": quick})), _call("slow", "fetch", json.dumps({"seconds": slow}))]
-    started = loop.time() / SCALE
+    started = loop.time()
 
     await _run(pipe, monkeypatch, registry, calls, timeout=300.0, batch_timeout=600.0)
 
@@ -1335,7 +1291,7 @@ async def test_a_call_still_running_when_its_request_ends_is_stopped_rather_than
         batch_timeout=600.0,
         idle_timeout=idle,
     )
-    await asyncio.sleep(slow * SCALE)
+    await asyncio.sleep(slow)
 
     assert f"Tool 'fetch' timed out after {idle}s (idle timeout)." in _text(outputs["slow"]), outputs
     assert trace == ["started"], trace
@@ -1345,13 +1301,13 @@ async def test_a_call_still_running_when_its_request_ends_is_stopped_rather_than
 
 
 class _VirtualTime:
-    """Stands in for the breaker module's `time`, reading the scaled clock the tool timers run on."""
+    """Stands in for the breaker module's `time`, reading the clock the tool timers run on."""
 
     def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
 
     def time(self) -> float:
-        return self._loop.time() / SCALE
+        return self._loop.time()
 
     def __getattr__(self, name: str) -> Any:
         return getattr(_real_time, name)
@@ -1364,7 +1320,7 @@ async def _hanging_rounds(pipe, monkeypatch, rounds: int, trace: list[str]) -> l
     for index in range(rounds):
         result, _ = await _run(pipe, monkeypatch, registry, [_call(f"c{index}", "hangs")], timeout=90.0, batch_timeout=900.0)
         outputs.append(result[f"c{index}"])
-        await asyncio.sleep(5 * SCALE)
+        await asyncio.sleep(5)
     return outputs
 
 
@@ -1465,7 +1421,7 @@ async def test_a_pause_longer_than_the_window_gives_a_timed_out_tool_back(pipe_i
     trace: list[str] = []
 
     await _hanging_rounds(pipe, monkeypatch, threshold, trace)
-    await asyncio.sleep(61 * SCALE)
+    await asyncio.sleep(61)
     outputs = await _hanging_rounds(pipe, monkeypatch, threshold + 1, trace)
 
     # The pause cleared the earlier failures: the tool gets a whole new run of them before it is skipped again.
@@ -1491,7 +1447,7 @@ def _models_keep_calling(tool_name: str, fed_back: list[str], *, think_after_fir
             yield {"type": "response.completed", "response": {"output": [], "usage": {}}}
             return
         if len(outputs) == 1:
-            await asyncio.sleep(think_after_first_result * SCALE)
+            await asyncio.sleep(think_after_first_result)
         call = {"type": "function_call", "call_id": f"call-{len(outputs)}", "name": tool_name, "arguments": "{}", "status": "completed"}
         yield {"type": "response.output_item.done", "item": call}
         yield {"type": "response.completed", "response": {"output": [call], "usage": {}}}
@@ -1523,7 +1479,7 @@ async def test_a_fusion_turn_stops_calling_a_tool_that_keeps_timing_out_without_
     reopen by expiry. The user's own breaker still allows the tool for a separate reason: a Fusion
     turn's failures are recorded on the per-run breaker alone, never on the user's, so the user is
     never charged for them. Measured: the dispatches are sub-millisecond apart, 0.19-0.35 ms on an
-    idle box at `SCALE = 1.0`, which is an order of magnitude and not a bound; the count, not the
+    idle box, which is an order of magnitude and not a bound; the count, not the
     interval, is what the assertions below pin. The arms differ in whether a member deliberates before
     its second dispatch, so a window that reopened between rounds could not pass both: at an infinite
     window the pause changes nothing, and at a finite one the count is what moves.
@@ -1577,7 +1533,7 @@ async def test_a_fusion_turn_stops_calling_a_tool_that_keeps_timing_out_without_
 
     async def hangs(**_kwargs):
         invoked.append(1)
-        await asyncio.sleep(NEVER * SCALE)
+        await asyncio.sleep(NEVER)
 
     tools = {
         "hangs": {
@@ -1594,19 +1550,18 @@ async def test_a_fusion_turn_stops_calling_a_tool_that_keeps_timing_out_without_
     valves.API_KEY = EncryptedStr("sk-test-key")
     pipe.valves = valves
     try:
-        with _scaled_clock(monkeypatch):
-            result = await pipe.pipe(
-                body={"model": "openrouter.fusion", "messages": [{"role": "user", "content": "Look it up."}], "stream": True},
-                __user__={"id": "u1", "role": "user"},
-                __request__=None,
-                __event_emitter__=None,
-                __event_call__=None,
-                __metadata__={"chat_id": "chat-1", "message_id": "message-1", "model": {"id": "openrouter.fusion"}},
-                __tools__=tools,
-            )
-            if isinstance(result, AsyncIterator):
-                async for _chunk in result:
-                    pass
+        result = await pipe.pipe(
+            body={"model": "openrouter.fusion", "messages": [{"role": "user", "content": "Look it up."}], "stream": True},
+            __user__={"id": "u1", "role": "user"},
+            __request__=None,
+            __event_emitter__=None,
+            __event_call__=None,
+            __metadata__={"chat_id": "chat-1", "message_id": "message-1", "model": {"id": "openrouter.fusion"}},
+            __tools__=tools,
+        )
+        if isinstance(result, AsyncIterator):
+            async for _chunk in result:
+                pass
     finally:
         await pipe.close()
 
@@ -1636,7 +1591,7 @@ async def test_a_fusion_turn_stops_calling_a_tool_that_keeps_timing_out_without_
 
 def _finishes_after(finished: list[str]):
     async def tool(label: str = "", seconds: float = 0, **_kwargs):
-        await asyncio.sleep(seconds * SCALE)
+        await asyncio.sleep(seconds)
         finished.append(label)
         return f"{label} done"
 
@@ -1876,7 +1831,7 @@ async def _stop_the_request_after(pipe, monkeypatch, registry, calls, seconds, *
         try:
             await pipe._ensure_tool_executor()._execute_function_calls(calls, registry)
         except asyncio.CancelledError:
-            await asyncio.sleep(20 * SCALE)
+            await asyncio.sleep(20)
             raise
         return "turn finished"
 
@@ -1896,7 +1851,7 @@ async def _stop_the_request_after(pipe, monkeypatch, registry, calls, seconds, *
         valves=valves,
     )
     running = asyncio.ensure_future(pipe._execute_pipe_job(job))
-    await asyncio.sleep(seconds * SCALE)
+    await asyncio.sleep(seconds)
     running.cancel()
     with pytest.raises(asyncio.CancelledError):
         await running
@@ -1953,7 +1908,7 @@ async def test_a_call_behind_the_running_one_when_the_request_is_stopped_never_s
     def tool(name: str, seconds: float):
         async def run(**_kwargs):
             trace.append(f"{name} started")
-            await asyncio.sleep(seconds * SCALE)
+            await asyncio.sleep(seconds)
             trace.append(f"{name} finished")
             return name
 
