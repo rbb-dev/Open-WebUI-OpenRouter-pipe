@@ -55,6 +55,7 @@ import open_webui_openrouter_pipe.pipe as pipe_mod
 from open_webui_openrouter_pipe import Pipe, OpenRouterAPIError
 from open_webui_openrouter_pipe.api.gateway import responses_adapter
 from open_webui_openrouter_pipe.api.gateway.responses_adapter import ResponsesAdapter
+from open_webui_openrouter_pipe.core.errors import UpstreamBodyUnreadable, _build_openrouter_api_error
 from open_webui_openrouter_pipe.integrations import image_catalog, video_catalog
 from tests.test_image_api_path import _seed_contract
 
@@ -629,6 +630,79 @@ async def test_a_refused_picture_is_logged_once_for_a_chat_and_for_a_program(
                 )
     finally:
         await session.close()
+
+    assert logged == {
+        (failure, chat): [(level, False)]
+        for failure, level in (("refusal", logging.WARNING), ("unreadable", logging.ERROR))
+        for chat in (True, False)
+    }
+
+
+class _NoStoredMessage:
+    async def load_message_content(self, *, chat_id, message_id, user=None):
+        return ""
+
+
+async def _records_of_a_failed_clip(monkeypatch, pipe, caplog, failure, chat):
+    class _Refused:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def submit(self, _payload):
+            if failure == "refusal":
+                raise _build_openrouter_api_error(
+                    400,
+                    "Bad Request",
+                    json.dumps({"error": {"message": "The prompt was refused", "code": 400}}),
+                )
+            raise UpstreamBodyUnreadable(
+                endpoint="https://openrouter.ai/api/v1/videos",
+                body_excerpt="<html>Bad gateway</html>",
+                content_type="text/html",
+            )
+
+    monkeypatch.setattr("open_webui_openrouter_pipe.integrations.video.OpenRouterVideoClient", _Refused)
+    adapter = pipe._ensure_video_generation_adapter()
+    adapter._persistence = _NoStoredMessage()
+    metadata = {"chat_id": "chat-1", "message_id": "message-1"} if chat else {}
+
+    async def emitter(event):
+        pass
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        await adapter.generate(
+            body={"messages": [{"role": "user", "content": "a red mug on a windowsill"}]},
+            responses_body=SimpleNamespace(provider={}),
+            session=object(),
+            event_emitter=emitter if chat else None,
+            metadata=metadata,
+            user={"id": "user-1"},
+            request=None,
+            user_obj={"id": "user-1"},
+            normalized_model_id="openai.sora-2-pro",
+            api_model_id="openai/sora-2-pro",
+            valves=pipe.valves,
+        )
+    return [
+        (record.levelno, record.exc_info is not None)
+        for record in emitted(caplog, min_level=logging.WARNING)
+        if "request-scoped id" not in record.getMessage()
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_clip_is_logged_once_for_a_chat_and_for_a_program(
+    pipe_instance_async, monkeypatch, caplog
+):
+    pipe = pipe_instance_async
+    pipe.valves.VIDEO_INTENT_ENABLED = False
+    logged = {}
+    for failure in ("refusal", "unreadable"):
+        for chat in (True, False):
+            logged[(failure, chat)] = await _records_of_a_failed_clip(
+                monkeypatch, pipe, caplog, failure, chat
+            )
 
     assert logged == {
         (failure, chat): [(level, False)]

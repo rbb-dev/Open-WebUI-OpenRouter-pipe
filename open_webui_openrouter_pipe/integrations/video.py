@@ -1365,7 +1365,6 @@ class VideoGenerationAdapter:
             raise
         except OpenRouterAPIError as exc:
             self._count_a_failed_start(submitted and not lifecycle_transferred, outcome_sink, breaker_key)
-            self.logger.warning("Video generation rejected (job_id=%s): %s", job_id, exc)
             if _is_api_caller(metadata):
                 escape = _provider_error_response(
                     exc, stream=bool(getattr(responses_body, "stream", False)), request=request
@@ -1373,6 +1372,7 @@ class VideoGenerationAdapter:
                 if escape is not None:
                     if is_sign_in_failure(exc):
                         self._pipe._note_auth_failure()
+                    self._pipe._ensure_error_formatter()._log_provider_rejection(exc)
                     return escape
             await self._report_generation(None, "failed", metadata)
             return await self._pipe._ensure_error_formatter()._report_openrouter_error(
@@ -1390,9 +1390,7 @@ class VideoGenerationAdapter:
                 breaker_key,
                 provider_document=False,
             )
-            self.logger.warning(
-                "Video generation body was not an OpenRouter document (job_id=%s): %s", job_id, exc
-            )
+            self._pipe._ensure_error_formatter()._log_unreadable_upstream_body(exc)
             if _is_api_caller(metadata):
                 escape = _unreadable_body_failure_response(
                     exc, code=502, stream=bool(getattr(responses_body, "stream", False)),
@@ -1884,7 +1882,7 @@ class VideoGenerationAdapter:
                 output_mime=output_mime,
             )
         except UpstreamBodyUnreadable as exc:
-            self.logger.warning(
+            self.logger.error(
                 "Video lifecycle body was not an OpenRouter document (job_id=%s): %s", job_id, exc
             )
             failed = True
