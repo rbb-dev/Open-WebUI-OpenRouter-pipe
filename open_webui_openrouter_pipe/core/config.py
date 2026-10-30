@@ -3521,7 +3521,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "is still charged it against its own user's bucket. A caller that reaches the "
             "pipe with no user id at all falls back to the literal string 'anonymous', so "
             "every such caller shares one daily budget. A stored value under the retired "
-            "retired spelling of this setting's name is carried to this setting on load "
+            "spelling of this setting's name is carried to this setting on load "
             "unless this setting already holds a value."
         ),
     )
