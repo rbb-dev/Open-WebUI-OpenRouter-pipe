@@ -383,3 +383,55 @@ async def test_a_request_with_no_chat_that_names_an_open_webui_tool_gets_each_ca
     await run(pipe, mode="Pipeline", stream=True, metadata=dict(CHAT), body_tools=declared, owui_tools=registry)
     assert ran == ["x"]
     assert outputs_in(requests[1]) == ["found"]
+
+
+@pytest.mark.asyncio
+async def test_a_request_with_no_chat_gets_a_call_to_a_tool_withheld_under_legacy_function_calling_back_streamed_or_not(
+    pipe_instance_async, monkeypatch
+):
+    ran: list[str] = []
+
+    async def lookup(q: str) -> str:
+        ran.append(q)
+        return "found"
+
+    registry = {"lookup": resolved_tool("lookup", lookup)}
+    legacy = {"function_calling": "legacy"}
+    pipe = pipe_instance_async
+    requests = install(
+        pipe, monkeypatch,
+        lambda n, _request: calls_round(call("lookup", {"q": "x"}, f"call-{n}")) if n == 1 else answer_round("done"),
+    )
+
+    for stream in (True, False):
+        requests.clear()
+        result, _raw = await run(
+            pipe, mode="Pipeline", stream=stream, metadata={}, owui_tools=registry, params=legacy, wire=stream
+        )
+        if stream:
+            returned = [
+                tool_call
+                for frame in result
+                if isinstance(frame, dict)
+                for tool_call in ((frame.get("choices") or [{}])[0].get("delta") or {}).get("tool_calls") or []
+            ]
+            finished = finish_reasons_of(result)
+        else:
+            choice = result["choices"][0]
+            returned = choice["message"].get("tool_calls") or []
+            finished = [choice["finish_reason"]]
+        assert [(c["id"], c["function"]["name"], json.loads(c["function"]["arguments"])) for c in returned] == [
+            ("call-1", "lookup", {"q": "x"})
+        ], (stream, result)
+        assert finished == ["tool_calls"], (stream, result)
+        assert len(requests) == 1, stream
+        assert offered(requests[0]) == [], stream
+        assert ran == [], stream
+
+    requests.clear()
+    in_a_chat, _raw = await run(
+        pipe, mode="Pipeline", stream=False, metadata=dict(CHAT), owui_tools=registry, params=legacy
+    )
+    assert len(requests) == 2
+    assert in_a_chat["choices"][0]["message"]["content"].endswith("done")
+    assert ran == []

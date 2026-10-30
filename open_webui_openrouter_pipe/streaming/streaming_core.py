@@ -3917,7 +3917,7 @@ class StreamingHandler:
                 hand_back = bool(call_items) and (
                     owui_tool_passthrough
                     or (
-                        body.stream
+                        (body.stream or _is_chatless_caller(metadata))
                         and not fusion_inner_call
                         and _open_webui_owns_the_round(call_items)
                     )
