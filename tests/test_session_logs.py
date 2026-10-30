@@ -1204,6 +1204,60 @@ def _poll(predicate, timeout: float = 5.0) -> bool:
     return predicate()
 
 
+def test_a_writer_blocked_across_a_stop_is_not_doubled_by_the_restart_and_a_later_start_brings_one_back(
+    pipe_instance, monkeypatch
+) -> None:
+    import threading
+
+    manager = pipe_instance._session_log_manager
+    manager.stop_workers()
+    manager._stop_event = None
+    monkeypatch.setattr(manager, "cleanup_archives", lambda: None)
+
+    written: list[tuple[str, threading.Thread]] = []
+    inside_the_write = threading.Event()
+    let_the_write_finish = threading.Event()
+
+    def write(job: str) -> None:
+        if job == "held":
+            inside_the_write.set()
+            assert let_the_write_finish.wait(timeout=10)
+        written.append((job, threading.current_thread()))
+
+    monkeypatch.setattr(manager, "_write_archive", write)
+
+    def writers() -> set[threading.Thread]:
+        return {t for t in threading.enumerate() if t.name == "openrouter-session-log-writer"}
+
+    manager.start_workers()
+    first = manager._worker_thread
+    assert first is not None
+    manager._queue.put("held")
+    manager._queue.put("queued")
+    assert inside_the_write.wait(timeout=5)
+
+    real_join = first.join
+    monkeypatch.setattr(first, "join", lambda timeout=None: real_join(min(timeout or 0.05, 0.05)))
+    manager.stop_workers()
+    assert manager._worker_thread is first and first.is_alive()
+
+    writers_before_the_restart = writers()
+    manager.start_workers()
+    assert manager._worker_thread is first
+    assert writers() == writers_before_the_restart
+
+    let_the_write_finish.set()
+    assert _poll(lambda: not first.is_alive())
+    assert written == [("held", first), ("queued", first)]
+
+    manager.start_workers()
+    second = manager._worker_thread
+    assert second is not None and second is not first and second.is_alive()
+    manager._queue.put("next")
+    assert _poll(lambda: len(written) == 3)
+    assert written[2] == ("next", second)
+
+
 class TestResolveMessageId:
     """Pin resolve_message_id extraction paths (module-level function, no instance)."""
 

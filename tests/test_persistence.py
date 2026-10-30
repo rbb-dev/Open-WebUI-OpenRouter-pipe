@@ -2306,3 +2306,79 @@ def test_a_per_load_table_the_current_key_cannot_read_is_left_alone(pipe_instanc
         assert stale_name in sqlalchemy.inspect(engine).get_table_names()
         with engine.connect() as conn:
             assert conn.execute(sqlalchemy.select(store._item_model.__table__.c.id)).all() == []
+
+
+def test_the_retention_sweep_spares_the_pipes_own_rows_and_sweeps_a_retired_table_only_when_no_other_install_may_own_it(
+    pipe_instance,
+):
+    import sqlalchemy
+
+    engine = create_engine("sqlite://")
+    store = pipe_instance._artifact_store
+    pipe_id = "open_webui_openrouter_pipe"
+    store.id = pipe_id
+    fragment = persistence_mod._sanitize_table_fragment(pipe_id)
+    now = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+    long_ago = now - datetime.timedelta(days=99)
+    cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=30)
+    pipe_owned = [
+        "session_log_segment",
+        "session_log_segment_terminal",
+        "session_log_attempt",
+        "session_log_lock",
+        "dashboard_purge_lock",
+    ]
+
+    def ids(table) -> list[str]:
+        with engine.connect() as conn:
+            return sorted(row[0] for row in conn.execute(sqlalchemy.select(table.c.id)))
+
+    with _install_internal_db(engine):
+        store._apply_artifact_encryption_key("the key before the rotation", "")
+        store._artifact_store_signature = None
+        store._init_artifact_store(pipe_identifier=pipe_id, table_fragment=fragment)
+        retired = store._item_model.__table__
+        with engine.begin() as conn:
+            conn.execute(
+                sqlalchemy.insert(retired),
+                [
+                    _row_values("retired-old", "c1", {"n": 1}, long_ago),
+                    _row_values("retired-new", "c1", {"n": 2}, now),
+                ],
+            )
+
+        store._apply_artifact_encryption_key("the key after the rotation", "")
+        store._artifact_store_signature = None
+        store._init_artifact_store(pipe_identifier=pipe_id, table_fragment=fragment)
+        current = store._item_model.__table__
+        assert current.name != retired.name
+        with engine.begin() as conn:
+            conn.execute(
+                sqlalchemy.insert(current),
+                [
+                    {**_row_values("answer-old", "c1", {"n": 3}, long_ago), "item_type": "reasoning"},
+                    {**_row_values("answer-new", "c1", {"n": 4}, now), "item_type": "reasoning"},
+                    *(
+                        {**_row_values(f"old-{kind}", "c1", {"n": 5}, long_ago), "item_type": kind}
+                        for kind in pipe_owned
+                    ),
+                ],
+            )
+            conn.exec_driver_sql("CREATE TABLE function (id TEXT)")
+            conn.exec_driver_sql(
+                f"INSERT INTO function (id) VALUES ('{pipe_id}'), ('open-webui-openrouter-pipe')"
+            )
+
+        store._cleanup_sync(cutoff)
+        while_another_install_may_own_it = (ids(current), ids(retired))
+
+        with engine.begin() as conn:
+            conn.exec_driver_sql("DELETE FROM function WHERE id = 'open-webui-openrouter-pipe'")
+        store._cleanup_sync(cutoff)
+        once_none_may = ids(retired)
+
+    assert while_another_install_may_own_it == (
+        sorted(["answer-new", *(f"old-{kind}" for kind in pipe_owned)]),
+        ["retired-new", "retired-old"],
+    )
+    assert once_none_may == ["retired-new"]

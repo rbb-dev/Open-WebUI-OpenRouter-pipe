@@ -1836,6 +1836,68 @@ async def test_chat_completions_streaming_tool_call_done_events(pipe_instance_as
     assert func_done[0]["item"]["status"] == "completed"
 
 
+@pytest.mark.asyncio
+async def test_a_tool_call_with_no_finish_reason_still_reaches_the_completed_event(pipe_instance_async):
+    pipe = pipe_instance_async
+    valves = pipe.valves
+    session = pipe._create_http_session(valves)
+
+    sse_response = (
+        _sse({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_no_finish_reason",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": '{"q":'},
+                    }]
+                },
+                "finish_reason": None,
+            }]
+        })
+        + _sse({
+            "choices": [{
+                "delta": {"tool_calls": [{"index": 0, "function": {"arguments": ' "x"}'}}]},
+                "finish_reason": None,
+            }]
+        })
+        + "data: [DONE]\n"
+    )
+
+    with aioresponses() as mock_http:
+        mock_http.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            body=sse_response.encode("utf-8"),
+            headers={"Content-Type": "text/event-stream"},
+            status=200,
+        )
+
+        events = [
+            event
+            async for event in pipe.send_openai_chat_completions_streaming_request(
+                session,
+                {"model": "openai/gpt-4o", "stream": True, "input": []},
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                breaker_key="user_no_finish_reason",
+                valves=valves,
+            )
+        ]
+
+        await session.close()
+
+    completed = [e for e in events if e.get("type") == "response.completed"]
+    assert len(completed) == 1, [e.get("type") for e in events]
+    response = completed[0]["response"]
+    calls = [item for item in response["output"] if item.get("type") == "function_call"]
+    assert [(c["call_id"], c["name"], json.loads(c["arguments"])) for c in calls] == [
+        ("call_no_finish_reason", "lookup", {"q": "x"})
+    ]
+    assert "status" not in response and "incomplete_details" not in response
+    assert pipe._circuit_breaker._breaker_records.get("user_no_finish_reason", []) == []
+
+
 # ============================================================================
 # Reasoning done item emission
 # ============================================================================
