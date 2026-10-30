@@ -13589,3 +13589,77 @@ async def test_the_text_of_two_message_items_is_separated_by_a_newline(pipe_inst
             if event.get("type") == "chat:message:delta"
         )
         assert shown == result
+
+
+@pytest.mark.asyncio
+async def test_the_text_of_two_tool_rounds_is_separated_by_a_newline_unless_a_marker_line_or_an_item_does(
+    pipe_instance_async, monkeypatch
+):
+    from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import (
+        answer_round,
+        call,
+        install,
+        resolved_tool,
+        run,
+    )
+
+    async def add_numbers(a: int, b: int) -> str:
+        return str(a + b)
+
+    properties = {"a": {"type": "integer"}, "b": {"type": "integer"}}
+    registry = {"add_numbers": resolved_tool("add_numbers", add_numbers, properties=properties)}
+    declared = [
+        {
+            "type": "function",
+            "function": {
+                "name": "add_numbers",
+                "description": "Add two numbers.",
+                "parameters": {"type": "object", "properties": properties},
+            },
+        }
+    ]
+    first_message = _assistant_text_message("Let me check.")
+    first_call = call("add_numbers", {"a": 2, "b": 2})
+
+    def script(round_number, _request):
+        if round_number > 1:
+            return answer_round("It is 4.")
+        return [
+            {"type": "response.output_text.delta", "delta": "Let me check."},
+            {"type": "response.output_item.done", "item": first_message},
+            {"type": "response.output_item.done", "item": first_call},
+            {"type": "response.completed", "response": {"output": [first_message, first_call], "usage": {}}},
+        ]
+
+    pipe = pipe_instance_async
+    requests = install(pipe, monkeypatch, script)
+    holds_each_row = pipe._artifact_store._db_persist
+
+    async def keeps_no_row(_rows):
+        return []
+
+    temporary_chat = {"chat_id": "local:session-1", "message_id": "message-1", "session_id": "session-1"}
+    saved_chat = {"chat_id": "chat-1", "message_id": "message-1", "session_id": "session-1"}
+    monkeypatch.setattr(pipe._artifact_store, "_db_persist", keeps_no_row)
+    requests.clear()
+    not_streamed, _raw = await run(
+        pipe, mode="Pipeline", stream=False, metadata=temporary_chat, body_tools=declared, owui_tools=registry
+    )
+    requests.clear()
+    streamed, _raw = await run(
+        pipe, mode="Pipeline", stream=True, metadata=temporary_chat, body_tools=declared, owui_tools=registry
+    )
+    monkeypatch.setattr(pipe._artifact_store, "_db_persist", holds_each_row)
+    requests.clear()
+    with_markers, _raw = await run(
+        pipe, mode="Pipeline", stream=False, metadata=saved_chat, body_tools=declared, owui_tools=registry
+    )
+
+    assert not_streamed["choices"][0]["message"]["content"] == "Let me check.\nIt is 4."
+    assert [
+        piece
+        for frame in streamed
+        if isinstance(frame, dict)
+        if (piece := ((frame.get("choices") or [{}])[0].get("delta") or {}).get("content"))
+    ] == ["Let me check.", "It is 4."]
+    assert with_markers["choices"][0]["message"]["content"].endswith("#\nIt is 4.")

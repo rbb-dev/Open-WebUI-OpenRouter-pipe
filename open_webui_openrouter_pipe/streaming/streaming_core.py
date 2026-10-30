@@ -578,6 +578,7 @@ class StreamingHandler:
         refusal_pending: list[str] = []
         refusal_block_end = -1
         message_item_ended = False
+        message_items_stay_apart = bool(body.stream and emitter_supplied)
         continues_after_text = not continuation_newline_pending and bool((CONTINUED_REPLY.get() or "").strip())
         continues_reply = continuation_newline_pending or continues_after_text
         if event_emitter is None:
@@ -2375,7 +2376,7 @@ class StreamingHandler:
 
                 if loop_index > 0:
                     retry_barrier_crossed = True
-                    message_item_ended = False
+                    message_item_ended = not message_items_stay_apart
                     await _close_and_emit_reasoning_items(assistant_message)
                     active_reasoning_item_id = None
                     reasoning_stream_buffers.pop("__reasoning__", None)
