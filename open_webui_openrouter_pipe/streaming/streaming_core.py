@@ -628,6 +628,7 @@ class StreamingHandler:
         breaker_key_value = None if fusion_inner_call else (user_id or None)
 
         owui_tool_passthrough = open_webui_runs_the_calls(valves, metadata, stream=bool(body.stream))
+        serves_a_program_with_no_chat = _is_chatless_caller(metadata)
         persist_tools_enabled = valves.PERSIST_TOOL_RESULTS
         handed_back = False
         is_continuation = owui_tool_passthrough and any(
@@ -3917,7 +3918,11 @@ class StreamingHandler:
                 hand_back = bool(call_items) and (
                     owui_tool_passthrough
                     or (
-                        (body.stream or _is_chatless_caller(metadata))
+                        serves_a_program_with_no_chat
+                        and not any(_pipe_runs(str(c.get("name") or "")) for c in call_items)
+                    )
+                    or (
+                        body.stream
                         and not fusion_inner_call
                         and _open_webui_owns_the_round(call_items)
                     )

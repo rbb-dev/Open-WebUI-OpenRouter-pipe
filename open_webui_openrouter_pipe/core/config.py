@@ -1749,7 +1749,8 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "or not: Open WebUI runs its tool loop only for a request that carries a chat id and a message id, and "
             "passes the model's tool calls on to the caller for any other, so the pipe offers the model the tools the "
             "program sent and the Open WebUI tools it named, runs none of the calls the model makes, and hands each "
-            "call to one of those tools back to the program as a standard tool call. In a chat, a tool the "
+            "call that names a tool back to the program as a standard tool call, including a call to a name nobody "
+            "offered. In a chat, a tool the "
             "request itself declared with nothing behind it goes back to its sender instead. With 'ask' tool approval "
             "in a saved or temporary chat the pipe never runs a call itself: a streamed reply there hands every call "
             "to Open "
@@ -3746,8 +3747,9 @@ class UserValves(BaseModel):
             "charged to two budgets - and it is charged in a Temporary Chat too, where only the reply's own budget is "
             "held and its chat id is not. A request with no chat, such as an API program's, is not handed to "
             "Open WebUI whatever this is set to: Open WebUI runs its tool loop only for a chat, and the pipe runs "
-            "none of the AI's calls for it either. Every call, to a tool the program declared or to an Open WebUI "
-            "tool it named, goes back to the program as a standard tool call."
+            "none of the AI's calls for it either. Every call that names a tool goes back to the program as a "
+            "standard tool call: one to a tool the program declared, one to an Open WebUI tool it named, and one "
+            "to a name nobody offered."
         ),
     )
     SHOW_TOOL_CARDS: bool = Field(
