@@ -21,6 +21,7 @@ import base64
 import datetime
 import inspect
 import json
+import os
 import re
 import struct
 import zlib
@@ -5434,9 +5435,9 @@ class TestImageReuseRegister:
             "evict the ones it is holding"
         )
         held = sum(
-            len(_b) for _, _b, _m in transformer_module._reuse_download_memo.values()
+            os.path.getsize(path) for _, path, _m in transformer_module._reuse_download_memo.values()
         )
-        assert held <= 1_000, (
+        assert 0 < held <= 1_000, (
             f"the memo holds {held} bytes against its own 1,000 byte cap"
         )
 
