@@ -37,7 +37,9 @@ import json
 import logging
 import os
 import sys
+import time
 import types
+from types import SimpleNamespace
 from typing import Any
 
 import aiohttp
@@ -54,6 +56,7 @@ from open_webui_openrouter_pipe import Pipe, OpenRouterAPIError
 from open_webui_openrouter_pipe.api.gateway import responses_adapter
 from open_webui_openrouter_pipe.api.gateway.responses_adapter import ResponsesAdapter
 from open_webui_openrouter_pipe.integrations import image_catalog, video_catalog
+from tests.test_image_api_path import _seed_contract
 
 
 def _sse(obj: dict[str, Any]) -> str:
@@ -563,6 +566,74 @@ async def test_a_refusal_writes_one_warning_and_a_fault_one_traceback_on_every_r
     assert {"refused": refused, "faulted": faulted} == {
         "refused": {route: [(logging.WARNING, False)] for route in ROUTES},
         "faulted": {route: [(logging.ERROR, True)] for route in ROUTES},
+    }
+
+
+async def _records_of_a_failed_picture(pipe, session, caplog, failure, chat):
+    adapter = pipe._ensure_image_generation_adapter()
+    _seed_contract(adapter, "openai/gpt-image-2", [{}], at=time.monotonic())
+    metadata = {"chat_id": "chat-1", "message_id": "message-1"} if chat else {}
+
+    async def emitter(event):
+        pass
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING), aioresponses() as mock_http:
+        if failure == "refusal":
+            mock_http.post(
+                "https://openrouter.ai/api/v1/images",
+                payload={"error": {"message": "The prompt was refused", "code": 400}},
+                status=400,
+            )
+        else:
+            mock_http.post(
+                "https://openrouter.ai/api/v1/images",
+                body="<html>Bad gateway</html>",
+                content_type="text/html",
+                status=200,
+            )
+        await adapter.generate(
+            body={},
+            responses_body=SimpleNamespace(
+                input=[{"role": "user", "content": [{"type": "input_text", "text": "a leaf"}]}],
+                provider=None,
+            ),
+            session=session,
+            event_emitter=emitter if chat else None,
+            metadata=metadata,
+            user={"id": "user-1"},
+            request=object(),
+            user_obj=object(),
+            normalized_model_id="openai.gpt-image-2",
+            api_model_id="openai/gpt-image-2",
+            valves=pipe.valves,
+        )
+    return [
+        (record.levelno, record.exc_info is not None)
+        for record in emitted(caplog, min_level=logging.WARNING)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_picture_is_logged_once_for_a_chat_and_for_a_program(
+    pipe_instance_async, caplog
+):
+    pipe = pipe_instance_async
+    session = pipe._create_http_session(pipe.valves)
+    logged = {}
+    try:
+        for failure in ("refusal", "unreadable"):
+            for chat in (True, False):
+                logged[(failure, chat)] = await _records_of_a_failed_picture(
+                    pipe, session, caplog, failure, chat
+                )
+    finally:
+        await session.close()
+
+    assert logged == {
+        (failure, chat): [(level, False)]
+        for failure, level in (("refusal", logging.WARNING), ("unreadable", logging.ERROR))
+        for chat in (True, False)
     }
 
 

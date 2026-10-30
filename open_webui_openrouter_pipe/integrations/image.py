@@ -1280,6 +1280,7 @@ class ImageGenerationAdapter:
             if escape is not None:
                 if is_sign_in_failure(exc):
                     self._pipe._note_auth_failure()
+                self._pipe._ensure_error_formatter()._log_provider_rejection(exc)
                 content = escape
             else:
                 content = await self._pipe._ensure_error_formatter()._report_openrouter_error(
@@ -1304,6 +1305,7 @@ class ImageGenerationAdapter:
                 else None
             )
             if escape is not None:
+                self._pipe._ensure_error_formatter()._log_unreadable_upstream_body(exc)
                 content = escape
             else:
                 content = await self._pipe._ensure_error_formatter()._emit_templated_error(

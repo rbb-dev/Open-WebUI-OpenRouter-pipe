@@ -10,7 +10,10 @@ from starlette.responses import StreamingResponse
 from ..core.timing_logger import timed
 
 if TYPE_CHECKING:
-    from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
+    from open_webui_openrouter_pipe.core.errors import (
+        OpenRouterAPIError,
+        UpstreamBodyUnreadable,
+    )
 
     from ..pipe import Pipe
     from ..streaming.event_emitter import EventEmitter, EventEmitterHandler
@@ -436,6 +439,12 @@ class ErrorFormatter:
             "%sOpenRouter rejected the request: %s",
             f"[{error_id}] " if error_id else "",
             _provider_log_subject(exc),
+        )
+
+    def _log_unreadable_upstream_body(self, exc: UpstreamBodyUnreadable) -> None:
+        self.logger.error(
+            "Unreadable upstream body from %s (Content-Type: %s): %s",
+            exc.endpoint, exc.content_type, exc.body_excerpt[:200],
         )
 
     @timed

@@ -951,10 +951,7 @@ class RequestOrchestrator:
         if is_sign_in_failure(exc):
             self._pipe._note_auth_failure()
         if isinstance(exc, UpstreamBodyUnreadable):
-            self.logger.error(
-                "Unreadable upstream body from %s (Content-Type: %s): %s",
-                exc.endpoint, exc.content_type, exc.body_excerpt[:200],
-            )
+            self._pipe._ensure_error_formatter()._log_unreadable_upstream_body(exc)
         else:
             self._pipe._ensure_error_formatter()._log_provider_rejection(exc)
         if fusion_inner:
