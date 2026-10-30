@@ -1583,7 +1583,7 @@ async def transform_messages_to_input(
         temporary_chat = is_temporary_chat(chat_id) if temporary_chat is None else temporary_chat
         _set_memo_writes(not temporary_chat)
         memo_owner = _memo_owner_key(user_obj)
-        request_memo: dict[tuple[str, str], tuple[str | None, str, str]] = {}
+        request_memo: dict[str, tuple[str | None, str, str]] = {}
 
         from ..tools.tool_executor import _request_address_budget
 
@@ -2172,11 +2172,7 @@ async def transform_messages_to_input(
                         elif is_http_or_https_url(url) and not owui_internal:
                             memo_key = (chat_id, url) if chat_id else None
                             transfer_refused: dict[str, str] = {}
-                            remembered = (
-                                request_memo.get(memo_key)
-                                if mode == "reuse" and memo_key is not None
-                                else None
-                            )
+                            remembered = request_memo.get(url)
                             if mode == "reuse" and not temporary_chat and remembered is None:
                                 if (
                                     memo_key is not None
@@ -2192,12 +2188,10 @@ async def transform_messages_to_input(
                                     )
                             if remembered is not None and remembered[0] != memo_owner:
                                 remembered = None
-                            if (
-                                remembered is not None
-                                and memo_key is not None
-                                and not os.path.isfile(remembered[1])
-                            ):
-                                _reuse_download_memo.pop(memo_key, None)
+                            if remembered is not None and not os.path.isfile(remembered[1]):
+                                request_memo.pop(url, None)
+                                if memo_key is not None:
+                                    _reuse_download_memo.pop(memo_key, None)
                                 remembered = None
                             if remembered is not None and not await (
                                 _memo_hit_is_still_permitted(
@@ -2236,6 +2230,7 @@ async def transform_messages_to_input(
                                     if fetched is not None:
                                         held_path = str(fetch_path)
                                         held_mime = fetched.get("mime_type") or held_mime
+                                        request_memo[url] = (memo_owner, held_path, held_mime or "")
                                     else:
                                         fetch_path = None
                                 else:
@@ -2313,12 +2308,8 @@ async def transform_messages_to_input(
                                         memo_path,
                                         held_mime or "",
                                     )
-                                if mode == "reuse" and memo_key is not None:
-                                    request_memo[memo_key] = (
-                                        memo_owner,
-                                        memo_path,
-                                        held_mime or "",
-                                    )
+                                if memo_path != held_path:
+                                    request_memo[url] = (memo_owner, memo_path, held_mime or "")
                                 url = picture_slot
                         owui_file_id = extract_internal_file_id(url) if owui_internal else None
                         if owui_internal and not owui_file_id:

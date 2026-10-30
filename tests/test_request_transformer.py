@@ -5623,3 +5623,49 @@ async def test_a_picture_cited_twice_in_one_request_is_downloaded_once(pipe_inst
     )
 
     assert downloads == [url]
+
+
+@pytest.mark.asyncio
+async def test_a_picture_cited_twice_is_downloaded_once_without_a_chat_and_in_the_latest_message(pipe_instance):
+    url = "https://example.invalid/cited-twice-again.png"
+    downloads: list[str] = []
+
+    async def counting_download(requested, *_a, **_k):
+        downloads.append(requested)
+        return {"data": b"\x89PNG\r\n\x1a\nAAAAAAAA", "mime_type": "image/png"}
+
+    async def none(*_a, **_k):
+        return None
+
+    async def permit(*_a, **_k):
+        return True
+
+    pipe_instance._file_gateway.resolve_storage_context = none
+    pipe_instance._file_gateway.inline_owui_file_id = none
+    pipe_instance._multimodal_handler._is_safe_url = permit
+    pipe_instance._multimodal_handler._download_remote_url_streaming = _as_streaming(counting_download)
+
+    picture = {"type": "image_url", "image_url": {"url": url}}
+    await transform_messages_to_input(
+        pipe_instance,
+        [
+            {"role": "user", "content": [picture, {"type": "text", "text": "what is this"}]},
+            {"role": "assistant", "content": "A cat."},
+            {"role": "user", "content": [picture, {"type": "text", "text": "and this one again"}]},
+            {"role": "assistant", "content": "The same cat."},
+            {"role": "user", "content": [{"type": "text", "text": "and its colour?"}]},
+        ],
+        chat_id=None,
+        user_obj=_NAMED_CALLER,
+    )
+    without_a_chat = list(downloads)
+    downloads.clear()
+
+    await transform_messages_to_input(
+        pipe_instance,
+        [{"role": "user", "content": [picture, picture, {"type": "text", "text": "are they the same"}]}],
+        chat_id="chat-1",
+        user_obj=_NAMED_CALLER,
+    )
+
+    assert (without_a_chat, downloads) == ([url], [url])
