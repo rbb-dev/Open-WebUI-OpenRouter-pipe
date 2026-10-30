@@ -59,6 +59,7 @@ from ..core.context_budget import (
     record_chars_per_token,
 )
 from ..core.costs import maybe_dump_costs_snapshot
+from ..core.error_formatter import _transported_failure_envelope
 from ..core.errors import (
     OpenRouterAPIError,
     RequiredInternalFileError,
@@ -67,6 +68,7 @@ from ..core.errors import (
     data_policy_refusal_reason,
     refused_by_data_policy,
 )
+from ..core.fusion_defaults import PANEL_FAILED_ANSWER, PANEL_FAILED_STATUS
 from ..core.logging_system import SessionLogger, bounded_log_record_text
 from ..core.timing_logger import timed, timing_mark
 from ..core.url_scheme import is_http_or_https_url, loggable_link
@@ -2216,6 +2218,7 @@ class StreamingHandler:
             error_occurred = False
             was_cancelled = False
             fusion_no_usable_member = False
+            fusion_failure_is_an_error = False
             reply_ended_without_an_answer = False
             loop_limit_reached = False
             loop_limit_announced = False
@@ -2641,8 +2644,9 @@ class StreamingHandler:
 
                     if _is_no_usable_member_event(event_source, etype, event):
                         fusion_no_usable_member = True
+                        fusion_failure_is_an_error = streams_to_a_caller_with_no_chat
                         event = {k: v for k, v in event.items() if k != "no_usable_member"}
-                        if not fusion_armed and not assistant_message:
+                        if not fusion_armed and not assistant_message and not fusion_failure_is_an_error:
                             assistant_message = str(event.get("text") or "")
                             if event_emitter:
                                 await event_emitter(
@@ -2676,7 +2680,11 @@ class StreamingHandler:
                                 event = fusion_state.augment_final_answer(event)
                             fusion_state.record(event)
                             await _emit_fusion_embed_once()
-                            if etype == "response.output_text.done" and not assistant_message:
+                            if (
+                                etype == "response.output_text.done"
+                                and not assistant_message
+                                and not fusion_failure_is_an_error
+                            ):
                                 assistant_message = event.get("text") or ""
                             await _emit_fusion_event(event)
                             retry_barrier_crossed = True
@@ -5159,7 +5167,7 @@ class StreamingHandler:
                         exc_info=True,
                     )
 
-            if body.stream and terminal and not was_cancelled:
+            if body.stream and terminal and not was_cancelled and not fusion_failure_is_an_error:
                 try:
                     end_of_answer_notice = _chatless_answer_notice(body, metadata)
                     if end_of_answer_notice:
@@ -5180,9 +5188,12 @@ class StreamingHandler:
                         final_content = (
                             None
                             if (
-                                body.stream
-                                and not (error_occurred and is_channel_chat(chat_id))
-                                and (emitted_response_output_items or open_webui_keeps_stored_output)
+                                fusion_failure_is_an_error
+                                or (
+                                    body.stream
+                                    and not (error_occurred and is_channel_chat(chat_id))
+                                    and (emitted_response_output_items or open_webui_keeps_stored_output)
+                                )
                             )
                             else assistant_message
                         )
@@ -5199,13 +5210,17 @@ class StreamingHandler:
                             content=final_content,
                             output=final_output,
                             usage=_handover_usage(total_usage, last_round_usage),
-                            error=tool_call_limit_error
-                            or (
-                                self._pipe._event_emitter_handler._failure_mark(
-                                    "The model returned no content."
+                            error=(
+                                _transported_failure_envelope(PANEL_FAILED_ANSWER, code=PANEL_FAILED_STATUS)["error"]
+                                if fusion_failure_is_an_error
+                                else tool_call_limit_error
+                                or (
+                                    self._pipe._event_emitter_handler._failure_mark(
+                                        "The model returned no content."
+                                    )
+                                    if reply_ended_without_an_answer
+                                    else None
                                 )
-                                if reply_ended_without_an_answer
-                                else None
                             ),
                             done=True,
                         )

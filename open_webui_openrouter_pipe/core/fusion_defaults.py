@@ -297,6 +297,12 @@ class FusionRunPlan(NamedTuple):
 
 _REQUIRED_TOOL_CHOICE = "required"
 
+PANEL_FAILED_ANSWER = (
+    "Every panel member failed to produce an answer, so no deliberated "
+    "response is available for this run. Please try again."
+)
+PANEL_FAILED_STATUS = 502
+
 
 class FusionPanelTooLargeError(Exception):
     pass

@@ -48,6 +48,8 @@ from ..core.errors import (
 )
 from ..core.fusion_defaults import (
     _REQUIRED_TOOL_CHOICE,
+    PANEL_FAILED_ANSWER,
+    PANEL_FAILED_STATUS,
     FusionPanelTooLargeError,
     find_fusion_entry,
     has_active_fusion_entry,
@@ -2758,6 +2760,15 @@ class RequestOrchestrator:
                     )
                 if invocation.no_usable_member and outcome_sink is not None:
                     outcome_sink["error_occurred"] = True
+                if invocation.no_usable_member and _is_chatless_caller(__metadata__):
+                    escape = _transported_failure_response(
+                        PANEL_FAILED_ANSWER,
+                        code=PANEL_FAILED_STATUS,
+                        stream=responses_body.stream,
+                        path=getattr(getattr(__request__, "url", None), "path", "") or "",
+                    )
+                    if escape is not None:
+                        return escape
                 if invocation.no_usable_member and not fusion_inner:
                     fusion_failure = "Every Fusion panel member failed; this run has no deliberated answer."
                     await self._pipe._event_emitter_handler._emit_notification(

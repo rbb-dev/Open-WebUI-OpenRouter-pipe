@@ -21,6 +21,7 @@ from ..core.fusion_defaults import (
     DEFAULT_FUSION_JUDGE_SYSTEM_PROMPT,
     DEFAULT_FUSION_PANEL_SYSTEM_PROMPT,
     DEFAULT_FUSION_SYNTHESIS_SYSTEM_PROMPT,
+    PANEL_FAILED_ANSWER,
     FusionRunPlan,
 )
 from ..core.logging_system import SessionLogger
@@ -808,14 +809,10 @@ async def run_internal_fusion(
 
         synth_text = ""
         if not usable:
-            failure_answer = (
-                "Every panel member failed to produce an answer, so no deliberated "
-                "response is available for this run. Please try again."
-            )
             yield {"type": "response.output_item.added", "output_index": 1,
                    "item": {"type": "message"}}
             yield {"type": "response.output_text.done", "output_index": 1,
-                   "text": failure_answer, "no_usable_member": True}
+                   "text": PANEL_FAILED_ANSWER, "no_usable_member": True}
         else:
             material = build_synthesis_material(ordered, analysis)
             synth_messages = [

@@ -1695,6 +1695,54 @@ async def test_a_fusion_turn_whose_whole_panel_failed_counts_toward_the_users_re
 
 
 @pytest.mark.asyncio
+async def test_a_fusion_run_whose_whole_panel_failed_is_an_error_to_a_program_and_still_counts_toward_the_users_refusal(
+    monkeypatch,
+):
+    from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import frames_of
+
+    pipe = Pipe()
+    _reach_fusion(monkeypatch, pipe)
+
+    async def turn(stream: bool, metadata: dict[str, Any]) -> Any:
+        return await pipe.pipe(
+            body={"model": "openrouter.fusion", "messages": [{"role": "user", "content": "hi"}], "stream": stream},
+            __user__={"id": "user-1", "role": "user"},
+            __request__=None,
+            __event_emitter__=None,
+            __event_call__=None,
+            __metadata__={"model": {"id": "openrouter.fusion"}, **metadata},
+            __tools__=None,
+        )
+
+    try:
+        with aioresponses() as mock_http:
+            mock_http.post(_RESPONSES_URL, repeat=True, **_FAILED_UPSTREAM)
+            _saved_breaker_settings(pipe, 5)
+            not_streamed = await turn(False, {})
+            streamed = await turn(True, {})
+            assert isinstance(not_streamed, StreamingResponse), not_streamed
+            not_streamed_body = "".join(
+                [
+                    chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk)
+                    async for chunk in not_streamed.body_iterator
+                ]
+            )
+            frames = frames_of([piece async for piece in streamed.body_iterator])
+            recorded = len(pipe._circuit_breaker._breaker_records["user-1"])
+            in_a_chat = await turn(False, {"chat_id": "chat-1", "message_id": "message-1"})
+    finally:
+        await pipe.close()
+
+    error = json.loads(not_streamed_body)["error"]
+    assert (not_streamed.status_code, error["code"]) == (502, 502), (not_streamed.status_code, not_streamed_body)
+    assert [list(frame) if isinstance(frame, dict) else frame for frame in frames] == [["error"], "[DONE]"], frames
+    assert frames[0]["error"] == error, frames
+    assert error["message"].strip(), error
+    assert recorded == 2
+    assert in_a_chat["choices"][0]["finish_reason"] == "stop", in_a_chat
+
+
+@pytest.mark.asyncio
 async def test_a_fusion_turn_where_some_panel_members_answered_clears_the_count(monkeypatch):
     from aioresponses import CallbackResult
 
