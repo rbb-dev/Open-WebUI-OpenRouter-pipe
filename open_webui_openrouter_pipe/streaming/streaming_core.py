@@ -782,6 +782,10 @@ class StreamingHandler:
         total_usage: dict[str, Any] = {}
         last_round_usage: dict[str, Any] = {}
         answering_models: list[str] = []
+
+        def _model_that_answered() -> str:
+            return answering_models[-1].strip() if answering_models else ""
+
         reasoning_stream_active = False
         active_reasoning_item_id: str | None = None
         reasoning_stream_buffers: dict[str, _ReasoningTextBox] = {}
@@ -2323,6 +2327,7 @@ class StreamingHandler:
                 outcome_sink["reason"] = session_log_reason or None
                 outcome_sink["answer_truncated"] = answer_truncated or None
                 outcome_sink["incomplete_reason"] = incomplete_reason_of(final_response)
+                outcome_sink["answering_model"] = _model_that_answered() or None
 
             final_response: dict[str, Any] | None = None
             _finalise_cancelled: BaseException | None = None
@@ -4099,9 +4104,9 @@ class StreamingHandler:
                         if not body.stream:
                             content_handed_back = True
                             try:
-                                model_for_response = ""
+                                model_for_response = _model_that_answered()
                                 metadata_model = metadata.get("model") if isinstance(metadata, dict) else None
-                                if isinstance(metadata_model, dict):
+                                if not model_for_response and isinstance(metadata_model, dict):
                                     model_for_response = str(metadata_model.get("id") or "")
                                 if not model_for_response:
                                     model_for_response = str(body.model or "pipe")

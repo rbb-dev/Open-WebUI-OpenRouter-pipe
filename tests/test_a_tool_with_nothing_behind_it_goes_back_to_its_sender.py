@@ -475,3 +475,31 @@ async def test_a_request_with_no_chat_gets_a_call_to_a_name_nobody_offered_back_
     await run(pipe, mode="Pipeline", stream=True, metadata=dict(CHAT), body_tools=declared, loops=2)
     assert len(requests) > 1
     assert len(outputs_in(requests[1])) == 1
+
+
+def reported_by(model: str, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {**event, "response": {**event["response"], "model": model}} if event.get("type") == "response.completed" else event
+        for event in events
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_reply_that_is_not_streamed_carries_the_model_openrouter_reports_whether_it_hands_a_call_back_or_answers(
+    pipe_instance_async, monkeypatch
+):
+    declared = [{"type": "function", "function": {
+        "name": "lookup", "description": "Look something up.",
+        "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
+    }}]
+    pipe = pipe_instance_async
+
+    install(pipe, monkeypatch, lambda n, _request: reported_by("answering/model", calls_round(call("lookup", {"q": "x"}))))
+    handed_back, _raw = await run(pipe, mode="Pipeline", stream=False, metadata={}, body_tools=declared)
+
+    install(pipe, monkeypatch, lambda n, _request: reported_by("answering/model", answer_round("done")))
+    answered, _raw = await run(pipe, mode="Pipeline", stream=False, metadata={}, body_tools=declared)
+
+    assert handed_back["choices"][0]["finish_reason"] == "tool_calls"
+    assert answered["choices"][0]["message"]["content"] == "done"
+    assert (handed_back["model"], answered["model"]) == ("answering/model", "answering/model")

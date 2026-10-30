@@ -4288,7 +4288,8 @@ class Pipe:
                     record = outcome.get("output")
                     if isinstance(result, str) and isinstance(record, list) and record and not job.task:
                         result = self._build_chat_completion_payload(
-                            model=str(job.body.get("model") or "pipe"), content=result
+                            model=str(outcome.get("answering_model") or job.body.get("model") or "pipe"),
+                            content=result,
                         )
                         result["output"] = record
                         if outcome.get("usage"):
