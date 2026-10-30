@@ -818,7 +818,7 @@ class TestInlineInternalResponsesInputFilesInplace:
         The `match` is the sentence the person is shown, anchored to the whole of
         it: a bare `ValueError` here is not caught by the pipe's typed handler
         and became the internal-error card. The sentence carries no reference on
-        purpose (B936, H3595-2), so the file id is pinned absent from it.
+        purpose, so the file id is pinned absent from it.
         """
         monkeypatch.setattr(owui_files_module, "get_file_by_id", AsyncMock(return_value=None))
 

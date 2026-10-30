@@ -342,8 +342,8 @@
   shielded and unlinks the private temp it produced when the call is cancelled, including when it is cancelled
   repeatedly. A Stop used to land the turn while a worker kept writing a full private copy of somebody's attachment
   whose name nothing held, so the file outlived the call and the pipe paid for a copy nobody would ever read. A
-  returned path is untouched and an `OSError` out of the copy still reaches the caller unchanged (TODO T637 is
-  unchanged and still open: the temp a failed copy wrote is still left behind).
+  returned path is untouched and an `OSError` out of the copy still reaches the caller unchanged; the temp a
+  failed copy wrote is still left behind.
 
 - **Two refusal cards stop appearing for block spellings that carry a real source** — a file block naming its document under `id`/`url` rather than `file_id`/`file_url`, and an `input_image` naming a `file_id` instead of a url, are now sent rather than skipped. Both reached `Files: skipped 1 (has no readable source).` and `Images: skipped 1 (an image carried no picture data).` respectively, so an operator watching refusal counts will see both drop for these spellings even though nothing else was refused. The file block is read through the same address gate, plaintext policy and storage-path rules as any other link (an `id`/`url` naming a private address or a cleartext link is refused exactly as `file_url` is), and the image block's id is forwarded as a file reference to the provider rather than resolved out of Open WebUI storage — it is the provider's own id, and it does not count against the per-request image cap. Open WebUI 0.11.4 itself writes neither spelling into a message, so on a stock deployment these counts do not move; they move where an upstream filter or a direct `/v1/responses` caller sends them.
 - **A remote picture whose download was refused is no longer forwarded as its link** — the downloader returned
@@ -353,7 +353,7 @@
   downloader now says which failure it was, and both the inline and the reuse legs refuse a refused transfer in the
   pipe's own words, `Images: skipped N (past the pipe's per-item receive ceiling of 2048 MiB, so it was not sent).`
   Nothing else moves: a transfer that failed for any other reason — a 404, a timeout, a slow host — is still forwarded
-  as its link on both legs, and a link the pipe's own address check refused is still never forwarded. (T1283)
+  as its link on both legs, and a link the pipe's own address check refused is still never forwarded.
 
 - **Secret valve values, a passphrase typed with the `encrypted:` prefix** — a secret an operator types beginning
   `encrypted:` that is not already a stored row is now sealed like any other, instead of being written into the
@@ -569,7 +569,7 @@
   and a Files default an admin ticked in the editor, are both unchanged.
   **Rows already carrying `builtinTools.files = false` from an earlier build keep it**: there is no valve to
   undo that write and no tick-back, so untick the box in the model editor, or wait for the marker work
-  (B682/T971) that can tell a pipe-written entry from an admin's.
+  that can tell a pipe-written entry from an admin's.
 
 - **Pipe shutdown no longer drops a session-log write that was still in flight** — a turn cancelled by `close()` writes its terminal
   segment from its own cleanup, and that write is now given a budget of its own: it is registered when it starts and awaited before the

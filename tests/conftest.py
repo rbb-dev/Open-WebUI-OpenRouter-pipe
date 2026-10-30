@@ -222,8 +222,7 @@ def config_rev_reader(monkeypatch):
     and a test could no longer tell which one the code under test used -- which is the
     whole subject here, and the reason a suite already covering `read_config_rev` did
     not notice a second, wider reader of the same column. A test that wants the two to
-    DISAGREE (and one that wants to count the narrow reads) writes its own reader; the
-    two arms in `test_config_tab_secret_clear.py` do.
+    DISAGREE (and one that wants to count the narrow reads) writes its own reader.
 
     Not autouse: an unasked-for revision is a revision no test chose, and the tests
     that are about an unreadable row need the opposite of this.
@@ -408,10 +407,8 @@ def _package_modules() -> list:
 def _package_cached_functions() -> list:
     """Every cache the package owns, as the wrapped functions the sweep will clear.
 
-    The predicate lives HERE and nowhere else, because the census in
-    test_unlinkable_chat_prefixes_isolation.py asserts against this same list. Written
-    twice, the census would test a copy: narrowing the sweep to a name list would leave
-    the copy intact and the census green over a cache nothing resets.
+    The predicate lives HERE and nowhere else, so the set of caches the sweep clears is
+    decided in one place.
 
     Ownership is by `__globals__` IDENTITY rather than by name. A wrapped function
     defined inside one of the package's own module namespaces belongs to the package
@@ -730,7 +727,7 @@ def _reset_process_semaphores():
     A permit taken on one test's event loop is returned only when that loop runs the
     generation's `async with` exit. A later test on a new loop that reuses the same
     semaphore can wait for a permit that never comes back
-    (`tests/test_video_generation.py` then `tests/test_api_call_video.py` hung that way).
+    (one video test module run after another hung that way).
 
     Every pool needs it, not just the video one: the slots live in a holder keyed by
     pipe id that outlives the test that filled it, so a request, tool or panel permit leaked
@@ -799,17 +796,15 @@ def _reset_package_caches():
 def _package_process_state_containers() -> tuple[tuple[str, str], ...]:
     """The package-owned containers whose lifetime is the process, as (module, name).
 
-    Written as one predicate rather than two resets, so the census in
-    test_unlinkable_chat_prefixes_isolation.py asserts against this same list.
-    Written twice, the census would test a copy and a name added to one half would
-    go unseen.
+    Written as one predicate rather than two resets, so a name added to one half
+    cannot go unseen by the other.
 
-    Two containers, and the census is scoped to exactly these on purpose. A module
-    name gives no signal about lifetime -- `_cache` and `ALLOWED_OPENROUTER_FIELDS`
-    are both module-level dicts and only one of them is per-test state -- so the
-    wider sweep a name-based list would need is not mechanically decidable from the
-    source. A container that is really process-lifetime and really per-test state
-    gets its own item and its own reach analysis.
+    Two containers, on purpose. A module name gives no signal about lifetime --
+    `_cache` and `ALLOWED_OPENROUTER_FIELDS` are both module-level dicts and only one
+    of them is per-test state -- so the wider sweep a name-based list would need is
+    not mechanically decidable from the source. A container that is really
+    process-lifetime and really per-test state gets its own item and its own reach
+    analysis.
     """
     return (
         ("open_webui_openrouter_pipe", "_cache"),
@@ -867,9 +862,7 @@ def _clear_package_process_state() -> None:
             # suspended on a future, or one whose first step never ran, schedules
             # the next step on the loop and raises `RuntimeError: Event loop is
             # closed` if that loop has closed. Hence cancel-first rather than a bare
-            # clear, and hence the arm in
-            # test_a_package_owned_container_is_empty_at_the_start_of_every_test.py
-            # builds the one shape that leaks without making this raise.
+            # clear.
             for task in list(container):
                 if not task.done():
                     task.cancel()
@@ -957,11 +950,6 @@ def _reset_filter_pass_accumulators():
 
     A SEPARATE fixture from `_reset_warn_latches`, not folded into it: the two guard
     unrelated invariants, and folding them would couple a cache clear to a latch clear.
-    About twenty test files already clear these two by hand, which is the coupling this
-    removes -- each of those is a place the next file had to remember. What is swept is
-    asserted in test_a_retired_filter_pass_state_is_reset_between_tests.py, which also
-    carries the static census, so the next accumulator is caught where it is added rather
-    than by a reader rediscovering it.
     """
     accumulators = _package_accumulators()
     for accumulator in accumulators:
@@ -992,9 +980,8 @@ def arm_dashboard_pipe(pipe: Any, *, get_pipe: Any = None, snapshot_getter: Any 
     The bindings are per-pipe REGISTRIES, so a test arms them by REGISTERING rather than
     by assigning: `dashboard_socket._pipe_getters[pid] = getter`. Two calls with the same
     id and different instances model a hot reload, two calls with different ids model two
-    installed copies -- which is how the reload tests and
-    `tests/test_two_installed_copies_do_not_share_a_dashboard.py` end up running ONE code
-    path, so a bug in the fix shows up in both rather than in one of them.
+    installed copies -- which is how a hot-reload case and a two-installed-copies case
+    run ONE code path, so a bug in the fix shows up in both rather than in one of them.
 
     `get_pipe` and `snapshot_getter` default to the pipe itself, which is right for a test
     that only needs the id resolved. A test with a getter of its own passes it, because
@@ -1058,10 +1045,7 @@ def _reset_dashboard_socket_state():
     process, where the bound pipe is drained and closed by the time the next test runs.
     This fixture repairs all five at BOTH ends of every test, and no test module restores
     any of them itself: a test that writes one of these is relying on the repair below,
-    not on a fixture of its own. `tests/test_dashboard_socket_isolation.py` arms and
-    reads; it is the witness, and
-    `tests/test_a_test_module_does_not_restore_what_conftest_resets.py` is the census that
-    keeps a per-file save/restore from being added back.
+    not on a fixture of its own.
 
     The three registries are in scope together because ONE call
     (`PipeDashboardPlugin._re_register_registrations`) writes all three, and every
@@ -1071,9 +1055,7 @@ def _reset_dashboard_socket_state():
     `_teardown_epoch` is deliberately NOT reset. `set_pipe_getter` and
     `clear_fresh_dispatch` both increment it, and its whole job is to be monotonic ACROSS
     a teardown: zeroing it per test makes a reconcile arm computed under one test read as
-    un-armed under the next, and
-    `tests/test_a_reconcile_that_overlaps_a_teardown_publishes_nothing.py` depends on the
-    real semantics. Resetting it to `True`-ish is the other trap: `_registered` is
+    un-armed under the next. Resetting it to `True`-ish is the other trap: `_registered` is
     restored, never re-armed.
 
     The two flags are saved and restored at teardown; the three registries are only
@@ -1088,12 +1070,8 @@ def _reset_dashboard_socket_state():
     `plugins/pipe_dashboard` entirely, and a bare import here would be a collection
     error in the one mode that has no dashboard to reset.
 
-    The three registries are containers, so the census in
-    `tests/test_module_state_census.py` can see them; `_teardown_epoch`, `_fresh_dispatch`
-    and the two flags are not, and that gap is the split this docstring records. The
-    census reaches them because their names appear literally below, not because they are
-    listed in `_MODULE_STATE_CONTAINERS` -- a name in both lists is the duplicate that
-    census exists to name.
+    None of the names this fixture repairs is listed in `_MODULE_STATE_CONTAINERS`: a name
+    in both places would be reset by two fixtures.
     """
     saved = [
         (sys.modules[name], attr, getattr(sys.modules[name], attr))
@@ -1135,22 +1113,18 @@ def _reset_module_state_containers():
     """Empty every module-level container the package writes, at BOTH ends of every test.
 
     A container is one worker's answer, not this test's, and the package never clears
-    them -- right for a live worker, wrong for a test process. The eight here are the
-    rows `tests/test_module_state_census.py` lists as reset rather than exempt: the
-    archive claim table, the stored-valve schema cache, the two filter-manager
-    latches, both dashboard rate limiters, the per-pipe config write
-    locks, and the usage query memo. The timing buffer was the ninth until the
-    timing profiler's per-request in-memory copy was deleted with its two readers
-    (B680, T967); the timing logger keeps no module-level container at all now, so
-    the row went with the thing it named.
+    them -- right for a live worker, wrong for a test process. What is emptied is listed
+    in `_MODULE_STATE_CONTAINERS`: the archive claim table, the stored-valve schema cache,
+    the filter-manager latches, both dashboard rate limiters, the per-pipe config write
+    locks, and the usage query memo. The timing logger keeps no module-level container,
+    so it has no row.
 
-    `_coarse_state` and `_rate_state` are the pair the census exists for. Both key on
+    `_coarse_state` and `_rate_state` are the pair that matters most here. Both key on
     `time.monotonic()`, and the suite's stub clocks run at 1000.0 -- hours behind the
     real clock -- so an entry armed under the real clock and read under a stub makes
     `now - last` NEGATIVE, the "too soon" branch is taken, and the FIRST call for a
     user this worker has never served is refused. Nothing goes red: the limiter simply
     declines work for a reason its caller cannot see.
-    `tests/test_a_module_state_does_not_outlive_its_test.py` drives that arm.
 
     BOTH ends, for the reason `_reset_package_caches` records: the teardown stops this
     test's arm poisoning the next one, and the setup discards anything a finalizer
@@ -1159,31 +1133,24 @@ def _reset_module_state_containers():
     Deliberately NOT cleared by THIS fixture: the import-time action registry, the
     named-latch registry, the monotone registration-path set, and the cooldown latches
     their own readers age out. A blanket "clear every module-level mutable" sweep would
-    take all of those with the eight, plus the ~82 read-only constant tables, which is
-    why each exclusion and its reason is written down IN THE CENSUS rather than here:
-    naming a container in this docstring would make the census read it as a name
-    conftest resets, and a row that says "nobody looks after this" while something else
-    silently clears it is exactly the duplicate the census exists to name.
+    take all of those with the rest, plus the ~82 read-only constant tables.
 
     The package's lazy-import memo and the self-draining pending-emit set were on that
     list once and are not any more: `_reset_package_process_state` above clears both at
     both ends of every test, for the reach analysis it gives in
-    `_clear_package_process_state`. Two fixtures, one reset each, is the split that file
-    and this one already keep for the socket singles below.
+    `_clear_package_process_state`. Two fixtures, one reset each, is the split already
+    kept for the socket singles below.
 
     Resolved through `sys.modules` and skipped when absent, the shape
     `_reset_warn_latches` uses: a module no test imported has no container to clear,
-    and a no-plugins bundle has no `plugins/pipe_dashboard` at all. The census, not
-    this fixture, is what covers a container in a module nothing imported.
+    and a no-plugins bundle has no `plugins/pipe_dashboard` at all.
 
     It cannot reach the two SINGLES in `_reset_dashboard_socket_state` above, and that
     is the split between the two fixtures: `dashboard_socket._registered` and
-    `._resync` are bools, and this census admits only containers. The three per-pipe
+    `._resync` are bools, and this fixture empties only containers. The three per-pipe
     registries that fixture also repairs (`_pipe_getters`, `_routes_get_pipes`,
-    `_pd_snapshot_getters`) appear literally in its text, so the census derives them into
-    its covered side on its own; adding them here as well would be the duplicate this
-    census exists to name. Reading one list for the other is how a fourth global beside
-    those would arrive unaccounted for.
+    `_pd_snapshot_getters`) are not listed here either: a name in both places would be
+    reset by two fixtures.
     """
     def _clear() -> None:
         for module_name, attr in _MODULE_STATE_CONTAINERS:

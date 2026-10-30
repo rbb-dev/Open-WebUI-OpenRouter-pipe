@@ -2637,7 +2637,7 @@ This file was removed in commit 5c6b043f, together with the `ReasoningTracker` c
 
 ## `tests/test_sse_parser.py`
 
-This file and the `SSEParser` class it tested were removed in commit 34b30a36, so no row below names a test that exists. The log levels that the two producer rows (`test_producer_auth_error_logs_warning`, `test_producer_non_auth_error_logs_error`) described are held, for the code that reads the stream today, where a failure is reported, by `test_a_refusal_writes_one_warning_and_a_fault_one_traceback_on_every_route` in `tests/test_responses.py`.
+This file and the `SSEParser` class it tested were removed in commit 34b30a36, so no row below describes a test that exists. One row's name, `test_passthrough_skips_empty_deltas`, is also the name of a test that does exist, in `tests/test_nagle_coalescer.py`; that one tests `NagleCoalescer`, not the removed parser. The log levels that the two producer rows (`test_producer_auth_error_logs_warning`, `test_producer_non_auth_error_logs_error`) described are held, for the code that reads the stream today, where a failure is reported, by `test_a_refusal_writes_one_warning_and_a_fault_one_traceback_on_every_route` in `tests/test_responses.py`.
 
 | Test Name | Description | What It Tests | Code Under Test | Mocks/Fixtures | Assertions | Drift Risk | Check Done | Codex Notes | Codex TODO |
 |-----------|-------------|---------------|-----------------|----------------|------------|------------|------------|-------------|------------|

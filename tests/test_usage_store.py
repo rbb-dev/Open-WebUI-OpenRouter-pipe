@@ -3,8 +3,6 @@ lock, overload drops, and disabled-mode no-ops — against a real sqlite DB."""
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import datetime
 import shutil
 import tempfile
@@ -18,33 +16,19 @@ import pytest
 from sqlalchemy import (
     JSON,
     Column,
-    DateTime,
-    Float,
-    Integer,
-    MetaData,
     String,
-    Table,
     create_engine,
     inspect as sa_inspect,
     text,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
-from sqlalchemy.pool import StaticPool
 
 pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
 
-from open_webui_openrouter_pipe.plugins.pipe_dashboard.usage_store import (
-    USAGE_ROW_FIELDS,
-    UsageStore,
-    _usage_model_columns,
-)
+from open_webui_openrouter_pipe.plugins.pipe_dashboard.usage_store import UsageStore
 from open_webui_openrouter_pipe.storage.persistence import ArtifactStore
-from open_webui_openrouter_pipe.plugins.pipe_dashboard.usage_queries import query_usage_stats
-from sqlalchemy.engine import Connection
 import sqlalchemy
-import sqlite3
 import json
-import logging
 
 
 def _persisted_function_model(monkeypatch) -> Any:

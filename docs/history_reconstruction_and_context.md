@@ -394,7 +394,7 @@ only through the card Open WebUI keeps for it in the browser, and none with card
   the round's picture is forwarded: the pipe cannot tell that history apart from a person's own message carrying
   Open WebUI's fixed hand-off sentence and their own photo, and treating it as the round's hand-off would withhold
   the person's picture too. What the caller built is the caller's own posted bytes, so nothing the pipe stores is
-  exposed by it (TODO T1163, to reopen only if Open WebUI ever builds the gapped shape). A round of Open WebUI's built-in
+  exposed by it (to be reopened only if Open WebUI ever builds the gapped shape). A round of Open WebUI's built-in
   `ask_user` is the exception: its question and the person's typed answer are always handed over, in every turn however
   old (`TOOL_TURNS_TO_REMEMBER` does not cut them either, §5.5), since the answer is the person's own words. The round is recognised by the tool behind it, not by the name it was advertised under,
   so a third-party tool that happens to be called `ask_user` is a tool like any other and is withheld -- and that

@@ -3447,7 +3447,7 @@ async def test_sniff_audio_format_empty_prefix(monkeypatch):
     attachment -- one payload would be wrong, and a silent turn would be worse. The
     refusal the person reads is the encoding failure, not the missing-format error: the
     read never gets as far as a format to be missing. The attachment's own id is absent
-    from the turn on purpose (B936, H3595-2): a reference is what leaks, so no
+    from the turn on purpose: a reference is what leaks, so no
     file-error message carries one.
     """
     pipe = Pipe()
