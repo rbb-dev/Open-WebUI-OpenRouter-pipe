@@ -1980,6 +1980,47 @@ async def test_sync_model_metadata_maker_image_fallback(pipe_instance_async) -> 
 
 
 @pytest.mark.asyncio
+async def test_sync_model_metadata_asks_for_a_maker_page_but_not_for_a_preset_row(pipe_instance_async) -> None:
+    pipe = pipe_instance_async
+    manager = pipe._ensure_catalog_manager()
+    pipe.valves.UPDATE_MODEL_IMAGES = True
+    pipe.valves.UPDATE_MODEL_CAPABILITIES = False
+    pipe.valves.AUTO_ATTACH_WEB_TOOLS_FILTER = False
+    pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER = False
+    pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = False
+    pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
+
+    manager._fetch_frontend_model_catalog = AsyncMock(return_value={"data": []})
+    pages_asked: list[str] = []
+
+    async def maker_page(maker_id: str) -> str | None:
+        pages_asked.append(maker_id)
+        return "https://example.com/example-lab.png" if maker_id == "example-lab" else None
+
+    pipe._multimodal_handler._fetch_maker_profile_image_url = maker_page
+    pipe._multimodal_handler._fetch_image_as_data_url = AsyncMock(return_value="data:image/png;base64,QUJD")
+    manager._update_or_insert_model_with_metadata = AsyncMock()
+
+    await manager._sync_model_metadata_to_owui(
+        [
+            {"id": "example-lab.alpha-1", "original_id": "example-lab/alpha-1", "name": "Alpha 1"},
+            {"id": "@preset.team-alpha", "original_id": "@preset/team-alpha", "name": "Team Alpha"},
+        ],
+        pipe_identifier="test_pipe",
+    )
+
+    pictures = {
+        call.args[0]: call.args[3]
+        for call in manager._update_or_insert_model_with_metadata.call_args_list
+    }
+    assert pictures == {
+        "test_pipe.example-lab.alpha-1": "data:image/png;base64,QUJD",
+        "test_pipe.@preset.team-alpha": None,
+    }
+    assert pages_asked == ["example-lab"], f"maker pages asked for: {pages_asked}"
+
+
+@pytest.mark.asyncio
 async def test_sync_model_metadata_skips_model_without_original_id_for_images(pipe_instance_async) -> None:
     """Skips models without original_id when building icon mapping."""
     pipe = pipe_instance_async

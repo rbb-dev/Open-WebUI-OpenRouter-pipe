@@ -40,7 +40,12 @@ from ..core.config import (
     openrouter_attribution_headers,
 )
 from ..integrations.provider_options import options_key
-from .registry import ModelFamily, OpenRouterModelRegistry, uses_dedicated_image_api
+from .registry import (
+    ModelFamily,
+    OpenRouterModelRegistry,
+    referenced_preset_slug,
+    uses_dedicated_image_api,
+)
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -239,6 +244,8 @@ def makers_needing_a_page(
         if not isinstance(original_id, str) or not original_id:
             continue
         if original_id in icon_mapping:
+            continue
+        if referenced_preset_slug(original_id) is not None:
             continue
         maker_id = original_id.split("/", 1)[0]
         if not maker_id:
