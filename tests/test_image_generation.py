@@ -805,10 +805,11 @@ async def test_an_image_reply_is_read_to_its_end_and_its_picture_delivered():
                 api_key="sk-invented-for-a-test",
                 logger=logging.getLogger("tests.image-reply-bound"),
             )
-            return await client.generate(
-                {"model": "vendor/invented-image", "prompt": "a leaf", "stream": shape.startswith("sse")},
-                spool=ReceiveSpool(),
-            )
+            with ReceiveSpool() as spool:
+                return await client.generate(
+                    {"model": "vendor/invented-image", "prompt": "a leaf", "stream": shape.startswith("sse")},
+                    spool=spool,
+                )
 
     try:
         kept = [

@@ -5451,6 +5451,54 @@ class TestImageReuseRegister:
             "Cannot read a referenced file.", kind="image", denied=False
         )
 
+
+_MEMO_FOLDER_CHILD = """
+import os, sys, tempfile
+sys.path.insert(0, __ROOT__)
+sys.path.insert(0, os.path.join(__ROOT__, "tests"))
+import owui_stubs
+from open_webui_openrouter_pipe.requests import transformer
+
+handle, source = tempfile.mkstemp()
+os.close(handle)
+claimed = transformer._claim_memo_picture(source)
+print("MEMO_FOLDER:" + os.path.dirname(claimed))
+print("MEMO_PICTURE_HELD:" + str(os.path.isfile(claimed)))
+"""
+
+
+@pytest.fixture(scope="module")
+def memo_folder_after_its_process_exits(tmp_path_factory):
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    scratch = tmp_path_factory.mktemp("memo-child-tmp")
+    done = subprocess.run(
+        [sys.executable, "-c", _MEMO_FOLDER_CHILD.replace("__ROOT__", repr(str(root)))],
+        capture_output=True,
+        text=True,
+        timeout=45,
+        env={"PATH": "/usr/bin:/bin", "TMPDIR": str(scratch), "PYTHONDONTWRITEBYTECODE": "1"},
+    )
+    said = dict(
+        line.split(":", 1) for line in done.stdout.splitlines() if line.startswith("MEMO_")
+    )
+    assert done.returncode == 0 and "MEMO_FOLDER" in said, (
+        f"the memo probe did not run (rc={done.returncode}) stderr={done.stderr[-400:]!r}"
+    )
+    return said["MEMO_FOLDER"], said["MEMO_PICTURE_HELD"] == "True"
+
+
+def test_the_image_memo_folder_is_gone_once_the_process_that_made_it_has_exited(
+    memo_folder_after_its_process_exits,
+):
+    folder, picture_was_held = memo_folder_after_its_process_exits
+    assert picture_was_held, "the process never kept an image, so it made no memo folder to remove"
+    assert not os.path.exists(folder), f"{folder} is still there after the process that made it exited"
+
+
 class TestTransformerFeedsTheBudget:
     """The seam where one unit's output shape is another unit's input assumption.
 

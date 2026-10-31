@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import base64
 import binascii
 import contextlib
@@ -8,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import tempfile
 import time
 from collections import OrderedDict, defaultdict, deque
@@ -361,10 +363,16 @@ class _ReuseDownloadMemo(OrderedDict):
 _MEMO_PICTURE_DIR: str | None = None
 
 
+def _remove_memo_picture_dir(directory: str, owner_pid: int) -> None:
+    if os.getpid() == owner_pid:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
 def _claim_memo_picture(path: str) -> str:
     global _MEMO_PICTURE_DIR
     if _MEMO_PICTURE_DIR is None:
         _MEMO_PICTURE_DIR = tempfile.mkdtemp(prefix="openrouter-imgmemo-")
+        atexit.register(_remove_memo_picture_dir, _MEMO_PICTURE_DIR, os.getpid())
     fd, claimed = tempfile.mkstemp(dir=_MEMO_PICTURE_DIR)
     os.close(fd)
     try:
