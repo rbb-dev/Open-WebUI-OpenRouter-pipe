@@ -128,3 +128,36 @@ async def _drive(pipe, monkeypatch, *, exposed: str, entry: dict[str, Any], args
     await pipe._execute_pipe_job(job)
     assert job.future.result() == "done"
     return holder["outputs"], emitted
+
+
+@pytest.mark.asyncio
+async def test_a_file_shown_inline_is_reported_displayed_only_when_a_card_shows_it(monkeypatch):
+    from open_webui_openrouter_pipe import Pipe
+    import open_webui_openrouter_pipe.tools.tool_executor as tool_executor
+
+    build, handler, process = _real_owui(
+        "build_terminal_file_tool_result", "terminal_event_handler", "process_tool_result"
+    )
+    monkeypatch.setattr(tool_executor, "_owui_build_terminal_file_tool_result", build)
+    monkeypatch.setattr(tool_executor, "_owui_terminal_event_handler", handler)
+    monkeypatch.setattr(tool_executor, "_owui_process_tool_result", process)
+
+    async def display_file(**_kwargs):
+        return dict(FILE)
+
+    entry = _entry("display_file", display_file, tool_id="terminal:T1")
+    pipe = Pipe()
+    try:
+        seen = {}
+        for carded in (False, True):
+            outputs, emitted = await _drive(
+                pipe, monkeypatch, exposed="display_file", entry=entry,
+                args={"path": FILE["path"], "inline": True}, card_carries_the_result=carded,
+            )
+            seen[carded] = (
+                json.loads(outputs[0]["output"]).get("displayed") is True,
+                [event["type"] for event in emitted],
+            )
+    finally:
+        await pipe.close()
+    assert seen == {False: (False, ["terminal:display_file"]), True: (True, [])}

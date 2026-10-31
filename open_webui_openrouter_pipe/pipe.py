@@ -5503,7 +5503,7 @@ class Pipe:
             try:
                 executor = self._ensure_tool_executor()
                 raw_result = executor._terminal_file_result_safe(
-                    origin_name, call_args, raw_result, item.tool_cfg, context.metadata
+                    origin_name, _terminal_event_args(), raw_result, item.tool_cfg, context.metadata
                 )
                 text, files, embeds = await executor._process_tool_result_safe(
                     tool_name=tool_name,
