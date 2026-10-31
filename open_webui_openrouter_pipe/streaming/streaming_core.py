@@ -240,9 +240,11 @@ from .constants import (
 )
 from .event_emitter import (
     _UNGUARDED_ATTR,
+    ANSWERING_MODEL_EVENT,
     REASONING_DELTA_EVENT,
     EventEmitter,
     incomplete_reason_of,
+    model_named_by,
 )
 from .fusion_embed import (
     FusionDeliberationState,
@@ -785,6 +787,7 @@ class StreamingHandler:
         total_usage: dict[str, Any] = {}
         last_round_usage: dict[str, Any] = {}
         answering_models: list[str] = []
+        stream_model = ""
 
         def _model_that_answered() -> str:
             return answering_models[-1].strip() if answering_models else ""
@@ -2503,6 +2506,17 @@ class StreamingHandler:
                 timing_mark("event_iteration_start")
                 first_event_logged = False
                 async for event in event_iter:
+                    if (
+                        streams_to_a_caller_with_no_chat
+                        and event_source is None
+                        and outcome_sink is not None
+                        and not stream_model
+                    ):
+                        stream_model = model_named_by(event)
+                        if stream_model:
+                            outcome_sink["stream_model"] = stream_model
+                    if event.get("type") == ANSWERING_MODEL_EVENT:
+                        continue
                     if stream_started_at is None:
                         stream_started_at = perf_counter()
                     if not first_event_logged:

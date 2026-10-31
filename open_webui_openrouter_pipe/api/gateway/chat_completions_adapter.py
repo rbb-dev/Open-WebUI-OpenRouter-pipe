@@ -48,6 +48,7 @@ from ...storage.receive_spool import (
     attach_parts,
     scan_event,
 )
+from ...streaming.event_emitter import ANSWERING_MODEL_EVENT
 from ...streaming.nagle_coalescer import nagle_coalesce_stream
 from ..transforms import (
     _filter_openrouter_chat_request,
@@ -421,6 +422,7 @@ class ChatCompletionsAdapter:
         assistant_text_parts: list[str] = []
         latest_usage: dict[str, Any] = {}
         answering_model = ""
+        model_announced = False
         seen_citation_urls: set[str] = set()
         unhandled_citation_types: set[str] = set()
         latest_message_annotations: list[dict[str, Any]] = []
@@ -617,8 +619,8 @@ class ChatCompletionsAdapter:
             return out
 
         def _consume_blob(data_blob: bytes | None, preparsed: Any | None = None):
-            nonlocal received_any, latest_usage, answering_model, reasoning_item_id, reasoning_text_seen, \
-                latest_message_annotations, image_item_id, \
+            nonlocal received_any, latest_usage, answering_model, model_announced, reasoning_item_id, \
+                reasoning_text_seen, latest_message_annotations, image_item_id, \
                 image_output_item, images_emitted, refusal_text_seen, provider_refusal_full, \
                 tool_calls_completed, \
                 truncating_reason, delivered_any, saw_choice_chunk, assistant_text_seen, \
@@ -657,6 +659,9 @@ class ChatCompletionsAdapter:
             chunk_model = chunk_obj.get("model") if isinstance(chunk_obj, dict) else None
             if isinstance(chunk_model, str) and chunk_model.strip():
                 answering_model = chunk_model.strip()
+                if not model_announced:
+                    model_announced = True
+                    yield {"type": ANSWERING_MODEL_EVENT, "model": answering_model}
 
             choices = chunk_obj.get("choices") if isinstance(chunk_obj, dict) else None
             if not isinstance(choices, list) or not choices:
@@ -985,6 +990,7 @@ class ChatCompletionsAdapter:
                         recorded_annotation_keys.clear()
                         images_emitted = False
                         received_any = False
+                        model_announced = False
                         saw_choice_chunk = False
                         saw_data_line = False
                         body_bytes_seen = False

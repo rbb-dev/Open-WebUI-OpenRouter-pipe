@@ -3121,10 +3121,11 @@ class Pipe:
                 failed = False
                 tool_calls_sent = False
                 completion_id = ""
+                stream_model = ""
                 role_pending = True
 
                 def _stamped(frame: dict[str, Any]) -> dict[str, Any]:
-                    nonlocal completion_id, role_pending
+                    nonlocal completion_id, role_pending, stream_model
                     choices = frame.get("choices")
                     first = choices[0] if isinstance(choices, list) and choices else None
                     if not isinstance(first, dict):
@@ -3132,6 +3133,9 @@ class Pipe:
                     completion_id = completion_id or str(frame.get("id") or "")
                     if completion_id:
                         frame["id"] = completion_id
+                    stream_model = stream_model or str(job.outcome.get("stream_model") or "")
+                    if stream_model:
+                        frame["model"] = stream_model
                     if role_pending:
                         role_pending = False
                         delta = first.get("delta")

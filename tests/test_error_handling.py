@@ -2597,3 +2597,91 @@ async def test_the_final_status_names_the_model_that_answered_only_when_it_is_no
     )
     assert same_posts == ["exampleco/model-small:nitro"]
     assert "Answered by" not in same, same
+
+
+_STREAM_ENDPOINT_URLS = {
+    "responses": "https://openrouter.ai/api/v1/responses",
+    "chat_completions": "https://openrouter.ai/api/v1/chat/completions",
+}
+
+
+def _upstream_stream_naming(model: str, endpoint: str) -> bytes:
+    if endpoint == "responses":
+        message = {
+            "type": "message", "role": "assistant", "status": "completed",
+            "content": [{"type": "output_text", "text": "Found it."}],
+        }
+        opening = {"id": "resp-1", "model": model, "status": "in_progress"}
+        events = [
+            {"type": "response.created", "response": opening},
+            {"type": "response.in_progress", "response": opening},
+            {"type": "response.output_item.added", "item": {"type": "reasoning", "id": "rs-1", "status": "in_progress"}},
+            {"type": "response.reasoning_text.delta", "item_id": "rs-1", "delta": "Weigh the offers."},
+            {"type": "response.output_item.added", "item": {"type": "message", "id": "msg-1", "role": "assistant", "status": "in_progress", "content": []}},
+            {"type": "response.output_text.delta", "delta": "Found it."},
+            {"type": "response.completed", "response": {
+                "id": "resp-1", "model": model, "output": [message],
+                "usage": {"input_tokens": 9, "output_tokens": 2, "total_tokens": 11}}},
+        ]
+    else:
+        def chunk(delta: dict[str, Any], finish: str | None = None, **extra: Any) -> dict[str, Any]:
+            return {
+                "id": "gen-1", "object": "chat.completion.chunk", "model": model,
+                "choices": [{"index": 0, "delta": delta, "finish_reason": finish}], **extra,
+            }
+
+        events = [
+            chunk({"role": "assistant", "content": ""}),
+            chunk({"reasoning": "Weigh the offers."}),
+            chunk({"content": "Found it."}),
+            chunk({}, "stop", usage={"prompt_tokens": 9, "completion_tokens": 2, "total_tokens": 11}),
+        ]
+    return ("".join(f"data: {json.dumps(event)}\n\n" for event in events) + "data: [DONE]\n\n").encode("utf-8")
+
+
+@pytest.mark.asyncio
+async def test_every_chunk_of_a_stream_to_a_program_with_no_chat_carries_the_model_openrouter_reported(
+    pipe_instance_async, monkeypatch
+):
+    import open_webui_openrouter_pipe.pipe as pipe_mod
+    from tests.test_a_tool_with_nothing_behind_it_goes_back_to_its_sender import frames_of
+
+    async def loaded(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    pipe = pipe_instance_async
+    catalogue = [{"id": "exampleco/router-auto", "name": "Router", "norm_id": "exampleco.router-auto"}]
+    monkeypatch.setattr(pipe, "_resolve_openrouter_api_key", lambda _valves: ("sk-test-key", None))
+    monkeypatch.setattr(pipe._artifact_store, "_ensure_artifact_store", lambda *_a, **_k: None)
+    monkeypatch.setattr(pipe_mod.OpenRouterModelRegistry, "ensure_loaded", loaded)
+    monkeypatch.setattr(pipe_mod.OpenRouterModelRegistry, "list_models", lambda: catalogue)
+
+    for endpoint, url in _STREAM_ENDPOINT_URLS.items():
+        pipe.valves = pipe.valves.model_copy(update={"DEFAULT_LLM_ENDPOINT": endpoint})
+        with aioresponses() as mock_http:
+            mock_http.post(
+                url,
+                body=_upstream_stream_naming("exampleco/model-small", endpoint),
+                headers={"Content-Type": "text/event-stream"},
+            )
+            result = await pipe.pipe(
+                body={
+                    "model": "exampleco.router-auto", "stream": True,
+                    "stream_options": {"include_usage": True},
+                    "messages": [{"role": "user", "content": "look it up"}],
+                },
+                __user__={"id": "user-1", "role": "user"},
+                __request__=None,
+                __event_emitter__=None,
+                __event_call__=None,
+                __metadata__={"model": {"id": "my-assistant"}},
+                __tools__=None,
+            )
+            pieces = [piece async for piece in result.body_iterator]
+        chunks = [frame for frame in frames_of(pieces) if frame != "[DONE]"]
+
+        deltas = [chunk["choices"][0]["delta"] for chunk in chunks]
+        assert any("reasoning" in delta for delta in deltas), (endpoint, chunks)
+        assert any("content" in delta for delta in deltas), (endpoint, chunks)
+        assert chunks[-2]["choices"][0]["finish_reason"] == "stop" and "usage" in chunks[-1], (endpoint, chunks)
+        assert [chunk["model"] for chunk in chunks] == ["exampleco/model-small"] * len(chunks), (endpoint, chunks)

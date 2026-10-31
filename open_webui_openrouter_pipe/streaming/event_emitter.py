@@ -190,6 +190,23 @@ def incomplete_reason_of(response: Any) -> str | None:
     return reason if isinstance(reason, str) else None
 
 
+ANSWERING_MODEL_EVENT = "openrouter_pipe.answering_model"
+
+_MODEL_NAMING_EVENTS = frozenset({"response.created", "response.in_progress"})
+
+
+def model_named_by(event: Any) -> str:
+    kind = event.get("type") if isinstance(event, dict) else None
+    if kind == ANSWERING_MODEL_EVENT:
+        model = event.get("model")
+    elif kind in _MODEL_NAMING_EVENTS:
+        response = event.get("response")
+        model = response.get("model") if isinstance(response, dict) else None
+    else:
+        return ""
+    return model.strip() if isinstance(model, str) else ""
+
+
 def carries_tool_calls(frame: Any) -> bool:
     choices = frame.get("choices") if isinstance(frame, dict) else None
     first = choices[0] if isinstance(choices, list) and choices else None
