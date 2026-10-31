@@ -7,7 +7,7 @@ keeps its own copy of every round it runs -- the call and its result, committed 
 replay uses it whenever Open WebUI does not hand the same round back; while results are not kept, the model is
 handed the call as it was made and a note in place of its result. The thinking blocks stay apart. The copy is a
 record of the round, not of the reasoning: it survives every path that drops reasoning (measured accepted without
-it, t233a).
+it).
 
 Stage A is the real streaming loop. Stage B feeds the next request what Open WebUI would: its saved message when the
 turn published one, otherwise the content stage A produced (text plus hidden markers), through the real transformer.
@@ -249,8 +249,8 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
             # like any other tool card, so a reader cannot tell it apart from a model call except by its id.
             # The thought is signed so nothing is deferred by the signature gate, and the round carries no
             # `response.output_text.delta` at all: a text delta publishes every reasoning key inline ahead of
-            # the deferral, so the box would land above both cards for a reason this shape is not about
-            # (B306), and the test would measure nothing.
+            # the deferral, so the box would land above both cards for a reason this shape is not about,
+            # and the test would measure nothing.
             for slot, call_id in enumerate(value):
                 call = {"type": "function_call", "call_id": call_id, "name": tool_name,
                         "arguments": json.dumps({"q": ARGUMENT_CANARY}), "status": "completed"}
@@ -579,7 +579,7 @@ async def test_an_unretained_tool_turn_replays_as_a_shape_anthropic_accepted(
     replay = await _stage_b(pipe, valves, content, persisted, recorded=_recorded_output(emitted))
 
     assert _shape(replay) == accepted["shape"]
-    assert _shape(replay) != _recorded("sequential_rounds", "T52")["shape"]
+    assert _shape(replay) != _recorded("sequential_rounds", "ADJACENT_REASONING")["shape"]
     _assert_calls_keep_their_arguments_and_results_are_notes(replay)
 
 # --- every default-settings path keeps the rounds apart ----------------------------------------------------------------

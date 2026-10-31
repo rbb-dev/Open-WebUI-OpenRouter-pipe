@@ -296,7 +296,7 @@ async def test_fusion_emits_native_message_item_with_clean_answer(monkeypatch, p
     The panel wrapper is part of that string: `streaming_core` wraps `assistant_message`
     before it builds the item, records it and emits it, so the recorded copy a channel is
     handed carries the answer panel too. This used to pin the opposite -- that the item
-    carried the bare answer -- which is the defect H3305-1 fixed.
+    carried the bare answer -- which was a defect.
     """
     result, emitted = await _run(
         pipe_instance_async, monkeypatch, fusion_live_enabled=True,

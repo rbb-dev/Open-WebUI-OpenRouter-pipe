@@ -466,7 +466,7 @@ async def test_an_insecure_http_image_url_is_dropped_unless_allowed(
     ModelFamily.set_dynamic_specs({"vision-model": {"features": {"vision"}}})
 
     # The allowed https rows are kept only if the download SUCCEEDS: a download the pipe
-    # could not make is now refused (H142-2), so a row that kept the image while stubbing
+    # could not make is now refused, so a row that kept the image while stubbing
     # the downloader to None was asserting the old fall-through, not the cleartext gate.
     async def _download(url, dest_path=None, *_a, **_k):
         if dest_path is not None:

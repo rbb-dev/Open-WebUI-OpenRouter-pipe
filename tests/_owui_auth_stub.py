@@ -49,7 +49,7 @@ INVALID_TOKEN = "Invalid token"
 
 TRUSTED_EMAIL_HEADER = "WEBUI_AUTH_TRUSTED_EMAIL_HEADER"
 
-SIGNING_KEY = "b1300-probe-signing-key-32-bytes-long"
+SIGNING_KEY = "probe-signing-key-at-least-32-bytes-long"
 
 DEFAULT_USER = types.SimpleNamespace(id="u1", role="user", email="u1@example.com")
 DEFAULT_API_KEY_USER = types.SimpleNamespace(id="key1", role="admin", email="key@example.com")

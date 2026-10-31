@@ -2476,7 +2476,7 @@ async def _collect_sse_events(
 ) -> list[dict[str, Any]]:
     """Mock HTTP, run the streaming pipeline, return collected events.
 
-    Wraps the pipeline with ``asyncio.wait_for`` so that if the C3 fix
+    Wraps the pipeline with ``asyncio.wait_for`` so that if the placeholder fix
     regresses (distributor stalls on a missing sequence), the test raises
     ``TimeoutError`` instead of hanging the entire test suite.
     """
@@ -2508,7 +2508,7 @@ async def _collect_sse_events(
 async def test_streaming_malformed_json_does_not_block(pipe_instance_async):
     """Malformed JSON in SSE stream must not hang — valid events still arrive.
 
-    Before the C3 fix the worker would ``continue`` on JSONDecodeError
+    Previously the worker would ``continue`` on JSONDecodeError
     without emitting a placeholder, so the distributor waited forever for
     the missing sequence number.
     """
@@ -2537,7 +2537,7 @@ async def test_streaming_malformed_json_does_not_block(pipe_instance_async):
 async def test_streaming_invalid_utf8_does_not_block(pipe_instance_async):
     """Invalid UTF-8 bytes after ``data:`` must not crash or hang the pipeline.
 
-    Before the C3 fix the ``except json.JSONDecodeError`` would NOT catch
+    Previously the ``except json.JSONDecodeError`` would NOT catch
     ``UnicodeDecodeError``.  The broadened ``except Exception`` catches it
     and emits the placeholder.
     """

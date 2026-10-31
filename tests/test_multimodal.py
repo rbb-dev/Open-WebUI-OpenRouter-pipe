@@ -2842,7 +2842,7 @@ class TestAudioTransformer:
         The converter returns a refusal rather than the empty `input_audio` block it
         used to, and the block loop routes that refusal into the attachment note. What
         matters here is unchanged by that: a payload-less `input_audio` is never put in
-        front of OpenRouter, because T433 established it must not be and the pipe
+        front of OpenRouter, and the pipe
         records *why* the block yielded nothing.
 
         The line the turn carries is therefore the attachment note, not the
@@ -3955,8 +3955,8 @@ class TestUploadToOwuiStorageFromPath:
 The shipped window is 4096 characters (`core/url_scheme.py`), so this sits 16x below it:
 a scan that still moves 256 characters at a time has kept the bulk property that makes
 the fix worth having. Below it the work stops being bulk, and that is the failure the
-cost row exists for. MUST-FAIL MUTATION (4), the per-character Python loop the design
-first proposed, reads one character per step -- and in the form that loop actually takes
+cost row exists for. The per-character Python loop the design
+first proposed reads one character per step -- and in the form that loop actually takes
 (`for ch in text:`) it never reads the body at all, so the `reads` arm below is what
 catches it rather than this bound.
 """

@@ -240,7 +240,7 @@ class TestReadTaskModelResponseJson:
                 {"choices": [{"message": {"content": "not json at all"}}]}
             )
 
-    # ── H1399-3: a dict `message.content` that is a content-part envelope ──
+    # ── a dict `message.content` that is a content-part envelope ──
 
     _ENVELOPE_TEXT = '{"intent":"clarify","confidence":"high"}'
     _ENVELOPE_ANSWER = {"intent": "clarify", "confidence": "high"}

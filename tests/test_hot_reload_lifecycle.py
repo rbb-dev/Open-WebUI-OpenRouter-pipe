@@ -204,7 +204,7 @@ async def test_old_close_does_not_clobber_new_generation_log_queue(fresh_registr
 
     from open_webui_openrouter_pipe.core.logging_system import SessionLogger
 
-    rid = "req-b440-retired-generation"
+    rid = "req-retired-generation"
     g1 = pipe_mod.Pipe()
     g1.id = "test_id_static"
     g1_queue: asyncio.Queue = asyncio.Queue()

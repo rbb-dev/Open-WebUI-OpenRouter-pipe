@@ -71,7 +71,7 @@ def _a_real_png() -> bytes:
 
 
 # -----------------------------------------------------------------------------
-# Bug A — retargeting success is NOT a downgrade
+# Retargeting success is NOT a downgrade
 # -----------------------------------------------------------------------------
 
 class TestRetargetingNotADowngrade:
@@ -351,7 +351,7 @@ class TestInputReferenceTargetIsMovedNotStamped:
 
 
 # -----------------------------------------------------------------------------
-# Bug A (telemetry) — new field exposed to operators
+# Telemetry — new field exposed to operators
 # -----------------------------------------------------------------------------
 
 class TestRetargetingTelemetryField:
@@ -399,7 +399,7 @@ class TestRetargetingTelemetryField:
 
 
 # -----------------------------------------------------------------------------
-# Bug B — first-failure toast emits + diagnostic logging
+# First-failure toast emits + diagnostic logging
 # -----------------------------------------------------------------------------
 
 class TestClassifierFailureToastDiagnostics:

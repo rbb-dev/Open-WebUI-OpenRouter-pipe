@@ -4896,7 +4896,7 @@ async def test_an_empty_rebuild_keeps_the_previous_provider_map_and_says_so(
 
 
 # ============================================================================
-# REGFIX: infrastructure fixes 7 and 8
+# what reschedules the filter sync, and the tag scanner on every model row
 # ============================================================================
 
 

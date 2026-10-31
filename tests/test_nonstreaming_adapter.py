@@ -53,7 +53,7 @@ def test_pipe_creates_nonstreaming_adapter(pipe_instance):
 # _extract_chat_message_text Tests (lines 62, 66-74)
 #
 # The first row below is no longer one of them: a `message` that is not an object is
-# rejected at the gateway (B623) before the reader runs, so it now asserts the designed
+# rejected at the gateway before the reader runs, so it now asserts the designed
 # retry-then-report behaviour instead. See its docstring.
 # ============================================================================
 
@@ -63,7 +63,7 @@ async def test_nonstreaming_chat_message_not_dict(pipe_instance_async):
     """A first choice whose `message` is not an object is retried, then reported.
 
     The reader still reads a non-object message as empty -- `_extract_chat_message_text` is
-    unchanged -- but the gateway no longer lets such a 200 reach it. B623's design decides the
+    unchanged -- but the gateway no longer lets such a 200 reach it. The design decides the
     question at the gateway, and its predicate counts a non-object `message` as nothing a
     reader could use:
 
@@ -72,7 +72,7 @@ async def test_nonstreaming_chat_message_not_dict(pipe_instance_async):
 
     so `{"message": "not a dict", "finish_reason": "stop"}` falls through to the `finish_reason`
     test and returns False, the same answer it gives the null message and the empty message
-    that B623 lists among the hollow shapes it costs the whole budget for. The property the
+    that the design lists among the hollow shapes it costs the whole budget for. The property the
     design states is "A non-streamed `/chat/completions` 200 whose first choice carries no
     content, no tool call, no refusal, no reasoning, no images and no `finish_reason` other than
     `stop` costs `1 + TRANSIENT_RETRY_MAX_ATTEMPTS` POSTs, publishes no `response.completed`,

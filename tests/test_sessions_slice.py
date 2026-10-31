@@ -15,7 +15,7 @@ from open_webui_openrouter_pipe.plugins.pipe_dashboard import dashboard_publishe
 # The snapshot registry is keyed by `Pipe.id`; conftest's
 # `_reset_dashboard_socket_state` empties it at both ends of every test, so this file has
 # no fixture of its own to keep it out of the next one.
-_PIPE_ID = "pipe_b1125_slice"
+_PIPE_ID = "pipe_sessions_slice"
 
 
 @pytest.fixture(autouse=True)

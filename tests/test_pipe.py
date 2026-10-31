@@ -1288,7 +1288,7 @@ class TestReasoningConfiguration:
         shipped order and the pair's result is what is asserted.
 
         `effort: "none"` is the documented disable and nothing else rides out with
-        it: `enabled: true` beside it asks for the opposite (T401), and the fitter
+        it: `enabled: true` beside it asks for the opposite, and the fitter
         is what guarantees that, whether the effort it strips was written by the
         chat applier or by this one. The wire guarantee is
         `test_include_reasoning_reaches_only_models_that_list_it.py`'s
@@ -4953,7 +4953,7 @@ def test_apply_gemini_thinking_config_sets_budget():
 
 def test_apply_gemini_thinking_config_budget_zero_disables_thinking():
     """GEMINI_THINKING_BUDGET=0 switches thinking off with OpenRouter's `effort: "none"`,
-    the control measured to stop gemini-2.5-flash thinking (T371); the old body reasoned
+    the control measured to stop gemini-2.5-flash thinking; the old body reasoned
     and hid it."""
     pipe = Pipe()
     ModelFamily.set_dynamic_specs({

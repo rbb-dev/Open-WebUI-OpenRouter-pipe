@@ -631,8 +631,8 @@ def _install_open_webui_stubs() -> None:
 
         * `HTMLResponse` and external-tool header handling (`:1112-1214`). The installed
           function decodes an inline body into embeds and answers with a `ui_component` result
-          dict. For a **bare** `HTMLResponse` this returns `(str(tool_result), [], [])`, which is
-          what arm D pins. The installed function also accepts the 2-tuple
+          dict. For a **bare** `HTMLResponse` this returns `(str(tool_result), [], [])`. The installed
+          function also accepts the 2-tuple
           `(HTMLResponse, result_context)` that `:1115-1117` unpacks; the tail's tuple branch is
           **not** transcribed, so the text is `str()` of the whole tuple and the embeds stay
           empty. Deliberate: transcribing the branch would need the `HTMLResponse` import here.

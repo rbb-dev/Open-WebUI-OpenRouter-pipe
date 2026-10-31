@@ -452,7 +452,7 @@ class TestOnModels:
         assert models[-1]["name"] == "Pipe Dashboard"
 
 
-# ── H180-2: the overlay must not clobber columns it does not own ──
+# ── the overlay must not clobber columns it does not own ──
 #
 # `Models.update_model_by_id` is a FULL-ROW update: it dumps the whole form
 # (`models.py:548`) and writes every column. There is no such thing as a partial

@@ -508,11 +508,10 @@ def test_a_name_that_is_already_usable_is_returned_unchanged():
 
 # --- request specs the pipe has no tool for ----------------------------------------------------------------------
 
-# Prescription 125 asked for a registry-level arm built from "three request specs named `x`". It is writable: in
-# Open-WebUI mode the caller's specs are passed through and the collision loop names them apart. An earlier
-# deviation claimed it could not be written because such specs were dropped in Pipeline mode; since the tool
-# hand-back landed they are offered in both modes and the collision loop names them apart in both. Both modes are
-# pinned here.
+# A registry-level arm built from "three request specs named `x`" is writable: in Open-WebUI mode the caller's
+# specs are passed through and the collision loop names them apart. It was once thought unwritable because such
+# specs were dropped in Pipeline mode; since the tool hand-back landed they are offered in both modes and the
+# collision loop names them apart in both. Both modes are pinned here.
 REQUEST_SPECS_WITH_NO_TOOL = [
     pytest.param(("x", "x", "x"), id="three-request-specs-sharing-one-name"),
     pytest.param(("alpha", "beta"), id="two-request-specs-with-distinct-names"),

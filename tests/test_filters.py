@@ -1547,7 +1547,7 @@ class TestProviderRoutingFilter:
         assert "OWUI_OPENROUTER_PIPE_MARKER" in source
         assert "openrouter_pipe:provider_routing:" in source
 
-    # --- H133-2: presence, not value. A user who explicitly clears a boolean or a
+    # --- presence, not value. A user who explicitly clears a boolean or a
     # number the admin set must have that clear reach the request. ---
 
     _BOOL_CONTROLS = [
@@ -2548,7 +2548,7 @@ class TestInstalledRowMatchesTheRenderedModule:
 
 
 # ============================================================================
-# REGFIX: infrastructure fixes 2, 3, 6
+# installed filter templates, the import rewrite and rows that will not be updated
 # ============================================================================
 
 

@@ -389,7 +389,7 @@ async def test_a_save_answers_with_the_value_the_store_now_holds(fake_functions,
     assert result["values"] == {name: stored}, result
 
 
-# -- H124-1: clearing a nullable numeric box must not take the save down with it -------
+# -- clearing a nullable numeric box must not take the save down with it ---------------
 
 
 def _swept_nullable_numbers() -> list[str]:

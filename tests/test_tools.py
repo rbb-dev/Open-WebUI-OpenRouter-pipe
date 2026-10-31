@@ -4241,7 +4241,7 @@ class TestToolExecutionContextFields:
     """Tests for _ToolExecutionContext new fields."""
 
     def test_context_has_request_user_metadata_fields(self):
-        """Test that context has the new Phase 3 fields."""
+        """Test that context has the request, user and metadata fields."""
         import asyncio
         from open_webui_openrouter_pipe.tools.tool_executor import _ToolExecutionContext
 

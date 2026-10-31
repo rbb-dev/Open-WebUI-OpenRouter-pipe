@@ -35,7 +35,7 @@ from open_webui_openrouter_pipe.integrations.video_intent import (
 # -----------------------------------------------------------------------------
 
 class TestNeutraliseControlTokens:
-    """Regression tests for M2 — prompt-injection defense."""
+    """Regression tests for the prompt-injection defense."""
 
     def test_neutralises_chatml_tokens(self):
         from open_webui_openrouter_pipe.integrations.video_intent import (
@@ -202,7 +202,7 @@ class TestCollectPriorVideos:
         assert collect_prior_videos_from_messages([]) == []
         assert collect_prior_videos_from_messages(None) == []  # type: ignore[arg-type]
 
-    # ------------------------------------------------- the S11 shape check ----
+    # ------------------------------------------------- the shape check ----
     #
     # A `<video>` body is a prior video only when it is exactly a relative OWUI file
     # URL. Anything else -- a Windows path, a foreign https link, a traversal, a
@@ -577,9 +577,9 @@ class TestDisclosureBlock:
 
     def test_empty_frame_plan_returns_empty_string(self):
         # An empty plan alone is no longer the gate: a rewritten prompt or a
-        # best-guess note has to render on a turn that reuses no frame (B268b,
-        # user decision N8). What still renders nothing is a turn with nothing
-        # to disclose -- no frame, no prompt, no downgrade.
+        # best-guess note has to render on a turn that reuses no frame. What
+        # still renders nothing is a turn with nothing to disclose -- no frame,
+        # no prompt, no downgrade.
         r = self._result(frame_plan=[])
         r.prompt = ""
         r.downgrades = []

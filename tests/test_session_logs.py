@@ -1364,7 +1364,7 @@ class TestResolveMessageId:
             resolve_message_id({"message_id": second, "task": qualifier}),
         )
 
-# ===== Assembler failure paths on a real sqlite artifact table (B7-1 / B7-3) =====
+# ===== Assembler failure paths on a real sqlite artifact table =====
 
 import datetime as _dt
 

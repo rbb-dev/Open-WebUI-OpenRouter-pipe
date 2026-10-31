@@ -1,4 +1,4 @@
-"""The pipe's own `include_reasoning` goes only to a model whose catalog entry lists it (T369); reasoning fields the chat itself carries go out as Open WebUI sends them (O2).
+"""The pipe's own `include_reasoning` goes only to a model whose catalog entry lists it; reasoning fields the chat itself carries go out as Open WebUI sends them.
 
 Live, 2026-09-25, Open WebUI 0.11.4, pipe at 6c63a68: four chats with `openai/gpt-4.1-mini`
 failed with HTTP 400 "Provider returned error"; the provider (Azure) said "Unknown parameter:
@@ -191,7 +191,7 @@ async def _sent_shown(
     user_valves: dict[str, Any] | None = None,
 ) -> tuple[list[tuple[str, dict[str, Any]]], str]:
     """As `_sent`, and the text the person would read: every emitter payload plus a
-    non-streamed return, the way `_t379_run` in test_task_model_adapter.py collects it.
+    non-streamed return, the way `_run_task_request` in test_task_model_adapter.py collects it.
 
     `user_valves` is the route to a stored user valve row. `Pipe._stored_user_valves` re-reads
     the row from Open WebUI whenever a `user_id` is present, so the `Pipe.UserValves()` instance
@@ -273,21 +273,21 @@ async def _sent_shown(
 
 
 # ---------------------------------------------------------------------------
-# T378: a fallback in `models` that cannot take the flag decides for the whole chain
+# a fallback in `models` that cannot take the flag decides for the whole chain
 # ---------------------------------------------------------------------------
 #
 # Live, 2026-09-26, Open WebUI 0.11.4, two rounds of probes against OpenRouter with a
 # fallback served by Azure:
 #
-#   R1  /responses  google/gemini-2.5-flash + models=[openai/gpt-4.1-mini] + include_reasoning:false
+#   1.  /responses  google/gemini-2.5-flash + models=[openai/gpt-4.1-mini] + include_reasoning:false
 #       -> 400, metadata.provider_name "Azure", metadata.raw verbatim:
 #          {"error": {"message": "Unknown parameter: 'include_reasoning'.",
 #                      "type": "invalid_request_error", "param": "include_reasoning",
 #                      "code": "unknown_parameter"}}
-#   R2  the same request with reasoning:{"effort":"none"} instead -> 200, reasoning_tokens 0
-#   C2  /responses, gpt-4.1-mini directly, include_reasoning:false -> the same 400
-#   F1  /chat/completions, the same flag on the same fallback -> 200
-#   G1  /responses, gemini-2.5-flash with reasoning:{"effort":"none"} -> reasoning_tokens 0
+#   2.  the same request with reasoning:{"effort":"none"} instead -> 200, reasoning_tokens 0
+#   3.  /responses, gpt-4.1-mini directly, include_reasoning:false -> the same 400
+#   4.  /chat/completions, the same flag on the same fallback -> 200
+#   5.  /responses, gemini-2.5-flash with reasoning:{"effort":"none"} -> reasoning_tokens 0
 #
 # So OpenRouter forwards `include_reasoning` to whichever model ends up serving, and a
 # provider that does not know the parameter rejects the whole request -- not just its own
@@ -298,7 +298,7 @@ async def _sent_shown(
 #
 # The fix drops the key once any id in `models` does not list it, and -- when the dropped
 # value was `False` and the primary lists `reasoning` -- carries thinking off as
-# `reasoning: {"effort": "none"}` instead, which R2 and G1 measured as tolerated with
+# `reasoning: {"effort": "none"}` instead, which probes 2 and 5 measured as tolerated with
 # zero reasoning tokens.
 
 _GEMINI_25_FLASH_LITE = {
@@ -320,16 +320,16 @@ _GEMINI_25_FLAG_ONLY = {
     "supported_parameters": ["include_reasoning", "max_tokens", "temperature"],
     "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
 }
-_T378_CATALOG = [
+_FALLBACK_CATALOG = [
     _GEMINI_25_FLASH, _GEMINI_25_FLASH_LITE, _GPT_41_MINI, _GEMINI_25_FLASH_IMAGE, _GPT_5_MINI,
     _GEMINI_25_REASONING_ONLY, _LEGACY_ONLY, _GEMINI_25_FLAG_ONLY,
 ]
 
 # The rule now runs on the task transport too, so every path a request can take is here.
-_T378_PATHS = dict(_PATHS)
+_FALLBACK_PATHS = dict(_PATHS)
 
 # (label, primary, fallbacks, extra valves, the flag the POSTed body must carry, the reasoning it must carry)
-_T378_FALLBACK_ARMS = [
+_FALLBACK_ARMS = [
     (
         "a-fallback-that-cannot-take-the-flag-drops-it",
         _GEMINI_25_FLASH["id"],
@@ -410,16 +410,16 @@ _T378_FALLBACK_ARMS = [
 # rule under test can run. `_PATHS` keeps its own single-model allowlist, because the rows that
 # read it are about the primary bypassing the list, not about the chain; only this copy widens.
 # Derived from the arms so an arm cannot be added without its ids being named here.
-_T378_FALLBACK_IDS = list(
-    dict.fromkeys(fallback for _l, _primary, fallbacks, *_ in _T378_FALLBACK_ARMS for fallback in fallbacks)
+_FALLBACK_IDS = list(
+    dict.fromkeys(fallback for _l, _primary, fallbacks, *_ in _FALLBACK_ARMS for fallback in fallbacks)
 )
-assert all(fallback in {row["id"] for row in _T378_CATALOG} for fallback in _T378_FALLBACK_IDS), (
-    f"a T378 arm names an id the catalogue does not know: "
-    f"{[f for f in _T378_FALLBACK_IDS if f not in {row['id'] for row in _T378_CATALOG}]}"
+assert all(fallback in {row["id"] for row in _FALLBACK_CATALOG} for fallback in _FALLBACK_IDS), (
+    f"a fallback arm names an id the catalogue does not know: "
+    f"{[f for f in _FALLBACK_IDS if f not in {row['id'] for row in _FALLBACK_CATALOG}]}"
 )
-_T378_TASK_ALLOWLIST = ", ".join([_CLAUDE_SONNET_46["id"], *_T378_FALLBACK_IDS])
-_T378_PATHS["task-outside-allowlist"] = (
-    {"MODEL_ID": _T378_TASK_ALLOWLIST}, *_PATHS["task-outside-allowlist"][1:],
+_FALLBACK_TASK_ALLOWLIST = ", ".join([_CLAUDE_SONNET_46["id"], *_FALLBACK_IDS])
+_FALLBACK_PATHS["task-outside-allowlist"] = (
+    {"MODEL_ID": _FALLBACK_TASK_ALLOWLIST}, *_PATHS["task-outside-allowlist"][1:],
 )
 # The primary stays outside the list, or the path stops being the path it is named for.
-assert _GEMINI_25_FLASH["id"] not in _T378_TASK_ALLOWLIST.split(", ")
+assert _GEMINI_25_FLASH["id"] not in _FALLBACK_TASK_ALLOWLIST.split(", ")

@@ -297,7 +297,7 @@ def _persisted_master_switch(monkeypatch):
     monkeypatch.setattr(fn_mod, "Functions", _Functions(), raising=False)
 
 
-_PIPE_ID = "pipe_b1125_tracker"
+_PIPE_ID = "pipe_session_tracker"
 
 
 def _make_plugin():

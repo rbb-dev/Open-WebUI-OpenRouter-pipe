@@ -39,7 +39,7 @@ from open_webui_openrouter_pipe.storage.multimodal import MultimodalHandler
 STUB_PUBLIC_IP = "93.184.216.34"
 
 logger = logging.getLogger(__name__)
-_T178_CAUSE = "on this development host, WSL's port mirroring (T178)"
+_DEAD_LISTENER_CAUSE = "on this development host, WSL's port mirroring"
 _MAX_REOPENS = 3
 _Listener = TypeVar("_Listener")
 
@@ -64,11 +64,11 @@ def _dead_listener(host: str, sockets: Sequence[Any]) -> str | None:
 def _after_a_dead_start(problem: str, reopened: int) -> None:
     if reopened >= _MAX_REOPENS:
         raise RuntimeError(
-            f"Test listener {problem}, and still dead after {_MAX_REOPENS} reopens on port 0; {_T178_CAUSE}."
+            f"Test listener {problem}, and still dead after {_MAX_REOPENS} reopens on port 0; {_DEAD_LISTENER_CAUSE}."
         )
     logger.warning(
         "Test listener %s; %s. Reopening it on port 0 (%d of %d).",
-        problem, _T178_CAUSE, reopened + 1, _MAX_REOPENS,
+        problem, _DEAD_LISTENER_CAUSE, reopened + 1, _MAX_REOPENS,
     )
 
 

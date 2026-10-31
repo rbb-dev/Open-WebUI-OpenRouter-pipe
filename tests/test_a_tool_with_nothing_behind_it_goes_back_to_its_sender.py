@@ -250,7 +250,7 @@ async def _lookup(q: str) -> str:
     return "ok"
 
 
-# --- B131: the hand-back budget is a reply's own ----------------------------------------------------------------------
+# --- the hand-back budget is a reply's own ----------------------------------------------------------------------------
 
 
 CAP = 2

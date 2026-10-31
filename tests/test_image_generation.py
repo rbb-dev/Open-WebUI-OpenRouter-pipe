@@ -3727,7 +3727,7 @@ def test_the_compatibility_spelling_still_works_on_its_own():
 
 
 # ============================================================================
-# REGFIX: infrastructure fix 5 -- a failed contract read is not a shrunk contract
+# A failed contract read is not a shrunk contract
 # ============================================================================
 
 

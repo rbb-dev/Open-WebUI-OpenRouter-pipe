@@ -155,7 +155,7 @@ async def test_e2e_real_round_trip_no_consecutive_reasoning(monkeypatch, pipe_in
 
 
 # --------------------------------------------------------------------------- #
-# Bug B: same call_id reused across rounds must NOT collapse reasoning.
+# Same call_id reused across rounds must NOT collapse reasoning.
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 async def test_e2e_colliding_call_id_across_rounds(monkeypatch, pipe_instance_async):

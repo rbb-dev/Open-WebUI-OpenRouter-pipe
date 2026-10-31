@@ -1744,7 +1744,7 @@ async def test_audio_format_allowlist_from_metadata(monkeypatch):
 
     Covers lines 221-224: custom allowlist for audio formats.
 
-    The clip is `wav` and the allowlist `mp3,wav,ogg` since B978. It used to be an `OggS`
+    The clip is `wav` and the allowlist `mp3,wav,ogg`. It used to be an `OggS`
     clip in the same allowlist, which routed to `/responses` because the pipe read the
     valve verbatim -- and `/responses` publishes `enum: [mp3, wav]` for
     `input_audio.format`, so a format outside it now routes to `/chat/completions` whatever
@@ -4306,7 +4306,7 @@ async def test_reasoning_retry_without_reasoning():
 
 @pytest.mark.asyncio
 async def test_signature_retry_strips_replayed_reasoning_end_to_end():
-    """End-to-end S1 backstop: a streaming Anthropic turn replays a SIGNED thinking block
+    """End-to-end backstop: a streaming Anthropic turn replays a SIGNED thinking block
     that the provider rejects with a 400 'Invalid signature in thinking block'. The error
     re-raises into the orchestrator, where _should_retry_dropping_signed_reasoning (gated
     on Anthropic + 400) strips the replayed reasoning and retries -- two HTTP calls, and
@@ -4377,14 +4377,14 @@ async def test_signature_retry_strips_replayed_reasoning_end_to_end():
 
             await _consume_stream(result)
 
-        assert call_count[0] == 2, f"the S1 signature retry must fire on streaming: {call_count[0]} call(s)"
+        assert call_count[0] == 2, f"the signature retry must fire on streaming: {call_count[0]} call(s)"
 
         def _replays_signed_reasoning(payload: dict) -> bool:
             blob = json.dumps(payload.get("input") or payload.get("messages") or [])
             return "STALE_SIG" in blob or "prior thinking" in blob
 
         assert _replays_signed_reasoning(captured_payloads[0]), "call 1 must replay the signed reasoning"
-        assert not _replays_signed_reasoning(captured_payloads[1]), "the S1 retry must strip the reasoning"
+        assert not _replays_signed_reasoning(captured_payloads[1]), "the signature retry must strip the reasoning"
 
     finally:
         await pipe.close()
@@ -5734,7 +5734,7 @@ async def test_tool_renames_with_collisions(caplog):
 
 @pytest.mark.asyncio
 async def test_variant_in_model_id_not_restricted():
-    """Variant suffixed model in MODEL_ID should NOT be restricted (plan item 11).
+    """Variant suffixed model in MODEL_ID should NOT be restricted.
 
     When MODEL_ID='arcee-ai/trinity-mini:free' and user requests that exact model,
     it should pass enforcement and reach the API call.
@@ -5804,7 +5804,7 @@ async def test_variant_in_model_id_not_restricted():
 
 @pytest.mark.asyncio
 async def test_variant_from_variant_models_not_restricted():
-    """Variant from VARIANT_MODELS should NOT be restricted (plan item 12).
+    """Variant from VARIANT_MODELS should NOT be restricted.
 
     When VARIANT_MODELS='openai/gpt-4o:nitro' and the base model is in the catalog,
     the :nitro variant should pass enforcement even though it has no catalog entry.
@@ -5934,7 +5934,7 @@ async def test_variant_in_model_id_routing_only_not_restricted():
 
 @pytest.mark.asyncio
 async def test_unknown_variant_is_restricted():
-    """Unknown variant NOT in MODEL_ID or VARIANT_MODELS should be restricted (plan item 13).
+    """Unknown variant NOT in MODEL_ID or VARIANT_MODELS should be restricted.
 
     When MODEL_ID='openai/gpt-4o' (base only) and user requests 'openai/gpt-4o:nitro',
     the variant should be restricted because it wasn't explicitly configured.
@@ -6317,7 +6317,7 @@ async def test_a_stale_sibling_valve_does_not_drop_the_zdr_preference(stored, ex
 
 
 # -----------------------------------------------------------------------------
-# Tests: a refused task must not ship a writable JSON stub (B73-extra-1)
+# Tests: a refused task must not ship a writable JSON stub
 # -----------------------------------------------------------------------------
 
 

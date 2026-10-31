@@ -48,7 +48,7 @@ async def test_supported_image_formats_are_inlined(
 
     Each row's payload now carries the signature of the format it declares. The pipe
     types a `data:` URL from its own bytes, so a PNG declared as JPEG, WEBP or GIF is
-    re-spelled to `image/png` -- correctly, and the point of B454 -- but it would leave
+    re-spelled to `image/png` -- correctly, and by design -- but it would leave
     this table asserting the same answer three times and covering none of the three
     formats it names.
     """

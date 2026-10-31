@@ -4,7 +4,7 @@ In Open WebUI a tool call saved in a message IS its card: `function_call` is one
 in `structuredOutput.ts`, every stored one renders as a collapsible card, and no setting hides it. So a user who
 switches tool cards off can only be spared them if the round is kept OUT of the saved message. That used to cost
 the model its memory of the round: with nothing saved, the next turn arrived with no trace a tool had run, and a
-model asked what it had done concluded it had made the answer up (measured on claude-opus-4.8, t227a CONTROL).
+model asked what it had done concluded it had made the answer up (measured on claude-opus-4.8).
 
 Decided 2026-09-22: switch ON (the default, matching Open WebUI) -- the round is saved in the message, shown as a
 card, and Open WebUI replays it. Switch OFF -- nothing is saved in the message, so no card appears, live or after

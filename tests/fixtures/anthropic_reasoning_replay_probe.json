@@ -7,9 +7,9 @@
   "interleaved_thinking_beta_header": true,
   "note": "Replays of one signed opus-4.8 tool turn (two sequential tool rounds) and one with two parallel calls and final-round reasoning, sent as the next request's history. Only thinking blocks placed next to each other were rejected; text position, stubbed tool results and stubbed arguments were all accepted.",
   "sequential_rounds": {
-    "recorded": "2026-09-15 00:09 (t52b), 00:49 (t52d)",
+    "recorded": "2026-09-15 00:09 and 00:49",
     "arms": {
-      "T52": {
+      "ADJACENT_REASONING": {
         "status": 400,
         "shape": [
           "message:user",
@@ -20,7 +20,7 @@
         ],
         "error": "messages.1.content.1: `thinking` or `redacted_thinking` blocks in the latest assistant message cannot be modified. These blocks must remain as they were in the original response."
       },
-      "T52_FIRST": {
+      "ADJACENT_REASONING_FIRST": {
         "status": 400,
         "shape": [
           "message:user",
@@ -118,7 +118,7 @@
     }
   },
   "parallel_calls_with_final_round_reasoning": {
-    "recorded": "2026-09-15 00:54 (t52f)",
+    "recorded": "2026-09-15 00:54",
     "arms": {
       "CTRL_FULL": {
         "status": 200,
@@ -210,7 +210,7 @@
     }
   },
   "stubbed_arguments": {
-    "recorded": "2026-09-15 01:09 (t52g); every function_call.arguments replaced by \"{}\"",
+    "recorded": "2026-09-15 01:09; every function_call.arguments replaced by \"{}\"",
     "arms": {
       "B_ARGS_KEPT": {
         "status": 200
@@ -227,7 +227,7 @@
     }
   },
   "continue_of_a_tool_turn": {
-    "recorded": "2026-09-16 22:33-22:37 (t126), the saved t52b turn replayed as a Continue with no trailing user message",
+    "recorded": "2026-09-16 22:33-22:37, the saved two-sequential-rounds turn replayed as a Continue with no trailing user message",
     "note": "A Continue sends the history ending inside the continued assistant turn. Ending on the turn's skeleton result was accepted; ending on the assistant's text was rejected by the model, with or without reasoning in the request. On the answer cut after round 1 the model called its tool again in both accepted runs.",
     "arms": {
       "A_FULL": {

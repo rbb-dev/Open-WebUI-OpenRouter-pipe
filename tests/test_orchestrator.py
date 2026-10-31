@@ -109,7 +109,7 @@ def mock_valves():
     valves = Mock()
     # A `Mock` attribute is not a usable key: `EncryptedStr.decrypt` cannot read it, so
     # `_resolve_openrouter_api_key` reports an undecryptable key. The image help path
-    # builds a client to read a model's contract, and since B391 that build sits above
+    # builds a client to read a model's contract, and that build now sits above
     # the read's own `try`, so a key that cannot be used now propagates rather than being
     # swallowed as "the contract could not be read". An orchestrator reached this way is
     # standing in for a configured deployment, so it is given a key that can be sent --

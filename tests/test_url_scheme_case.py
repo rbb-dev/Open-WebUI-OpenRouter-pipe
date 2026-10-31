@@ -320,7 +320,7 @@ async def test_cleartext_video_urls_are_gated_however_the_scheme_is_typed(
     sits above it.
 
     The refused case no longer ships that empty ``video_url`` either -- a block with an
-    empty url is a void attachment, and T433 stops void attachments from reaching the
+    empty url is a void attachment, and void attachments no longer reach the
     provider -- so a refused URL now produces no video block at all, on every turn and not
     only on this one. The gate's decision is still what is under test: an allowed one
     forwards the URL unchanged. An allowed row that stopped forwarding, or a refused row

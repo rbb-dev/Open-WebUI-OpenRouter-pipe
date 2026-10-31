@@ -238,7 +238,7 @@ def test_a_cleared_non_template_string_valve_stays_cleared(name):
     assert getattr(_effective(stored), name) == ""
 
 
-# -- H124-1: clearing a nullable numeric valve is a reset, not a 500 ------------------
+# -- clearing a nullable numeric valve is a reset, not a 500 --------------------------
 
 
 def _swept_nullable_numbers() -> list[str]:

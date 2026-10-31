@@ -271,9 +271,9 @@ async def test_a_card_says_the_same_thing_whether_the_failure_arrived_as_a_statu
 
 # --- what the service card tells an admin a 503 means ------------------------------------------------------
 
-# Prescription 122 split the `503` line, which had stated routing constraints as THE cause, and added the
-# missing `504` row. The wording was fixed but nothing observed it: round 32's verify lens measured both
-# reverts SURVIVING the whole suite. These assert the factory template, not a rendered card -- a rendered card
+# The `503` line, which had stated routing constraints as THE cause, was split and the missing `504` row was
+# added. The wording was fixed but nothing observed it: reverting either change left the whole suite passing.
+# These assert the factory template, not a rendered card -- a rendered card
 # carries OpenRouter's own `{reason}`, so a substring check there passes against the defect.
 def test_the_service_card_offers_both_meanings_of_a_503_rather_than_only_routing():
     from open_webui_openrouter_pipe.core.config import DEFAULT_SERVICE_ERROR_TEMPLATE as template

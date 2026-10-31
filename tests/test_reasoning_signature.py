@@ -1,14 +1,14 @@
 """Issue #48 -- Anthropic thinking-signature handling across both endpoints.
 
 Covers the coordinated fixes:
-  C1/C2 -- the streaming /chat reverse adapter keys reasoning_details by `index`
-           (so one block's deltas consolidate and distinct blocks stay separate)
-           and carries the final delta's signature.
-  R1    -- /responses back-fills the signature from final_response.output onto the
-           persisted reasoning row, in the one loop that BOTH streaming and
-           non-streaming execute.
-  S1    -- a thinking-signature 400 strips replayed reasoning from the input and
-           retries (rather than bricking the conversation).
+  - the streaming /chat reverse adapter keys reasoning_details by `index`
+    (so one block's deltas consolidate and distinct blocks stay separate)
+    and carries the final delta's signature.
+  - /responses back-fills the signature from final_response.output onto the
+    persisted reasoning row, in the one loop that BOTH streaming and
+    non-streaming execute.
+  - a thinking-signature 400 strips replayed reasoning from the input and
+    retries (rather than bricking the conversation).
 """
 # pyright: reportArgumentType=false, reportOptionalSubscript=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportCallIssue=false, reportOptionalIterable=false
 from __future__ import annotations
@@ -81,7 +81,7 @@ async def _drive_chat_stream(pipe: Pipe, sse_body: str) -> list[dict[str, Any]]:
 
 
 # --------------------------------------------------------------------------- #
-# C1/C2 -- streaming chat reverse adapter: key on index, final signature wins
+# Streaming chat reverse adapter: key on index, final signature wins
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 async def test_chat_idless_deltas_same_index_consolidate_with_final_signature(pipe_instance_async):
@@ -222,7 +222,7 @@ async def test_fragmented_reasoning_round_trips_as_one_signed_block_on_chat(pipe
 
 
 # --------------------------------------------------------------------------- #
-# R1 -- /responses back-fills the signature onto the persisted reasoning row
+# /responses back-fills the signature onto the persisted reasoning row
 # --------------------------------------------------------------------------- #
 def _responses_events_with_signed_final(rs_id: str, signature: str) -> list[dict[str, Any]]:
     """The per-item `output_item.done` reasoning has NO signature (as observed in the
@@ -249,7 +249,7 @@ def _capture_persisted_reasoning(pipe: Pipe, monkeypatch) -> list[dict[str, Any]
 
     def capture(chat_id, message_id, model_id, payload):
         if isinstance(payload, dict) and payload.get("type") == "reasoning":
-            captured.append(payload)  # same object the R1 back-fill mutates by reference
+            captured.append(payload)  # same object the back-fill mutates by reference
         return original(chat_id, message_id, model_id, payload)
 
     monkeypatch.setattr(pipe._artifact_store, "_make_db_row", capture)
@@ -277,8 +277,8 @@ async def test_responses_signature_backfilled_onto_persisted_reasoning(pipe_inst
 
 @pytest.mark.asyncio
 async def test_nonstreaming_loop_delegates_to_streaming_loop(pipe_instance_async, monkeypatch):
-    """Non-streaming reuses the streaming loop verbatim, so R1's back-fill (and R2's
-    gate) apply to both modes without duplication."""
+    """Non-streaming reuses the streaming loop verbatim, so the signature back-fill
+    applies to both modes without duplication."""
     pipe = pipe_instance_async
     captured: dict[str, Any] = {}
 
@@ -300,7 +300,7 @@ async def test_nonstreaming_loop_delegates_to_streaming_loop(pipe_instance_async
 
 
 # --------------------------------------------------------------------------- #
-# S1 -- a thinking-signature 400 strips replayed reasoning and retries
+# A thinking-signature 400 strips replayed reasoning and retries
 # --------------------------------------------------------------------------- #
 def _signature_error() -> OpenRouterAPIError:
     return OpenRouterAPIError(
@@ -323,7 +323,7 @@ def _signature_error() -> OpenRouterAPIError:
     ],
 )
 def test_the_self_heal_matches_the_text_anthropic_actually_sends(pipe_instance, upstream, heals):
-    """The verbatim production string must trip S1, not just the signature wording.
+    """The verbatim production string must trip the strip-and-retry, not just the signature wording.
 
     Anthropic writes "`thinking` or `redacted_thinking` blocks", so the contiguous
     substring "thinking block" never appears and the arm that was meant to catch a
@@ -380,7 +380,7 @@ def test_signature_error_with_nothing_to_strip_does_not_retry(pipe_instance):
 
 
 def test_signature_error_non_anthropic_model_does_not_strip(pipe_instance):
-    """D3 gate: a signature-shaped 400 on a NON-Anthropic model must not trigger the
+    """A signature-shaped 400 on a NON-Anthropic model must not trigger the
     reactive strip/retry -- the backstop is Anthropic-only."""
     mgr = pipe_instance._ensure_reasoning_config_manager()
     body = ResponsesBody(model="google/gemini-2.5-pro", api_model="google/gemini-2.5-pro", input=[
@@ -391,7 +391,7 @@ def test_signature_error_non_anthropic_model_does_not_strip(pipe_instance):
 
 
 def test_signature_error_tilde_anthropic_alias_strips_and_retries(pipe_instance):
-    """~anthropic router aliases take the S1 reactive strip path like plain slugs (issue #53)."""
+    """~anthropic router aliases take the reactive strip path like plain slugs (issue #53)."""
     mgr = pipe_instance._ensure_reasoning_config_manager()
     body = ResponsesBody(model="~anthropic/claude-fable-latest", input=[
         {"type": "reasoning", "id": "r1",
@@ -420,14 +420,14 @@ def test_proactive_strip_applies_to_tilde_anthropic_alias(pipe_instance):
 
 # --------------------------------------------------------------------------- #
 # Proactive strip (the streaming heal). The sanitizer removes unreplayable
-# thinking BEFORE every send, so a legacy conversation never 400s. S1's reactive
+# thinking BEFORE every send, so a legacy conversation never 400s. The reactive
 # retry is the backstop for a present-but-rejected signature -- now reachable on
 # streaming via the pre-emission re-raise.
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 async def test_proactive_strip_removes_unsigned_reasoning_on_streaming(pipe_instance_async, monkeypatch):
     """On streaming, the sanitizer strips unsigned/unencrypted reasoning before the
-    send, so a legacy conversation never 400s (the path S1 can't reach). The signed
+    send, so a legacy conversation never 400s (the path the reactive retry can't reach). The signed
     block lives in a SEPARATE turn (after a user message) so it is kept."""
     pipe = pipe_instance_async
     captured: list[Any] = []
@@ -627,7 +627,7 @@ def test_strip_reasoning_details_kept_when_all_replayable():
 
 
 # --------------------------------------------------------------------------- #
-# A4 -- signature / encrypted_content "present" means a non-blank STRING. A
+# Signature / encrypted_content "present" means a non-blank STRING. A
 # whitespace-only or non-string value is corrupt and unreplayable, so it counts
 # as absent: the reasoning is stripped rather than replayed into a 400. Plain
 # truthiness wrongly read such garbage as a valid signature and kept it.
@@ -719,8 +719,8 @@ def test_strip_detail_nonstring_signature_treated_as_unsigned():
 
 
 def test_strip_detail_empty_signature_still_unsigned_characterization():
-    """Characterization (unchanged by A4): an empty-string signature was already falsy and
-    stays unsigned, so the array is dropped. A4 only adds the whitespace/non-string cases."""
+    """Characterization: an empty-string signature was already falsy and
+    stays unsigned, so the array is dropped. The rule only adds the whitespace/non-string cases."""
     items = [{"type": "message", "role": "assistant", "content": "hi", "reasoning_details": [
         {"type": "reasoning.text", "text": "t", "signature": ""}]}]
     out = _strip_unreplayable_anthropic_reasoning(items)
@@ -747,7 +747,7 @@ def test_sanitize_strips_unsigned_reasoning_for_anthropic(pipe_instance):
 
 @pytest.mark.asyncio
 async def test_responses_format_backfilled_completed_wins(pipe_instance_async, monkeypatch):
-    """R1 also back-fills `format`, and the completed-output value wins over a stale
+    """The back-fill also covers `format`, and the completed-output value wins over a stale
     streamed one."""
     pipe = pipe_instance_async
     valves = pipe.valves.model_copy(update={"PERSIST_REASONING_TOKENS": "conversation"})

@@ -577,7 +577,7 @@ class TestCollectSlowStats:
         s = collect_slow_stats(pipe)["storage"]
         assert s["encryption_mode"] == "Disabled"
 
-    # ── H2294-1: the Storage tab said "connected" over a query that failed ──────────────────────────────
+    # ── the Storage tab said "connected" over a query that failed ───────────────────────────────────────
     #
     # Each of the five queries swallows its own `SQLAlchemyError`, so a store whose queries are
     # failing rendered the header "connected" and the fields it could still read, with nothing

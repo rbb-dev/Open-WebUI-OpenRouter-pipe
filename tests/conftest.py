@@ -1098,9 +1098,6 @@ def _reset_dashboard_socket_state():
 _MODULE_STATE_CONTAINERS = (
     ("open_webui_openrouter_pipe.core.logging_system", "_ARCHIVE_CLAIMS"),
     ("open_webui_openrouter_pipe.core.valve_salvage", "_VALVE_SCHEMA_CACHE"),
-    ("open_webui_openrouter_pipe.filters.filter_manager", "_PIPE_OFF_LANDED_AT"),
-    ("open_webui_openrouter_pipe.filters.filter_manager", "_REFUSED_FILTER_WRITES"),
-    ("open_webui_openrouter_pipe.filters.filter_manager", "_PIPE_OFF_SETTLING"),
     ("open_webui_openrouter_pipe.plugins.pipe_dashboard.actions", "_rate_state"),
     ("open_webui_openrouter_pipe.plugins.pipe_dashboard.actions", "_config_write_locks"),
     ("open_webui_openrouter_pipe.plugins.pipe_dashboard.http_routes", "_coarse_state"),
@@ -1115,9 +1112,8 @@ def _reset_module_state_containers():
     A container is one worker's answer, not this test's, and the package never clears
     them -- right for a live worker, wrong for a test process. What is emptied is listed
     in `_MODULE_STATE_CONTAINERS`: the archive claim table, the stored-valve schema cache,
-    the filter-manager latches, both dashboard rate limiters, the per-pipe config write
-    locks, and the usage query memo. The timing logger keeps no module-level container,
-    so it has no row.
+    both dashboard rate limiters, the per-pipe config write locks, and the usage query
+    memo. The timing logger keeps no module-level container, so it has no row.
 
     `_coarse_state` and `_rate_state` are the pair that matters most here. Both key on
     `time.monotonic()`, and the suite's stub clocks run at 1000.0 -- hours behind the
@@ -1150,7 +1146,8 @@ def _reset_module_state_containers():
     `._resync` are bools, and this fixture empties only containers. The three per-pipe
     registries that fixture also repairs (`_pipe_getters`, `_routes_get_pipes`,
     `_pd_snapshot_getters`) are not listed here either: a name in both places would be
-    reset by two fixtures.
+    reset by two fixtures. The filter retire pass's three accumulators are the same
+    case: `_reset_filter_pass_accumulators` owns them.
     """
     def _clear() -> None:
         for module_name, attr in _MODULE_STATE_CONTAINERS:

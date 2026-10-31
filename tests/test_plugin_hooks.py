@@ -1,4 +1,4 @@
-"""Task-0 tests: the three neutral observation hooks, request_id plumbing,
+"""Tests for the three neutral observation hooks, request_id plumbing,
 and the shared table_suffix helper."""
 
 from __future__ import annotations

@@ -1713,7 +1713,7 @@ def test_the_provider_type_and_openrouters_type_stay_separate_fields():
 
 
 # ---------------------------------------------------------------------------
-# T384 · a body whose fields are not text still gets the card its status selects
+# a body whose fields are not text still gets the card its status selects
 # ---------------------------------------------------------------------------
 #
 # `_extract_openrouter_error_details` handed the constructor raw JSON values, and the
@@ -1721,7 +1721,7 @@ def test_the_provider_type_and_openrouters_type_stay_separate_fields():
 # those fields raised while the error was being built. The turn then ended in the
 # unexpected-error card instead of the one for the failure the provider actually reported.
 
-_T384_CARD_MARKERS = {
+_CARD_MARKERS = {
     "OPENROUTER_ERROR_TEMPLATE": "### REJECTED-CARD {status_code}",
     "RATE_LIMIT_TEMPLATE": "### RATE-LIMIT-CARD {status_code}",
     "SERVICE_ERROR_TEMPLATE": "### SERVICE-CARD {status_code}",
@@ -1732,12 +1732,12 @@ _T384_CARD_MARKERS = {
     "INTERNAL_ERROR_TEMPLATE": "### UNEXPECTED-CARD",
 }
 
-def _t384_user_valves():
+def _user_valves():
     from open_webui_openrouter_pipe import Pipe
 
     return Pipe.UserValves()
 
-def _t384_reach_the_model(monkeypatch, pipe) -> None:
+def _reach_the_model(monkeypatch, pipe) -> None:
     import open_webui_openrouter_pipe.pipe as pipe_mod
 
     async def loaded(*_args: Any, **_kwargs: Any) -> None:
@@ -1753,7 +1753,7 @@ def _t384_reach_the_model(monkeypatch, pipe) -> None:
     )
 
 
-async def _t384_card(monkeypatch, pipe_instance_async, status: int, error: dict[str, Any]) -> str:
+async def _card_for_a_rejected_turn(monkeypatch, pipe_instance_async, status: int, error: dict[str, Any]) -> str:
     """Drive one real turn rejected with `status` and `error`; return what was shown."""
     import json as _json
     from unittest.mock import AsyncMock as _AsyncMock
@@ -1761,11 +1761,11 @@ async def _t384_card(monkeypatch, pipe_instance_async, status: int, error: dict[
     pipe = pipe_instance_async
     pipe.valves.API_KEY = EncryptedStr("test-api-key")
     pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
-    _t384_reach_the_model(monkeypatch, pipe)
+    _reach_the_model(monkeypatch, pipe)
     pipe.valves = pipe.valves.model_copy(
         update={
             "DEFAULT_LLM_ENDPOINT": "responses",
-            **{name: marker for name, marker in _T384_CARD_MARKERS.items()},
+            **{name: marker for name, marker in _CARD_MARKERS.items()},
         }
     )
     pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = MagicMock()
@@ -1785,7 +1785,7 @@ async def _t384_card(monkeypatch, pipe_instance_async, status: int, error: dict[
         mock_http.get("https://openrouter.ai/api/v1/endpoints/zdr", payload={"data": []}, repeat=True)
         result = await pipe.pipe(
             body={"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}], "stream": True},
-            __user__={"id": "user1", "valves": _t384_user_valves()},
+            __user__={"id": "user1", "valves": _user_valves()},
             __request__=None,
             __event_emitter__=None,
             __event_call__=None,

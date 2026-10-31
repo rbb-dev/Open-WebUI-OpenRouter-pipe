@@ -434,7 +434,7 @@ class TestReauthorizeLocalViewers:
             await dashboard_socket.reauthorize_local_viewers(_PIPE_ID)
         mock_sio.leave_room.assert_not_awaited()
         fake_resolve_user.assert_awaited_once_with("user-1")
-        # Defect 5's other half: an eviction warning that also fires for authorized
+        # An eviction warning that also fires for authorized
         # viewers is worse than none, so pin the negative case beside the positive.
         assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 

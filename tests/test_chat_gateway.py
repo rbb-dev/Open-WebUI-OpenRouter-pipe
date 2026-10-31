@@ -5058,16 +5058,16 @@ def test_a_usage_envelope_already_in_responses_spelling_survives(raw, expected):
 
 
 # ============================================================================
-# H20-2 / H20-3: the terminal event this transport synthesises
+# The terminal event this transport synthesises
 #
-# H20-2: a provider that stops with `finish_reason: "length"` had its answer
+# A provider that stops with `finish_reason: "length"` had its answer
 # reported as `response.completed`. `/responses` reports the identical condition
 # as `response.incomplete`, and the streaming loop turns that into a warning
 # toast. The same condition must produce the same signal on both transports,
 # streamed and not -- and it stays a *finished* call: usage reported, no breaker
 # charge.
 #
-# H20-3: a body whose last `data:` line is terminated by a single `\n` and no
+# A body whose last `data:` line is terminated by a single `\n` and no
 # blank line leaves that event in `event_data_parts` when `iter_any()` ends, so
 # the turn was reported as cut off (breaker charge) or retried three times.
 # `/responses` already flushes that tail.

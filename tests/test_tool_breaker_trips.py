@@ -381,7 +381,7 @@ async def test_a_tool_first_called_after_the_saved_failure_count_changes_still_r
         json.dumps(["lookup result"]),
         json.dumps(["search result"]),
         json.dumps(["lookup result", "search result"]),
-        json.dumps([_T383_ERROR_TEXT]),
+        json.dumps([_TOOL_ERROR_TEXT]),
     ]
     assert sorted(ran) == ["fail", "lookup", "lookup", "search", "search"]
 
@@ -764,7 +764,7 @@ _CHAT_TITLE_UPSTREAM = {
 }
 """The same title in the shape /chat/completions delivers.
 
-A task uses whichever endpoint a chat turn would (T379), so under
+A task uses whichever endpoint a chat turn would, so under
 `DEFAULT_LLM_ENDPOINT=chat_completions` the title arrives here rather than on /responses.
 """
 
@@ -948,7 +948,7 @@ async def test_a_request_refused_before_the_model_is_called_does_not_clear_earli
     assert "Temporarily disabled due to repeated errors" in replies[-1], replies
 
 
-# --- image and video generations count toward the request breaker (decision T145) ------------------------------------
+# --- image and video generations count toward the request breaker ----------------------------------------------------
 
 _IMAGE_MODEL = "black-forest-labs/flux.2-pro"
 _VIDEO_MODEL = "openai/sora-2-pro"
@@ -2116,7 +2116,7 @@ async def test_a_content_block_never_pauses_background_work_however_it_arrives(m
     assert posts == (1 if pauses else 2), (shape, posts, title)
 
 
-# --- the text a raising tool sends the model is Open WebUI's own (T383) -------------------------
+# --- the text a raising tool sends the model is Open WebUI's own --------------------------------
 #
 # Open WebUI stores a failed tool call as `{'error': str(exc)}` and serialises it with
 # `json.dumps(..., indent=2, ensure_ascii=False)`, so the model reads
@@ -2125,4 +2125,4 @@ async def test_a_content_block_never_pauses_background_work_however_it_arrives(m
 # Open WebUI itself produces when a tool raises. The only intended difference is the
 # empty-message case, which names the exception class.
 
-_T383_ERROR_TEXT = '{\n  "error": "tool exploded"\n}'
+_TOOL_ERROR_TEXT = '{\n  "error": "tool exploded"\n}'

@@ -876,7 +876,7 @@ def test_task_model_adapter_initialization(pipe_instance):
 
 
 # ============================================================================
-# T379 · a task request obeys the endpoint settings, exactly as a chat turn does
+# a task request obeys the endpoint settings, exactly as a chat turn does
 # ============================================================================
 #
 # `_run_task_model_request` called `send_openai_responses_nonstreaming_request` directly,
@@ -888,7 +888,7 @@ def test_task_model_adapter_initialization(pipe_instance):
 # The rows are real (OpenRouter /api/v1/models, 2026-09-12) and the stubs return two
 # different texts, so a hardcoded title cannot satisfy both arms.
 
-_T379_GPT_41_MINI = {
+_TASK_GPT_41_MINI = {
     "id": "openai/gpt-4.1-mini",
     "name": "OpenAI: GPT-4.1 Mini",
     "supported_parameters": [
@@ -902,7 +902,7 @@ _T379_GPT_41_MINI = {
     },
     "pricing": {"prompt": "0.0000004", "completion": "0.0000016", "web_search": "0.01"},
 }
-_T379_GPT_4O_1120 = {
+_TASK_GPT_4O_1120 = {
     "id": "openai/gpt-4o-2024-11-20",
     "name": "OpenAI: GPT-4o (2024-11-20)",
     "supported_parameters": [
@@ -917,7 +917,7 @@ _T379_GPT_4O_1120 = {
     },
     "pricing": {"prompt": "0.0000025", "completion": "0.00001"},
 }
-_T379_CATALOG = [_T379_GPT_41_MINI, _T379_GPT_4O_1120]
+_TASK_CATALOG = [_TASK_GPT_41_MINI, _TASK_GPT_4O_1120]
 
 _TASK_TEXT = "A title from the task path"
 _TASK_UNSUPPORTED = {
@@ -931,7 +931,7 @@ _TASK_SERVER_500 = {"message": "Provider returned error", "code": 500}
 _TASK_CHAT_500 = _TASK_SERVER_500
 
 
-def _t379_rejection(error: dict[str, Any]) -> CallbackResult:
+def _rejection_callback(error: dict[str, Any]) -> CallbackResult:
     return CallbackResult(
         status=400,
         body=json.dumps({"error": error}),
@@ -942,7 +942,7 @@ def _t379_rejection(error: dict[str, Any]) -> CallbackResult:
 _EMITTER_UNSET = object()
 
 
-async def _t379_run(
+async def _run_task_request(
     model: str,
     *,
     task: str | None,
@@ -984,11 +984,11 @@ async def _t379_run(
         endpoints.append(endpoint)
         bodies.append(dict(posted_json(kwargs) or {}))
         if reject_responses_with is not None and endpoint == "responses":
-            return _t379_rejection(reject_responses_with)
+            return _rejection_callback(reject_responses_with)
         if reject_responses and endpoint == "responses":
-            return _t379_rejection(_TASK_UNSUPPORTED)
+            return _rejection_callback(_TASK_UNSUPPORTED)
         if fail_chat and endpoint == "chat/completions":
-            return _t379_rejection(_TASK_CHAT_500)
+            return _rejection_callback(_TASK_CHAT_500)
         return answer(url, **kwargs)
 
     async def _emit(event) -> None:
@@ -1013,7 +1013,7 @@ async def _t379_run(
             )
             http.get(
                 "https://openrouter.ai/api/v1/models",
-                payload={"data": [dict(row) for row in _T379_CATALOG]},
+                payload={"data": [dict(row) for row in _TASK_CATALOG]},
                 repeat=True,
             )
             http.get("https://openrouter.ai/api/v1/endpoints/zdr", payload={"data": []}, repeat=True)

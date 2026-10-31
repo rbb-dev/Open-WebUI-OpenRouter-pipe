@@ -107,8 +107,7 @@ def test_the_local_list_is_used_when_open_webui_has_no_such_module(monkeypatch):
     Absence is simulated explicitly. This test used to rely on `open_webui.utils.chat_id` being absent from the
     test stubs, but that module has shipped since Open WebUI v0.11.0 -- below the 0.12.0 floor -- so it is present
     wherever the pipe runs, and the stubs now carry a verbatim copy of it. A `None` entry in `sys.modules` makes
-    the import raise, which is the path the resolver guards. (Retiring the hand-copied list, and with it this
-    fallback, is tracked as T226.)
+    the import raise, which is the path the resolver guards.
     """
     monkeypatch.setitem(sys.modules, "open_webui.utils.chat_id", None)
     assert _unlinkable_chat_prefixes() == _UNLINKABLE_CHAT_PREFIXES

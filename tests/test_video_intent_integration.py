@@ -612,7 +612,7 @@ class TestDisclosurePersistence:
 
 
 # -----------------------------------------------------------------------------
-# H9-3 — the disclosure block pairs each frame with its OWN thumbnail
+# The disclosure block pairs each frame with its OWN thumbnail
 # -----------------------------------------------------------------------------
 
 _VIDEO_CATALOG_FIXTURE = Path(__file__).parent / "fixtures" / "video_models_catalog.json"

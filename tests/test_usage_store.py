@@ -135,7 +135,7 @@ def _make_store_host(collect: bool = True, *, monkeypatch) -> Any:
     `_rows_in` below does, on the test's own thread, while the writer thread is
     committing -- issues a ROLLBACK that destroys the writer's open savepoint. The
     release then raises "no such savepoint", `_persist_sync` counts the row as rejected
-    and drops it, and the arm fails as a lost write on a box that was idle. That is B559.
+    and drops it, and the arm fails as a lost write on a box that was idle.
     A deployment's engine gives each thread its own connection to a file, so a rig that
     shares one connection is testing a shape nothing ships. The temporary directory is
     removed when the engine is garbage-collected, which is when the last holder of this

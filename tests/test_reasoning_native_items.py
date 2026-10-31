@@ -1,4 +1,4 @@
-"""Native reasoning output-item emission tests (Part A migration).
+"""Native reasoning output-item emission tests.
 
 Drives the real _run_streaming_loop with fake upstream streams and asserts the
 append-only native protocol: one completed reasoning output_item.added per
@@ -88,7 +88,7 @@ def _assert_completed_shape(item: dict) -> None:
 
 
 class TestNativeReasoningDelta:
-    """T1: delta-shaped streams emit one completed box per item."""
+    """Delta-shaped streams emit one completed box per item."""
 
     @pytest.mark.asyncio
     async def test_delta_shape_single_completed_item_before_answer(
@@ -152,7 +152,7 @@ class TestNativeReasoningDelta:
 
 
 class TestNativeReasoningSnapshot:
-    """T2: snapshot-shaped streams (text only in output_item.done)."""
+    """Snapshot-shaped streams (text only in output_item.done)."""
 
     @pytest.mark.asyncio
     async def test_snapshot_duration_excludes_tool_latency(
@@ -210,7 +210,7 @@ class TestNativeReasoningSnapshot:
 class TestEmptyAndModes:
     @pytest.mark.asyncio
     async def test_encrypted_only_items_are_dropped(self, monkeypatch, pipe_instance_async):
-        """T3: empty/encrypted-only reasoning emits nothing."""
+        """Empty/encrypted-only reasoning emits nothing."""
         pipe = pipe_instance_async
         clock = _install_clock(monkeypatch)
         valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "open_webui"})
@@ -229,7 +229,7 @@ class TestEmptyAndModes:
         [("open_webui", 1, False), ("status", 0, True)],
     )
     async def test_mode_matrix(self, monkeypatch, pipe_instance_async, mode, expect_native, expect_status):
-        """T4: box/status/both gating."""
+        """Box/status/both gating."""
         pipe = pipe_instance_async
         clock = _install_clock(monkeypatch)
         valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": mode})
@@ -256,7 +256,7 @@ class TestIdsAndRobustness:
     async def test_idless_items_get_minted_ids_and_stay_distinct(
         self, monkeypatch, pipe_instance_async
     ):
-        """T5: two id-less reasoning items render as two distinct boxes."""
+        """Two id-less reasoning items render as two distinct boxes."""
         pipe = pipe_instance_async
         clock = _install_clock(monkeypatch)
         valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "open_webui"})
@@ -282,7 +282,7 @@ class TestIdsAndRobustness:
 
     @pytest.mark.asyncio
     async def test_truncated_stream_emits_terminating_box(self, monkeypatch, pipe_instance_async):
-        """T6: stream dies mid-reasoning -> finally emits a completed box."""
+        """Stream dies mid-reasoning -> finally emits a completed box."""
         pipe = pipe_instance_async
         clock = _install_clock(monkeypatch)
         valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "open_webui"})
@@ -299,7 +299,7 @@ class TestIdsAndRobustness:
 
     @pytest.mark.asyncio
     async def test_done_without_added_lazy_init(self, monkeypatch, pipe_instance_async):
-        """T8: reasoning done for an unseen id must not crash and must emit."""
+        """Reasoning done for an unseen id must not crash and must emit."""
         pipe = pipe_instance_async
         clock = _install_clock(monkeypatch)
         valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "open_webui"})
@@ -316,7 +316,7 @@ class TestIdsAndRobustness:
 
     @pytest.mark.asyncio
     async def test_delta_resume_clears_close_candidate(self, monkeypatch, pipe_instance_async):
-        """T8: reasoning text resuming after a tool boundary re-opens the window."""
+        """Reasoning text resuming after a tool boundary re-opens the window."""
         pipe = pipe_instance_async
         clock = _install_clock(monkeypatch)
         valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "open_webui"})
@@ -344,7 +344,7 @@ class TestAnswerAndWireIntegrity:
     async def test_no_marker_space_and_content_none_at_completion(
         self, monkeypatch, pipe_instance_async
     ):
-        """T10: no stray marker-space deltas; completion carries content=None."""
+        """No stray marker-space deltas; completion carries content=None."""
         pipe = pipe_instance_async
         clock = _install_clock(monkeypatch)
         valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "open_webui"})
@@ -370,7 +370,7 @@ class TestAnswerAndWireIntegrity:
     async def test_upstream_response_completed_is_never_forwarded(
         self, monkeypatch, pipe_instance_async
     ):
-        """N5: the upstream array is a stub; forwarding it would wipe OWUI's output."""
+        """The upstream array is a stub; forwarding it would wipe OWUI's output."""
         pipe = pipe_instance_async
         clock = _install_clock(monkeypatch)
         valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "open_webui"})
@@ -662,7 +662,7 @@ class TestSeededHistoryIsHealed:
 
 
 class TestRetireDriftGuard:
-    """T7: the legacy reasoning wire vocabulary must not return."""
+    """The legacy reasoning wire vocabulary must not return."""
 
     def test_production_sources_free_of_legacy_vocabulary(self):
         root = Path(__file__).resolve().parent.parent / "open_webui_openrouter_pipe" / "streaming"

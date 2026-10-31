@@ -95,23 +95,23 @@ def test_usage_tab_markers():
 
 def test_sortable_searchable_tables_and_chart():
     html = _build_dashboard_shell("dash-v2")
-    # Reusable sort/search controller drives all three tables (D).
+    # Reusable sort/search controller drives all three tables.
     assert "makeSortTable" in html
     for m in ("liveTable", "modelsTable", "usersTable"):
         assert m in html
     assert "th-sort" in html and "tbl-search" in html
-    assert "toolsCell" in html      # shared ok/failed tools cell (C)
+    assert "toolsCell" in html      # shared ok/failed tools cell
     assert "ticksFor" in html and "usBindHover" in html  # nice-tick axes + hover tooltip
-    # Live 'Keep completed' extended to hours (E).
+    # Live 'Keep completed' extended to hours.
     for opt in ('value="60">1 hour', 'value="120">2 hours', 'value="180">3 hours'):
         assert opt in html
-    # 30d segment no longer clips (A).
+    # 30d segment no longer clips.
     assert "flex-shrink: 0" in html
 
 
 def test_footer_legend_and_models_breakdown():
     html = _build_dashboard_shell("dash-v2")
-    # Footer abbreviations legend sits above the version line (item 3).
+    # Footer abbreviations legend sits above the version line.
     assert "footer-legend" in html
     assert "zero-data-retention" not in html  # ZDR dropped: no ZDR marker is ever rendered
     assert "tools succeeded / failed" in html
@@ -119,13 +119,13 @@ def test_footer_legend_and_models_breakdown():
     # The skipped glyph ships in the cell, so the legend that names the other two has to
     # name it too -- otherwise a breaker skip is a mark the operator cannot decode.
     # A later commit folded all three into one run of glyphs named "succeeded / failed /
-    # skipped", so match on the glyph span and the third name rather than B85's original
+    # skipped", so match on the glyph span and the third name rather than the original
     # "<b>&#8856;</b> tools skipped by the breaker" wording, which that commit replaced.
     assert "&#10003; / &#10007; / &#8856;" in html, (
         "the footer legend names the ok and failed glyphs but not the skipped one"
     )
     assert "tools succeeded / failed / skipped" in html
-    # Health "Models loaded" folds Text/Image/Video into one sub-line (item 7);
+    # Health "Models loaded" folds Text/Image/Video into one sub-line;
     # the stray middot-prefixed standalone cards are gone.
     assert "modParts" in html
     assert "\\u00b7 Text / chat" not in html
@@ -168,7 +168,7 @@ def test_config_secret_control_reads_secret_set():
     The two halves of the secret row answer different questions and used to share one
     flag, which is what let the pane contradict itself: the box said "configured — type
     to replace" while the line above it said the stored value was about to be removed.
-    F5 gates the placeholder on the live state (`v.secret_set` and nothing staged), and
+    The placeholder is gated on the live state (`v.secret_set` and nothing staged), and
     the Default cell keeps its own `secret_set` gate, where reporting an env-supplied key
     as configured is correct.
     """

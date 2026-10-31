@@ -6,7 +6,7 @@ fill whatever room is left and are taken from the tail, so the LAST N survive. T
 said "keeping the most recent" in every case, which is true only of attachments -- and
 when the published limit is zero it said it while keeping nothing at all.
 
-B305 added the count to the same sentence. The number in it has to be the number the
+The same sentence carries a count, too. The number in it has to be the number the
 person can check their own list against: what was OFFERED (every link they listed, plus
 every attachment) minus what was SENT. It used to be computed from the list after it had
 already been sliced, so links past the ceiling were counted as never offered at all: 20

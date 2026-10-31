@@ -1669,7 +1669,7 @@ class TestResponsesInputToChatMessages:
     async def test_empty_content_blocks(self):
         """A contentless message item keeps the caller's own empty block list.
 
-        B378's operator decision 1(b): the normaliser preserves the caller's spelling
+        The normaliser preserves the caller's spelling
         rather than rewriting a contentless item to `""`, so `/v1/responses` and
         `/v1/chat/completions` answer the same turn the same way. Which line the provider
         ends up with is the transformer's, and
@@ -3199,7 +3199,7 @@ def test_filter_openrouter_chat_request_preserves_trace() -> None:
 
 
 # ============================================================================
-# Task 4 — Responses allowlist: new OpenRouter Responses-specific fields
+# Responses allowlist: new OpenRouter Responses-specific fields
 # ============================================================================
 
 

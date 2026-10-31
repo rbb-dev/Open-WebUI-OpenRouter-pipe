@@ -1,4 +1,4 @@
-"""New coverage for the image-path fixes (SYS, P1/P1b, P2, S2b, BCAST)."""
+"""Coverage for the image path: the system prompt and a user turn's text, region-sharded provider slugs, provider option fan-out, and pixel sizes and ratios."""
 from __future__ import annotations
 
 import json
@@ -34,7 +34,7 @@ from tests.test_image_api_path import (  # noqa: F401
     _seed_contract,
 )
 
-# ----------------------------------------------------------------- SYS
+# ----------------------------------------------------------------- the system prompt and a user turn's text
 
 
 @pytest.mark.parametrize(
@@ -126,7 +126,7 @@ def test_item_text_separates_no_text_from_empty_text(content, expected):
     assert item_text({"role": "user", "content": content}) == expected
 
 
-# ----------------------------------------------------------------- P1 / P1b
+# ----------------------------------------------------------------- region-sharded provider slugs
 
 
 @pytest.mark.parametrize(
@@ -232,7 +232,7 @@ def test_a_pin_no_record_carries_is_still_reported_as_unserved(pin, expected):
         assert record is None and unserved == expected
 
 
-# ----------------------------------------------------------------- BCAST
+# ----------------------------------------------------------------- provider option fan-out
 
 
 @pytest.mark.parametrize(
@@ -297,7 +297,7 @@ def test_option_carriers_reads_every_published_record(records, expected):
     assert ImageGenerationAdapter._option_carriers(records) == expected
 
 
-# ----------------------------------------------------------------- S2b
+# ----------------------------------------------------------------- pixel sizes and ratios
 
 
 @pytest.mark.parametrize(

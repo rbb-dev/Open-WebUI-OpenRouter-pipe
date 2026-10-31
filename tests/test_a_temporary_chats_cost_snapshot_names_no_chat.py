@@ -95,7 +95,7 @@ async def _through_the_pipe(monkeypatch, pipe, *, messages, chat_id, model=MODEL
 
 
 # =============================================================================
-# B515 H2459-1 · picture and video spend is written with no chat id
+# picture and video spend is written with no chat id
 #
 # The writer was already right: `core/costs.py:103-107` drops both ids for a temporary
 # chat and keeps them otherwise. The two callers that pass neither id are what made

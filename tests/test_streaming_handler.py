@@ -10088,7 +10088,7 @@ class TestPhaseMarkerPersistence:
             for event in emitted
             if event.get("type") == "chat:message:delta"
         ]
-        # Each stretch of streamed text goes into a message item the pipe opens first (ledger 158): one for "Done.",
+        # Each stretch of streamed text goes into a message item the pipe opens first: one for "Done.",
         # one for the marker line written after the thinking box.
         assert [event.get("item", {}).get("type") for event in added_events] == [
             "function_call",
@@ -11759,7 +11759,7 @@ class TestJpgMimeTypeConversion:
         """The declaration is `image/jpg`; the payload is a PNG, so the PNG wins.
 
         This row used to assert the opposite -- that `image/jpg` lands as `.jpeg` -- which
-        was the rule before B590: the declaration decided. The rule now is that the bytes
+        was the old rule: the declaration decided. The rule now is that the bytes
         decide and the declaration only decides where the bytes say nothing, so a `data:`
         arm that routes its declared type through `_resolved_stored_mime` stores this PNG as
         `image/png`. The spelling that made the old answer necessary, `image/jpg`, is still

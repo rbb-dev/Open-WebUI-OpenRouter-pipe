@@ -1640,7 +1640,7 @@ async def test_a_round_hands_back_its_results_in_call_order_however_the_calls_fi
 # --- the four places the idle limit is described to an operator ---------------------------------------------
 
 
-# --- Stop during a round counts only what the tools did (round 35, tools F1) ----------------------------------------
+# --- Stop during a round counts only what the tools did -------------------------------------------------------------
 
 
 # A synchronous tool reaches the pipe wrapped in Open WebUI's async shell, so the pipe sees an async

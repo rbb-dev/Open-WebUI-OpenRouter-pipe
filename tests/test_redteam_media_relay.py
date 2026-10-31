@@ -117,7 +117,7 @@ def _record(file_id, stored_mime, filename="clip.mp4"):
                            meta={"content_type": stored_mime})
 
 
-# ---------------------------------------------------------------- FINDING 3 --
+# ---------------------------------------------------------------- the type a file is relayed as --
 @pytest.mark.parametrize(
     ("declared", "stored_mime"),
     [("video/mp4", ";")],
@@ -159,7 +159,7 @@ async def test_a_request_declared_type_cannot_reach_the_upload_headers(hostile):
     assert withheld, "the file was neither sent nor reported"
 
 
-# ---------------------------------------------------------------- FINDING 1 --
+# ---------------------------------------------------------------- disclosure before the upload --
 @pytest.mark.parametrize("interrupted_by", ["stop-pressed", "the-next-upload-refused"])
 @pytest.mark.asyncio
 async def test_a_file_already_published_is_disclosed_even_when_the_request_fails(
@@ -202,7 +202,7 @@ async def test_a_file_already_published_is_disclosed_even_when_the_request_fails
     assert "hour" in said, f"the notice does not say how long it stays: {said}"
 
 
-# ---------------------------------------------------------------- FINDING 5 --
+# ---------------------------------------------------------------- the number of files one request publishes --
 @pytest.mark.parametrize("count", [40, 400])
 @pytest.mark.asyncio
 async def test_a_single_request_cannot_publish_an_unbounded_number_of_files(count):
@@ -224,7 +224,7 @@ async def test_a_single_request_cannot_publish_an_unbounded_number_of_files(coun
     )
 
 
-# ---------------------------------------------------------------- FINDING 4 --
+# ---------------------------------------------------------------- the link the chosen host serves --
 @pytest.mark.parametrize(
     "answer",
     ["https://attacker.example/beacon.mp4", "http://169.254.169.254/latest/meta-data/"],

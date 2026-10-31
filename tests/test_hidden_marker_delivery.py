@@ -144,8 +144,8 @@ async def test_a_streaming_turn_publishes_its_markers_and_does_not_warn(monkeypa
 async def test_a_non_streaming_tool_hand_back_that_returns_before_its_markers_still_warns(
     monkeypatch, pipe_instance_async
 ):
-    # A hand-back the request declared a tool for returns its tool_calls response before the markers are added
-    # (TODO T55), so those rows really are unaddressed.
+    # A hand-back the request declared a tool for returns its tool_calls response before the markers are added,
+    # so those rows really are unaddressed.
     result, markers, _, warnings = await _turn(
         pipe_instance_async, monkeypatch, stream=False, answer="Let me look.", hand_back=True
     )

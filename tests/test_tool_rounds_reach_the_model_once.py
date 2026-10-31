@@ -1,8 +1,8 @@
 """Every tool round reaches the next request exactly once, where it happened, whatever the card switch says.
 
 A round can travel two ways: Open WebUI saves it in the message and rebuilds it into the next request (tool cards
-on, a streamed turn), or the pipe keeps it in its own storage and replays it through a hidden marker. Round 33 found
-the round arriving twice, arriving nowhere, and arriving in the wrong place, depending on the switch, the result
+on, a streamed turn), or the pipe keeps it in its own storage and replays it through a hidden marker. The round was found
+arriving twice, arriving nowhere, and arriving in the wrong place, depending on the switch, the result
 setting, the kind of chat and the reasoning path. Each test here pins one of those, driven through the real
 streaming loop and, where Open WebUI rebuilds the message, through Open WebUI's own converter.
 """
@@ -36,7 +36,7 @@ def _label(item: dict[str, Any]) -> str:
     return str(kind)
 
 
-# --- T235: with cards off, the pipe's copy is the model's record of the round, not a reasoning scaffold -------------
+# --- with cards off, the pipe's copy is the model's record of the round, not a reasoning scaffold -------------------
 
 import asyncio  # noqa: E402
 import json  # noqa: E402
@@ -81,7 +81,7 @@ def _open_webui_streaming_handler() -> dict[str, Any]:
     return namespace
 
 
-# --- T233: one copy of each round, whichever carriers exist -----------------------------------------------------------
+# --- one copy of each round, whichever carriers exist -----------------------------------------------------------------
 
 from open_webui_openrouter_pipe import generate_item_id  # noqa: E402
 from open_webui_openrouter_pipe.core import utils as core_utils  # noqa: E402
@@ -91,11 +91,11 @@ from tests.test_continue_stores_once import _open_webui_convert_output_to_messag
 from tests.test_reasoning_skeleton_replay import MODEL, RESULT_CANARY, _has_consecutive_reasoning  # noqa: E402
 
 
-# --- T237: an OpenRouter server tool's round is carried by exactly one thing ---------------------------------------
+# --- an OpenRouter server tool's round is carried by exactly one thing ---------------------------------------------
 
 from tests.test_tool_record_survives_cards_off import _run_server_tool  # noqa: E402
 
-# --- T243: a Continue must not glue its first words onto the message's last hidden marker ----------------------------
+# --- a Continue must not glue its first words onto the message's last hidden marker ----------------------------------
 
 import copy  # noqa: E402
 import re  # noqa: E402

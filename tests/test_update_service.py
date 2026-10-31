@@ -610,8 +610,8 @@ class _NoDistribution:
 def _installed_dist_version(monkeypatch, value):
     """Patch `importlib.metadata.version` -- one seam BELOW `_owui_version`.
 
-    Patching `_owui_version` itself would stop its body from running, so both of the
-    Fix-1 mutations (return env.VERSION unconditionally / return the metadata value
+    Patching `_owui_version` itself would stop its body from running, so both
+    wrong implementations (return env.VERSION unconditionally / return the metadata value
     unconditionally) would stay green. Other distributions still resolve for real, so
     nothing else that asks `importlib.metadata` during the test is disturbed.
     """
@@ -1228,7 +1228,7 @@ async def test_reload_success_passes_replace_imports_content(svc, fake_functions
 
     monkeypatch.setattr(owp, "load_function_module_by_id", _load)
     monkeypatch.setattr(owp, "replace_imports", lambda c: c + "\n# normalized")
-    # Four values since H656-2: the fourth is the restore callable the refusal arm
+    # Four values: the fourth is the restore callable the refusal arm
     # needs. The content assertion below is the part that must stay.
     instance, frontmatter, content, restore = await svc._reload_via_loader(GOOD_HEADER)
     assert callable(restore)
@@ -2240,7 +2240,7 @@ async def test_auto_never_applies_same_version(auto, fake_http):
     assert delay == us._PD_UPDATE_AUTO_INTERVAL
 
 
-# ── external-review hardening (M1/M2/M3/L2/L8) ──────────────────────────────
+# ── commit refusals, the revision guard, row valves and the rate-limit header ──
 
 
 @pytest.mark.asyncio
@@ -2940,7 +2940,7 @@ async def test_an_undecodable_valve_blob_is_not_read_as_no_override(
     )
 
 
-# ── B1019-4: a parked release ages out ─────────────────────────────────────────
+# ── a parked release ages out ──────────────────────────────────────────────────
 #
 # `_auto_skip[version]` is written by any code outside `_TRANSIENT_CODES`, and the
 # membership test short-circuits before the retry, so the entry parked that version until
@@ -2956,7 +2956,7 @@ async def test_an_undecodable_valve_blob_is_not_read_as_no_override(
 # release in the future and the tick never reaches apply, which makes every assertion here
 # pass or fail for the wrong reason.
 _AUTO_TICK_BASE = 1_783_000_000.0
-# ── H656-2: a refused content write leaves the freshly loaded code installed and the
+# ── a refused content write leaves the freshly loaded code installed and the
 # ── pipe dead. The restore is what makes the rebuild possible; the rebuild is what
 # ── makes the next chat work. Restoring `sys.modules` alone leaves a dead instance.
 #
