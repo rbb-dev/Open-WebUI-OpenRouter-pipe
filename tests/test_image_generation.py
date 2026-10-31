@@ -3889,21 +3889,33 @@ def test_the_server_tool_filter_offers_exactly_what_the_model_publishes(slug, mo
     seeded = re.search(r"params: dict\[str, Any\] = \{(.*?)\}", source)
     written = re.findall(r"[\"']([a-z_]+)[\"']\s*:", seeded.group(1) if seeded else "")
     written += re.findall(r"params\[[\"']([a-z_]+)[\"']\]\s*=", source)
+    published_names = {
+        name
+        for record in records
+        for name, descriptor in (record.get("supported_parameters") or {}).items()
+        if isinstance(descriptor, dict)
+    }
+    publishes_size = bool(published_names & {"size", "resolution"})
+    controls_expected = {
+        "size": int(publishes_size),
+        "aspect_ratio": int("aspect_ratio" in published_names),
+    }
     for parameter in _RECORDED_SERVER_TOOL_PARAMS:
-        assert written.count(parameter) == 1, (
+        expected = controls_expected.get(parameter, 1)
+        assert written.count(parameter) == expected, (
             f"{model_id}: OpenRouter's server-tool parameter table documents {parameter}, so "
-            f"exactly one control must set it; {written.count(parameter)} do. The per-model "
-            "images contract describes a different endpoint and does not decide which "
-            "parameters the server tool carries."
+            f"{expected} control(s) must set it (a size and an aspect ratio only where the "
+            f"model publishes them); {written.count(parameter)} do."
         )
     assert ("IMAGE_RESOLUTION" in drawn) == bool(offered.get("resolution")), (
         f"{model_id} publishes resolution={bool(offered.get('resolution'))!r} and the panel "
         f"drew {('IMAGE_RESOLUTION' in drawn)!r}; the tier control is the one that does "
         "track this model's own published values"
     )
-    assert ("IMAGE_SIZE" in drawn) != bool(offered.get("resolution")), (
+    assert ("IMAGE_SIZE" in drawn) == (publishes_size and not offered.get("resolution")), (
         f"{model_id}: the tier dropdown and the free-text size box write the same request "
-        "key, so drawing both loses whichever runs first without saying so"
+        "key, so drawing both loses whichever runs first without saying so, and a model "
+        "that publishes no size draws neither"
     )
 
 
@@ -3944,16 +3956,25 @@ def test_the_emitted_tool_call_never_carries_a_ratio_the_pixel_size_contradicts(
     )
     from open_webui_openrouter_pipe.requests.orchestrator import _build_server_tool_entries
 
-    model_id = "google/gemini-2.5-flash-image"
+    model_id = "vendor/pixel-sizes"
     spec = build_image_model_filter_spec(
         model_id,
-        {"id": model_id, "name": "Gemini"},
-        _recorded_endpoint("google_gemini-2.5-flash-image"),
+        {"id": model_id, "name": "Pixel sizes"},
+        [
+            {
+                "provider_slug": "alpha",
+                "provider_tag": "alpha",
+                "supported_parameters": {
+                    "size": {"type": "enum", "values": ["1024x1024", "1536x1024"]},
+                    "aspect_ratio": {"type": "enum", "values": ["1:1", "16:9"]},
+                },
+            }
+        ],
         dedicated_image_api=True,
     )
-    assert not dict(spec.enums).get("resolution"), (
-        f"{model_id} publishes tiers, so its panel draws the tier dropdown rather than the "
-        "free-text size box this case is about"
+    assert "1024x1024" in dict(spec.enums)["size"], (
+        f"{model_id} publishes pixel sizes, so its panel must offer the exact size this "
+        "case is about"
     )
     assert ratio in dict(spec.enums)["aspect_ratio"], (
         f"{model_id} does not publish {ratio}, so the panel never drew it and this case "
@@ -3986,9 +4007,9 @@ def test_the_emitted_tool_call_never_carries_a_ratio_the_pixel_size_contradicts(
 async def test_the_tool_panel_measures_a_size_tier_against_the_four_names(typed, sent):
     """The size box on the chat tool says a tier is checked, so a tier has to be checked.
 
-    The model driven here publishes no tier list, which is the case the panel describes:
-    its own sentence promises the value is measured against OpenRouter's four names
-    before it goes out. `2K` is one of them and `8K` is not, so one value must survive
+    The panel driven here has read no published settings for its model, which is the case
+    its sentence describes: the value is measured against OpenRouter's four names before
+    it goes out. `2K` is one of them and `8K` is not, so one value must survive
     and the other must be withheld -- neither an unconditional send nor an unconditional
     drop passes, and no constant satisfies both rows.
 
@@ -4006,7 +4027,7 @@ async def test_the_tool_panel_measures_a_size_tier_against_the_four_names(typed,
     spec = build_image_model_filter_spec(
         model_id,
         {"id": model_id, "name": "Gemini"},
-        _recorded_endpoint("google_gemini-2.5-flash-image"),
+        None,
         dedicated_image_api=True,
     )
     assert not dict(spec.enums).get("resolution"), (
@@ -4233,10 +4254,10 @@ async def test_the_installed_filter_is_built_for_the_model_its_own_valve_names(
         for record in records
         for name in (record.get("supported_parameters") or {})
     }
-    assert "IMAGE_ASPECT_RATIO" in fields, (
-        f"{stored}: aspect_ratio is in OpenRouter's server-tool parameter table, so this "
-        "panel carries it whatever the per-model images contract says -- that contract "
-        "describes a different endpoint"
+    assert ("IMAGE_ASPECT_RATIO" in fields) == ("aspect_ratio" in published), (
+        f"{stored} publishes aspect_ratio={('aspect_ratio' in published)!r} and the panel "
+        f"drew {'IMAGE_ASPECT_RATIO' in fields!r}; an aspect ratio is offered only where "
+        "the model publishes one"
     )
     assert ("IMAGE_RESOLUTION" in fields) == ("resolution" in published), (
         f"{stored} publishes resolution={('resolution' in published)!r} and the panel drew "

@@ -74,7 +74,7 @@ class Filter:
         IMAGE_GENERATION_MODEL: str = Field(
             default='openai/gpt-5-image-mini',
             title="Image generation model",
-            description="Which OpenRouter model draws the picture. In force: openai/gpt-5-image-mini. When this valve is left unset the pipe draws with openai/gpt-5-image-mini; that is this pipe's default and not the one OpenRouter documents, which is openai/gpt-5-image. The default was chosen because it costs less per image than OpenRouter's own default, and a value an admin has stored in this valve takes its place. openai/gpt-5-image-mini is not in the image model list this pipe has loaded, so the settings below are not its own: each one offers what OpenRouter's image API accepts in general, and this model decides what to do with the value. Check the id if that is unexpected.",
+            description="Which OpenRouter model generates the images. In force: openai/gpt-5-image-mini. When this valve is left unset the pipe generates with openai/gpt-5-image-mini; that is this pipe's default and not the one OpenRouter documents, which is openai/gpt-5-image. The default was chosen because it costs less per image than OpenRouter's own default, and a value an admin has stored in this valve takes its place. openai/gpt-5-image-mini is not in the image model list this pipe has loaded, so the settings below are not its own: each one offers what OpenRouter's image API accepts in general, and this model decides what to do with the value. Where this pipe can read settings the model publishes and they include no output size or size tiers, or no aspect ratios, a value typed for either is not sent and a message says so. Check the id if that is unexpected.",
         )
         IMAGE_GENERATION_MODERATION: Literal['auto', 'low'] = Field(
             default='auto',
@@ -126,12 +126,12 @@ class Filter:
         IMAGE_SIZE: str = Field(
                     default="",
                     title='Output size',
-                    description='Either a size tier (512, 1K, 2K or 4K) or exact pixels written like 1024x1024. This model publishes no tiers of its own, so a tier is checked only against those four names and then goes out for the company running the model to interpret. It still takes its shape from Aspect ratio. Exact pixels settle the picture on their own, so Aspect ratio is not sent alongside them unless it is the shape you typed. A toast says so at the time, which Open WebUI does not keep with the message: it is gone once the page reloads. No model publishes a list of pixel sizes, so exact pixels go out as typed and the company running this one decides what to do with them. Empty leaves it unset.',
+                    description='Either a size tier (512, 1K, 2K or 4K) or exact pixels written like 1024x1024. This model publishes no tiers of its own, so a tier is checked only against those four names and then goes out for the company running the model to interpret. It still takes its shape from Aspect ratio. Where this pipe has read settings the model publishes and none of them is an output size or a list of size tiers, nothing is sent for it and a message says so. Exact pixels settle the image on their own, so Aspect ratio is not sent alongside them unless it is the shape you typed. A toast says so at the time, which Open WebUI does not keep with the message: it is gone once the page reloads. No model publishes a list of pixel sizes, so exact pixels go out as typed and the company running this one decides what to do with them. Empty leaves it unset.',
                 )
         IMAGE_ASPECT_RATIO: str = Field(
                     default="",
                     title='Aspect ratio',
-                    description="Frame shape. This model publishes no preference of its own. OpenRouter's image API takes one of 1:1, 1:2, 1:4, 1:8, 2:1, 2:3, 2.35:1, 3:2, 3:4, 4:1, 4:3, 4:5, 5:2, 5:4, 8:1, 9:16, 16:9, 9:19.5, 19.5:9, 9:20, 20:9, 9:21, 21:9, auto here and refuses anything else before the company running the model sees it. Empty leaves it unset.",
+                    description="Frame shape. This model publishes no preference of its own. OpenRouter's image API takes one of 1:1, 1:2, 1:4, 1:8, 2:1, 2:3, 2.35:1, 3:2, 3:4, 4:1, 4:3, 4:5, 5:2, 5:4, 8:1, 9:16, 16:9, 9:19.5, 19.5:9, 9:20, 20:9, 9:21, 21:9, auto here and refuses anything else before the company running the model sees it. Where this pipe has read settings the model publishes, a ratio they do not list is not sent and a message says so. Empty leaves it unset.",
                 )
         IMAGE_BACKGROUND: str = Field(
                     default="",

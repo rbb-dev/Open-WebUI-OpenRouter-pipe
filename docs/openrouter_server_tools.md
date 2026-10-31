@@ -124,7 +124,7 @@ These are configured on the companion filter functions themselves (Open WebUI Ad
 | Valve | Type | Default | Purpose |
 | --- | --- | --- | --- |
 | `priority` | `int` | `0` | Priority level for the filter operations. |
-| `IMAGE_GENERATION_MODEL` | `str` | `openai/gpt-5-image-mini` | Which OpenRouter model draws the picture. The pipe's default is `openai/gpt-5-image-mini`; OpenRouter documents `openai/gpt-5-image` as its own, so the two differ. The default was chosen because it costs less per image than OpenRouter's documented default, and a value an admin stores in this valve takes its place. Clearing the box, or filling it with only spaces, counts as unset, and the pipe's own default draws the picture. Its own published contract is what the user valves below are built from, so changing it changes them on the next catalog refresh. Its description names the model in force and, when no settings are offered, says which of the four reasons applies. A refresh whose valve read **fails** leaves the installed filter exactly as it is, rather than rebuilding it for the default model, until a later refresh succeeds. Each distinct cause is warned about once at WARNING and then dropped to DEBUG for the life of the worker, latched separately for a read that raised and for a read that returned no result; the message reads "Could not read the image generation filter's selected model, so the installed filter is left as it is rather than rebuilt for the default model". The model-ruled-out warning is separate and latched per model over a sliding 300-model window: once per model inside the window, and again at WARNING for a model that falls out of it, so a model that keeps being ruled out stays visible rather than going quiet forever. |
+| `IMAGE_GENERATION_MODEL` | `str` | `openai/gpt-5-image-mini` | Which OpenRouter model generates the images. The pipe's default is `openai/gpt-5-image-mini`; OpenRouter documents `openai/gpt-5-image` as its own, so the two differ. The default was chosen because it costs less per image than OpenRouter's documented default, and a value an admin stores in this valve takes its place. Clearing the box, or filling it with only spaces, counts as unset, and the pipe's own default generates the image. Its own published contract is what the user valves below are built from, so changing it changes them on the next catalog refresh. Its description names the model in force and, when no settings are offered, says which of the four reasons applies. A refresh whose valve read **fails** leaves the installed filter exactly as it is, rather than rebuilding it for the default model, until a later refresh succeeds. Each distinct cause is warned about once at WARNING and then dropped to DEBUG for the life of the worker, latched separately for a read that raised and for a read that returned no result; the message reads "Could not read the image generation filter's selected model, so the installed filter is left as it is rather than rebuilt for the default model". The model-ruled-out warning is separate and latched per model over a sliding 300-model window: once per model inside the window, and again at WARNING for a model that falls out of it, so a model that keeps being ruled out stays visible rather than going quiet forever. |
 | `IMAGE_GENERATION_MODERATION` | `Literal["auto","low"]` | `auto` | How strictly the company running the model screens what it will draw. |
 
 A stored admin value from an older version of the pipe that no longer fits its field falls
@@ -163,14 +163,16 @@ A stored value from an older version of the pipe that no longer fits its field f
 
 ### OpenRouter Image Generation filter user valves
 
-Six controls, always six. The filter is re-rendered for whichever model
-`IMAGE_GENERATION_MODEL` names, reading that model's own published list of what it
-accepts — the same list, read the same way, as the per-model image filters described in
-[OpenRouter Image Generation](openrouter_image_generation.md). Five of the six are always
-the same five; the sixth depends on the model. What that list changes most is what each
-control will let a user pick: where the model publishes values, the control becomes a
-dropdown of exactly those, and where it publishes none the control takes free text and
-names in its description what OpenRouter's image API accepts.
+The filter is re-rendered for whichever model `IMAGE_GENERATION_MODEL` names, reading that
+model's own published list of what it accepts — the same list, read the same way, as the
+per-model image filters described in
+[OpenRouter Image Generation](openrouter_image_generation.md). Four controls are always
+there. **Aspect ratio** is there when the model publishes aspect ratios, and a size control
+is there when it publishes sizes or size tiers; a model that publishes settings but not
+one of these does not get that control. What that list changes most is what each control
+will let a user pick: where the model publishes values, the control becomes a dropdown of
+exactly those, and where it publishes none the control takes free text and names in its
+description what OpenRouter's image API accepts.
 
 Turning image generation on for a chat is the filter's own on/off switch in the message
 box, not one of these settings.
@@ -178,17 +180,19 @@ box, not one of these settings.
 | Valve | On screen | Type | Shown when |
 | --- | --- | --- | --- |
 | `IMAGE_QUALITY` | Quality | `Literal` over the published levels, otherwise `str` | Always. |
-| `IMAGE_ASPECT_RATIO` | Aspect ratio | `Literal` over the published ratios, otherwise `str` | Always. |
+| `IMAGE_ASPECT_RATIO` | Aspect ratio | `Literal` over the published ratios, otherwise `str` | The model publishes aspect ratios, or publishes no settings at all, or its settings could not be read. |
 | `IMAGE_BACKGROUND` | Background | `Literal` over the published treatments, otherwise `str` | Always. |
 | `IMAGE_OUTPUT_FORMAT` | Output format | `Literal` over the published formats, otherwise `str` | Always. |
 | `IMAGE_OUTPUT_COMPRESSION` | Output compression | `int \| None`, bounded by the published range where there is one and by OpenRouter's documented 0-to-100 otherwise | Always. |
 | `IMAGE_RESOLUTION` | Resolution | `Literal` over the published tiers | The model publishes a tier list. |
-| `IMAGE_SIZE` | Output size | `str`, or `int \| None` bounded by the published range where the model publishes `size` as one | The model publishes no tier list. |
+| `IMAGE_SIZE` | Output size | `Literal` over the published sizes, `int \| None` bounded by the published range where the model publishes `size` as one, otherwise `str` | The model publishes `size`, or size tiers its companies do not agree on, or publishes no settings at all, or its settings could not be read. |
 
-The last two are alternatives, never both at once: a model that publishes size tiers gets
-the **Resolution** dropdown, and one that does not gets **Output size** instead, where a
-tier name or exact pixels can be typed. Across the fifty-one image models recorded in this
-repository, nineteen draw **Resolution** and thirty-two draw **Output size**.
+The last two are alternatives, never both at once: a model that publishes a list of size
+tiers gets the **Resolution** dropdown, a model that publishes `size` itself gets
+**Output size** as a list or a number box, and a model that publishes settings but no
+size gets neither. Across the fifty-two image models recorded in this repository,
+nineteen show **Resolution**, one — the model that publishes no settings at all — shows
+**Output size** as free text, and thirty-two show no size control.
 
 Where a control falls back to `str` — because the model publishes no values for it — its
 own description names what OpenRouter's image API accepts there, so an admin or user still
@@ -203,18 +207,26 @@ control is a whole number bounded by that range, its own description names no ti
 pixel form, and the request is measured against the same bound. No recorded model takes
 this path today, but where one does, this panel and the per-model panel agree.
 
-`IMAGE_SIZE` is the one control that is checked further along, and only on the
-server-tool path: the `size` the pipe sends is measured against the selected model's
-published `resolution` list, and a tier that model does not publish is withheld from
-the request and named in a toast. On a model that publishes no `resolution` list there
-is nothing to measure against, so the typed value goes out as typed, exactly as on the
-direct path. The other five controls are not gated — whatever they hold reaches the
-service as typed.
+Where the selected model publishes settings, the size and the aspect ratio are checked once
+more on the server-tool path, by the same code that checks a model picked directly. A
+`size` is measured against the model's published `size`, or against its published
+`resolution` list: a tier outside that list is withheld from the request and named in a
+toast, and on a model that publishes settings but neither, no size of any kind is sent. On
+a model that publishes size tiers, exact pixels go out as typed, because no model publishes
+a list of those. An `aspect_ratio` is measured against the ratios the model publishes, and
+one it does not list is withheld and named the same way. A copy of the filter that still
+carries an aspect ratio or size tier the model does not publish, or a size for a model that
+publishes none — one written before the model changed, or installed by hand — therefore
+sends the request without it. The other controls are not gated — whatever they hold
+reaches the service as typed.
 
-A model the pipe's image model list does not carry, or whose settings could not be read
-this time, still gets all six — with `IMAGE_SIZE` as the sixth, and every one of them
-offering what OpenRouter's image API accepts in general rather than that model's own
-values. `IMAGE_GENERATION_MODEL`'s own description says which case it is.
+A model whose settings the pipe has not read — the id is not one it knows, or the read
+failed this time — or that publishes no settings at all still gets every control, Aspect
+ratio and Output size included, and each offers what OpenRouter's image API accepts in
+general rather than that model's own values. Nothing is measured against a published list
+there: a size has to be one of OpenRouter's four tier names or exact pixels, and an aspect
+ratio goes out as typed unless exact pixels contradict it. `IMAGE_GENERATION_MODEL`'s own
+description says which case it is.
 
 ---
 
@@ -229,7 +241,7 @@ User chat message
 [Filter inlet] -- reads user valves, writes server_tools dict to __metadata__["openrouter_pipe"]["server_tools"]
     |
     v
-[Pipe orchestrator: measure the image tool's size against the selected model] -- reads __metadata__["openrouter_pipe"]["server_tools"], injects into API request tools array
+[Pipe orchestrator: measure the image tool's size and aspect ratio against the selected model] -- reads __metadata__["openrouter_pipe"]["server_tools"], injects into API request tools array
     |
     v
 [OpenRouter API] -- model calls tools as needed, OpenRouter executes them server-side
@@ -300,7 +312,7 @@ The same rule holds for every other filter the pipe installs (Fusion, image gene
 The pipe's request orchestrator:
 
 1. Reads `__metadata__["openrouter_pipe"]["server_tools"]`.
-2. For each tool in the dict, builds a tool spec (`{"type": "<tool_name>", ...params}`) and appends it to the `tools` array in the outgoing API request body, leaving out every tool whose `ENABLE_*` gate is off, whether a filter writes it or the request lists it. A type the request body already lists is **not** appended a second time: the filter's parameters are the ones sent, and the body's own entry for a type the filter does not ask for is left exactly as it was written. For the image tool, the `size` it puts in that spec is measured against the selected model's published contract, and a tier the model does not publish is withheld and named in a toast.
+2. For each tool in the dict, builds a tool spec (`{"type": "<tool_name>", ...params}`) and appends it to the `tools` array in the outgoing API request body, leaving out every tool whose `ENABLE_*` gate is off, whether a filter writes it or the request lists it. A type the request body already lists is **not** appended a second time: the filter's parameters are the ones sent, and the body's own entry for a type the filter does not ask for is left exactly as it was written. For the image tool, the `size` and `aspect_ratio` it puts in that spec are measured against the selected model's published contract, and a tier or aspect ratio the model does not publish, or any size at all when the model publishes none, is withheld and named in a toast.
 3. The tools array is sent alongside any Open WebUI registry tools or Direct Tool Server tools. A card for one of these tools is published where the tool's own item closes, in the middle of the round, so a thinking box the provider listed before that item is published above the card and one it listed after it stays below; a card for the model's own call is published after the round instead, so a server card always reads first in a round that has both.
 4. If the chat asked for a web tool whose gate is now off, it schedules a background repair of the Web Tools filters, so the filter stops offering a switched-off tool without waiting for the next model-list refresh. The repair runs at most once every five minutes: a pass that could not reach a verdict -- the function store could not be imported or listed, or the auto-install raised -- leaves that window unarmed and is retried on the next request rather than waiting one out, while a pass that ran to its end consumes the window whether or not the write was accepted, so a standing refusal costs one write attempt per window and not one per request. Because an unarmed window means an *unbounded* number of retries, three consecutive passes that reached no verdict put a separate 30-second floor under the next one, so a store that never becomes readable costs one pass at most every 30 seconds rather than one per request; a pass that reaches a verdict clears that count, so the next blip is retried at once and only a standing fault ever pays the floor.
 

@@ -21,8 +21,10 @@ IMAGE_FIELD_ROUTES: dict[str, str] = {
     "resolution": "per-model control, drawn when the model publishes its tiers",
     "seed": "per-model control, drawn when the model declares it supports one",
     "size": (
-        "control drawn on every model; where a contract describes this field as a "
-        "numeric range it is a bounded number box, otherwise a free-text one"
+        "control shown where the model publishes a size or size tiers, and on a model "
+        "that publishes no settings at all; where a contract describes this field as a "
+        "list it is a closed list, as a numeric range a bounded number box, otherwise a "
+        "free-text one"
     ),
     "stream": (
         "set for you, whenever every endpoint that could serve the request publishes "

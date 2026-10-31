@@ -30,6 +30,7 @@ from ..integrations.image_types import (
     SCHEMA_RANGES,
     TIER_EQUIVALENT,
     TOP_LEVEL_PARAMS,
+    published_descriptors,
 )
 from ..integrations.provider_options import CHAT_PROVIDER_KEYS
 from ..models.registry import sanitize_model_id
@@ -77,6 +78,7 @@ class ImageModelFilterSpec:
     unkeyable_passthrough: tuple[str, ...] = ()
     publishes_size_tiers: bool = False
     publishes_size_descriptor: bool = False
+    published_names: tuple[str, ...] = ()
     enums: tuple[tuple[str, tuple[Any, ...]], ...] = ()
     narrowed: tuple[tuple[str, tuple[Any, ...]], ...] = ()
     schema_only: tuple[str, ...] = ()
@@ -257,6 +259,10 @@ def _publishes_size_descriptor(records: list[dict]) -> bool:
     return False
 
 
+def _published_descriptor_names(records: list[dict]) -> tuple[str, ...]:
+    return tuple(sorted({name for record in records for name in published_descriptors(record)}))
+
+
 
 def _acceptable_passthrough(names: tuple[str, ...], taken: set[str]) -> tuple[str, ...]:
     accepted: list[str] = []
@@ -314,6 +320,7 @@ def build_image_model_filter_spec(
         unkeyable_passthrough=unaddressable,
         publishes_size_tiers=_publishes_size_tiers(records),
         publishes_size_descriptor=_publishes_size_descriptor(records),
+        published_names=_published_descriptor_names(records),
         enums=tuple(enums),
         narrowed=tuple(narrowed),
         schema_only=schema_only,
@@ -377,7 +384,10 @@ def _panel_knobs(
 ]:
     enums, narrowed, ranges, supported_names = _renderable_knobs(_agreed_parameters(records))
     drawn = {name for name, _ in enums} | {name for name, _, _ in ranges} | set(supported_names)
-    schema = tuple(name for name in SCHEMA_ONLY_PARAMS if name not in drawn)
+    offers_size = _publishes_size_descriptor(records) or not _published_descriptor_names(records)
+    schema = (
+        tuple(name for name in SCHEMA_ONLY_PARAMS if name not in drawn) if offers_size else ()
+    )
     claimed = {_valve_name(name) for name in (*drawn, *schema)} | set(ALWAYS_ON_VALVE_NAMES)
     return enums, narrowed, ranges, supported_names, schema, claimed
 
@@ -437,37 +447,43 @@ _SIZE_TIER_SPLIT_NO_RATIO = (
     "a company that does -- or a note says why it could not."
 )
 
+_SIZE_NOTHING_READ = (
+    "Where this pipe has read settings the model publishes and none of them is an "
+    "output size or a list of size tiers, nothing is sent for it and a message says so."
+)
+
 _SIZE_TIER_UNCHECKED = (
     "This model publishes no tiers of its own, so a tier is checked only against those "
     "four names and then goes out for the company running the model to interpret. It "
-    "still takes its shape from Aspect ratio."
+    f"still takes its shape from Aspect ratio. {_SIZE_NOTHING_READ}"
 )
 
 _SIZE_TIER_UNCHECKED_NO_RATIO = (
     "This model publishes no tiers of its own, so a tier is checked only against those "
-    "four names and then goes out for the company running the model to interpret."
+    "four names and then goes out for the company running the model to interpret. "
+    f"{_SIZE_NOTHING_READ}"
 )
 
 _SIZE_PIXELS_WIN = (
-    "Exact pixels settle the picture on their own, so Aspect ratio is not sent alongside "
+    "Exact pixels settle the image on their own, so Aspect ratio is not sent alongside "
     "them unless it is the shape you typed. A toast says so at the time, which Open WebUI "
     "does not keep with the message: it is gone once the page reloads."
 )
 
 _SIZE_PIXELS_WIN_WITH_TIERS = (
-    "Exact pixels settle the picture on their own, so {tier_control} is not sent alongside "
+    "Exact pixels settle the image on their own, so {tier_control} is not sent alongside "
     "them, and nor is Aspect ratio unless it is the shape you typed. A toast says so at "
     "the time, which Open WebUI does not keep with the message: it is gone once the page "
     "reloads."
 )
 
 _SIZE_PIXELS_WIN_WITH_TIERS_NO_RATIO = (
-    "Exact pixels settle the picture on their own, so {tier_control} is not sent alongside "
+    "Exact pixels settle the image on their own, so {tier_control} is not sent alongside "
     "them. A toast says so at the time, which Open WebUI does not keep with the message: "
     "it is gone once the page reloads."
 )
 
-_SIZE_PIXELS_WIN_ALONE = "Exact pixels settle the picture on their own."
+_SIZE_PIXELS_WIN_ALONE = "Exact pixels settle the image on their own."
 
 _SIZE_PUBLISHED_LIST = (
     "The output sizes this model publishes; it takes no others, so neither a tier nor "
@@ -588,10 +604,16 @@ def _schema_only_caveat(name: str) -> str:
     if not values:
         return _SCHEMA_ONLY_CAVEAT
     offered = ", ".join(values)
+    gate = (
+        " Where this pipe has read settings the model publishes, a ratio they do not "
+        "list is not sent and a message says so."
+        if name == "aspect_ratio"
+        else ""
+    )
     return (
         f"This model publishes no preference of its own. OpenRouter's image API takes "
         f"one of {offered} here and refuses anything else before the company running "
-        "the model sees it. Empty leaves it unset."
+        f"the model sees it.{gate} Empty leaves it unset."
     )
 
 ALWAYS_ON_CONTROLS: tuple[tuple[str, str, str, str, str], ...] = (
@@ -1083,6 +1105,7 @@ def build_image_gen_tool_spec(spec: ImageModelFilterSpec) -> ImageModelFilterSpe
     ranges: list[tuple[str, int, int]] = []
     schema_only: list[str] = []
     published_ranges = {name: (low, high) for name, low, high in spec.ranges}
+    contract_published = bool(spec.published_names)
     for name in IMAGE_GEN_TOOL_PARAMS:
         if name == "size":
             if sized is not None:
@@ -1090,7 +1113,7 @@ def build_image_gen_tool_spec(spec: ImageModelFilterSpec) -> ImageModelFilterSpe
             elif name in published_ranges:
                 low, high = published_ranges[name]
                 ranges.append((name, low, high))
-            else:
+            elif spec.publishes_size_descriptor or not contract_published:
                 schema_only.append("size")
             continue
         if name in published:
@@ -1098,6 +1121,9 @@ def build_image_gen_tool_spec(spec: ImageModelFilterSpec) -> ImageModelFilterSpe
         elif name in published_ranges:
             low, high = published_ranges[name]
             ranges.append((name, low, high))
+        elif name == "aspect_ratio" and contract_published:
+            if name in spec.published_names:
+                schema_only.append(name)
         else:
             schema_only.append(name)
     return replace(
@@ -1110,21 +1136,6 @@ def build_image_gen_tool_spec(spec: ImageModelFilterSpec) -> ImageModelFilterSpe
         passthrough=(),
     )
 
-
-GEN_TIER_CLAUSES: dict[str, str] = {
-    "own": (
-        "{tiered}, because {named} publishes a list of size tiers; a model that publishes "
-        "none gets {plain} instead"
-    ),
-    "split": (
-        "{plain}, because the companies serving {named} publish different lists of size "
-        "tiers and share none; a model whose companies share one gets {tiered} instead"
-    ),
-    "none": (
-        "{plain}, because {named} publishes no list of size tiers; a model that publishes "
-        "one gets {tiered} instead"
-    ),
-}
 
 DISAGREED_SETTINGS = (
     "The companies serving {named} publish different settings and share none of them"
@@ -1140,83 +1151,101 @@ def named_settings(spec: ImageModelFilterSpec) -> str:
     return ", ".join(spec.unkeyable_passthrough)
 
 
-def gen_tier_clause(state: str, named: str, drawn: str | None = None) -> str:
-    drawn_name = drawn or "size"
-    other = TIER_EQUIVALENT["size"] if drawn_name == "size" else "size"
-    if state == "own":
-        tiered, plain = drawn_name, other
-    else:
-        tiered, plain = other, drawn_name
-    return GEN_TIER_CLAUSES[state].format(
-        named=named,
-        tiered=IMAGE_KNOB_TITLES[tiered][0],
-        plain=IMAGE_KNOB_TITLES[plain][0],
+_GEN_TOOL_ABSENT_NOUNS = {
+    "size": "output size or size tiers",
+    "aspect_ratio": "aspect ratios",
+}
+
+
+def _title_list(titles: list[str]) -> str:
+    if len(titles) < 2:
+        return "".join(titles)
+    return f"{', '.join(titles[:-1])} and {titles[-1]}"
+
+
+def _gen_tool_settings(tool: ImageModelFilterSpec, named: str) -> str:
+    listed = {name for name, _values in tool.enums} | {name for name, _low, _high in tool.ranges}
+    size_source = next(
+        (source for source, _values in tool.enums if source in _SIZE_TIER_SOURCES), "size"
     )
+    exact: list[str] = []
+    general: list[str] = []
+    absent: list[str] = []
+    for name in IMAGE_GEN_TOOL_PARAMS:
+        source = size_source if name == "size" else name
+        if source in listed:
+            exact.append(IMAGE_KNOB_TITLES[source][0])
+        elif name in tool.schema_only:
+            general.append(IMAGE_KNOB_TITLES[source][0])
+        else:
+            absent.append(name)
+    sentences: list[str] = []
+    if exact:
+        verb, pronoun = ("offers", "it") if len(exact) == 1 else ("offer", "them")
+        sentences.append(
+            f"{_title_list(exact)} {verb} exactly what {named} publishes for {pronoun}."
+        )
+    if general:
+        verb = "offers" if len(general) == 1 else "offer"
+        sentences.append(
+            f"{_title_list(general)} {verb} what OpenRouter's image API accepts in general, "
+            "and the company running the model decides what to do with the value."
+        )
+    for name in absent:
+        sentences.append(
+            f"{IMAGE_KNOB_TITLES[name][0]} is not offered, because {named} publishes no "
+            f"{_GEN_TOOL_ABSENT_NOUNS[name]}."
+        )
+    return " ".join(sentences)
 
 
 def image_gen_model_note(spec: ImageModelFilterSpec, *, catalog_match: bool) -> str:
     named = spec.model_id or "no model"
     opening = (
-        "Which OpenRouter model draws the picture. In force: "
-        f"{named}. When this valve is left unset the pipe draws with "
+        "Which OpenRouter model generates the images. In force: "
+        f"{named}. When this valve is left unset the pipe generates with "
         f"{_OPENROUTER_IMAGE_GEN_FILTER_DEFAULT_MODEL}; that is this pipe's default and "
         "not the one OpenRouter documents, which is openai/gpt-5-image. The default was "
         "chosen because it costs less per image than OpenRouter's own default, and a "
         "value an admin has stored in this valve takes its place."
     )
-    if not catalog_match:
-        return (
-            f"{opening} {named} is not in the image model list this pipe has loaded, so "
-            "the settings below are not its own: each one offers what OpenRouter's image "
-            "API accepts in general, and this model decides what to do with the value. "
-            "Check the id if that is unexpected."
-        )
     if not spec.contract_read:
+        if not catalog_match:
+            return (
+                f"{opening} {named} is not in the image model list this pipe has loaded, "
+                "so the settings below are not its own: each one offers what OpenRouter's "
+                "image API accepts in general, and this model decides what to do with the "
+                "value. Where this pipe can read settings the model publishes and they "
+                "include no output size or size tiers, or no aspect ratios, a value typed "
+                "for either is not sent and a message says so. Check the id if that is "
+                "unexpected."
+            )
         return (
             f"{opening} What {named} accepts could not be read this time, so the settings "
             "below offer what OpenRouter's image API accepts in general rather than this "
             "model's own choices. They narrow to its own once it can be read again."
         )
-    tool = build_image_gen_tool_spec(spec)
-    sized = gen_tier_clause(
-        drawn_tier_state(tool),
-        named,
-        next(
-            (source for source, _values in tool.enums if source in _SIZE_TIER_SOURCES),
-            "size",
-        ),
-    )
+    settings = _gen_tool_settings(build_image_gen_tool_spec(spec), named)
     if spec.has_knobs:
         cause = ""
     elif spec.unkeyable_passthrough:
-        cause = (
-            " Every one of the six offers the general values here. "
-            f"{UNKEYABLE_SETTINGS.format(named=named, listed=named_settings(spec))}."
-        )
+        cause = f" {UNKEYABLE_SETTINGS.format(named=named, listed=named_settings(spec))}."
     elif spec.providers_disagree:
         cause = (
-            f" {DISAGREED_SETTINGS.format(named=named)}, so every one of the six offers "
-            "the general values here."
+            f" {DISAGREED_SETTINGS.format(named=named)}, so no setting can list exactly "
+            "what it publishes."
         )
     elif spec.published_any_parameter:
-        cause = (
-            f" Nothing {named} publishes can be offered as a choice of its own, so every "
-            "one of the six offers the general values here."
-        )
+        cause = f" Nothing {named} publishes can be offered as a choice of its own."
     else:
-        cause = (
-            f" {named} publishes no settings of its own, so every one of the six offers "
-            "the general values here."
-        )
-    return (
-        f"{opening} The same six settings are offered whichever model is named: Quality, "
-        "Aspect ratio, Background, Output format, Output compression, and one for size -- "
-        f"here {sized}. What changes with the model is what each of the six lets a user "
-        "pick: where it publishes the values it takes, that setting offers exactly those; "
-        "where it publishes nothing, the setting offers what OpenRouter's image API "
-        "accepts in general and the company running the model decides what to do with the "
-        f"value.{cause} Naming another model re-reads all six."
-    )
+        cause = f" {named} publishes no settings of its own."
+    if not spec.published_names:
+        withheld = ""
+    elif spec.publishes_size_descriptor:
+        withheld = f" A saved aspect ratio or size tier that {named} does not publish is not sent."
+    else:
+        withheld = f" A saved size, or an aspect ratio {named} does not publish, is not sent."
+    return f"{opening} {settings}{cause}{withheld} Naming another model re-reads the settings."
 
 
 def render_image_gen_filter_source(

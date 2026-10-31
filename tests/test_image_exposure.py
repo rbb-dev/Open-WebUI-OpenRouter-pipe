@@ -243,17 +243,22 @@ def test_the_split_of_top_level_names_is_a_partition():
     assert set(TOP_LEVEL_PARAMS) <= set(recorded), sorted(set(TOP_LEVEL_PARAMS) - set(recorded))
 
 
-@pytest.mark.parametrize("record", [_RECRAFT, _OPENAI])
-def test_every_schema_only_field_gets_a_control_whatever_the_contract_says(record):
-    """Zero of the forty-four recorded contracts describe `size`, so a control gated on
-    the contract is drawn on no model at all."""
+_NOTHING_PUBLISHED = {"provider_slug": "alpha"}
+
+
+@pytest.mark.parametrize(("record", "drawn"), [(_RECRAFT, False), (_NOTHING_PUBLISHED, True)])
+def test_the_output_size_box_follows_what_the_model_publishes(record, drawn):
     spec = build_image_model_filter_spec("m/x", None, [record], dedicated_image_api=True)
-    assert spec.schema_only == SCHEMA_ONLY_PARAMS
+    assert (spec.schema_only == SCHEMA_ONLY_PARAMS) is drawn
 
     module = _load_filter_from_source(
-        render_image_model_filter_source(spec), f"schema_only_{record['provider_slug']}"
+        render_image_model_filter_source(spec), f"output_size_box_{record['provider_slug']}"
     )
-    field = module.Filter.UserValves.model_fields["IMAGE_SIZE"]
+    fields = module.Filter.UserValves.model_fields
+    assert ("IMAGE_SIZE" in fields) is drawn
+    if not drawn:
+        return
+    field = fields["IMAGE_SIZE"]
     assert field.annotation is str
     described = field.description or ""
     assert "go out as typed" in described and "publishes a list of pixel sizes" in described, (
@@ -277,30 +282,25 @@ def _publishes_only_1k_2k() -> dict[str, Any]:
 
 
 @pytest.mark.parametrize(
-    ("contract", "chosen", "sent"),
+    ("chosen", "sent"),
     [
-        ("no-resolution", "2048x2048", True),
-        ("publishes-1K-2K", "4K", False),
+        ("2048x2048", True),
+        ("4K", False),
     ],
 )
-def test_a_schema_only_value_travels_from_the_control_into_the_request(contract, chosen, sent):
-    """`size` is unconstrained except where it spells a tier the model rules out.
+def test_a_schema_only_value_travels_from_the_control_into_the_request(chosen, sent):
+    """On a model that publishes tiers, `size` is unconstrained except where it spells a
+    tier the model rules out.
 
     OpenRouter words a tier `size` as equivalent to setting `resolution`, so on a model
     publishing `1K, 2K` the two spellings had opposite fates: `resolution="4K"` was
     refused with a note while `size="4K"` went out unchecked, and `IMAGE_SIZE` is free
-    text on every model. An explicit pixel size stays unconstrained wherever it is set,
-    because no contract describes pixel sizes -- so gating `size` on the mere presence of
-    a `resolution` descriptor would refuse `2048x2048` on the nineteen endpoints that
-    publish one.
+    text on a model that publishes tiers. An explicit pixel size stays unconstrained
+    there, because no contract describes pixel sizes -- so gating `size` on the tier list
+    would refuse `2048x2048` on the nineteen endpoints that publish one.
     """
-    record = _RECRAFT if contract == "no-resolution" else _publishes_only_1k_2k()
-    published = ((record.get("supported_parameters") or {}).get("resolution") or {}).get("values")
-    assert (published is None) == (contract == "no-resolution"), (
-        f"the {contract} row is not the contract it names: resolution={published!r}"
-    )
-
-    module = _filter(record, f"size_travel_{contract}_{chosen}")
+    record = _publishes_only_1k_2k()
+    module = _filter(record, f"size_travel_{chosen}")
     body, _metadata = _inlet(module, {"IMAGE_SIZE": chosen})
     assert body["image_config"]["size"] == chosen, (
         "the control must write what was typed; the contract is the adapter's job"
@@ -313,10 +313,10 @@ def test_a_schema_only_value_travels_from_the_control_into_the_request(contract,
     )
     reported = [note.text for note in notes if note.name == "size"]
     assert (top_level.get("size") == chosen) is sent, (
-        f"{contract} + size={chosen!r}: top_level={top_level!r} notes={reported!r}"
+        f"size={chosen!r}: top_level={top_level!r} notes={reported!r}"
     )
     assert bool(reported) is not sent, (
-        f"{contract} + size={chosen!r}: a value that is not sent has to say so, and one "
+        f"size={chosen!r}: a value that is not sent has to say so, and one "
         f"that is sent has nothing to report. got {reported!r}"
     )
 
@@ -351,10 +351,9 @@ With both set, `size` supersedes `resolution` because they set the same thing --
 
 @pytest.mark.parametrize("chosen", ["1024x1024", "2K"])
 @pytest.mark.asyncio
-async def test_a_schema_only_value_reaches_the_wire(chosen):
+async def test_a_size_is_kept_off_the_wire_for_a_model_that_publishes_none(chosen):
     adapter = _adapter(_KeyPipe("sk-x"))
     _seed_contract(adapter, "m/x", [_RECRAFT], at=time.monotonic())
-
 
     result = await _posted(
         adapter,
@@ -365,7 +364,10 @@ async def test_a_schema_only_value_reaches_the_wire(chosen):
         normalized_model_id="m.x",
         api_model_id="m/x",
     )
-    assert result.payload["size"] == chosen
+
+    notices = " ".join(str(_event_data(call).get("content", "")) for call in result.events)
+    assert "size" not in result.payload, f"payload={result.payload!r}"
+    assert chosen in notices, f"the withheld size has to be named to the user; notices={notices!r}"
 
 
 # =============================================================================

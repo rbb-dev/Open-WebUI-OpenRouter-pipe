@@ -324,3 +324,64 @@ async def _drive_request(
         await pipe.close()
 
     return captured.get("body"), events
+
+
+_GPT_5_IMAGE_MINI_CONTRACT = [
+    {
+        "provider_slug": "openai",
+        "provider_tag": "openai",
+        "supported_parameters": {
+            "aspect_ratio": {"type": "enum", "values": ["1:1", "3:2", "2:3", "auto"]},
+            "quality": {"type": "enum", "values": ["auto", "low", "medium", "high"]},
+        },
+    }
+]
+
+
+@pytest.mark.parametrize(
+    ("saved", "carried", "left_out"),
+    [
+        ({"size": "768x1344", "aspect_ratio": "16:9"}, {}, ["768x1344", "16:9"]),
+        ({"aspect_ratio": "2:3"}, {"aspect_ratio": "2:3"}, []),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_saved_size_or_ratio_the_image_model_does_not_publish_is_left_out_and_told_once(
+    saved, carried, left_out
+):
+    from types import SimpleNamespace
+
+    from open_webui_openrouter_pipe.models.registry import (
+        OpenRouterModelRegistry,
+        _contract_target,
+    )
+
+    model = "openai/gpt-5-image-mini"
+    target = _contract_target(SimpleNamespace(**_CONTRACT_IDENTITY))
+    OpenRouterModelRegistry._image_contract_target = target
+    OpenRouterModelRegistry.set_image_endpoints(
+        {model: _GPT_5_IMAGE_MINI_CONTRACT}, target=target
+    )
+
+    sent, events = await _drive_request({"image_generation": {"model": model, **saved}})
+
+    tools = [
+        t
+        for t in (cast(Any, sent).tools or [])
+        if isinstance(t, dict) and t.get("type") == "openrouter:image_generation"
+    ]
+    assert len(tools) == 1, f"one image tool entry expected, got {tools!r}"
+    assert tools[0]["parameters"] == {"model": model, **carried}, (
+        f"the model publishes aspect ratios and no size; the tool call carries {tools[0]!r}"
+    )
+    told = [
+        str((event.get("data") or {}).get("content", ""))
+        for event in events
+        if event.get("type") == "notification"
+    ]
+    for value in left_out:
+        assert len([text for text in told if value in text]) == 1, (
+            f"{value!r} was left out and must be named once; got {told!r}"
+        )
+    if not left_out:
+        assert not told, told

@@ -132,6 +132,17 @@ def json_encodable(value: Any) -> bool:
     return True
 
 
+def published_descriptors(record: Any) -> dict[str, dict[str, Any]]:
+    supported = record.get("supported_parameters") if isinstance(record, dict) else None
+    if not isinstance(supported, dict):
+        return {}
+    return {
+        name: descriptor
+        for name, descriptor in supported.items()
+        if isinstance(descriptor, dict)
+    }
+
+
 def pixel_size(value: Any) -> tuple[int, int] | None:
     if not isinstance(value, str):
         return None

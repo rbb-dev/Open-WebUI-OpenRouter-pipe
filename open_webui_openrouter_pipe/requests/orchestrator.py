@@ -515,16 +515,12 @@ def _build_server_tool_entries(
     records: list[dict[str, Any]] | None = None,
     model_resolver: Any = None,
 ) -> tuple[list[dict[str, Any]], list[tuple[str, Any]]]:
-    from ..integrations.image import (
-        ImageGenerationAdapter,
-        size_consistency_notes,
-    )
+    from ..integrations.image import tool_shape_notes
 
-    def _declared_for(params):
+    def _records_for(params):
         if model_resolver is not None:
-            resolved = model_resolver(params.get("model"))
-            return ImageGenerationAdapter._union_declared(resolved) if resolved else None
-        return ImageGenerationAdapter._union_declared(records) if records else None
+            return model_resolver(params.get("model"))
+        return records
 
     entries: list[dict[str, Any]] = []
     superseded: list[tuple[str, Any]] = []
@@ -546,8 +542,8 @@ def _build_server_tool_entries(
                             else _NO_MODEL_NAMED,
                             note,
                         )
-                        for note in size_consistency_notes(
-                            cleaned_params, _declared_for(cleaned_params)
+                        for note in tool_shape_notes(
+                            cleaned_params, _records_for(cleaned_params)
                         )
                     )
                 if cleaned_params:

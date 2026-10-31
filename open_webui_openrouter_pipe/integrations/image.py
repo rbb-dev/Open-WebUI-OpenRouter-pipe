@@ -57,6 +57,7 @@ from .image_types import (
     json_encodable,
     pixel_size,
     prompt_with_system,
+    published_descriptors,
     supersede_size_conflicts,
 )
 from .media_relay import megabytes
@@ -164,6 +165,10 @@ _STALE_CONTRACT = (
     "gated against limits this model no longer publishes."
 )
 
+_NO_OUTPUT_SIZE = "it publishes no output size or size tiers"
+
+_TOOL_SHAPE_PARAMS = ("size", "aspect_ratio")
+
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -216,6 +221,27 @@ def size_consistency_notes(
         _Note(*_superseded(name, value, f"{_labelled('size')}={shown_size} {reason}"))
         for name, value, reason in dropped
     ]
+
+
+def tool_shape_notes(
+    params: dict[str, Any], records: list[dict[str, Any]] | None
+) -> list[_Note]:
+    declared = ImageGenerationAdapter._union_declared(records) if records else None
+    shape = {name: params[name] for name in _TOOL_SHAPE_PARAMS if name in params}
+    if not records or declared is None or not shape:
+        return size_consistency_notes(params, None)
+    fitted, _provider, notes = ImageGenerationAdapter._split_image_config(
+        {"image_config": shape},
+        allowed_passthrough=frozenset(),
+        record=records[0],
+        records=records,
+    )
+    for name in shape:
+        if name in fitted:
+            params[name] = fitted[name]
+        else:
+            del params[name]
+    return notes
 
 
 def _is_only_the_empty_turn_marker(items: Any) -> bool:
@@ -336,12 +362,7 @@ class ImageGenerationAdapter:
     def _union_declared(records: list[dict[str, Any]]) -> dict[str, Any] | None:
         merged: dict[str, Any] = {}
         for record in records:
-            supported = record.get("supported_parameters")
-            if not isinstance(supported, dict):
-                continue
-            for name, descriptor in supported.items():
-                if not isinstance(descriptor, dict):
-                    continue
+            for name, descriptor in published_descriptors(record).items():
                 current = merged.get(name)
                 if current is None:
                     merged[name] = dict(descriptor)
@@ -375,7 +396,11 @@ class ImageGenerationAdapter:
                         return _Fitted(admitted, other_reason, equivalent)
             return _Fitted(fitted, reason, name)
         equivalent = TIER_EQUIVALENT.get(name)
-        if not equivalent or pixel_size(value) is not None:
+        if not equivalent:
+            return _Fitted(value, "", "")
+        if declared is not None and equivalent not in known:
+            return _Fitted(None, _NO_OUTPUT_SIZE, "")
+        if pixel_size(value) is not None:
             return _Fitted(value, "", "")
         tiers = SCHEMA_ENUMS.get(equivalent, ())
         if value not in tiers:
@@ -543,7 +568,10 @@ class ImageGenerationAdapter:
                     continue
                 if name not in declared:
                     _note(
-                        "not-offered", name, f"{_labelled(name)} is not offered by this model"
+                        "not-offered",
+                        name,
+                        f"{_labelled(name)}={_clamp(repr(value), _NOTE_VALUE_LIMIT)} was "
+                        "not sent (this model does not offer it)",
                     )
                     continue
                 outcome = ImageGenerationAdapter._fit_published(declared, name, value)

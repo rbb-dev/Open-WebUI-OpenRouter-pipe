@@ -2938,17 +2938,20 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "in Open WebUI."
             + _PIPE_OFF_COMES_BACK
             + _ADMIN_OFF_STAYS_OFF
-            + " The six controls on that tool's panel are built from the same "
-            "published-contract sweep as the per-model image panels, so either half of "
-            "this pair, or either half of AUTO_INSTALL_IMAGE_FILTERS / "
-            "AUTO_ATTACH_IMAGE_FILTERS, pays for that read; turning the per-model pair off "
-            "does not turn this one off, and with all four off the contracts are not read "
-            "at all."
+            + " The controls on that tool's panel are built from the same "
+            "published-contract sweep as the per-model image panels: where the image "
+            "model publishes settings, its Aspect ratio and size controls are offered only "
+            "if it publishes them, a saved aspect ratio or size tier it does not publish "
+            "is not sent, and neither is any saved size when it publishes no size or size "
+            "tiers. So either half of this pair, or either half of "
+            "AUTO_INSTALL_IMAGE_FILTERS / AUTO_ATTACH_IMAGE_FILTERS, pays for that read; "
+            "turning the per-model pair off does not turn this one off, and with all four "
+            "off the contracts are not read at all."
         ),
     )
     AUTO_ATTACH_IMAGE_GEN_FILTER: bool = Field(
         default=True,
-        description="Automatically attach the OpenRouter Image Generation filter to every pipe model that can send the tool: not a model whose catalogue entry rules tool use out, not a picture-only model, not a video model, not the hosted Fusion model. A model that stops qualifying loses the switch at the next refresh, and the id the pipe had recorded for it is released from `filterIds` on that same refresh. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. A pass that cannot install the filter, because Open WebUI refused the write, is not a decision to detach: the switch stays exactly where it was and the install is tried again at the next pass. On its own, with the per-model image filter pair off, this valve also buys the published-contract sweep the tool's six controls are drawn from and checked against, so the choices on them are the drawing model's own.",
+        description="Automatically attach the OpenRouter Image Generation filter to every pipe model that can send the tool: not a model whose catalogue entry rules tool use out, not an image-only model, not a video model, not the hosted Fusion model. A model that stops qualifying loses the switch at the next refresh, and the id the pipe had recorded for it is released from `filterIds` on that same refresh. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. A pass that cannot install the filter, because Open WebUI refused the write, is not a decision to detach: the switch stays exactly where it was and the install is tried again at the next pass. On its own, with the per-model image filter pair off, this valve also buys the published-contract sweep the tool's controls are built from and checked against, so the choices on them are the image model's own.",
     )
     ENABLE_OPENROUTER_IMAGE_GENERATION: bool = Field(
         default=True,
@@ -2970,11 +2973,14 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "Install and keep up to date one settings panel per image model, built from "
             "the settings that model tells OpenRouter it accepts -- so nobody is shown an "
             "aspect ratio their model rejects. A routing variant or preset of an image "
-            "model is the same model, so its panel covers the variant too. Alongside those, every panel carries "
-            "Output size: a size tier typed there is checked against the tiers that model "
-            "publishes, or against 512, 1K, 2K and 4K where it publishes none, and a tier "
-            "the model does not list is dropped before the request goes out, while exact "
-            "pixels such as 1024x1024 travel as typed. A model that answers with a picture "
+            "model is the same model, so its panel covers the variant too. Output size "
+            "appears on a panel where the model publishes a size or size tiers, and on a "
+            "model that publishes no settings at all. A size tier typed there is checked "
+            "against the tiers the model publishes, or against 512, 1K, 2K and 4K where it "
+            "publishes none, and one that fails the check is dropped before the request "
+            "goes out; exact pixels such as 1024x1024 travel as typed. A model that "
+            "publishes settings but no size has no Output size, and a size sent for it "
+            "anyway is dropped and named in a message. A model that answers with an image "
             "and no text carries three more the panel supplies rather than the model: "
             "Provider options, Reference images and Reference image links. If a model's "
             "settings list cannot be read on a refresh, it keeps the settings from the "
