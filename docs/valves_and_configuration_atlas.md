@@ -194,7 +194,7 @@ Behavior note (no valve):
 See: [OpenRouter Server Tools](openrouter_server_tools.md) for filter valves, user valves, and the data flow.
 See: [Web Search: OWUI vs OpenRouter](web_search_owui_vs_openrouter_search.md) for the distinction between Open WebUI native web search and OpenRouter web search.
 
-**Note:** Open WebUI Direct Tool Servers are configured in Open WebUI (External Tools) and are not controlled by valves in this pipe.
+**Note:** Open WebUI Direct Tool Servers are configured in Open WebUI (Settings → Integrations → External Tool Servers) and are not controlled by valves in this pipe. From Open WebUI 0.12.4 a person's own servers, and their own Open Terminal connection, reach a model only while an administrator has turned on Direct Integrations in Open WebUI.
 
 ### OpenRouter native image generation
 

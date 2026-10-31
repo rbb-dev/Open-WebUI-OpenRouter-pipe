@@ -7,7 +7,7 @@
 This pipe supports OpenRouter tool calling either via an internal execution pipeline (pipe-run tools) or via Open WebUI pass-through (OWUI-run tools). Tool sources and integrations:
 
 - Open WebUI tool registry tools (server-side Python tools).
-- Open WebUI **Direct Tool Servers** (client-side OpenAPI tools executed in the browser via Socket.IO).
+- Open WebUI **Direct Tool Servers** (client-side OpenAPI tools executed in the browser via Socket.IO). From Open WebUI 0.12.4 a person's own servers reach a model only while an administrator has turned on Direct Integrations.
 - OpenRouter web-search (attached as an `openrouter:web_search` server tool in the `tools` array — not a `plugins` entry or a function tool).
 
 ---
@@ -92,6 +92,7 @@ Tool *schemas* are assembled by the tool registry builder and attached to the ou
 
 2. **Open WebUI Direct Tool Servers** (direct entries in `__metadata__["tools"]`)
    - These are user-configured OpenAPI tool servers that Open WebUI executes client-side.
+   - From Open WebUI 0.12.4 Open WebUI passes a person's own tool servers, and their own Open Terminal connection, on only while an administrator has turned on **Direct Integrations** (the switch of that name in Open WebUI's admin settings, or `ENABLE_DIRECT_INTEGRATIONS`; it is off by default, and it holds for an administrator's own servers too). With it off Open WebUI removes `tool_servers` from the request, so the pipe receives no direct entry and offers none of those tools, whatever the person saved in their settings. Open WebUI 0.12.2 and 0.12.3 remove them only for a person without the `Direct Tool Servers` permission, an administrator excepted. The pipe does not read a person's saved servers itself, so an administrator who keeps Direct Integrations off keeps them out of the pipe as well.
    - Before calling the pipe, Open WebUI resolves the tools of the servers selected for the chat and adds each tool to `__metadata__["tools"]` as a direct entry carrying its spec and its server, and writes the same specs into the request's own `form_data["tools"]`. The pipe builds its browser-run tools from those entries, so a tool Open WebUI withholds stays withheld (for example, the shell tools of a personal Open Terminal while no shell is connected).
    - This pipe:
      - advertises the tools to the model under the names Open WebUI gives them (OpenAPI `operationId` values). Open WebUI keys a direct tool on that name byte for byte and its own `tools.get(name)` hand-back reads the same one, so the pipe keys and addresses each direct tool by the name Open WebUI gave it: two servers whose `operationId`s differ only in surrounding whitespace are two tools, and the name the pipe sends the browser is the one the server declared, so its `operationId` match resolves. Open WebUI's own collapse of two same-named servers happens upstream of the pipe, on a request the pipe receives as one entry, and is not undone here; when names collide among the tools the pipe receives, it disambiguates them with a source prefix (e.g. `direct__`), and
@@ -285,7 +286,8 @@ If you want auto-healing, integrate it explicitly in your own request layer so i
 
 Direct Tool Servers are configured and executed by Open WebUI, but advertised/executed through this pipe:
 
-- Configure servers in **User Settings → External Tools → Manage Tool Servers** (and ensure the server is enabled/toggled).
+- An administrator turns on **Direct Integrations** in Open WebUI's admin settings (or sets `ENABLE_DIRECT_INTEGRATIONS`); Open WebUI 0.12.4 and 0.12.5 pass a person's own servers on only while it is on.
+- A person who may manage their own connections (an administrator, or a user with the `Direct Tool Servers` permission, which Open WebUI offers once Direct Integrations is on) configures servers under **Settings → Integrations → External Tool Servers** (Open WebUI 0.12.3 to 0.12.5) and ensures the server is enabled.
 - Select tool servers for a chat in the tool picker (Open WebUI sends the selected servers in `tool_servers`).
 - When the model calls a direct tool, the pipe emits `execute:tool` via `__event_call__` and the browser performs the OpenAPI request.
 

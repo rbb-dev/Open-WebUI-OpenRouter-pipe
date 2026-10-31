@@ -468,7 +468,7 @@ Operational guidance:
   - We prefer fail-fast behavior for malformed/invalid outputs so errors remain visible.
 - Tools:
   - Tool schemas are built from Open WebUI’s `__tools__` registry plus any selected Open WebUI **Direct Tool Servers**.
-  - Direct Tool Servers are executed client-side via Open WebUI (the pipe emits `execute:tool` via Socket.IO).
+  - Direct Tool Servers are executed client-side via Open WebUI (the pipe emits `execute:tool` via Socket.IO). From Open WebUI 0.12.4 a person's own servers reach the pipe only while an administrator has turned on Direct Integrations.
 - Tool schema strictness:
   - `ENABLE_STRICT_TOOL_CALLING` is off by default: OpenAI rejects a strict tool whose parameters contain a free-form
     object, and Open WebUI's built-in `ask_user` is one, so strict mode is opt-in.
