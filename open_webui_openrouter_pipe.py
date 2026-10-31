@@ -6,8 +6,8 @@ git_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
 id: open_webui_openrouter_pipe
 description: Stub loader that installs and imports the full pipe from GitHub
 required_open_webui_version: 0.12.0
-version: 2.8.0
-requirements: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/archive/refs/tags/v2.8.0.zip
+version: 2.9.0
+requirements: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/archive/refs/tags/v2.9.0.zip
 license: MIT
 """
 
