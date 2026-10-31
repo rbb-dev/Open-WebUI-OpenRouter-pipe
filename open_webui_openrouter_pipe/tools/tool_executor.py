@@ -7,6 +7,7 @@ import contextlib
 import json
 import logging
 import mimetypes
+import re
 import sys
 import threading
 import uuid
@@ -342,6 +343,37 @@ def is_builtin_ask_user(tool_cfg: Any) -> bool:
 def is_sub_agent_call(tool_name: str, tool_cfg: Any) -> bool:
     origin_name = tool_cfg.get("origin_name") if isinstance(tool_cfg, dict) else None
     return (origin_name if isinstance(origin_name, str) and origin_name else tool_name) == SUB_AGENT_TOOL_NAME
+
+
+DISPLAY_FILE_TOOL_NAME = "display_file"
+_UPLOADED_FILE_ID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
+
+
+def _names_an_uploaded_file(args: Any) -> bool:
+    path = str(args.get("path", "")) if isinstance(args, dict) else ""
+    return path.startswith("/api/v1/files/") or _UPLOADED_FILE_ID.fullmatch(path) is not None
+
+
+def uploaded_file_tool(tool_name: str, tool_cfg: Any, args: Any) -> dict[str, Any] | None:
+    if not isinstance(tool_cfg, dict) or not _names_an_uploaded_file(args):
+        return None
+    if str(tool_cfg.get("origin_name") or tool_name) != DISPLAY_FILE_TOOL_NAME:
+        return None
+    file_tool = tool_cfg.get("file_tool")
+    if isinstance(file_tool, dict) and callable(file_tool.get("callable")):
+        return {
+            **file_tool,
+            **{key: tool_cfg[key] for key in ("origin_source", "origin_name", "exposed_name") if key in tool_cfg},
+        }
+    return tool_cfg if is_owui_builtin(tool_cfg) else None
+
+
+def shows_an_uploaded_file(tool_name: str, tool_cfg: Any, raw_arguments: Any) -> bool:
+    try:
+        args = parse_tool_arguments(raw_arguments)
+    except ValueError:
+        return False
+    return uploaded_file_tool(tool_name, tool_cfg, args) is not None
 
 
 _DATA_ENTRY_EXTENSIONS = {
@@ -749,6 +781,7 @@ class ToolExecutor:
                 except ValueError as exc:
                     await _refuse(index, call, f"Error: {exc}")
                     continue
+            tool_cfg = uploaded_file_tool(tool_name, tool_cfg, args) or tool_cfg
             tool_type = (tool_cfg.get("type") or "function").lower()
             breaker = self._tool_breaker(context)
             if breaker is not None and not breaker.tool_allows(
@@ -977,6 +1010,7 @@ class ToolExecutor:
                         "callable": _browser_call(allowed_params, raw_name, server_payload, event_call),
                         "origin_key": origin_key,
                         "source": entry,
+                        **({"file_tool": entry["file_tool"]} if isinstance(entry.get("file_tool"), dict) else {}),
                     }
                 except Exception:
                     self.logger.debug("Skipping malformed direct tool spec", exc_info=True)

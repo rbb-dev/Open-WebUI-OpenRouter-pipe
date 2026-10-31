@@ -1535,10 +1535,17 @@ class StreamingHandler:
                     await _open_message()
                     await event_emitter({"type": "chat:message:delta", "data": {"content": delta}})
 
-            def _shows_a_file_inline(name: str) -> bool:
+            def _shows_a_file_inline(name: str, arguments: str) -> bool:
+                from ..tools.tool_executor import (
+                    DISPLAY_FILE_TOOL_NAME,
+                    shows_an_uploaded_file,
+                )
+
                 context = self._pipe._TOOL_CONTEXT.get()
-                return name == "display_file" and bool(
-                    context and context.terminal_files_inline and not context.fusion_inner
+                if _origin_tool_name(name) != DISPLAY_FILE_TOOL_NAME or (context and context.fusion_inner):
+                    return False
+                return bool(context and context.terminal_files_inline) or shows_an_uploaded_file(
+                    name, tool_registry.get(name), arguments
                 )
 
             async def _emit_tool_start(
@@ -1552,7 +1559,7 @@ class StreamingHandler:
                 provider_function: dict[str, Any] | None = None,
             ) -> str:
                 nonlocal emitted_response_output_items
-                if not event_emitter or not (valves.SHOW_TOOL_CARDS or _shows_a_file_inline(_origin_tool_name(name))):
+                if not event_emitter or not (valves.SHOW_TOOL_CARDS or _shows_a_file_inline(name, arguments)):
                     return call_id
                 effective_id = call_id or f"st-{uuid.uuid4().hex}"
                 if effective_id in emitted_tool_call_items:

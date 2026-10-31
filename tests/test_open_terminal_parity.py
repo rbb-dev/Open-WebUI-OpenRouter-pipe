@@ -101,9 +101,19 @@ async def _drive(pipe, monkeypatch, *, exposed: str, entry: dict[str, Any], args
     name and the lookup strips, so `"display_file "` and `"display_file"` name the same tool and reach the same code
     with different `call["name"]` text. Nothing else in production may see the difference -- a padded spelling is the
     model's own text, and Open WebUI's loop keeps it."""
+    calls = [{"type": "function_call", "call_id": "c1", "name": spelled or exposed, "arguments": json.dumps(args)}]
+
+    async def work(_emitter, _valves):
+        if card_carries_the_result:
+            pipe._TOOL_CONTEXT.get().carded_calls = {"c1"}
+        return await pipe._ensure_tool_executor()._execute_function_calls(calls, {exposed: entry})
+
+    return await _in_job(pipe, monkeypatch, work, metadata=metadata, valves=valves)
+
+
+async def _in_job(pipe, monkeypatch, work, *, metadata: dict[str, Any] | None = None, valves=None):
     from open_webui_openrouter_pipe import _PipeJob
 
-    calls = [{"type": "function_call", "call_id": "c1", "name": spelled or exposed, "arguments": json.dumps(args)}]
     emitted: list[dict[str, Any]] = []
 
     async def emitter(event):
@@ -114,9 +124,7 @@ async def _drive(pipe, monkeypatch, *, exposed: str, entry: dict[str, Any], args
     holder: dict[str, Any] = {}
 
     async def handle(*_a, **_k):
-        if card_carries_the_result:
-            pipe._TOOL_CONTEXT.get().carded_calls = {"c1"}
-        holder["outputs"] = await pipe._ensure_tool_executor()._execute_function_calls(calls, {exposed: entry})
+        holder["outputs"] = await work(emitter, valves)
         return "done"
 
     monkeypatch.setattr(pipe, "_handle_pipe_call", handle)
@@ -161,3 +169,78 @@ async def test_a_file_shown_inline_is_reported_displayed_only_when_a_card_shows_
     finally:
         await pipe.close()
     assert seen == {False: (False, ["terminal:display_file"]), True: (True, [])}
+
+
+@pytest.mark.asyncio
+async def test_with_cards_off_a_chat_file_runs_the_file_tool_and_keeps_its_card_where_a_terminal_path_has_none(
+    monkeypatch,
+):
+    from open_webui_openrouter_pipe import EncryptedStr, Pipe, ResponsesBody
+    from open_webui_openrouter_pipe.tools.tool_registry import _build_collision_safe_tool_specs_and_registry
+
+    ran: list[str] = []
+
+    async def terminal_display(**_kwargs):
+        ran.append("terminal")
+        return dict(FILE)
+
+    async def file_display(**kwargs):
+        ran.append("file")
+        return json.dumps(
+            {"type": "file", "source": "open_webui", "exists": True, "displayed": True, "path": kwargs["path"]}
+        )
+
+    spec = _entry("display_file", None)["spec"]
+    file_tool = {"tool_id": "builtin:display_file", "type": "builtin", "callable": file_display, "spec": spec}
+    terminal = {
+        "tool_id": "terminal:T1", "type": "terminal", "callable": terminal_display, "spec": spec,
+        "file_tool": file_tool,
+    }
+    _tools, registry, _map = _build_collision_safe_tool_specs_and_registry(
+        request_tool_specs=None, owui_registry={"display_file": terminal}, direct_registry=None,
+        builtin_registry=None, extra_tools=None, strictify=False, owui_tool_passthrough=False, logger=None,
+    )
+    paths = ["3f2504e0-4f89-41d3-9a0c-0305e82c3301", FILE["path"]]
+    step = [0]
+
+    async def provider(_self, _session, _request_body, **_kwargs):
+        index = step[0]
+        step[0] += 1
+        if index < len(paths):
+            call = {
+                "type": "function_call", "call_id": f"call-{index}", "name": "display_file",
+                "arguments": json.dumps({"path": paths[index]}), "status": "completed",
+            }
+            yield {"type": "response.output_item.done", "item": call}
+            yield {"type": "response.completed", "response": {"output": [call], "usage": {}}}
+        else:
+            yield {"type": "response.output_text.delta", "delta": "done"}
+            yield {"type": "response.completed", "response": {"output": [], "usage": {}}}
+
+    monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", provider)
+    pipe = Pipe()
+    pipe.valves.API_KEY = EncryptedStr("sk-test-key")
+    try:
+        async def work(emitter, valves):
+            return await pipe._streaming_handler._run_streaming_loop(
+                ResponsesBody(model="test/model", input=[], stream=True),
+                valves,
+                emitter,
+                metadata={"model": {"id": "test"}, **CHAT},
+                tools=registry,
+                session=cast(Any, object()),
+                user_id="user-1",
+            )
+
+        _outputs, emitted = await _in_job(
+            pipe, monkeypatch, work, valves=pipe.valves.model_copy(update={"SHOW_TOOL_CARDS": False})
+        )
+    finally:
+        await pipe.close()
+    carded = {
+        (event["item"]["type"], event["item"]["call_id"])
+        for event in emitted
+        if event.get("type") == "response.output_item.added"
+        and event["item"].get("type") in ("function_call", "function_call_output")
+    }
+    assert (ran, carded) == (["file", "terminal"], {("function_call", "call-0"), ("function_call_output", "call-0")})
