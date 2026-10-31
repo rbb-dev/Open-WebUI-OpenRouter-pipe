@@ -3610,6 +3610,56 @@ async def test_registry_tool_ids_tool_still_executes(pipe_instance_async):
     assert result and result[0]["output"] == "ok"
 
 
+@pytest.mark.asyncio
+async def test_only_an_mcp_tool_gets_arguments_its_root_schema_does_not_name(pipe_instance_async):
+    from open_webui_openrouter_pipe.tools.tool_registry import _build_collision_safe_tool_specs_and_registry
+
+    any_of_root = {
+        "type": "object",
+        "anyOf": [
+            {"properties": {"id": {"type": "string"}}, "required": ["id"]},
+            {"properties": {"path": {"type": "string"}}, "required": ["path"]},
+        ],
+    }
+
+    async def run(tool_type: str) -> dict[str, Any]:
+        seen: dict[str, Any] = {}
+
+        async def server_call(**kwargs: Any) -> str:
+            seen.update(kwargs)
+            return "ok"
+
+        _tools, registry, _map = _build_collision_safe_tool_specs_and_registry(
+            request_tool_specs=[],
+            owui_registry={
+                "docs_get_page": {
+                    "type": tool_type,
+                    "callable": server_call,
+                    "spec": {"name": "docs_get_page", "description": "Get a page", "parameters": any_of_root},
+                }
+            },
+            direct_registry={},
+            builtin_registry={},
+            extra_tools=[],
+            strictify=False,
+            owui_tool_passthrough=False,
+            logger=None,
+        )
+        loop = asyncio.get_running_loop()
+        item = _QueuedToolCall(
+            call={"name": "docs_get_page", "call_id": "c1"},
+            tool_cfg=registry["docs_get_page"],
+            args={"id": "page-1"},
+            future=loop.create_future(),
+        )
+        await pipe_instance_async._execute_tool_batch([item], create_tool_context(loop))
+        assert item.future.result()["output"] == "ok"
+        return seen
+
+    assert await run("mcp") == {"id": "page-1"}
+    assert await run("function") == {}
+
+
 # ===== From test_tool_worker_batching.py =====
 
 

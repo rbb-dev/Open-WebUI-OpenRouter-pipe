@@ -5478,12 +5478,15 @@ class Pipe:
         timeout = ask_user_window if ask_user_window is not None else float(context.timeout)
 
         origin_name = str(item.tool_cfg.get("origin_name") or tool_name)
-        declared = item.tool_cfg.get("declared_params")
-        if declared is None:
-            declared = _declared_parameter_names((item.tool_cfg.get("spec") or {}).get("parameters"))
-        call_args = (
-            {key: value for key, value in item.args.items() if key in declared} if isinstance(item.args, dict) else {}
-        )
+        if not isinstance(item.args, dict):
+            call_args = {}
+        elif tool_type == "mcp":
+            call_args = dict(item.args)
+        else:
+            declared = item.tool_cfg.get("declared_params")
+            if declared is None:
+                declared = _declared_parameter_names((item.tool_cfg.get("spec") or {}).get("parameters"))
+            call_args = {key: value for key, value in item.args.items() if key in declared}
         carded = str(item.call.get("call_id") or item.call.get("id") or "").strip() in context.carded_calls
         displayed_inline_by_a_card = resolved_tool_name(item.call) == "display_file" and carded
         args_without_inline = (

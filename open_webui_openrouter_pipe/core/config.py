@@ -1959,7 +1959,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "against the names that schema declares, with a root carried by `$ref` or `allOf` resolved for that "
             "purpose only and the top-level property names an `allOf` branch spells out in plain text still "
             "declared where the resolver declines that root; a root that is not an object and is not advertised "
-            "under the pipe's `value` envelope declares no names, so nothing is delivered for it."
+            "under the pipe's `value` envelope declares no names, so nothing is delivered for it. The executor "
+            "does not filter an MCP tool's arguments with the valve on or off: its server checks them, so it "
+            "receives every argument the model sent."
         ),
     )
     MAX_FUNCTION_CALL_LOOPS: int = Field(
