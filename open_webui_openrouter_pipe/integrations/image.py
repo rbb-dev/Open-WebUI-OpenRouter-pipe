@@ -167,6 +167,8 @@ _STALE_CONTRACT = (
 
 _NO_OUTPUT_SIZE = "it publishes no output size or size tiers"
 
+_NO_EXACT_PIXELS = "it publishes size tiers, not exact pixels"
+
 _TOOL_SHAPE_PARAMS = ("size", "aspect_ratio")
 
 
@@ -401,15 +403,19 @@ class ImageGenerationAdapter:
         if declared is not None and equivalent not in known:
             return _Fitted(None, _NO_OUTPUT_SIZE, "")
         if pixel_size(value) is not None:
-            return _Fitted(value, "", "")
+            if declared is None:
+                return _Fitted(value, "", "")
+            return _Fitted(None, _NO_EXACT_PIXELS, "")
         tiers = SCHEMA_ENUMS.get(equivalent, ())
         if value not in tiers:
-            return _Fitted(
-                None,
-                f"it is neither one of the tiers {', '.join(tiers)} nor exact pixels "
-                "written like 1024x1024",
-                "",
+            listed = ", ".join(tiers)
+            reason = (
+                f"it is neither one of the tiers {listed} nor exact pixels written like "
+                "1024x1024"
+                if declared is None
+                else f"it is not one of the tiers {listed}"
             )
+            return _Fitted(None, reason, "")
         descriptor = known.get(equivalent)
         if descriptor is None:
             return _Fitted(value, "", "")

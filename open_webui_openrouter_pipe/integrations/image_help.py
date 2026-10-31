@@ -849,11 +849,11 @@ def render_image_help(
     panel_installed: bool = True,
 ) -> str:
     from ..filters.image_filter_renderer import (
-        _SCHEMA_ONLY_CAVEAT,
         DISAGREED_SETTINGS,
         UNKEYABLE_SETTINGS,
         _image_shared_by_some,
         _published_records,
+        _schema_only_caveat,
         always_on_controls,
         build_image_model_filter_spec,
         image_knob_text,
@@ -912,7 +912,8 @@ def render_image_help(
         )
     for name in spec.schema_only:
         title, description = image_knob_text(name, spec)
-        lines.append(f"- **{title}** — {description} {_SCHEMA_ONLY_CAVEAT}".replace("  ", " "))
+        caveat = _schema_only_caveat(name, spec)
+        lines.append(f"- **{title}** — {description} {caveat}".replace("  ", " "))
     for name, low, high in spec.ranges:
         title, description = image_knob_text(name, spec)
         lines.append(f"- **{title}** — {description} Accepts {low} to {high}.".replace("  ", " "))

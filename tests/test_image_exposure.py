@@ -243,10 +243,15 @@ def test_the_split_of_top_level_names_is_a_partition():
     assert set(TOP_LEVEL_PARAMS) <= set(recorded), sorted(set(TOP_LEVEL_PARAMS) - set(recorded))
 
 
+_TIER_PUBLISHER = {
+    "provider_slug": "alpha",
+    "supported_parameters": {"resolution": {"type": "enum", "values": ["1K", "2K"]}},
+}
+
 _NOTHING_PUBLISHED = {"provider_slug": "alpha"}
 
 
-@pytest.mark.parametrize(("record", "drawn"), [(_RECRAFT, False), (_NOTHING_PUBLISHED, True)])
+@pytest.mark.parametrize(("record", "drawn"), [(_TIER_PUBLISHER, False), (_NOTHING_PUBLISHED, True)])
 def test_the_output_size_box_follows_what_the_model_publishes(record, drawn):
     spec = build_image_model_filter_spec("m/x", None, [record], dedicated_image_api=True)
     assert (spec.schema_only == SCHEMA_ONLY_PARAMS) is drawn
@@ -284,30 +289,14 @@ def _publishes_only_1k_2k() -> dict[str, Any]:
 @pytest.mark.parametrize(
     ("chosen", "sent"),
     [
-        ("2048x2048", True),
-        ("4K", False),
+        ("2048x2048", False),
+        ("2K", True),
     ],
 )
-def test_a_schema_only_value_travels_from_the_control_into_the_request(chosen, sent):
-    """On a model that publishes tiers, `size` is unconstrained except where it spells a
-    tier the model rules out.
-
-    OpenRouter words a tier `size` as equivalent to setting `resolution`, so on a model
-    publishing `1K, 2K` the two spellings had opposite fates: `resolution="4K"` was
-    refused with a note while `size="4K"` went out unchecked, and `IMAGE_SIZE` is free
-    text on a model that publishes tiers. An explicit pixel size stays unconstrained
-    there, because no contract describes pixel sizes -- so gating `size` on the tier list
-    would refuse `2048x2048` on the nineteen endpoints that publish one.
-    """
+def test_a_size_typed_for_a_model_that_publishes_tiers_is_sent_only_as_one_of_them(chosen, sent):
     record = _publishes_only_1k_2k()
-    module = _filter(record, f"size_travel_{chosen}")
-    body, _metadata = _inlet(module, {"IMAGE_SIZE": chosen})
-    assert body["image_config"]["size"] == chosen, (
-        "the control must write what was typed; the contract is the adapter's job"
-    )
-
     top_level, _provider, notes = ImageGenerationAdapter._split_image_config(
-        body,
+        {"image_config": {"size": chosen}},
         allowed_passthrough=frozenset(record.get("allowed_passthrough_parameters") or []),
         record=record,
     )

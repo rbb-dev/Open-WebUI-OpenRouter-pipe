@@ -68,9 +68,10 @@ will be removed from the dropdown immediately.
 4. (Optional) Click its settings icon to adjust the model's options
    before you send. Most of what you see there is what that model
    accepts — two models rarely offer the same set, and a model that does
-   not accept an aspect ratio will not list it. **Output size** is there
-   when the model publishes a size or size tiers, and on a model that
-   publishes no settings at all. Models that answer only with an image
+   not accept an aspect ratio will not list it. A model that publishes
+   size tiers shows them as **Resolution**; **Output size** is there when
+   the model publishes sizes, and on a model that publishes no settings at
+   all. Models that answer only with an image
    also carry **Provider options**, **Reference images** and
    **Reference image links**; a model that answers with text as well takes
    its references from the message itself, so those three are left off.
@@ -1185,8 +1186,9 @@ admin pointed it at. **Quality**, **Background**, **Output format** and
 **Output compression** are there for every image model. Where the model
 publishes settings, **Aspect ratio** is there only if it publishes aspect
 ratios, and a size control only if it publishes sizes or size tiers:
-**Resolution** for a model that publishes a list of size tiers, **Output size**
-for one that publishes `size` itself. No model gets both. A model that
+**Resolution** for a model whose companies share a list of size tiers, **Output
+size** for one that publishes `size` itself or whose size tiers no shared list
+can offer. No model gets both. A model that
 publishes no settings at all, or whose settings could not be read, gets every
 control. Where the model publishes the values a control takes, the control
 becomes a list of exactly those; where it publishes nothing for a control that
@@ -1196,40 +1198,52 @@ it gets is decided by the same published read, and that read is paid for by any
 of the four image filter valves, so the tool-only layout — the Image Generation
 tool on, the per-model panels off — is built and checked exactly like the
 per-model one. Where the model publishes settings, a saved aspect ratio or size
-tier it does not publish is not sent, and where it publishes no size or size
-tiers no saved size is, exact pixels included; a toast names what was left out.
-With all four off there is no published list to read, so nothing is measured
-against one.
+tier it does not publish is not sent, exact pixels are not sent to a model that
+publishes size tiers, and where it publishes no size or size tiers no saved size
+is; a toast names what was left out. With all four off there is no published
+list to read, so nothing is measured against one.
 
-One more control sits beside the published ones, and a contract that does
-describe it decides the shape of the box:
+**Output size** is the one control whose shape depends on how much the model says
+about size, and a contract that does describe it decides the shape of the box:
 
-- **Output size** — there on a model that publishes a size or size tiers, and on
-  a model that publishes no settings at all. It takes either a size tier (`512`,
-  `1K`, `2K`, `4K`) or exact pixels such as `1024x1024`. Where a model instead
-  publishes `size` as a numeric range, this control is a whole number bounded by
-  that range, names no tier and no pixel form, and sends nothing but a number. A
-  contract may also declare a parameter's domain as whole numbers in its own
-  words — a numeric range, or an `integer` with or without bounds — and each is a
-  number box with exactly the bounds the model published. A tier *is* a
-  resolution and still takes its shape from **Aspect ratio**, and it is measured
-  against the tiers the model publishes. Where a tier and a **Resolution**
-  disagree, this pipe sends the tier and names the one it left off. Nineteen of
-  the fifty-two recorded models publish a tier list of their own, and on those a
-  tier outside the list is withheld rather than sent, and named. Of the other
-  thirty-three, thirty-two publish settings but no size and have no **Output
-  size**: a size sent to one anyway — typed into an API request, or kept by an
-  older copy of the panel — is withheld and named. The last publishes no settings
-  at all and keeps **Output size**, where a tier is measured only against those
-  four names and then goes out for the company running the model to interpret.
-  Anything that is neither one of the four names nor pixels is withheld and named
-  wherever the control exists. Exact pixels settle the image on their own: no
-  model publishes a list of pixel sizes, so those go out as typed and the company
-  running the model decides — and because they already fix the dimensions,
-  **Resolution** is not sent alongside them, nor is **Aspect ratio** unless it is
-  the shape you typed. Anything dropped that way is named in a toast at the time;
-  Open WebUI does not keep toasts with the message, so it is gone once the page
-  reloads.
+- A model that publishes size tiers shows them as **Resolution**, a list of the
+  tiers it publishes, and has no **Output size** box. Nineteen of the fifty-two
+  recorded models are like this. A tier outside the list is withheld rather than
+  sent, and named, and so are exact pixels such as `1024x1024`: a model that
+  publishes size tiers publishes no pixel sizes, and OpenRouter refused them in a
+  check on 2026-10-31. `1536x1024` sent to `sourceful/riverflow-v2.5-fast` was
+  answered with "does not support explicit pixel sizes", and sent to
+  `google/gemini-3.1-flash-lite-image` with "Request contains an invalid
+  argument", on the Image API and through the Image Generation tool, while the
+  same tool calls with `1K` returned an image. Where the companies serving a model
+  share no tier there is no list to show, and **Output size** is a box that takes
+  tier names only, measured against every tier the companies publish between
+  them.
+- A model that publishes `size` itself gets **Output size** as a list of the
+  sizes it names. Where a model instead publishes `size` as a numeric range, this
+  control is a whole number bounded by that range, names no tier and no pixel
+  form, and sends nothing but a number. A contract may also declare a parameter's
+  domain as whole numbers in its own words — a numeric range, or an `integer`
+  with or without bounds — and each is a number box with exactly the bounds the
+  model published. No recorded model publishes `size`.
+- A model that publishes settings but no size or size tiers has no **Output
+  size**. Thirty-two of the fifty-two recorded models are like this, and a size
+  sent to one anyway — typed into an API request, or kept by an older copy of the
+  panel — is withheld and named.
+- A model that publishes no settings at all, or whose settings could not be read,
+  gets **Output size** as a box that takes either a size tier (`512`, `1K`, `2K`,
+  `4K`) or exact pixels such as `1024x1024`. One recorded model is like this. A
+  tier is measured only against those four names and then goes out for the
+  company running the model to interpret. Exact pixels settle the image on their
+  own, so they go out as typed and the company running the model decides — and
+  because they already fix the dimensions, **Resolution** is not sent alongside
+  them, nor is **Aspect ratio** unless it is the shape you typed. Anything that
+  is neither one of the four names nor pixels is withheld and named.
+
+A tier *is* a resolution and still takes its shape from **Aspect ratio**. Where a
+tier and a **Resolution** disagree, this pipe sends the tier and names the one it
+left off. Anything dropped is named in a toast at the time; Open WebUI does not
+keep toasts with the message, so it is gone once the page reloads.
 
 Models that answer only with an image carry three more, which the panel supplies
 rather than the model. A model that answers with text as well takes its
@@ -1459,10 +1473,10 @@ section; a model whose panel is not installed, or not attached to that
 model because `AUTO_ATTACH_IMAGE_FILTERS` is off, is shown with no
 section at all. On a model that answers only with an image, Provider options,
 Reference images and Reference image links head the list, ahead of
-anything the model publishes. Where a model publishes a size or size tiers, or
-publishes no settings at all, Output size comes after the published lists of
-choices and before the rest of what the model publishes — its number ranges
-and the settings named after what the company running it accepts.
+anything the model publishes. Where a model has an Output size, it comes after
+the published lists of choices and before the rest of what the model publishes —
+its number ranges and the settings named after what the company running it
+accepts.
 Where a value is accepted by only some of the companies serving the model,
 both the panel and this list offer it and say so.
 
@@ -1618,7 +1632,7 @@ counting.
 | Valve | Default | Range | Purpose |
 |-------|---------|-------|---------|
 | `ENABLE_OPENROUTER_IMAGE_GENERATION` | `True` | bool | Master kill switch. False drops pure-image-only models from the model list AND clears them from OWUI's catalog on the next model-list build, ahead of the catalogue refresh window, so it does not wait on `MODEL_CATALOG_REFRESH_SECONDS`. It withdraws the published contracts of the models it drops as well, narrowed to the ids the registry can still route to; a text+image chat model is not one of them, so its own contract and its `image_config` vetting are untouched. It also discards any contract reads a cut-off sweep left owed under this base URL and key, so the first sweep after the valve comes back on is a full one rather than a repair of a sweep that will never run again. Multimodal models stay since they're in the chat catalog. It is a master kill switch for what is *offered*, not for what is *read*: with an image filter valve on, the published-contract sweep still runs so the Image Generation tool's own controls are built, and only the models stay out of the picker. |
-| `AUTO_INSTALL_IMAGE_FILTERS` | `True` | bool | Install and keep current one settings panel per image model, built from what that model publishes. It is one of the four valves that pay for that read — `AUTO_ATTACH_IMAGE_FILTERS`, `AUTO_INSTALL_IMAGE_GEN_FILTER` and `AUTO_ATTACH_IMAGE_GEN_FILTER` read the same contracts for the Image Generation tool's own panel, and with all four off no contract is read at all. A panel carries `Output size` where the model publishes a size or size tiers, and on a model that publishes no settings at all: a tier is checked against the tiers that model publishes -- or against `512`, `1K`, `2K` and `4K` where it publishes none -- while exact pixels such as `1024x1024` travel as typed, and a size sent to a model that publishes settings but no size is left out and named; and a model that answers with an image and no text carries `Provider options`, `Reference images` and `Reference image links` on top of that. A model whose settings list has never been read gets no panel; one read before keeps its last successful set -- and keeps it until a refresh does read the model, so a catalogue that is momentarily unreadable for one model costs it nothing. |
+| `AUTO_INSTALL_IMAGE_FILTERS` | `True` | bool | Install and keep current one settings panel per image model, built from what that model publishes. It is one of the four valves that pay for that read — `AUTO_ATTACH_IMAGE_FILTERS`, `AUTO_INSTALL_IMAGE_GEN_FILTER` and `AUTO_ATTACH_IMAGE_GEN_FILTER` read the same contracts for the Image Generation tool's own panel, and with all four off no contract is read at all. A panel shows a model's size tiers as `Resolution` and its sizes as `Output size`, and carries an `Output size` box on a model that publishes no settings at all: a tier is checked against the tiers that model publishes -- or against `512`, `1K`, `2K` and `4K` where it publishes none -- exact pixels such as `1024x1024` travel as typed only where nothing is known about the model, and a size the model does not publish (a tier outside its list, any size for a model that publishes none, exact pixels for a model that publishes tiers) is left out and named; and a model that answers with an image and no text carries `Provider options`, `Reference images` and `Reference image links` on top of that. A model whose settings list has never been read gets no panel; one read before keeps its last successful set -- and keeps it until a refresh does read the model, so a catalogue that is momentarily unreadable for one model costs it nothing. |
 | `AUTO_ATTACH_IMAGE_FILTERS` | `True` | bool | Attach each model's own settings panel to it, so its settings appear in the chat controls when that model is selected. A single model can opt out with the `disable_image_filter_auto_attach` advanced parameter. |
 | `AUTO_DEFAULT_IMAGE_FILTERS` | `True` | bool | Keep attached image filters enabled by default per chat. Re-asserted on every catalog metadata sync. |
 
@@ -1729,9 +1743,11 @@ That model does not publish it. The panel lists what the model told
 OpenRouter it accepts, so a missing setting means the model would not
 have honoured it. Type `help` to the model to see its published list.
 
-**Output size** is there when the model publishes a size or size tiers,
-and on a model that publishes no settings at all; a model that publishes
-settings without one has none. Models that answer only with an image also
+A model that publishes size tiers shows them as **Resolution**, with no box
+to type exact pixels into, because such a model takes tiers and no pixel
+sizes. **Output size** is there when the model publishes sizes, and on a model
+that publishes no settings at all; a model that publishes settings without a
+size or size tiers has none. Models that answer only with an image also
 carry Provider options,
 Reference images and Reference image links — so on those, if what you
 want is a provider-specific setting the panel does not name, put it in

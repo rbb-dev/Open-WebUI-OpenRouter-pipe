@@ -384,7 +384,10 @@ def _panel_knobs(
 ]:
     enums, narrowed, ranges, supported_names = _renderable_knobs(_agreed_parameters(records))
     drawn = {name for name, _ in enums} | {name for name, _, _ in ranges} | set(supported_names)
-    offers_size = _publishes_size_descriptor(records) or not _published_descriptor_names(records)
+    sized = any(source in drawn for source in _SIZE_TIER_SOURCES)
+    offers_size = not _published_descriptor_names(records) or (
+        _publishes_size_descriptor(records) and not sized
+    )
     schema = (
         tuple(name for name in SCHEMA_ONLY_PARAMS if name not in drawn) if offers_size else ()
     )
@@ -420,6 +423,8 @@ _SIZE_OPENING = (
     "Either a size tier (512, 1K, 2K or 4K) or exact pixels written like 1024x1024."
 )
 
+_SIZE_OPENING_TIERS = "A size tier (512, 1K, 2K or 4K)."
+
 _SIZE_PUBLISHED_BOUND = (
     "A whole number this model publishes for output size, and the only form it takes."
 )
@@ -448,8 +453,9 @@ _SIZE_TIER_SPLIT_NO_RATIO = (
 )
 
 _SIZE_NOTHING_READ = (
-    "Where this pipe has read settings the model publishes and none of them is an "
-    "output size or a list of size tiers, nothing is sent for it and a message says so."
+    "Where this pipe has read settings the model publishes, a size is sent only if they "
+    "include an output size or size tiers, and exact pixels only if they include output "
+    "sizes; anything else is not sent and a message says so."
 )
 
 _SIZE_TIER_UNCHECKED = (
@@ -470,20 +476,13 @@ _SIZE_PIXELS_WIN = (
     "does not keep with the message: it is gone once the page reloads."
 )
 
-_SIZE_PIXELS_WIN_WITH_TIERS = (
-    "Exact pixels settle the image on their own, so {tier_control} is not sent alongside "
-    "them, and nor is Aspect ratio unless it is the shape you typed. A toast says so at "
-    "the time, which Open WebUI does not keep with the message: it is gone once the page "
-    "reloads."
-)
-
-_SIZE_PIXELS_WIN_WITH_TIERS_NO_RATIO = (
-    "Exact pixels settle the image on their own, so {tier_control} is not sent alongside "
-    "them. A toast says so at the time, which Open WebUI does not keep with the message: "
-    "it is gone once the page reloads."
-)
-
 _SIZE_PIXELS_WIN_ALONE = "Exact pixels settle the image on their own."
+
+_SIZE_PIXELS_REFUSED = (
+    "This model publishes size tiers and no exact pixel sizes, so exact pixels such as "
+    "1024x1024 are not sent. A toast says so at the time, which Open WebUI does not keep "
+    "with the message: it is gone once the page reloads."
+)
 
 _SIZE_PUBLISHED_LIST = (
     "The output sizes this model publishes; it takes no others, so neither a tier nor "
@@ -496,10 +495,10 @@ _SIZE_TIER_LIST = (
 )
 
 _SIZE_MEANING: dict[tuple[str, bool], tuple[str, str]] = {
-    ("own", True): (_SIZE_TIER_CHECKED, _SIZE_PIXELS_WIN_WITH_TIERS),
-    ("own", False): (_SIZE_TIER_CHECKED_NO_RATIO, _SIZE_PIXELS_WIN_WITH_TIERS_NO_RATIO),
-    ("split", True): (_SIZE_TIER_SPLIT, _SIZE_PIXELS_WIN),
-    ("split", False): (_SIZE_TIER_SPLIT_NO_RATIO, _SIZE_PIXELS_WIN_ALONE),
+    ("own", True): (_SIZE_TIER_CHECKED, _SIZE_PIXELS_REFUSED),
+    ("own", False): (_SIZE_TIER_CHECKED_NO_RATIO, _SIZE_PIXELS_REFUSED),
+    ("split", True): (_SIZE_TIER_SPLIT, _SIZE_PIXELS_REFUSED),
+    ("split", False): (_SIZE_TIER_SPLIT_NO_RATIO, _SIZE_PIXELS_REFUSED),
     ("none", True): (_SIZE_TIER_UNCHECKED, _SIZE_PIXELS_WIN),
     ("none", False): (_SIZE_TIER_UNCHECKED_NO_RATIO, _SIZE_PIXELS_WIN_ALONE),
 }
@@ -554,13 +553,10 @@ def image_knob_text(name: str, spec: ImageModelFilterSpec) -> tuple[str, str]:
     if any(published == name for published, _low, _high in spec.ranges):
         return title, _SIZE_PUBLISHED_BOUND
     ratio = renders_control(spec, "aspect_ratio")
-    tier = _SIZE_MEANING[(tier_state(spec), ratio)][0]
-    pixels = _SIZE_MEANING[(drawn_tier_state(spec), ratio)][1]
-    if "{tier_control}" in pixels:
-        pixels = pixels.format(
-            tier_control=IMAGE_KNOB_TITLES[_drawn_tier_source(spec)][0]
-        )
-    return title, f"{_SIZE_OPENING} {tier} {pixels}"
+    state = tier_state(spec)
+    tier, pixels = _SIZE_MEANING[(state, ratio)]
+    opening = _SIZE_OPENING if state == "none" else _SIZE_OPENING_TIERS
+    return title, f"{opening} {tier} {pixels}"
 
 
 IMAGE_KNOB_TITLES = {
@@ -590,8 +586,10 @@ _SCHEMA_ONLY_CAVEAT = (
     "company running this one decides what to do with them. Empty leaves it unset."
 )
 
+_SIZE_TIERS_CAVEAT = "Empty leaves it unset."
 
-def _schema_only_caveat(name: str) -> str:
+
+def _schema_only_caveat(name: str, spec: ImageModelFilterSpec) -> str:
     bounds = SCHEMA_RANGES.get(name)
     if bounds is not None:
         low, high = bounds
@@ -602,7 +600,7 @@ def _schema_only_caveat(name: str) -> str:
         )
     values = SCHEMA_ENUMS.get(name)
     if not values:
-        return _SCHEMA_ONLY_CAVEAT
+        return _SIZE_TIERS_CAVEAT if spec.publishes_size_descriptor else _SCHEMA_ONLY_CAVEAT
     offered = ", ".join(values)
     gate = (
         " Where this pipe has read settings the model publishes, a ratio they do not "
@@ -730,7 +728,7 @@ def _render_image_model_user_valves(spec: ImageModelFilterSpec) -> str:
                     f"            ge={low},\n"
                     f"            le={high},\n"
                     f"            title={title!r},\n"
-                    f"            description={f'{description} {_schema_only_caveat(name)}'!r},\n"
+                    f"            description={f'{description} {_schema_only_caveat(name, spec)}'!r},\n"
                     "        )"
                 )
             )
@@ -740,7 +738,7 @@ def _render_image_model_user_valves(spec: ImageModelFilterSpec) -> str:
                 f"{_valve_name(name)}: str = Field(\n"
                 '            default="",\n'
                 f"            title={title!r},\n"
-                f"            description={f'{description} {_schema_only_caveat(name)}'!r},\n"
+                f"            description={f'{description} {_schema_only_caveat(name, spec)}'!r},\n"
                 "        )"
             )
         )
@@ -1170,11 +1168,14 @@ def _gen_tool_settings(tool: ImageModelFilterSpec, named: str) -> str:
     )
     exact: list[str] = []
     general: list[str] = []
+    tiers_only: list[str] = []
     absent: list[str] = []
     for name in IMAGE_GEN_TOOL_PARAMS:
         source = size_source if name == "size" else name
         if source in listed:
             exact.append(IMAGE_KNOB_TITLES[source][0])
+        elif name in tool.schema_only and name == "size" and tool.publishes_size_descriptor:
+            tiers_only.append(IMAGE_KNOB_TITLES[source][0])
         elif name in tool.schema_only:
             general.append(IMAGE_KNOB_TITLES[source][0])
         else:
@@ -1190,6 +1191,11 @@ def _gen_tool_settings(tool: ImageModelFilterSpec, named: str) -> str:
         sentences.append(
             f"{_title_list(general)} {verb} what OpenRouter's image API accepts in general, "
             "and the company running the model decides what to do with the value."
+        )
+    for title in tiers_only:
+        sentences.append(
+            f"{title} takes a size tier and no exact pixels, checked against what the "
+            f"companies serving {named} publish."
         )
     for name in absent:
         sentences.append(
@@ -1217,7 +1223,8 @@ def image_gen_model_note(spec: ImageModelFilterSpec, *, catalog_match: bool) -> 
                 "image API accepts in general, and this model decides what to do with the "
                 "value. Where this pipe can read settings the model publishes and they "
                 "include no output size or size tiers, or no aspect ratios, a value typed "
-                "for either is not sent and a message says so. Check the id if that is "
+                "for either is not sent and a message says so, and exact pixels are not "
+                "sent when they list size tiers and no sizes. Check the id if that is "
                 "unexpected."
             )
         return (
@@ -1241,8 +1248,13 @@ def image_gen_model_note(spec: ImageModelFilterSpec, *, catalog_match: bool) -> 
         cause = f" {named} publishes no settings of its own."
     if not spec.published_names:
         withheld = ""
-    elif spec.publishes_size_descriptor:
-        withheld = f" A saved aspect ratio or size tier that {named} does not publish is not sent."
+    elif "size" in spec.published_names:
+        withheld = f" A saved aspect ratio or size that {named} does not publish is not sent."
+    elif "resolution" in spec.published_names:
+        withheld = (
+            f" A saved aspect ratio or size tier that {named} does not publish is not "
+            f"sent, and neither are exact pixels, which {named} does not publish either."
+        )
     else:
         withheld = f" A saved size, or an aspect ratio {named} does not publish, is not sent."
     return f"{opening} {settings}{cause}{withheld} Naming another model re-reads the settings."
