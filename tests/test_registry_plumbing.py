@@ -1,10 +1,12 @@
 import asyncio
+import base64
 import inspect
 import json
 import logging
 import time
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -732,3 +734,73 @@ async def test_a_switched_off_preset_stays_out_of_the_catalog_on_every_path_and_
     assert holders("@preset.beta") == everywhere
 
     assert len([r for r in caplog.records if "alpha" in r.getMessage()]) == 1
+
+
+@pytest.mark.asyncio
+async def test_sync_model_metadata_writes_an_account_preset_row_with_the_icon_of_its_base_model(
+    pipe_instance_async,
+):
+    catalog = {
+        "data": [
+            {"id": "example-lab/alpha-1", "name": "Alpha 1"},
+            {"id": "other-lab/beta-2", "name": "Beta 2"},
+            {"id": "@preset/own-beta", "name": "Own beta"},
+        ]
+    }
+    presets = [_listed_preset("built-alpha", "v1"), _listed_preset("own-beta", "v2")]
+    records = {
+        "built-alpha": _preset_record("built-alpha", "v1", {"model": "example-lab/alpha-1"}),
+        "own-beta": _preset_record("own-beta", "v2", {"model": "other-lab/beta-2"}),
+    }
+    await _load_catalog(models=catalog, presets=presets, records=records)
+    rows = ow.OpenRouterModelRegistry.list_models()
+    assert {row["id"] for row in rows} == {
+        "example-lab.alpha-1",
+        "other-lab.beta-2",
+        "@preset.built-alpha",
+        "@preset.own-beta",
+    }
+
+    pipe = pipe_instance_async
+    manager = pipe._ensure_catalog_manager()
+    pipe.valves.UPDATE_MODEL_IMAGES = True
+    pipe.valves.UPDATE_MODEL_CAPABILITIES = False
+    pipe.valves.AUTO_ATTACH_WEB_TOOLS_FILTER = False
+    pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER = False
+    pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = False
+    pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
+
+    def as_data_url(url: str) -> str:
+        return "data:image/png;base64," + base64.b64encode(url.encode()).decode()
+
+    async def maker_page(maker_id: str) -> str:
+        return f"https://example.com/{maker_id}.png"
+
+    manager._fetch_frontend_model_catalog = AsyncMock(
+        return_value={
+            "data": [
+                {
+                    "slug": "example-lab/alpha-1",
+                    "endpoint": {
+                        "provider_info": {"icon": {"url": "https://example.com/alpha-1.png"}}
+                    },
+                }
+            ]
+        }
+    )
+    pipe._multimodal_handler._fetch_maker_profile_image_url = maker_page
+    pipe._multimodal_handler._fetch_image_as_data_url = AsyncMock(side_effect=as_data_url)
+    manager._update_or_insert_model_with_metadata = AsyncMock()
+
+    await manager._sync_model_metadata_to_owui(rows, pipe_identifier="test_pipe")
+
+    icons = {
+        call.args[0]: call.args[3]
+        for call in manager._update_or_insert_model_with_metadata.call_args_list
+    }
+    assert icons == {
+        "test_pipe.example-lab.alpha-1": as_data_url("https://example.com/alpha-1.png"),
+        "test_pipe.@preset.built-alpha": as_data_url("https://example.com/alpha-1.png"),
+        "test_pipe.other-lab.beta-2": as_data_url("https://example.com/other-lab.png"),
+        "test_pipe.@preset.own-beta": as_data_url("https://example.com/other-lab.png"),
+    }

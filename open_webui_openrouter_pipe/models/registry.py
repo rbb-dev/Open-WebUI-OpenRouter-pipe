@@ -928,6 +928,7 @@ class OpenRouterModelRegistry:
                 norm: entry for norm, entry in wanted.items() if norm not in switched_off
             }
         cls._align_own_preset_rows(specs, fingerprint)
+        models = cls._with_preset_bases(models, fingerprint)
         for preset_norm, preset_entry in wanted.items():
             if preset_norm in specs:
                 continue
@@ -1888,12 +1889,13 @@ class OpenRouterModelRegistry:
             preset_id = f"@preset/{slug}"
             norm = _catalog_norm(preset_id)
             base_id = _preset_base_id(config)
+            base_row = base_full.get(_catalog_norm(base_id)) if base_id is not None else None
             listed_full = base_full.get(norm) if norm in served_norms else None
             if listed_full is not None:
                 wanted[slug] = (
                     norm,
                     cls._derive_chat_spec(listed_full, norm, base_id),
-                    cls._preset_row(preset_id, norm, listed_full),
+                    cls._preset_row(preset_id, norm, listed_full, base_row),
                 )
                 cls._note_preset_state(states, served, logger, slug, "built")
                 continue
@@ -1906,7 +1908,6 @@ class OpenRouterModelRegistry:
             if base_id is None:
                 cls._note_preset_state(states, served, logger, slug, "dropped:no-base-model")
                 continue
-            base_row = base_full.get(_catalog_norm(base_id))
             if base_row is None:
                 cls._note_preset_state(
                     states, served, logger, slug, f"dropped:base-missing:{base_id}"
@@ -1919,7 +1920,7 @@ class OpenRouterModelRegistry:
             wanted[slug] = (
                 norm,
                 cls._derive_chat_spec(preset_full, norm, base_id),
-                cls._preset_row(preset_id, norm, preset_full),
+                cls._preset_row(preset_id, norm, preset_full, base_row),
             )
             cls._note_preset_state(states, served, logger, slug, "built")
         cls._preset_rows[fingerprint] = dict(wanted)
@@ -2009,14 +2010,42 @@ class OpenRouterModelRegistry:
         return deepcopy(config) if isinstance(config, dict) else None
 
     @classmethod
-    def _preset_row(cls, preset_id: str, norm: str, full: dict[str, Any]) -> dict[str, Any]:
+    def _preset_row(
+        cls,
+        preset_id: str,
+        norm: str,
+        full: dict[str, Any],
+        base_row: dict[str, Any] | None,
+    ) -> dict[str, Any]:
         name = full.get("name")
-        return {
+        row = {
             "id": sanitize_model_id(preset_id),
             "norm_id": norm,
             "original_id": preset_id,
             "name": name if isinstance(name, str) and name else preset_id,
         }
+        base_original_id = base_row.get("id") if base_row is not None else None
+        if isinstance(base_original_id, str) and base_original_id.strip():
+            row["base_original_id"] = base_original_id.strip()
+        return row
+
+    @classmethod
+    def _with_preset_bases(
+        cls, models: list[dict[str, Any]], fingerprint: str
+    ) -> list[dict[str, Any]]:
+        bases = {
+            norm: row["base_original_id"]
+            for norm, _spec, row in cls._preset_rows.get(fingerprint, {}).values()
+            if row.get("base_original_id")
+        }
+        stamped: list[dict[str, Any]] = []
+        for model in models:
+            if isinstance(model, dict):
+                base = bases.get(str(model.get("norm_id") or ""))
+                if base is not None and model.get("base_original_id") != base:
+                    model = {**model, "base_original_id": base}
+            stamped.append(model)
+        return stamped
 
     @classmethod
     async def _refresh_presets_only(
@@ -2105,6 +2134,7 @@ class OpenRouterModelRegistry:
         for norm, (_, row) in wanted.items():
             if norm not in present_norms:
                 models.append(row)
+        models = cls._with_preset_bases(models, fingerprint)
         models.sort(key=lambda m: str(m.get("name") or "").lower())
         roster = cls._zdr_roster_for(api_key)
         for norm in replaced:

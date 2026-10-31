@@ -229,6 +229,22 @@ def _convergent_stamp(row: tuple[str | None, str | None, bool, bool, str | None]
     return ""
 
 
+def icon_source_id(model: Mapping[str, Any]) -> str | None:
+    original_id = model.get("original_id")
+    if not isinstance(original_id, str) or not original_id:
+        return None
+    if referenced_preset_slug(original_id) is None:
+        return original_id
+    base_original_id = model.get("base_original_id")
+    if (
+        isinstance(base_original_id, str)
+        and base_original_id
+        and referenced_preset_slug(base_original_id) is None
+    ):
+        return base_original_id
+    return None
+
+
 def makers_needing_a_page(
     models: list[dict[str, Any]],
     icon_mapping: dict[str, str],
@@ -240,14 +256,12 @@ def makers_needing_a_page(
         return set(), {}
     stamps: dict[str, set[str]] = {}
     for model in models:
-        original_id = model.get("original_id")
-        if not isinstance(original_id, str) or not original_id:
+        source_id = icon_source_id(model)
+        if source_id is None:
             continue
-        if original_id in icon_mapping:
+        if source_id in icon_mapping:
             continue
-        if referenced_preset_slug(original_id) is not None:
-            continue
-        maker_id = original_id.split("/", 1)[0]
+        maker_id = source_id.split("/", 1)[0]
         if not maker_id:
             continue
         row = stored_icons.get(f"{pipe_identifier}.{model.get('id')}")
@@ -1934,12 +1948,12 @@ class ModelCatalogManager:
             if valves.UPDATE_MODEL_IMAGES:
                 slug_to_icon_url = {}
                 for model in models:
-                    original_id = model.get("original_id")
-                    if not isinstance(original_id, str) or not original_id:
+                    source_id = icon_source_id(model)
+                    if source_id is None:
                         continue
-                    icon_url = icon_mapping.get(original_id)
+                    icon_url = icon_mapping.get(source_id)
                     if icon_url:
-                        slug_to_icon_url[original_id] = icon_url
+                        slug_to_icon_url[source_id] = icon_url
 
                 maker_to_image_url = {k: v for k, v in maker_mapping.items() if isinstance(v, str) and v}
 
@@ -1947,31 +1961,31 @@ class ModelCatalogManager:
                 fetchable: dict[str, str] = {}
                 needs_maker: set[str] = set()
                 for model in models:
-                    original_id = model.get("original_id")
-                    if not isinstance(original_id, str) or not original_id:
+                    source_id = icon_source_id(model)
+                    if source_id is None:
                         continue
                     row_id = f"{pipe_identifier}.{model.get('id')}"
                     row = stored_icons.get(row_id)
                     if row is not None and (row[2] or row[3]):
                         continue
                     if not frontend_answered and row is not None and row[4] == _FRONTEND_SOURCE_KIND and row[0]:
-                        stored_data_by_url[original_id] = row[0]
+                        stored_data_by_url[source_id] = row[0]
                         reused_icon_rows.add(row_id)
                         continue
-                    icon_url = slug_to_icon_url.get(original_id)
+                    icon_url = slug_to_icon_url.get(source_id)
                     if icon_url:
                         covered = _covered_icon(row, icon_url)
                         if covered is not None:
-                            stored_data_by_url[original_id] = covered
+                            stored_data_by_url[source_id] = covered
                             reused_icon_rows.add(row_id)
                             continue
-                        fetchable[original_id] = icon_url
+                        fetchable[source_id] = icon_url
                         continue
-                    maker_id = original_id.split("/", 1)[0]
+                    maker_id = source_id.split("/", 1)[0]
                     if maker_id in maker_to_image_url:
                         covered = _covered_icon(row, maker_to_image_url[maker_id])
                         if covered is not None:
-                            stored_data_by_url[original_id] = covered
+                            stored_data_by_url[source_id] = covered
                             reused_icon_rows.add(row_id)
                         else:
                             needs_maker.add(maker_id)
@@ -2444,18 +2458,19 @@ class ModelCatalogManager:
                 profile_image_url = None
                 image_source_url = None
                 image_source_kind = None
+                icon_source = icon_source_id(model)
                 if (
                     valves.UPDATE_MODEL_IMAGES
-                    and isinstance(original_id, str) and original_id
+                    and icon_source is not None
                     and openwebui_model_id not in reused_icon_rows
                 ):
-                    profile_image_url = icon_data_mapping.get(original_id)
+                    profile_image_url = icon_data_mapping.get(icon_source)
                     if profile_image_url:
                         image_source_url = _stampable_icon_source(
-                            slug_to_icon_url.get(original_id)
+                            slug_to_icon_url.get(icon_source)
                         )
                     if not profile_image_url:
-                        maker_id = original_id.split("/", 1)[0]
+                        maker_id = icon_source.split("/", 1)[0]
                         profile_image_url = maker_data_mapping.get(maker_id)
                         if profile_image_url:
                             image_source_url = _stampable_icon_source(
@@ -2464,7 +2479,7 @@ class ModelCatalogManager:
                     if image_source_url:
                         image_source_kind = (
                             _FRONTEND_SOURCE_KIND
-                            if image_source_url == slug_to_icon_url.get(original_id)
+                            if image_source_url == slug_to_icon_url.get(icon_source)
                             else _MAKER_SOURCE_KIND
                         )
 
