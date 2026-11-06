@@ -174,6 +174,11 @@ _IMPORTS = _our_owui_imports()
 
 _NEWER_THAN_OUR_FLOOR: dict[tuple[str, str], str] = {
     ("open_webui.utils.tool_search", "resolve_tool_call"): "0.12.2",
+    ("open_webui.utils.misc", "chat_completion_chunk_template"): "0.13.0",
+}
+
+_REMOVED_AFTER_OUR_FLOOR: dict[tuple[str, str], str] = {
+    ("open_webui.utils.misc", "openai_chat_chunk_message_template"): "0.13.0",
 }
 
 
@@ -204,12 +209,14 @@ def test_owui_import_seam_resolves(module: str, symbol: str | None, is_optional:
         f"installed open_webui at {base}. Open WebUI renamed/moved/removed it — "
         f"update our import before this ships."
     )
-    assert symbol is not None and (module, symbol) in _NEWER_THAN_OUR_FLOOR, (
+    declared = (module, symbol) in _NEWER_THAN_OUR_FLOOR or (module, symbol) in _REMOVED_AFTER_OUR_FLOOR
+    assert symbol is not None and declared, (
         f"OWUI seam drift: `{target}` is imported under a guard and does not resolve in "
         f"the installed open_webui at {base}, so its fallback is what runs — "
-        "permanently, and silently. If Open WebUI removed it, drop our import. If it "
-        "predates our floor, add it to _NEWER_THAN_OUR_FLOOR with the version that "
-        "introduces it."
+        "permanently, and silently. If Open WebUI removed it and no release from our floor "
+        "still has it, drop our import; if releases from our floor still have it, add it to "
+        "_REMOVED_AFTER_OUR_FLOOR with the version that removed it. If it is newer than our "
+        "floor, add it to _NEWER_THAN_OUR_FLOOR with the version that introduces it."
     )
 
 

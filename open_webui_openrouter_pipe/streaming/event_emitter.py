@@ -77,6 +77,28 @@ def _stub_chat_chunk_template(
     return chunk
 
 
+def _owui_chunk_template() -> Callable[..., dict[str, Any]]:
+    try:
+        try:
+            from open_webui.utils.misc import (
+                chat_completion_chunk_template as template,  # type: ignore[import-not-found]
+            )
+        except ImportError:
+            from open_webui.utils.misc import (
+                openai_chat_chunk_message_template as template,  # type: ignore[import-not-found]
+            )
+    except ImportError:
+        return _stub_chat_chunk_template
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "open_webui.utils.misc failed to import for a reason other than absence; "
+            "the features that depend on it are now disabled",
+            exc_info=True,
+        )
+        return _stub_chat_chunk_template
+    return template
+
+
 def openai_chat_chunk_message_template(
     model: str,
     content: str | None = None,
@@ -85,22 +107,10 @@ def openai_chat_chunk_message_template(
     usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     global _owui_template_cached
-    if _owui_template_cached is None:
-        try:
-            from open_webui.utils.misc import (
-                openai_chat_chunk_message_template as _real_template,
-            )
-            _owui_template_cached = _real_template
-        except ImportError:
-            _owui_template_cached = _stub_chat_chunk_template
-        except Exception:
-            logging.getLogger(__name__).warning(
-                "open_webui.utils.misc failed to import for a reason other than absence; "
-                "the features that depend on it are now disabled",
-                exc_info=True,
-            )
-            _owui_template_cached = _stub_chat_chunk_template
-    return _owui_template_cached(model, content, None, tool_calls, usage)
+    template = _owui_template_cached
+    if template is None:
+        template = _owui_template_cached = _owui_chunk_template()
+    return template(model, content, None, tool_calls, usage)
 
 
 _UNGUARDED_ATTR = "_openrouter_unguarded_emitter"

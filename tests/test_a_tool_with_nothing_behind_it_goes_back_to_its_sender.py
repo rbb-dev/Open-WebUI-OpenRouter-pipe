@@ -149,7 +149,12 @@ def open_webui_stream_content(form_data: dict[str, Any], pipe_call: Any, params:
     templates = [
         node for node in ast.parse(misc_text).body
         if isinstance(node, ast.FunctionDef)
-        and node.name in ("openai_chat_message_template", "openai_chat_chunk_message_template")
+        and node.name in (
+            "chat_completion_template",
+            "chat_completion_chunk_template",
+            "openai_chat_message_template",
+            "openai_chat_chunk_message_template",
+        )
     ]
     namespace: dict[str, Any] = {
         "inspect": inspect, "JSONCodec": json, "BaseModel": BaseModel, "StreamingResponse": StreamingResponse,

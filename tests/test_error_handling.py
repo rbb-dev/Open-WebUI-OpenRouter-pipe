@@ -2384,11 +2384,12 @@ async def test_a_streamed_failure_with_no_chat_on_an_anthropic_mount_reaches_the
     converter_source = converter_path.read_text(encoding="utf-8")
     converter_node = next(
         node for node in ast.parse(converter_source).body
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "openai_stream_to_anthropic_stream"
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name in ("convert_chat_completions_stream_to_anthropic", "openai_stream_to_anthropic_stream")
     )
     namespace: dict[str, Any] = {"JSONCodec": json, "log": logging.getLogger("open_webui.utils.anthropic")}
     exec(compile(ast.get_source_segment(converter_source, converter_node), str(converter_path), "exec"), namespace)
-    to_anthropic = namespace["openai_stream_to_anthropic_stream"]
+    to_anthropic = namespace[converter_node.name]
 
     unreadable = UpstreamBodyUnreadable(
         endpoint="https://openrouter.ai/api/v1/responses", body_excerpt="<html>bad gateway</html>", content_type="text/html"
