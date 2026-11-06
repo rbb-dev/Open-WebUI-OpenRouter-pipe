@@ -288,14 +288,29 @@ async def _publish_function_event(
     if request is None:
         from .http_routes import get_owui_app
 
-        request = get_owui_app()
+        app = get_owui_app()
+        if app is None:
+            logger.debug("pipe_dashboard: no Open WebUI app to announce %s to", name)
+            return False
+        from fastapi import Request
+
+        request = Request({
+            "type": "http", "method": "GET", "path": "/internal", "query_string": b"",
+            "headers": [], "scheme": "http", "app": app,
+        })
     try:
         await publish_event(
             request, getattr(EVENTS, name), actor=actor, subject_id=pipe_id, data=data
         )
         return True
     except Exception:
-        logger.debug("pipe_dashboard event publish failed", exc_info=True)
+        logger.log(
+            warn_level(_warned_import_sites, f"publish:{name}"),
+            "pipe_dashboard: Open WebUI did not take the %s event, so event functions and "
+            "webhooks were not told about this write",
+            name,
+            exc_info=True,
+        )
         return False
 
 

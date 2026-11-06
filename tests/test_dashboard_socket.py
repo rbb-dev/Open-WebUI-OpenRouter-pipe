@@ -1177,6 +1177,25 @@ class TestConfigChangeNotification:
         assert other in sinks
 
     @pytest.mark.asyncio
+    async def test_an_update_made_with_no_request_is_still_announced_to_open_webui(self, monkeypatch):
+        from open_webui_openrouter_pipe.plugins.pipe_dashboard import http_routes
+
+        app = types.SimpleNamespace(state=types.SimpleNamespace())
+        published = []
+
+        async def publish_event(request, event, *, actor=None, subject_id=None, data=None, **_):
+            published.append((request.app, event, subject_id, data))
+
+        events_mod = types.ModuleType("open_webui.events")
+        setattr(events_mod, "EVENTS", types.SimpleNamespace(FUNCTION_UPDATED="function.updated"))
+        setattr(events_mod, "publish_event", publish_event)
+        monkeypatch.setitem(sys.modules, "open_webui.events", events_mod)
+        monkeypatch.setattr(http_routes, "get_owui_app", lambda: app)
+
+        assert await dashboard_socket.publish_function_updated(_PIPE_ID, None, None, {"type": "pipe"}) is True
+        assert published == [(app, "function.updated", _PIPE_ID, {"type": "pipe"})]
+
+    @pytest.mark.asyncio
     async def test_publisher_payload_carries_cfg_rev(self, monkeypatch):
         monkeypatch.setattr(
             dashboard_publisher, "read_config_rev", AsyncMock(return_value=(555, "d1"))
