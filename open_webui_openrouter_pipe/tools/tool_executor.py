@@ -163,6 +163,20 @@ except Exception:
     )
     _owui_get_updated_tool_function = None  # type: ignore[assignment]
 
+try:
+    from open_webui.utils.tools import (  # pyright: ignore[reportMissingImports]
+        guard_tool_enabled as _owui_guard_tool_enabled,  # type: ignore[import-not-found]
+    )
+except ImportError:
+    _owui_guard_tool_enabled = None  # type: ignore[assignment]
+except Exception:
+    logging.getLogger(__name__).warning(
+        "open_webui.utils.tools failed to import for a reason other than absence; "
+        "the features that depend on it are now disabled",
+        exc_info=True,
+    )
+    _owui_guard_tool_enabled = None  # type: ignore[assignment]
+
 _ASK_USER_GRACE_SECONDS = 15.0
 
 OPEN_WEBUI_OWNED_NAMES_KEY = "_pipe_open_webui_owned_names"
@@ -518,6 +532,25 @@ class ToolExecutor:
     @staticmethod
     def is_process_control(exc: BaseException) -> bool:
         return isinstance(exc, (SystemExit, KeyboardInterrupt, GeneratorExit))
+
+    @staticmethod
+    def _keep_open_webui_guard(
+        fn: Any, run_shell: Callable[[Any, dict[str, Any]], Awaitable[Any]]
+    ) -> Callable[..., Awaitable[Any]] | None:
+        tool_id = getattr(fn, "__tool_id__", None)
+        shell = getattr(fn, "__wrapped__", None)
+        if (
+            _owui_guard_tool_enabled is None
+            or not isinstance(tool_id, str)
+            or not callable(shell)
+            or getattr(shell, "__function__", None) is not getattr(fn, "__function__", None)
+        ):
+            return None
+
+        async def run(**kwargs: Any) -> Any:
+            return await run_shell(shell, kwargs)
+
+        return _owui_guard_tool_enabled(tool_id, run)
 
     @staticmethod
     async def _with_current_chat(fn: Any, tool_cfg: dict[str, Any], context: _ToolExecutionContext) -> Any:

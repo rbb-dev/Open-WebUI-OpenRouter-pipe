@@ -5646,9 +5646,16 @@ class Pipe:
     ) -> Any:
         inner = getattr(fn, "__function__", None)
         if on_threads and callable(inner) and not inspect.iscoroutinefunction(inner):
-            return await self._run_sync_tool(
-                fn, args, on_enter=on_enter, pool_key=pool_key, tool_name=tool_name, limit_ended=limit_ended
-            )
+
+            def _on_thread(target: Any, kwargs: dict[str, Any]) -> Awaitable[Any]:
+                return self._run_sync_tool(
+                    target, kwargs, on_enter=on_enter, pool_key=pool_key, tool_name=tool_name, limit_ended=limit_ended
+                )
+
+            guarded = self._ensure_tool_executor()._keep_open_webui_guard(fn, _on_thread)
+            if guarded is not None:
+                return await guarded(**args)
+            return await _on_thread(fn, args)
         if inspect.iscoroutinefunction(fn):
             if on_enter is not None and not on_enter():
                 raise _ToolWithdrawn()

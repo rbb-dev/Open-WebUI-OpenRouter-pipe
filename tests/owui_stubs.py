@@ -14,6 +14,8 @@ os.environ.setdefault("ENABLE_DB_MIGRATIONS", "false")
 os.environ.setdefault("DATA_DIR", "/tmp/owui-test-data")
 os.environ.setdefault("WEBUI_AUTH", "false")
 
+import asyncio
+import http
 import inspect
 import re
 import sys
@@ -21,7 +23,7 @@ import types
 import uuid
 from collections.abc import Awaitable, Callable
 from enum import Enum
-from functools import partial, update_wrapper
+from functools import partial, update_wrapper, wraps
 from types import SimpleNamespace
 from typing import Any, cast, get_args, get_type_hints
 
@@ -826,7 +828,7 @@ def _install_open_webui_stubs() -> None:
     chat_id_mod.is_temporary_chat_id = _is_temporary_chat_id
     utils_pkg.ask_user = ask_user_mod
 
-    # Open WebUI 0.12.0 `utils/tools.py`, copied verbatim: the pipe re-binds a tool's `__messages__` and `__files__`
+    # Open WebUI 0.13.3 `utils/tools.py`, copied verbatim: the pipe re-binds a tool's `__messages__` and `__files__`
     # through Open WebUI's own re-binder, so a stand-in would test a re-bind Open WebUI does not do.
     tools_mod = cast(Any, _ensure_module("open_webui.utils.tools"))
 
@@ -888,21 +890,62 @@ def _install_open_webui_stubs() -> None:
 
         return new_function
 
+    # Open WebUI 0.13.3 `models/tools.py` `Tools.is_tool_active`
+    tools_table_mod = cast(Any, _ensure_module("open_webui.models.tools"))
+
+    class _ToolsTable:
+        def __init__(self) -> None:
+            self.inactive: set[str] = set()
+
+        async def is_tool_active(self, id: str, db: Any = None) -> bool:
+            await asyncio.sleep(0)
+            return id not in self.inactive
+
+    tools_table_mod.Tools = _ToolsTable()
+    models_pkg.tools = tools_table_mod
+    Tools = tools_table_mod.Tools
+
+    # Starlette's `HTTPException`, as FastAPI raises it
+    class HTTPException(Exception):
+        def __init__(self, status_code: int, detail: str | None = None, headers: Any = None) -> None:
+            if detail is None:
+                detail = http.HTTPStatus(status_code).phrase
+            self.status_code = status_code
+            self.detail = detail
+            self.headers = headers
+
+        def __str__(self) -> str:
+            return f"{self.status_code}: {self.detail}"
+
+    def _guard_tool_enabled(tool_id: str, function: Callable) -> Callable:
+        @wraps(function)
+        async def guarded(*args, **kwargs):
+            # Resolve again at invocation: a chat may have prepared this callable before a toggle.
+            if not await Tools.is_tool_active(tool_id):
+                raise HTTPException(status_code=403, detail='Tool is disabled or no longer available')
+            return await function(*args, **kwargs)
+
+        guarded.__tool_id__ = tool_id  # type: ignore[attr-defined]
+        return guarded
+
     async def _get_updated_tool_function(function: Callable, extra_params: dict):
         # Get the original function and merge updated params
         __function__ = getattr(function, '__function__', None)
         __extra_params__ = getattr(function, '__extra_params__', None)
 
         if __function__ is not None and __extra_params__ is not None:
-            return await _get_async_tool_function_and_apply_extra_params(
+            updated = await _get_async_tool_function_and_apply_extra_params(
                 __function__,
                 {**__extra_params__, **extra_params},
             )
+            tool_id = getattr(function, '__tool_id__', None)
+            return _guard_tool_enabled(tool_id, updated) if tool_id is not None else updated
 
         return function
 
     tools_mod.get_async_tool_function_and_apply_extra_params = _get_async_tool_function_and_apply_extra_params
     tools_mod.get_updated_tool_function = _get_updated_tool_function
+    tools_mod.guard_tool_enabled = _guard_tool_enabled
     utils_pkg.tools = tools_mod
 
     # Open WebUI 0.12.0 `utils/tool_search.py::strip_deferred_tools_manifest` and its pattern, copied without the

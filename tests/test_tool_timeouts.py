@@ -1745,6 +1745,43 @@ async def test_the_synchronous_tools_switch_places_a_wrapped_body_on_the_pool_or
     assert seen["thread"] == loop_ident
 
 
+@pytest.mark.real_clock
+@pytest.mark.asyncio
+@pytest.mark.parametrize("switched_on", [True, False])
+async def test_a_synchronous_workspace_tool_under_open_webui_0_13s_switch_check_runs_its_body_on_a_pool_thread(
+    pipe_instance_async, monkeypatch, switched_on
+):
+    from open_webui.models.tools import Tools
+    from open_webui.utils.tools import (
+        get_async_tool_function_and_apply_extra_params,
+        guard_tool_enabled,  # type: ignore[import-not-found]
+    )
+
+    loop_ident = threading.get_ident()
+    seen: dict[str, Any] = {}
+
+    def pair_device(code: str) -> str:
+        seen["thread"] = threading.get_ident()
+        return f"paired with {code}"
+
+    shell = await get_async_tool_function_and_apply_extra_params(pair_device, {"__id__": "field_kit"})
+    registry = {"pair_device": _entry(guard_tool_enabled("field_kit", shell), tool_type="function", name="pair_device")}
+    if not switched_on:
+        monkeypatch.setattr(Tools, "inactive", {"field_kit"})
+
+    outputs = await _run_job(
+        pipe_instance_async, monkeypatch, registry, [_call("c1", "pair_device", json.dumps({"code": "K7Q2"}))]
+    )
+
+    if switched_on:
+        assert (outputs["c1"]["status"], _text(outputs["c1"])) == ("completed", "paired with K7Q2")
+        assert seen["thread"] != loop_ident
+    else:
+        assert outputs["c1"]["status"] == "incomplete"
+        assert json.loads(_text(outputs["c1"])) == {"error": "403: Tool is disabled or no longer available"}
+        assert seen == {}
+
+
 @pytest.mark.asyncio
 async def test_a_threaded_tool_body_can_start_a_task_and_ask_for_the_running_loop(pipe_instance_async):
     main_ident = threading.get_ident()

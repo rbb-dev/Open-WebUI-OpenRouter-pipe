@@ -175,6 +175,7 @@ _IMPORTS = _our_owui_imports()
 _NEWER_THAN_OUR_FLOOR: dict[tuple[str, str], str] = {
     ("open_webui.utils.tool_search", "resolve_tool_call"): "0.12.2",
     ("open_webui.utils.misc", "chat_completion_chunk_template"): "0.13.0",
+    ("open_webui.utils.tools", "guard_tool_enabled"): "0.13.0",
 }
 
 _REMOVED_AFTER_OUR_FLOOR: dict[tuple[str, str], str] = {
