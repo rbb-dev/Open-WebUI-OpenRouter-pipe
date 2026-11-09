@@ -38,13 +38,16 @@ _module_logger = logging.getLogger(__name__)
 
 
 
+def open_webui_approves_calls(params: Any) -> bool:
+    return isinstance(params, dict) and params.get("tool_approval_mode") in ("ask", "auto")
+
+
 def ask_approval_handoff(metadata: Any) -> bool:
     meta = metadata if isinstance(metadata, dict) else {}
     pipe_meta = meta.get(_PIPE_METADATA_KEY)
     if isinstance(pipe_meta, dict) and pipe_meta.get("fusion_inner"):
         return False
-    params = meta.get("params")
-    if not (isinstance(params, dict) and params.get("tool_approval_mode") == "ask"):
+    if not open_webui_approves_calls(meta.get("params")):
         return False
     if not meta.get("message_id"):
         return False

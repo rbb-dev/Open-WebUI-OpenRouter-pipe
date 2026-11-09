@@ -45,6 +45,7 @@ async def _ask_turn(
     script: Any = None,
     times: int = 1,
     loops: int = 4,
+    approval_mode: str = "ask",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[Any]]:
     made: list[dict[str, Any]] = []
 
@@ -62,7 +63,7 @@ async def _ask_turn(
             stream=True,
             metadata=metadata,
             owui_tools={"lookup": resolved_tool("lookup", spy)},
-            params={"tool_approval_mode": "ask"},
+            params={"tool_approval_mode": approval_mode},
             loops=loops,
         )
         chunks.extend(round_chunks)
@@ -75,6 +76,16 @@ async def test_ask_in_a_saved_streamed_chat_offers_the_tools_and_hands_the_call_
 ):
     made, requests, chunks = await _ask_turn(pipe_instance_async, monkeypatch, SAVED)
     assert offered(requests[0]) == ["function:lookup"]
+    assert made == []
+    assert len(requests) == 1
+    assert _hosted_call_item(chunks)
+
+
+@pytest.mark.asyncio
+async def test_auto_in_a_saved_streamed_chat_hands_the_call_back_for_open_webui_to_review(
+    pipe_instance_async, monkeypatch
+):
+    made, requests, chunks = await _ask_turn(pipe_instance_async, monkeypatch, SAVED, approval_mode="auto")
     assert made == []
     assert len(requests) == 1
     assert _hosted_call_item(chunks)

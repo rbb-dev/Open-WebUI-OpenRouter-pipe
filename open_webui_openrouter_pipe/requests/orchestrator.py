@@ -110,6 +110,7 @@ from ..tools.tool_registry import (
     _advertised_names_for_replayed_calls,
     _build_collision_safe_tool_specs_and_registry,
     ask_approval_handoff,
+    open_webui_approves_calls,
     open_webui_runs_the_calls,
 )
 from .fusion_engine import (
@@ -1670,7 +1671,7 @@ class RequestOrchestrator:
         withhold_owui_tools = bool(
             request_params.get("function_calling") == "legacy"
             or (
-                request_params.get("tool_approval_mode") == "ask"
+                open_webui_approves_calls(request_params)
                 and (
                     fusion_inner
                     or (
