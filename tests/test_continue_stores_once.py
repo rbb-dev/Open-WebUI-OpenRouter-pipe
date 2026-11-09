@@ -31,7 +31,7 @@ import pytest
 import open_webui_openrouter_pipe.streaming.streaming_core as streaming_core_mod
 from open_webui_openrouter_pipe import Pipe, ResponsesBody, generate_item_id
 from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
-from tests.package_sources import open_webui_package_dir
+from tests.package_sources import open_webui_package_dir, open_webui_tool_calling
 from tests.test_reasoning_native_items import _events_of, _install_clock, _make_timed_stream
 
 STORED = [
@@ -283,9 +283,11 @@ def _open_webui_convert_output_to_messages():
         wanted.add("get_paired_tool_call_ids")
     if "get_provider_function" in module_defs:
         wanted.add("get_provider_function")
+    if "merge_tool_call_batches" in module_defs:
+        wanted.add("merge_tool_call_batches")
     nodes: list[ast.stmt] = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted]
     assert sorted(node.name for node in nodes if isinstance(node, ast.FunctionDef)) == sorted(wanted)
-    namespace: dict[str, Any] = {"json": json}
+    namespace: dict[str, Any] = {"json": json, "JSONCodec": json, **open_webui_tool_calling()}
     code = compile(
         ast.Module(body=nodes, type_ignores=[]),
         str(source),

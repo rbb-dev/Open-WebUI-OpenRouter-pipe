@@ -16,6 +16,7 @@ import importlib.machinery
 import importlib.metadata
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -68,3 +69,17 @@ def open_webui_package_dir() -> Path:
         "on PYTHONPATH.",
         pytrace=False,
     )
+
+
+@lru_cache(maxsize=None)
+def _open_webui_tool_calling_names() -> tuple[tuple[str, Any], ...]:
+    path = open_webui_package_dir() / "utils" / "tool_calling.py"
+    if not path.is_file():
+        return ()
+    namespace: dict[str, Any] = {}
+    exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), namespace)
+    return tuple((name, value) for name, value in namespace.items() if not name.startswith("__"))
+
+
+def open_webui_tool_calling() -> dict[str, Any]:
+    return dict(_open_webui_tool_calling_names())

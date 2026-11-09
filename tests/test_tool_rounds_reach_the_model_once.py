@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from tests.package_sources import open_webui_package_dir
+from tests.package_sources import open_webui_package_dir, open_webui_tool_calling
 from tests.test_reasoning_skeleton_replay import (
     _recorded_output,
     _stage_a,
@@ -122,7 +122,10 @@ def _open_webui_0_11_4_full_output(prior: list[dict[str, Any]], output: list[dic
         source = open_webui_package_dir() / "utils" / "middleware.py"
         tree = ast.parse(source.read_text(encoding="utf-8"))
         (node,) = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "full_output"]
-        _FULL_OUTPUT_CODE.append(compile(ast.Module(body=[node], type_ignores=[]), str(source), "exec"))
-    namespace: dict[str, Any] = {"continuing": True, "prior_output": prior, "output": output}
+        helpers = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "is_message_continuation"]
+        _FULL_OUTPUT_CODE.append(compile(ast.Module(body=[*helpers, node], type_ignores=[]), str(source), "exec"))
+    namespace: dict[str, Any] = {
+        "continuing": True, "prior_output": prior, "output": output, "metadata": {}, **open_webui_tool_calling(),
+    }
     exec(_FULL_OUTPUT_CODE[0], namespace)
     return namespace["full_output"]()
