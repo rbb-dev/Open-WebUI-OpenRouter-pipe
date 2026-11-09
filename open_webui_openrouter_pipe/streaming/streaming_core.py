@@ -231,7 +231,11 @@ from ..tools.tool_registry import (
     OWUI_OWNS_KEY,
     RESOLVER_ERROR_KEY,
     ask_approval_handoff,
+    call_tool_batch_entries,
+    collapsed_call_tool_batches,
+    expanded_call_tool_batches,
     open_webui_runs_the_calls,
+    per_member_outputs,
 )
 from .constants import (
     _REPLAY_DROPPED_OPENING,
@@ -685,12 +689,37 @@ class StreamingHandler:
                     return exposed
             return None
 
-        def _rebind_call_tool_round(call_items: list[dict[str, Any]]) -> None:
+        def _rebind_call_tool_round(call_items: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+            batches: dict[str, list[dict[str, Any]]] = {}
             if resolve_tool_call is None:
-                return
+                return batches
             owui_tools = metadata.get("tools") if isinstance(metadata, dict) else None
             if not isinstance(owui_tools, dict):
-                return
+                return batches
+
+            def _resolved(call: dict[str, Any], arguments: Any) -> dict[str, Any] | None:
+                wrapper: dict[str, Any] = {"function": {"name": CALL_TOOL_NAME, "arguments": arguments}}
+                try:
+                    failure = resolve_tool_call(wrapper, owui_tools)
+                except RecursionError:
+                    return None
+                if failure is not None:
+                    return {**call, RESOLVER_ERROR_KEY: failure}
+                provider_function = wrapper.get("provider_function")
+                if not isinstance(provider_function, dict):
+                    return None
+                resolved = wrapper.get("function")
+                target_origin = str(resolved.get("name") or "") if isinstance(resolved, dict) else ""
+                target_exposed = _exposed_runner_for(owui_tools.get(target_origin)) if target_origin else None
+                if target_exposed:
+                    return {
+                        **call,
+                        "name": target_exposed,
+                        "arguments": resolved.get("arguments"),
+                        "provider_function": provider_function,
+                    }
+                return {**call, "provider_function": provider_function}
+
             for index, call in enumerate(call_items):
                 exposed_name = str(call.get("name") or "").strip()
                 if not exposed_name or _origin_tool_name(exposed_name) != CALL_TOOL_NAME:
@@ -698,29 +727,47 @@ class StreamingHandler:
                 entry = tool_registry.get(exposed_name)
                 if not (isinstance(entry, dict) and entry.get(OWUI_OWNS_KEY) is not True):
                     continue
-                wrapper: dict[str, Any] = {"function": {"name": CALL_TOOL_NAME, "arguments": call.get("arguments")}}
-                try:
-                    failure = resolve_tool_call(wrapper, owui_tools)
-                except RecursionError:
+                raw_arguments = call.get("arguments")
+                entries = call_tool_batch_entries(raw_arguments)
+                if isinstance(entries, str):
+                    call_items[index] = {**call, RESOLVER_ERROR_KEY: entries}
                     continue
-                if failure is not None:
-                    call_items[index] = {**call, RESOLVER_ERROR_KEY: failure}
+                if entries is None:
+                    rebound = _resolved(call, raw_arguments)
+                    if rebound is not None:
+                        call_items[index] = rebound
                     continue
-                provider_function = wrapper.get("provider_function")
-                if not isinstance(provider_function, dict):
+                raw_batch_id = call.get("call_id") or call.get("id")
+                batch_id = raw_batch_id.strip() if isinstance(raw_batch_id, str) else ""
+                if not batch_id:
                     continue
-                resolved = wrapper.get("function")
-                target_origin = str(resolved.get("name") or "") if isinstance(resolved, dict) else ""
-                target_exposed = _exposed_runner_for(owui_tools.get(target_origin)) if target_origin else None
-                if target_exposed:
-                    call_items[index] = {
+                batch_function = {
+                    "name": CALL_TOOL_NAME,
+                    "arguments": (
+                        raw_arguments
+                        if isinstance(raw_arguments, str)
+                        else json.dumps(raw_arguments or {}, ensure_ascii=False)
+                    ),
+                }
+                members: list[dict[str, Any]] = []
+                for batch_entry in entries:
+                    member_id = f"call_{uuid.uuid4().hex[:24]}"
+                    member_arguments = json.dumps(batch_entry, ensure_ascii=False)
+                    member = {
                         **call,
-                        "name": target_exposed,
-                        "arguments": resolved.get("arguments"),
-                        "provider_function": provider_function,
+                        "id": member_id,
+                        "call_id": member_id,
+                        "arguments": member_arguments,
+                        "provider_batch": {
+                            "call_id": batch_id,
+                            "function": batch_function,
+                            "size": len(entries),
+                            "tool_name": batch_entry["tool_name"],
+                        },
                     }
-                else:
-                    call_items[index] = {**call, "provider_function": provider_function}
+                    members.append(_resolved(member, member_arguments) or member)
+                batches[batch_id] = members
+            return batches
 
         tool_call_item_ids: dict[str, str] = {}
         host_call_indices: dict[str, int] = {}
@@ -1561,6 +1608,7 @@ class StreamingHandler:
                 current_text: str,
                 model_call: bool = True,
                 provider_function: dict[str, Any] | None = None,
+                provider_batch: dict[str, Any] | None = None,
             ) -> str:
                 nonlocal emitted_response_output_items
                 if not event_emitter or not (valves.SHOW_TOOL_CARDS or _shows_a_file_inline(name, arguments)):
@@ -1593,6 +1641,8 @@ class StreamingHandler:
                     call_item["display_labels"] = labels
                 if isinstance(provider_function, dict) and provider_function:
                     call_item["provider_function"] = provider_function
+                if isinstance(provider_batch, dict) and provider_batch:
+                    call_item["provider_batch"] = provider_batch
                 call_index = await _place_item(call_item, current_text)
                 await event_emitter({
                     "type": "response.output_item.added",
@@ -4037,13 +4087,14 @@ class StreamingHandler:
                             valves.MAX_FUNCTION_CALL_LOOPS,
                         )
 
+                call_tool_batches: dict[str, list[dict[str, Any]]] = {}
                 if (call_items or invalid_call_outputs) and not hand_back:
                     note_model_activity()
                     if continuation_input_items:
                         body.input.extend(continuation_input_items)
                         input_is_sanitized = False
                     if call_items:
-                        _rebind_call_tool_round(call_items)
+                        call_tool_batches = _rebind_call_tool_round(call_items)
                     if reasoning_count:
                         self.logger.debug(
                             "🧠 Preserving %d reasoning item(s) with encrypted_content for tool continuation",
@@ -4219,9 +4270,10 @@ class StreamingHandler:
                         calls_carded_this_round.clear()
                         stubbed_before_this_round: set[str] = set()
 
+                        card_outputs: list[dict[str, Any]] = []
                         if emitter_supplied:
                             try:
-                                for call in call_items:
+                                for call in expanded_call_tool_batches(call_items, call_tool_batches):
                                     call_id = _extract_call_id(call)
                                     if not call_id:
                                         continue
@@ -4235,6 +4287,7 @@ class StreamingHandler:
                                         else json.dumps(raw_args, ensure_ascii=False)
                                     )
                                     resolved_provider_function = call.get("provider_function")
+                                    batch = call.get("provider_batch")
                                     await _emit_tool_start(
                                         call_id=call_id,
                                         name=tool_name,
@@ -4246,6 +4299,7 @@ class StreamingHandler:
                                             if isinstance(resolved_provider_function, dict)
                                             else None
                                         ),
+                                        provider_batch=batch if isinstance(batch, dict) else None,
                                     )
                             except Exception as exc:
                                 self.logger.warning("Failed to emit in-progress tool cards: %s", exc, exc_info=True)
@@ -4276,9 +4330,10 @@ class StreamingHandler:
                                         "status": "incomplete",
                                     }
                                 )
+                            card_outputs = per_member_outputs(function_outputs, call_tool_batches)
                             if loop_index > max_loops and emitter_supplied:
                                 try:
-                                    for output in function_outputs:
+                                    for output in card_outputs:
                                         result_str, pictures = tool_output_text_and_pictures(
                                             output.get("output")
                                         )
@@ -4319,6 +4374,7 @@ class StreamingHandler:
                             ]
                             if not fresh_calls:
                                 function_outputs = repeated_outputs
+                                card_outputs = per_member_outputs(repeated_outputs, call_tool_batches)
                                 if loop_index > max_loops:
                                     break
                             else:
@@ -4374,9 +4430,10 @@ class StreamingHandler:
 
                                 _answer_carry[0] = assistant_message
 
+                                round_calls = expanded_call_tool_batches(call_items, call_tool_batches)
                                 try:
                                     function_outputs = await self._pipe._ensure_tool_executor()._execute_function_calls(
-                                        call_items,
+                                        round_calls,
                                         tool_registry,
                                     )
                                 except Exception as exc:
@@ -4386,7 +4443,7 @@ class StreamingHandler:
                                         exc_info=True,
                                     )
                                     function_outputs = []
-                                    for call in call_items:
+                                    for call in round_calls:
                                         call_id = _extract_call_id(call) or f"call-{uuid.uuid4().hex}"
                                         function_outputs.append(
                                             {
@@ -4401,6 +4458,10 @@ class StreamingHandler:
                                         _tool_ctx.on_complete = None
                                         _tool_ctx.carded_calls = set()
                                 assistant_message = _answer_carry[0]
+                                card_outputs = list(function_outputs) + per_member_outputs(
+                                    repeated_outputs, call_tool_batches
+                                )
+                                function_outputs = collapsed_call_tool_batches(function_outputs, call_tool_batches)
                                 if repeated_outputs:
                                     function_outputs = list(function_outputs) + repeated_outputs
 
@@ -4427,11 +4488,21 @@ class StreamingHandler:
                             cid = _extract_call_id(call)
                             if cid:
                                 call_by_id[cid] = call
-                        output_by_call_id: dict[str, dict] = {}
-                        for output in all_function_outputs:
+                        card_call_by_id: dict[str, dict] = {}
+                        for call in expanded_call_tool_batches(call_items, call_tool_batches):
+                            cid = _extract_call_id(call)
+                            if cid:
+                                card_call_by_id[cid] = call
+                        card_output_by_call_id: dict[str, dict] = {}
+                        for output in card_outputs:
                             cid = _extract_call_id(output)
                             if cid:
-                                output_by_call_id[cid] = output
+                                card_output_by_call_id[cid] = output
+                        batch_of_card = {
+                            _extract_call_id(member): batch_id
+                            for batch_id, members in call_tool_batches.items()
+                            for member in members
+                        }
 
                         omitted_call_ids = budget.omitted_call_ids
                         await _report_omissions(
@@ -4439,9 +4510,9 @@ class StreamingHandler:
                             "Too large for the remaining context this turn, so the model "
                             "did not receive:",
                         )
-                        if emitter_supplied and all_function_outputs:
+                        if emitter_supplied and card_outputs:
                             try:
-                                for cid, output in output_by_call_id.items():
+                                for cid, output in card_output_by_call_id.items():
                                     result_str, pictures = tool_output_text_and_pictures(output.get("output"))
                                     await _emit_tool_result(
                                         call_id=cid,
@@ -4455,10 +4526,10 @@ class StreamingHandler:
                             except Exception as exc:
                                 self.logger.warning("Failed to emit completed tool cards: %s", exc, exc_info=True)
 
-                        for cid, output in output_by_call_id.items():
-                            if cid in omitted_call_ids:
+                        for cid, output in card_output_by_call_id.items():
+                            if batch_of_card.get(cid, cid) in omitted_call_ids:
                                 continue
-                            call = call_by_id.get(cid)
+                            call = card_call_by_id.get(cid)
                             if not call:
                                 continue
                             tool_name = _origin_tool_name((call.get("name") or "").strip())

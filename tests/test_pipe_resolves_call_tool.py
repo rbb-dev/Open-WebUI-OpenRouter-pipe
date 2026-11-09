@@ -62,7 +62,9 @@ def _open_webui_tool_search_functions() -> dict[str, Any]:
     return namespace
 
 
-def _model_rounds(*, with_malformed_call: bool = False) -> tuple[Any, list[dict[str, Any]]]:
+def _model_rounds(
+    *, with_malformed_call: bool = False, arguments: str = _CALL_TOOL_ARGUMENTS
+) -> tuple[Any, list[dict[str, Any]]]:
     step = [0]
     bodies: list[dict[str, Any]] = []
 
@@ -74,7 +76,7 @@ def _model_rounds(*, with_malformed_call: bool = False) -> tuple[Any, list[dict[
                 "type": "function_call",
                 "call_id": "call_A",
                 "name": "call_tool",
-                "arguments": _CALL_TOOL_ARGUMENTS,
+                "arguments": arguments,
                 "status": "completed",
             }
             output = [call]
@@ -353,3 +355,108 @@ async def test_a_stored_call_tool_round_replays_as_the_model_made_it(monkeypatch
         assert item["arguments"] == _CALL_TOOL_ARGUMENTS, item
         assert "provider_function" not in item, item
     assert (cards_item["name"], cards_item["arguments"]) == (rows_item["name"], rows_item["arguments"])
+
+
+_BATCH_ARGUMENTS = json.dumps(
+    {
+        "calls": [
+            {"tool_name": "lookup", "params": json.dumps({"q": "a"})},
+            {"tool_name": "lookup", "params": json.dumps({"q": "b"})},
+        ]
+    }
+)
+
+
+@pytest.mark.asyncio
+async def test_a_batched_call_tool_runs_each_tool_and_answers_the_models_one_call(monkeypatch, pipe_instance_async):
+    functions = _open_webui_tool_search_functions()
+    monkeypatch.setattr(streaming_core_mod, "resolve_tool_call", functions["resolve_tool_call"], raising=False)
+    pipe = pipe_instance_async
+    model, model_bodies = _model_rounds(arguments=_BATCH_ARGUMENTS)
+    monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", model)
+    monkeypatch.setattr(Pipe, "send_openrouter_nonstreaming_request_as_events", model)
+    ran: list[str] = []
+
+    async def lookup(q: str) -> str:
+        ran.append(q)
+        return f"found {q}"
+
+    owui_lookup = {
+        "tool_id": "local_lookup",
+        "callable": lookup,
+        "spec": {"name": "lookup", "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}},
+    }
+    call_tool_entry = {
+        "tool_id": "builtin:call_tool",
+        "type": "builtin",
+        "spec": {"name": "call_tool", "parameters": {"type": "object", "properties": {}}},
+    }
+    emitted: list[dict[str, Any]] = []
+
+    async def capture(event):
+        emitted.append(event)
+
+    from open_webui_openrouter_pipe.tools.tool_executor import _ToolExecutionContext
+
+    context = _ToolExecutionContext(
+        queue=asyncio.Queue(maxsize=50),
+        per_request_semaphore=asyncio.Semaphore(1),
+        global_semaphore=None,
+        timeout=5.0,
+        batch_timeout=5.0,
+        idle_timeout=None,
+        user_id="u1",
+        event_emitter=capture,
+    )
+    context.workers.append(asyncio.create_task(pipe._ensure_tool_executor()._tool_worker_loop(context)))
+    token = pipe._TOOL_CONTEXT.set(context)
+    try:
+        content = await pipe._streaming_handler._run_streaming_loop(
+            ResponsesBody(
+                model="test/model",
+                input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+                stream=True,
+            ),
+            pipe.valves,
+            capture,
+            metadata={
+                "model": {"id": "test"},
+                "chat_id": "c1",
+                "message_id": "m1",
+                "tools": {"lookup": owui_lookup, "call_tool": call_tool_entry},
+            },
+            tools={
+                "call_tool": {**call_tool_entry, "source": call_tool_entry},
+                "lookup": {**owui_lookup, "source": owui_lookup},
+            },
+            session=cast(Any, object()),
+            user_id="u1",
+        )
+    finally:
+        pipe._TOOL_CONTEXT.reset(token)
+        for worker in context.workers:
+            worker.cancel()
+        await asyncio.gather(*context.workers, return_exceptions=True)
+
+    assert "all done." in str(content), content
+    assert sorted(ran) == ["a", "b"]
+    sent = [item for item in model_bodies[1].get("input") or [] if isinstance(item, dict)]
+    assert [(item["call_id"], item["arguments"]) for item in sent if item.get("type") == "function_call"] == [
+        ("call_A", _BATCH_ARGUMENTS)
+    ]
+    outputs = [item for item in sent if item.get("type") == "function_call_output"]
+    assert [item["call_id"] for item in outputs] == ["call_A"]
+    results = json.loads(outputs[0]["output"])["results"]
+    assert [(entry["tool_name"], entry["status"], entry["output"][0]["text"]) for entry in results] == [
+        ("lookup", "completed", "found a"),
+        ("lookup", "completed", "found b"),
+    ]
+    cards = [
+        event["item"]
+        for event in emitted
+        if event.get("type") == "response.output_item.added" and event["item"].get("type") == "function_call"
+    ]
+    assert [(card["name"], card["provider_batch"]["call_id"], card["provider_batch"]["size"]) for card in cards] == [
+        ("lookup", "call_A", 2),
+        ("lookup", "call_A", 2),
+    ]

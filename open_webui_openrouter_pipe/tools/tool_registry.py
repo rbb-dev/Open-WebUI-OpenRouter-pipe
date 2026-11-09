@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import itertools
+import json
 import logging
 import re
 from typing import TYPE_CHECKING, Any
 
 from ..core.config import _EMPTY_TOOL_SCHEMA, _PIPE_METADATA_KEY
 from ..core.timing_logger import timed
+from ..core.utils import (
+    parse_tool_arguments,
+    picture_output,
+    tool_output_text_and_pictures,
+)
 from ..storage.owui_files import (
     _is_chatless_caller,
     is_linkable_chat,
@@ -213,6 +219,95 @@ CALL_TOOL_NAME = "call_tool"
 SEARCH_TOOL_TOOL_ID = "builtin:search_tools"
 CALL_TOOL_TOOL_ID = f"builtin:{CALL_TOOL_NAME}"
 RESOLVER_ERROR_KEY = "resolver_error"
+BATCH_INTERRUPTED_TEXT = "Error: tool execution was interrupted; its outcome is unknown."
+
+
+def call_tool_batch_entries(arguments: Any) -> list[dict[str, Any]] | str | None:
+    try:
+        parsed = parse_tool_arguments(arguments)
+    except ValueError:
+        return None
+    if not isinstance(parsed, dict) or "calls" not in parsed:
+        return None
+    entries = parsed["calls"]
+    if set(parsed) != {"calls"} or not isinstance(entries, list) or not entries:
+        return "Error: call_tool requires a non-empty calls array."
+    if any(not isinstance(entry, dict) or set(entry) != {"tool_name", "params"} for entry in entries):
+        return "Error: Each call requires tool_name and params."
+    return entries
+
+
+def _call_id_of(item: Any) -> str:
+    raw = (item.get("call_id") or item.get("id")) if isinstance(item, dict) else None
+    return raw.strip() if isinstance(raw, str) else ""
+
+
+def expanded_call_tool_batches(
+    calls: list[dict[str, Any]], batches: dict[str, list[dict[str, Any]]]
+) -> list[dict[str, Any]]:
+    expanded: list[dict[str, Any]] = []
+    for call in calls:
+        expanded.extend(batches.get(_call_id_of(call)) or [call])
+    return expanded
+
+
+def per_member_outputs(
+    outputs: list[dict[str, Any]], batches: dict[str, list[dict[str, Any]]]
+) -> list[dict[str, Any]]:
+    copies: list[dict[str, Any]] = []
+    for output in outputs:
+        members = batches.get(_call_id_of(output))
+        if not members:
+            copies.append(output)
+            continue
+        copies.extend({**output, "call_id": _call_id_of(member)} for member in members)
+    return copies
+
+
+def collapsed_call_tool_batches(
+    outputs: list[dict[str, Any]], batches: dict[str, list[dict[str, Any]]]
+) -> list[dict[str, Any]]:
+    parent = {_call_id_of(member): batch_id for batch_id, members in batches.items() for member in members}
+    by_member = {_call_id_of(output): output for output in outputs if _call_id_of(output) in parent}
+    collapsed: list[dict[str, Any]] = []
+    placed: set[str] = set()
+    for output in outputs:
+        batch_id = parent.get(_call_id_of(output))
+        if batch_id is None:
+            collapsed.append(output)
+        elif batch_id not in placed:
+            placed.add(batch_id)
+            collapsed.append(_combined_batch_output(batch_id, batches[batch_id], by_member))
+    return collapsed
+
+
+def _combined_batch_output(
+    batch_id: str, members: list[dict[str, Any]], by_member: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
+    entries: list[dict[str, Any]] = []
+    pictures: list[str] = []
+    for member in members:
+        output = by_member.get(_call_id_of(member))
+        if output is None:
+            text, member_pictures, status = BATCH_INTERRUPTED_TEXT, [], "incomplete"
+        else:
+            text, member_pictures = tool_output_text_and_pictures(output.get("output"))
+            status = output.get("status") or "completed"
+        entries.append(
+            {
+                "tool_name": (member.get("provider_batch") or {}).get("tool_name"),
+                "status": status,
+                "output": [{"type": "input_text", "text": text}],
+            }
+        )
+        pictures.extend(member_pictures)
+    text = json.dumps({"results": entries}, ensure_ascii=False)
+    return {
+        "type": "function_call_output",
+        "call_id": batch_id,
+        "output": picture_output(text, pictures) if pictures else text,
+        "status": "completed",
+    }
 
 
 def _owui_owned_entry(origin_source: str, origin_name: str, exposed_name: str) -> dict[str, Any]:
