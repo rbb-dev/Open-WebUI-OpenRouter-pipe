@@ -206,19 +206,23 @@ def package_strings(package_scan) -> dict[bool, dict[str, str]]:
     }
 
 
-@pytest.mark.parametrize("artifact", BUNDLES)
-def test_no_bundled_string_constant_differs_from_the_package(package_strings, artifact):
-    """Compared by VALUE, so a renamed or relocated constant still matches."""
-    path = PROJECT_ROOT / artifact
+@pytest.fixture(scope="module", params=BUNDLES)
+def artifact_scan(request):
+    path = PROJECT_ROOT / request.param
     if not path.exists():
         pytest.fail(
-            f"{artifact} is not built, so the only comparison between the package and "
+            f"{request.param} is not built, so the only comparison between the package and "
             "a shipped artifact ran against nothing. Build the bundles "
             "(python scripts/bundle_v2.py [--compress] [--no-plugins]) before running "
             "this file; skipping made the guarantee conditional on build order."
         )
-
     bundled, carries_module_sources = _artifact_strings(path)
+    return request.param, bundled, carries_module_sources
+
+
+def test_no_bundled_string_constant_differs_from_the_package(package_strings, artifact_scan):
+    """Compared by VALUE, so a renamed or relocated constant still matches."""
+    artifact, bundled, carries_module_sources = artifact_scan
     pkg = package_strings[carries_module_sources]
     assert pkg, "no module-level string constants found; this test is comparing nothing"
 
