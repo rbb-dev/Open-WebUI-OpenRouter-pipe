@@ -1533,6 +1533,26 @@ _A_TOOL_ROUND = [
     },
     {"role": "tool", "tool_call_id": "call-1", "content": "found it"},
 ]
+_OPEN_WEBUIS_CONTEXT_ITEMS = [
+    {
+        "type": "function_call", "id": "fc_context", "call_id": "fc_context", "name": "list_available_skills",
+        "hidden": True, "arguments": "{}", "status": "completed",
+    },
+    {
+        "type": "function_call_output", "id": "fco_context", "call_id": "fc_context",
+        "output": [{"type": "input_text", "text": "<available_skills>\n</available_skills>"}], "status": "completed",
+    },
+]
+_OPEN_WEBUIS_CONTEXT_ROUND = [
+    {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {"id": "fc_context", "type": "function", "function": {"name": "list_available_skills", "arguments": "{}"}}
+        ],
+    },
+    {"role": "tool", "tool_call_id": "fc_context", "content": "<available_skills>\n</available_skills>"},
+]
 _IMAGES_FROM_THE_TOOL_ROUND = [
     *_A_TOOL_ROUND,
     {
@@ -1564,8 +1584,12 @@ async def _turn_with_messages(pipe, messages: list[dict[str, Any]], **metadata: 
     [
         (_A_TOOL_ROUND, {}),
         (_A_TOOL_ROUND, {"assistant_message_id": "message-1"}),
+        (
+            [_A_TOOL_ROUND[0], *_OPEN_WEBUIS_CONTEXT_ROUND, *_A_TOOL_ROUND[1:]],
+            {"initial_output": _OPEN_WEBUIS_CONTEXT_ITEMS},
+        ),
     ],
-    ids=["ends-on-the-tool-result", "a-resume-names-the-message-under-way"],
+    ids=["ends-on-the-tool-result", "a-resume-names-the-message-under-way", "the-tool-result-follows-open-webuis-context"],
 )
 @pytest.mark.parametrize("threshold", [2])
 async def test_a_request_bringing_tool_results_is_answered_at_the_saved_count(monkeypatch, threshold, messages, metadata):
@@ -1603,6 +1627,29 @@ async def test_a_new_question_after_a_tool_round_is_still_refused_at_the_saved_c
             reply = await _turn_with_messages(
                 pipe,
                 [*_A_TOOL_ROUND, {"role": "assistant", "content": "It found it."}, {"role": "user", "content": "Thanks."}],
+            )
+            posts = _posts(mock_http)
+    finally:
+        await pipe.close()
+
+    assert posts == 0, reply
+    assert "Temporarily disabled due to repeated errors" in reply, reply
+
+
+@pytest.mark.asyncio
+async def test_a_new_question_carrying_open_webuis_hidden_context_is_still_refused_at_the_saved_count(monkeypatch):
+    pipe = Pipe()
+    _reach_the_model(monkeypatch, pipe)
+    try:
+        with aioresponses() as mock_http:
+            mock_http.post(_RESPONSES_URL, repeat=True, **_ANSWERED_UPSTREAM)
+            _saved_breaker_settings(pipe, 2)
+            for _ in range(2):
+                pipe._circuit_breaker.record_failure("user-1")
+            reply = await _turn_with_messages(
+                pipe,
+                [{"role": "user", "content": "Thanks."}, *_OPEN_WEBUIS_CONTEXT_ROUND],
+                initial_output=_OPEN_WEBUIS_CONTEXT_ITEMS,
             )
             posts = _posts(mock_http)
     finally:

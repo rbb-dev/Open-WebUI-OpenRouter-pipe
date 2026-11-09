@@ -2883,7 +2883,7 @@ class Pipe:
                 breaker.window_seconds = valves.BREAKER_WINDOW_SECONDS
             self._artifact_store.configure_breaker(valves.BREAKER_MAX_FAILURES, valves.BREAKER_WINDOW_SECONDS)
             await breaker.refresh(user_id)
-            if not breaker.allows(user_id) and not _brings_tool_results(body):
+            if not breaker.allows(user_id) and not _brings_tool_results(body, __metadata__):
                 message = "Temporarily disabled due to repeated errors. Please retry later."
                 if safe_event_emitter:
                     await self._ensure_error_formatter()._emit_error(

@@ -98,6 +98,7 @@ from ..core.utils import (
     is_picture_output,
     join_answer_and_card,
     merge_usage_stats,
+    open_webui_context_call_ids,
     owui_call_status,
     parse_tool_arguments,
     picture_output,
@@ -637,8 +638,10 @@ class StreamingHandler:
         serves_a_program_with_no_chat = _is_chatless_caller(metadata)
         persist_tools_enabled = valves.PERSIST_TOOL_RESULTS
         handed_back = False
+        context_call_ids = open_webui_context_call_ids(metadata)
         is_continuation = owui_tool_passthrough and any(
-            item.get("type") == "function_call_output" for item in current_turn_items(body.input)
+            item.get("type") == "function_call_output" and item.get("call_id") not in context_call_ids
+            for item in current_turn_items(body.input)
         )
         open_webui_keeps_stored_output = bool(metadata.get("assistant_message_id"))
         earlier_turn_calls, earlier_turn_texts, continues_after_reasoning = (

@@ -591,12 +591,24 @@ def is_tool_image_handoff_for_round(results: list[Any], message: Any) -> bool:
     return any(url in seen for url in handoff)
 
 
-def brings_tool_results(body: dict[str, Any]) -> bool:
+def open_webui_context_call_ids(metadata: Any) -> frozenset[str]:
+    items = metadata.get("initial_output") if isinstance(metadata, dict) else None
+    if not isinstance(items, list):
+        return frozenset()
+    return frozenset(
+        item["call_id"].strip()
+        for item in items
+        if isinstance(item, dict) and isinstance(item.get("call_id"), str) and item["call_id"].strip()
+    )
+
+
+def brings_tool_results(body: dict[str, Any], metadata: Any = None) -> bool:
     messages = body.get("messages")
     if not isinstance(messages, list) or not messages or not isinstance(messages[-1], dict):
         return False
     if messages[-1].get("role") == "tool":
-        return True
+        call_id = messages[-1].get("tool_call_id")
+        return not (isinstance(call_id, str) and call_id.strip() in open_webui_context_call_ids(metadata))
     return len(messages) > 1 and is_tool_image_handoff(messages[-2], messages[-1])
 
 
