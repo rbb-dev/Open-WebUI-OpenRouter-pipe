@@ -144,6 +144,22 @@ def parse_tool_arguments(raw: Any) -> dict[str, Any] | None:
     return params
 
 
+def without_open_webui_call_fields(tool_cfg: Any, args: Any) -> tuple[Any, dict[str, str] | None]:
+    if not (isinstance(tool_cfg, dict) and isinstance(args, dict)):
+        return args, None
+    kept = dict(args)
+    labels: dict[str, str] | None = None
+    if tool_cfg.get("display_labels") is True and "__labels__" in kept:
+        raw = kept.pop("__labels__")
+        if isinstance(raw, dict) and all(
+            isinstance(raw.get(key), str) and 0 < len(raw[key].strip()) <= 120 for key in ("running", "completed")
+        ):
+            labels = {key: raw[key].strip() for key in ("running", "completed")}
+    if tool_cfg.get("approval_review") is True:
+        kept.pop("__approval__", None)
+    return kept, labels
+
+
 def split_tool_argument_objects(raw: Any) -> list[str]:
     if not isinstance(raw, str):
         return [raw]

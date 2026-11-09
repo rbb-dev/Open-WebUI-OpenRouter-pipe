@@ -27,6 +27,7 @@ from ..core.utils import (
     TOOL_CALL_STATUSES,
     parse_tool_arguments,
     picture_output,
+    without_open_webui_call_fields,
 )
 from ..core.warn_latch import warn_level
 
@@ -775,6 +776,7 @@ class ToolExecutor:
                     continue
                 await _refuse(index, call, f'Error: Tool "{tool_name}" not found.')
                 continue
+            args, _labels = without_open_webui_call_fields(tool_cfg, args)
             if _owui_normalize_ask_user_request is not None and self._is_builtin_ask_user(tool_cfg):
                 try:
                     args = _owui_normalize_ask_user_request(args)

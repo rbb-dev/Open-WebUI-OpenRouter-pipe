@@ -110,6 +110,7 @@ from ..core.utils import (
     strip_hidden_marker_lines,
     take_closing_notices,
     tool_output_text_and_pictures,
+    without_open_webui_call_fields,
     wrap_code_block,
 )
 from ..core.web_fetch_record import bound_fetch_record
@@ -1577,6 +1578,16 @@ class StreamingHandler:
                     "arguments": arguments,
                     "status": status,
                 }
+                try:
+                    parsed_arguments = parse_tool_arguments(arguments)
+                except ValueError:
+                    parsed_arguments = None
+                shown_arguments, labels = without_open_webui_call_fields(tool_registry.get(name), parsed_arguments)
+                if isinstance(parsed_arguments, dict) and shown_arguments != parsed_arguments:
+                    call_item["original_arguments"] = arguments
+                    call_item["arguments"] = json.dumps(shown_arguments, ensure_ascii=False)
+                if labels:
+                    call_item["display_labels"] = labels
                 if isinstance(provider_function, dict) and provider_function:
                     call_item["provider_function"] = provider_function
                 call_index = await _place_item(call_item, current_text)
