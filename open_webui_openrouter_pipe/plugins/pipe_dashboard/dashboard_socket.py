@@ -77,7 +77,10 @@ def _current_pipe(pipe_id: str) -> Any:
 
 
 async def _evict(sio: Any, sid: str, reason: str, pipe_id: str) -> None:
+    from .cluster import forget_viewer
+
     logger.warning("pipe_dashboard: evicting viewer sid=%s (%s)", sid, reason)
+    await forget_viewer(pipe_id, sid)
     try:
         await sio.leave_room(sid, viewers_room(pipe_id))
         await sio.emit(DENIED_EVENT, {}, room=sid)
@@ -86,6 +89,9 @@ async def _evict(sio: Any, sid: str, reason: str, pipe_id: str) -> None:
 
 
 async def _deny(sio: Any, sid: str, pipe_id: str) -> None:
+    from .cluster import forget_viewer
+
+    await forget_viewer(pipe_id, sid)
     try:
         await sio.leave_room(sid, viewers_room(pipe_id))
     except Exception:
@@ -106,9 +112,14 @@ async def _evict_every_viewer(pipe_id: str) -> None:
 
 
 async def _pipe_dashboard_sub(sid: str, data: Any = None) -> None:
+    await admit_viewer(sid, str((data or {}).get("pipe") or ""))
+
+
+async def admit_viewer(sid: str, pipe_id: str, user_id: str | None = None) -> bool:
     global _resync
-    pipe_id = str((data or {}).get("pipe") or "")
-    pipe = _current_pipe(pipe_id)
+    from .cluster import ensure_dashboard_pipe, record_viewer
+
+    pipe = await ensure_dashboard_pipe(pipe_id) if pipe_id else None
     if not pipe_id or pipe is None:
         logger.warning(
             "pipe_dashboard: viewer sid=%s refused (no registered install %r)",
@@ -121,7 +132,7 @@ async def _pipe_dashboard_sub(sid: str, data: Any = None) -> None:
             await _deny(sio, sid, pipe_id)
         except Exception:
             logger.debug("pipe_dashboard unknown-install notice failed for sid=%s", sid, exc_info=True)
-        return
+        return False
     enabled, read_ok = await _socket_dashboard_state(pipe)
     if not enabled:
         logger.warning(
@@ -136,8 +147,8 @@ async def _pipe_dashboard_sub(sid: str, data: Any = None) -> None:
             await _deny(sio, sid, pipe_id)
         except Exception:
             logger.debug("pipe_dashboard disabled-notice emit failed for sid=%s", sid, exc_info=True)
-        return
-    uid = await resolve_socket_user_id(sid)
+        return False
+    uid = user_id or await resolve_socket_user_id(sid)
     user = await resolve_user(uid)
     if not await can_view(user, pipe):
         try:
@@ -146,17 +157,28 @@ async def _pipe_dashboard_sub(sid: str, data: Any = None) -> None:
             await _deny(sio, sid, pipe_id)
         except Exception:
             logger.debug("pipe_dashboard denied-notice emit failed for sid=%s", sid, exc_info=True)
-        return
+        return False
     try:
         from open_webui.socket.main import sio
 
         await sio.enter_room(sid, viewers_room(pipe_id))
     except Exception:
         logger.debug("pipe_dashboard sub failed for sid=%s", sid, exc_info=True)
-        return
+        return False
     if uid:
-        await remember_socket_user_id(sid, uid)
+        if _socket_is_here(sio, sid):
+            await remember_socket_user_id(sid, uid)
+        await record_viewer(pipe_id, sid, uid)
     _resync = True
+    return True
+
+
+def _socket_is_here(sio: Any, sid: str) -> bool:
+    try:
+        return bool(sio.manager.is_connected(sid, "/"))
+    except Exception:
+        logger.debug("pipe_dashboard: could not tell whether socket %s is on this worker", sid, exc_info=True)
+        return False
 
 
 async def emit_config_changed(rev: Any, pipe_id: str, change: str | None = None) -> bool:
@@ -286,18 +308,12 @@ async def _publish_function_event(
         )
         return False
     if request is None:
-        from .http_routes import get_owui_app
+        from .http_routes import internal_request
 
-        app = get_owui_app()
-        if app is None:
+        request = internal_request()
+        if request is None:
             logger.debug("pipe_dashboard: no Open WebUI app to announce %s to", name)
             return False
-        from fastapi import Request
-
-        request = Request({
-            "type": "http", "method": "GET", "path": "/internal", "query_string": b"",
-            "headers": [], "scheme": "http", "app": app,
-        })
     try:
         await publish_event(
             request, getattr(EVENTS, name), actor=actor, subject_id=pipe_id, data=data
@@ -387,7 +403,7 @@ def local_viewer_sids(pipe_id: str) -> list[str]:
 
 
 async def emit_dashboard(
-    payload: dict[str, Any], pipe_id: str, enabled: bool | None = None
+    payload: dict[str, Any], pipe_id: str, enabled: bool | None = None, *, everywhere: bool = False
 ) -> bool:
     if enabled is None:
         enabled = await _socket_dashboard_enabled(_current_pipe(pipe_id))
@@ -405,12 +421,47 @@ async def emit_dashboard(
         return False
     try:
         await sio.emit(
-            DASHBOARD_EVENT, payload, room=viewers_room(pipe_id), ignore_queue=True
+            DASHBOARD_EVENT, payload, room=viewers_room(pipe_id), ignore_queue=not everywhere
         )
         return True
     except Exception:
         logger.debug("pipe_dashboard emit failed", exc_info=True)
         return False
+
+
+async def reauthorize_shared_viewers(pipe_id: str, viewers: dict[str, str]) -> bool | None:
+    from .cluster import forget_viewer
+
+    pipe = _current_pipe(pipe_id)
+    try:
+        from open_webui.socket.main import get_user_id_from_session_pool, sio
+    except Exception:
+        _level = warn_level(_warned_import_sites, 'reauth')
+        logger.log(
+            _level,
+            "pipe_dashboard: OWUI socket unavailable; viewer revocation checks are disabled",
+            exc_info=True,
+        )
+        return None
+    enabled, read_ok = await _socket_dashboard_state(pipe)
+    if not enabled:
+        if read_ok:
+            for sid in viewers:
+                await _evict(sio, sid, "dashboard disabled", pipe_id)
+        return False
+    resolved, model = await resolve_view_model(pipe)
+    verdicts: dict[str, bool | None] = {}
+    for sid, uid in viewers.items():
+        if get_user_id_from_session_pool(sid) != uid:
+            await forget_viewer(pipe_id, sid)
+            continue
+        if uid not in verdicts:
+            verdicts[uid] = await can_view_known(
+                await resolve_user(uid), pipe, model if resolved else _VIEW_MODEL_UNREAD
+            )
+        if verdicts[uid] is False:
+            await _evict(sio, sid, "authorization no longer holds", pipe_id)
+    return enabled
 
 
 async def reauthorize_local_viewers(pipe_id: str) -> bool | None:

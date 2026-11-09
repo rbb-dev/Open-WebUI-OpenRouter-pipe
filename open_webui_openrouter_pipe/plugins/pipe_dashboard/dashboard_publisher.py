@@ -26,12 +26,14 @@ from ._collectors import (
     collect_transport_session_state,
     collect_video_pool,
 )
+from .cluster import PublisherLock, maybe_refresh_inboxes, owui_redis, shared_viewers
 from .dashboard_socket import (
     consume_resync,
     emit_dashboard,
     local_viewer_sids,
     read_config_rev,
     reauthorize_local_viewers,
+    reauthorize_shared_viewers,
 )
 from .runtime_metrics import (
     collect_fast_stats,
@@ -683,6 +685,7 @@ async def run_dashboard_publisher(
     slow_state: dict[str, Any] = {}
     agg_state: dict[str, Any] = {}
     stood_down = False
+    lock: PublisherLock | None = None
 
     try:
         while True:
@@ -715,8 +718,25 @@ async def run_dashboard_publisher(
                 continue
 
             pipe_id = _pipe_id(pipe)
+            await maybe_refresh_inboxes(pipe_id)
 
-            if local_viewer_sids(pipe_id):
+            relay = owui_redis()
+            shared = await shared_viewers(pipe_id) if relay is not None else None
+            holder = False
+            if shared:
+                current = lock if lock is not None and lock.pipe_id == pipe_id else PublisherLock(pipe_id)
+                lock = current
+                holder = await current.hold(relay)
+                if not holder:
+                    emitting = False
+                    if redis_ok and client is not None:
+                        await _write_own_slice(client, worker_key, pipe)
+                    await asyncio.sleep(_PD_PUBLISH_INTERVAL)
+                    continue
+            elif lock is not None:
+                await lock.release(relay)
+
+            if holder or local_viewer_sids(pipe_id):
                 if consume_resync() or not emitting:
                     tick = 0
                 if redis_ok:
@@ -725,7 +745,10 @@ async def run_dashboard_publisher(
                         await asyncio.sleep(_PD_SETTLE_DELAY)
                 emitting = True
                 try:
-                    enabled_now = await reauthorize_local_viewers(pipe_id)
+                    if holder:
+                        enabled_now = await reauthorize_shared_viewers(pipe_id, shared or {})
+                    else:
+                        enabled_now = await reauthorize_local_viewers(pipe_id)
                 except Exception:
                     logger.debug("viewer re-auth failed", exc_info=True)
                     enabled_now = None
@@ -739,7 +762,7 @@ async def run_dashboard_publisher(
                         slow_state,
                         agg_state,
                     )
-                    await emit_dashboard(payload, pipe_id, enabled_now)
+                    await emit_dashboard(payload, pipe_id, enabled_now, everywhere=holder)
                 except Exception:
                     logger.debug("Dashboard emit iteration failed", exc_info=True)
                 tick += 1
@@ -781,6 +804,8 @@ async def run_dashboard_publisher(
     except asyncio.CancelledError:
         logger.debug("Dashboard publisher cancelled (pid=%d)", pid)
     finally:
+        if lock is not None:
+            await lock.release(owui_redis())
         if pubsub is not None:
             await _close_wake_listener(pubsub)
         try:

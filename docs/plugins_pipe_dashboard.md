@@ -328,9 +328,21 @@ every past panel quietly resume streaming live statistics, a panel this browser 
 few minutes ago opens in the DISCONNECTED state and says so; press **Connect** for live data. The
 panel you have just opened with the command is unaffected.
 
-**An API-key caller is governed by Open WebUI's own API-key settings.** The action route behind
-every dashboard tab stands behind Open WebUI's `get_verified_user`, so an `sk-` API key is
-accepted exactly where Open WebUI accepts one — subject to **Settings → Authentication → API keys**
+**Several Open WebUI workers.** With more than one worker (`UVICORN_WORKERS`), the dashboard answers
+whichever worker a browser connects to. It uses the Redis link that Open WebUI's own live features
+use between workers (`WEBSOCKET_MANAGER=redis`, which Open WebUI needs for several workers anyway):
+the panel's sign-up and every tab click travel over Open WebUI's relay to a worker that is running
+the pipe, and one worker at a time sends the live figures to every open panel. A worker that loads a
+new version of the pipe — after an update in Workspace → Functions or from the Update tab — starts
+the dashboard again on the first dashboard request it receives. Just after Open WebUI starts, before
+any worker has run the pipe, no worker can answer: after about fifteen seconds the panel says so
+instead of waiting. Send a message to one of the pipe's models, then press **Connect**.
+
+**An API-key caller is governed by Open WebUI's own API-key settings.** The dashboard's own tabs
+send their actions over Open WebUI's socket relay; the HTTP action route
+`/api/pipe/dashboard/action` runs the same actions for programs and for dashboard panels saved in
+chats by earlier releases. The route stands behind Open WebUI's `get_verified_user`, so an `sk-` API
+key is accepted exactly where Open WebUI accepts one — subject to **Settings → Authentication → API keys**
 (`auth.enable_api_keys`), the `features.api_keys` permission for a non-admin key holder, and
 `auth.api_key.endpoint_restrictions`, whose allow-list names `/api/pipe/dashboard/action`. A key
 Open WebUI refuses is refused here with Open WebUI's own message; a key it admits can drive the

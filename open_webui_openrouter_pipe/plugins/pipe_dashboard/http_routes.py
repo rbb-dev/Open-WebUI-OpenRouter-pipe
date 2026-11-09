@@ -286,31 +286,21 @@ async def _current_dispatch(request: Any, user: Any, pipe: Any, fid: Any, action
     return _preferred_dispatch(action, str(getattr(pipe, "id", "") or "")), pipe
 
 
-async def _action_route(
-    request: Request,
-    body: ActionBody,
-    _depth: Any = Depends(_bounded_json_body),  # noqa: B008
-):
-    from fastapi import HTTPException
-    from fastapi.responses import JSONResponse
-
-    user = request.state.user
-    pipe_id = str(body.pipe or "")
-    pipe = _live_routes_get_pipe(pipe_id)
-    if not pipe_id or pipe is None:
-        return JSONResponse({"error": "unknown pipe"}, status_code=404)
+async def run_action(
+    user: Any, pipe: Any, action: str, args: Any, *, request: Any, client_ip: Any
+) -> tuple[int, dict[str, Any]]:
     if not await _plugins_enabled(pipe):
-        _audit_off(user, body.action, _client_ip(request))
-        return JSONResponse({"error": "plugin_system_off"}, status_code=404)
+        _audit_off(user, action, client_ip)
+        return 404, {"error": "plugin_system_off"}
     if _coarse_rate_limited(user.id):
-        _audit(user, body.action, "coarse_rate_limited", _client_ip(request))
-        raise HTTPException(status_code=429)
-    fid = getattr(pipe, "id", None) if pipe is not None else None
-    if body.action not in ACTIONS and pipe is not None and fid:
-        dispatch, pipe = await _current_dispatch(request, user, pipe, fid, body.action)
+        _audit(user, action, "coarse_rate_limited", client_ip)
+        return 429, {"detail": "Too Many Requests"}
+    fid = getattr(pipe, "id", None)
+    if action not in ACTIONS and fid:
+        dispatch, pipe = await _current_dispatch(request, user, pipe, fid, action)
     else:
-        dispatch, _p = await _current_dispatch(request, user, pipe, None, body.action)
-    kwargs: dict[str, Any] = {"client_ip": _client_ip(request)}
+        dispatch, _p = await _current_dispatch(request, user, pipe, None, action)
+    kwargs: dict[str, Any] = {"client_ip": client_ip}
     try:
         params = inspect.signature(dispatch).parameters
         if "request" in params or any(
@@ -319,7 +309,28 @@ async def _action_route(
             kwargs["request"] = request
     except (TypeError, ValueError):
         kwargs["request"] = request
-    status, payload = await dispatch(pipe, user, body.action, body.args, **kwargs)
+    return await dispatch(pipe, user, action, args, **kwargs)
+
+
+async def _action_route(
+    request: Request,
+    body: ActionBody,
+    _depth: Any = Depends(_bounded_json_body),  # noqa: B008
+):
+    from fastapi.responses import JSONResponse
+
+    pipe_id = str(body.pipe or "")
+    pipe = _live_routes_get_pipe(pipe_id)
+    if pipe is None and pipe_id:
+        from .cluster import ensure_dashboard_pipe
+
+        pipe = await ensure_dashboard_pipe(pipe_id, request)
+    if not pipe_id or pipe is None:
+        return JSONResponse({"error": "unknown pipe"}, status_code=404)
+    status, payload = await run_action(
+        request.state.user, pipe, body.action, body.args,
+        request=request, client_ip=_client_ip(request),
+    )
     return JSONResponse(payload, status_code=status)
 
 
@@ -331,6 +342,18 @@ def get_owui_app() -> Any | None:
     except Exception:
         logger.debug("pipe_dashboard: Open WebUI app is not importable", exc_info=True)
         return None
+
+
+def internal_request() -> Any:
+    app = get_owui_app()
+    if app is None:
+        return None
+    from fastapi import Request
+
+    return Request({
+        "type": "http", "method": "GET", "path": "/internal", "query_string": b"",
+        "headers": [], "scheme": "http", "app": app,
+    })
 
 
 def ensure_route_before_spa(app: Any) -> None:

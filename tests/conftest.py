@@ -1101,6 +1101,9 @@ _MODULE_STATE_CONTAINERS = (
     ("open_webui_openrouter_pipe.plugins.pipe_dashboard.actions", "_rate_state"),
     ("open_webui_openrouter_pipe.plugins.pipe_dashboard.actions", "_config_write_locks"),
     ("open_webui_openrouter_pipe.plugins.pipe_dashboard.http_routes", "_coarse_state"),
+    ("open_webui_openrouter_pipe.plugins.pipe_dashboard.cluster", "_known_users"),
+    ("open_webui_openrouter_pipe.plugins.pipe_dashboard.cluster", "_refreshed_at"),
+    ("open_webui_openrouter_pipe.plugins.pipe_dashboard.cluster", "_relay_tasks"),
     ("open_webui_openrouter_pipe.plugins.pipe_dashboard.usage_queries", "_UQ_MEMO"),
 )
 

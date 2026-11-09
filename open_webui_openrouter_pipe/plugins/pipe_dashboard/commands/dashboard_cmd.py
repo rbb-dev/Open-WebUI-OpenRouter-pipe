@@ -5,6 +5,7 @@ import secrets
 from typing import Any
 
 from .._socketio_client import SOCKETIO_UMD
+from ..cluster import RELAY_TOPIC, REPLY_EVENT, remember_dashboard_user
 from ..command_registry import register_command
 from ..config_tab_assets import CONFIG_TAB_CSS, CONFIG_TAB_JS
 from ..context import CommandContext
@@ -19,6 +20,13 @@ from ..update_tab_assets import UPDATE_TAB_CSS, UPDATE_TAB_JS
 
 _PD_HEARTBEAT_MS = 30000
 _PD_AUTOCONNECT_MAX_AGE_S = 300
+_PD_SUB_RETRY_MS = 3000
+_PD_SUB_TRIES = 5
+_PD_STALL_MS = 20000
+_PD_WATCH_MS = 5000
+_PD_RELAY_READY_MS = 15000
+_PD_ACTION_MS = 30000
+_PD_LONG_ACTION_MS = 600000
 
 
 def _safe(val: Any) -> str:
@@ -1675,7 +1683,7 @@ def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
       reportHeight();
     }}
 
-    function callAction(name, args) {{
+    function httpCallAction(name, args) {{
       var token = null;
       try {{ token = localStorage.getItem("token"); }} catch (e) {{}}
       if (!token) return Promise.reject("no token");
@@ -1684,6 +1692,67 @@ def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
         headers: {{ "Content-Type": "application/json", "Authorization": "Bearer " + token }},
         body: JSON.stringify({{ action: name, args: args || {{}}, pipe: "{pid}" }})
       }}).then(function(r) {{ return r.json(); }});
+    }}
+
+    var relay = null;
+    var relayWaiters = [];
+    var pending = {{}};
+    var LONG_ACTIONS = {{ update_apply: 1, update_restore: 1 }};
+
+    function newRid() {{
+      return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+    }}
+
+    function relayReady() {{
+      return !!(relay && sock && sock.connected);
+    }}
+
+    function whenRelayReady(ms) {{
+      if (relayReady()) return Promise.resolve();
+      return new Promise(function(resolve, reject) {{
+        var waiter = {{ resolve: resolve, timer: null }};
+        waiter.timer = setTimeout(function() {{
+          relayWaiters = relayWaiters.filter(function(w) {{ return w !== waiter; }});
+          reject("not connected");
+        }}, ms);
+        relayWaiters.push(waiter);
+      }});
+    }}
+
+    function relayOpened() {{
+      var waiters = relayWaiters;
+      relayWaiters = [];
+      waiters.forEach(function(w) {{ clearTimeout(w.timer); w.resolve(); }});
+    }}
+
+    function failPending(reason) {{
+      Object.keys(pending).forEach(function(rid) {{
+        var p = pending[rid];
+        delete pending[rid];
+        clearTimeout(p.timer);
+        p.reject(reason);
+      }});
+    }}
+
+    function callAction(name, args) {{
+      if (typeof io === "undefined") return httpCallAction(name, args);
+      return whenRelayReady({_PD_RELAY_READY_MS}).then(function() {{
+        return new Promise(function(resolve, reject) {{
+          var rid = newRid();
+          var timer = setTimeout(function() {{
+            delete pending[rid];
+            reject("timeout");
+          }}, LONG_ACTIONS[name] ? {_PD_LONG_ACTION_MS} : {_PD_ACTION_MS});
+          pending[rid] = {{ resolve: resolve, reject: reject, timer: timer }};
+          try {{
+            sock.emit(relay, {{ op: "act", rid: rid, sid: sock.id, action: name, args: args || {{}} }});
+          }} catch (e) {{
+            clearTimeout(timer);
+            delete pending[rid];
+            reject(e);
+          }}
+        }});
+      }});
     }}
     window.pipeDashboardCallAction = callAction;
 
@@ -1694,6 +1763,50 @@ def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
     var sock = null;
     var gotData = false;
     var hbTimer = null;
+    var subTimer = null;
+    var subTries = 0;
+    var subAnswered = false;
+    var lastData = 0;
+    var watchTimer = null;
+
+    function stopRelayTimers() {{
+      if (subTimer) {{ clearInterval(subTimer); subTimer = null; }}
+      if (watchTimer) {{ clearInterval(watchTimer); watchTimer = null; }}
+    }}
+
+    function relaySignUp() {{
+      if (!relayReady()) return;
+      try {{ sock.emit(relay, {{ op: "sub", rid: newRid(), sid: sock.id }}); }} catch (e) {{}}
+    }}
+
+    function startSignUp() {{
+      subAnswered = false;
+      subTries = 1;
+      if (subTimer) clearInterval(subTimer);
+      relaySignUp();
+      subTimer = setInterval(function() {{
+        if (subAnswered) {{ clearInterval(subTimer); subTimer = null; return; }}
+        if (subTries >= {_PD_SUB_TRIES}) {{
+          stopRelayTimers();
+          try {{ if (sock) sock.disconnect(); }} catch (e) {{}}
+          setReplayed("No Open WebUI worker has the pipe running yet (Open WebUI may have just restarted). Send a message to one of its models, then press Connect.");
+          return;
+        }}
+        subTries += 1;
+        relaySignUp();
+      }}, {_PD_SUB_RETRY_MS});
+    }}
+
+    function startWatch() {{
+      if (watchTimer) clearInterval(watchTimer);
+      watchTimer = setInterval(function() {{
+        if (!relayReady() || !subAnswered) return;
+        if (Date.now() - lastData > {_PD_STALL_MS}) {{
+          lastData = Date.now();
+          startSignUp();
+        }}
+      }}, {_PD_WATCH_MS});
+    }}
 
     function freshToken() {{
       try {{ return localStorage.getItem("token"); }} catch (e) {{ return null; }}
@@ -1712,14 +1825,39 @@ def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
           try {{ if (sock && sock.connected) sock.emit("heartbeat", {{}}); }} catch (e) {{}}
         }}, {_PD_HEARTBEAT_MS});
         try {{
-          sock.emit("user-join", {{ auth: {{ token: freshToken() || token }} }}, function() {{
-            try {{ sock.emit("{SUB_EVENT}", {{"pipe": "{pid}"}}); }} catch (e) {{}}
+          sock.emit("user-join", {{ auth: {{ token: freshToken() || token }} }}, function(me) {{
+            var uid = me && typeof me.id === "string" ? me.id : "";
+            if (uid && uid.indexOf(":") < 0) {{
+              relay = uid + ":{RELAY_TOPIC}:{pid}";
+              relayOpened();
+              startSignUp();
+              startWatch();
+            }} else {{
+              relay = null;
+              try {{ sock.emit("{SUB_EVENT}", {{"pipe": "{pid}"}}); }} catch (e) {{}}
+            }}
           }});
         }} catch (e) {{}}
+      }});
+      sock.on("{REPLY_EVENT}", function(r) {{
+        if (!r || typeof r !== "object" || typeof r.rid !== "string") return;
+        var p = pending[r.rid];
+        if (p) {{
+          delete pending[r.rid];
+          clearTimeout(p.timer);
+          p.resolve(r.body || {{}});
+          return;
+        }}
+        if (r.ok === true) {{
+          subAnswered = true;
+          lastData = Date.now();
+        }}
       }});
       sock.on("{DASHBOARD_EVENT}", function(data) {{
         if (!data || typeof data !== "object") return;
         gotData = true;
+        subAnswered = true;
+        lastData = Date.now();
         setLive();
         $(ID + '-error').style.display = 'none';
         updateDashboard(data);
@@ -1736,6 +1874,9 @@ def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
       }});
       sock.on("disconnect", function(reason) {{
         if (hbTimer) {{ clearInterval(hbTimer); hbTimer = null; }}
+        stopRelayTimers();
+        relay = null;
+        failPending("disconnected");
         if (reason === "io client disconnect" || reason === "io server disconnect") setDisconnected(); else setReconnecting();
       }});
       sock.on("connect_error", function() {{
@@ -1745,6 +1886,7 @@ def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
 
     $(ID + '-btn-disconnect').addEventListener('click', function() {{
       if (hbTimer) {{ clearInterval(hbTimer); hbTimer = null; }}
+      stopRelayTimers();
       if (sock) sock.disconnect();
       setDisconnected();
     }});
@@ -1783,6 +1925,7 @@ async def handle_dashboard(ctx: CommandContext) -> str:
     register_socket_handler()
     dash_id = "dash-" + secrets.token_hex(8)
     pipe_id = str(getattr(getattr(ctx, "pipe", None), "id", "") or "")
+    await remember_dashboard_user(pipe_id, str((getattr(ctx, "user", None) or {}).get("id") or ""))
     await ctx.emit_html(_build_dashboard_shell(dash_id, pipe_id))
     return (
         "Live dashboard rendered above. If no panel appears, enable iframe embeds "

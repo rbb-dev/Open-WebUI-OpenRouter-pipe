@@ -14,6 +14,7 @@ from ..registry import PluginRegistry
 from .actions import _dashboard_enabled
 from .auth import ACCESS_DENIED_MD, UNDETERMINED_MD
 from .authz import UNDETERMINED, can_view_known, model_id, resolve_user
+from .cluster import unregister_inboxes
 from .command_registry import CommandRegistry
 from .commands.help_cmd import handle_help as _pd_commands_loaded  # noqa: F401
 from .config_service import persisted_dashboard_enabled
@@ -821,3 +822,4 @@ def release_registrations_for(pipe: Any) -> None:
             plugin._clear_module_registrations()
         except Exception:
             logger.debug("pipe_dashboard module-global teardown failed", exc_info=True)
+    unregister_inboxes(str(getattr(pipe, "id", "") or ""))
