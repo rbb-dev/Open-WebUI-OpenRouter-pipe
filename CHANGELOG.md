@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Each entry links to the commit that introduced it.
 
+## [2.9.1](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.9.1) — 2026-11-10
+
+### 🐛 Bug Fixes
+
+- build no-chat stream chunks with Open WebUI 0.13's renamed chunk helper, with the 0.12 name as the fallback, so the seam test, pyright and the Anthropic converter test pass on 0.13 ([`f8f02fd`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/f8f02fd9511ac85b735b004081c4a81233ae4123))
+- announce the dashboard's automatic update to Open WebUI 0.13 with a request built around its app, which 0.13 needs to publish an event, and warn once when Open WebUI refuses one ([`a7793ea`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/a7793ea4eed1301bd5c81679cce0a7fe22a4b736))
+- treat Open WebUI 0.13's Auto tool permission mode like Ask, so Open WebUI reviews the tool calls instead of the pipe running them unreviewed ([`be981c8`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/be981c8426df48c21588df6d174cc380129b3fb3))
+- take Open WebUI 0.13's tool call label and review fields out of a call's arguments before the tool runs, and show the labels on the pipe's tool cards ([`a32c010`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/a32c0102d1fca654db518c0b0d8c37bf4d969815))
+- do not take the context Open WebUI 0.13 sends as hidden tool results for a tool round coming back, so a tripped request breaker refuses new questions again ([`3b2acca`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/3b2acca597b79869b21aaf2d48169df45dc83720))
+- run each tool of a batched Open WebUI 0.13 call_tool and answer the model's call with one combined result, so Tool Search works in Pipeline mode ([`7f41c19`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/7f41c19041b4804852038c3d3fae31d438df99e7))
+- answer the Pipe Dashboard on every Open WebUI worker through Open WebUI's own relay and Redis, and start the dashboard on a worker whose newly loaded copy has not started it, so an update no longer stops it ([`c05d5c7`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/c05d5c7a3b8f13f8d882bd2dc9a42b685e8c0b36))
+- keep Open WebUI 0.13's switched-on check on the event loop and send only a synchronous tool's body to a thread, so synchronous workspace tools run again ([`b058741`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/b05874166c5ece01ff4db00aab943b12e2f89e3b))
+- give the Open WebUI entry of an account's own preset the icon of the model it runs on, as a base@preset variant already shows its base model's icon, instead of none ([`9d3a906`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/9d3a9062360c3184a5db7c452a45eb3cd67d0f72))
+- remove the folder that keeps reused images in the system temporary directory when the worker process exits, and close the five receive spools one image test left open, so test runs stop leaving openrouter-imgmemo and openrouter-receive folders in /tmp ([`f608bd2`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/f608bd22e508b6c52c8d7edaa7fa39c5456bfd6c))
+
+### 📚 Documentation
+
+- empty the pending release notes after 2.9.0 ([`4f71bf1`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/4f71bf132986cc67635efc7b16da677e82b0a880))
+
+### 🧪 Testing
+
+- let the tests that compile Open WebUI functions load the helpers those functions call since Open WebUI 0.13.1, so the suite passes on 0.13.3 ([`23ad41f`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/23ad41fac6f835af2bebf6e68353423b687299a9))
+- parse each bundle once in a module fixture for the bundle string fidelity check, so its call stays under the gate's 2-second call limit ([`c976dbf`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/c976dbfcbb0597cabd6b54fbadcd68e40efc21bc))
 ## [2.9.0](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.9.0) — 2026-10-31
 
 ### 🚀 Features
@@ -149,6 +172,7 @@ Each entry links to the commit that introduced it.
 - list the fetches that carry a fixed time bound instead of counting four catalogue reads, and say that one downloader serves the picture and clip links instead of a buffered and a streaming one ([`6d9dca5`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/6d9dca50ed4e4eea11d8db5cb817f4c510b45232))
 - say that Open WebUI 0.12.4 passes a person's own tool servers and Open Terminal connection to a model only while an administrator has turned on Direct Integrations, and that it also reads the usage of each frame of a no-chat stream when audit logging is on ([`26bee43`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/26bee43017977bd177c209860d2e976c04b6da61))
 - say what Open WebUI's merge_usage does with the prompt and completion token pair in 0.12.2 to 0.12.4 and in 0.12.5, and where the pipe's allow-list differs from it, instead of saying the pipe mirrors it ([`91a1ca9`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/91a1ca93c02602b54031836befff773510e94270))
+- regenerate changelog for v2.9.0 ([`f90e939`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/f90e939eee85cb876300ff1193c2b5dc35c69901))
 
 ### 🧪 Testing
 
