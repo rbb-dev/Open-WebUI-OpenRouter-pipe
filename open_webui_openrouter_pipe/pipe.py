@@ -163,6 +163,12 @@ from .core.utils import (
     join_answer_and_card,
 )
 from .core.warn_latch import warn_level
+from .core.worker_retire import (
+    register_retire_sink,
+    retire_listener_app,
+    retire_listener_redis,
+    run_retire_listener,
+)
 from .integrations.anthropic import _is_anthropic_model_id
 from .logging.session_log_manager import (
     SESSION_LOG_OWNERSHIP_MEMO,
@@ -1297,6 +1303,7 @@ class Pipe:
         self._redis_listener_task: asyncio.Task | None = None
         self._redis_flush_task: asyncio.Task | None = None
         self._redis_ready_task: asyncio.Task | None = None
+        self._retire_listener_task: asyncio.Task | None = None
         self._redis_namespace = (getattr(self, "id", None) or "openrouter").lower()
         self._redis_pending_key = f"{self._redis_namespace}:pending"
         self._redis_cache_prefix = f"{self._redis_namespace}:artifact"
@@ -1696,6 +1703,46 @@ class Pipe:
             self._redis_candidate = False
         elif not self._redis_candidate:
             self._redis_candidate = self._redis_candidate_now()
+
+    def _maybe_start_retire_listener(self) -> None:
+        if getattr(self, "_closed", False) or getattr(self, "_draining", False):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = getattr(self, "_retire_listener_task", None)
+        if task is not None and not task.done():
+            try:
+                task_loop = task.get_loop()
+            except AttributeError:  # pragma: no cover
+                task_loop = None
+            if task_loop is loop:
+                return
+            _drop_task(task)
+        self._retire_listener_task = None
+        app = retire_listener_app()
+        if retire_listener_redis(app) is None:
+            return
+        register_retire_sink()
+        self._retire_listener_task = _detached_task(
+            loop, run_retire_listener(self, app), "openrouter-retire-listener"
+        )
+
+    async def _stop_retire_listener(self) -> None:
+        task = getattr(self, "_retire_listener_task", None)
+        self._retire_listener_task = None
+        if task is None or task.done():
+            return
+        with contextlib.suppress(RuntimeError):
+            task.cancel()
+        try:
+            same_loop = task.get_loop() is asyncio.get_running_loop()
+        except (AttributeError, RuntimeError):
+            same_loop = False
+        if same_loop:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=2.0)
 
     @timed
     def _maybe_start_cleanup(self) -> None:
@@ -2492,6 +2539,7 @@ class Pipe:
         self._maybe_start_redis()
         self._maybe_start_cleanup()
         self._maybe_start_stall_alarm()
+        self._maybe_start_retire_listener()
         if getattr(self, "_closed", False):
             return self._select_model_rows(OpenRouterModelRegistry.list_models())
         session: aiohttp.ClientSession | None = None
@@ -2833,6 +2881,7 @@ class Pipe:
             timing_mark("after_redis")
             self._maybe_start_cleanup()
             self._maybe_start_stall_alarm()
+            self._maybe_start_retire_listener()
             timing_mark("after_cleanup")
 
             if not isinstance(body, dict):
@@ -3732,6 +3781,7 @@ class Pipe:
                 await self._drain_redis_pending(store)
 
         await self._stop_redis_tasks()
+        await self._stop_retire_listener()
 
         for drain in (self._stop_video_tasks, self._stop_request_worker,
                       self._stop_active_jobs, self._stop_log_worker,
