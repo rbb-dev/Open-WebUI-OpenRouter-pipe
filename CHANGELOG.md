@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Each entry links to the commit that introduced it.
 
+## [2.9.2](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.9.2) — 2026-11-18
+
+### 🐛 Bug Fixes
+
+- tell every Open WebUI worker over Redis when the pipe is updated or deleted, so each one retires its old copy once idle instead of running it until a request next reaches that worker ([`d1b3375`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/d1b33757c66ec4230078dbf1bcec77c84ae00b32))
+- pass direct_tool to Open WebUI's process_tool_result only where it still takes it, so Pipeline-mode tool results are processed again on Open WebUI 0.13.4 ([`ffa4ce5`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/ffa4ce5c59db03210e0e07d0b0f788e51e2dddcd))
+- send the Pipe Dashboard panel's sign-up and tab clicks through Open WebUI's chat route to the dashboard model, answered ahead of the pipe's chat limits, so the dashboard works on Open WebUI 0.13.4 without the removed relay and its live view no longer stops at the Storage tab ([`dd8e85b`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/dd8e85bc2e67e6a3167312a50be0bd94c9f94fdb))
+- answer a Pipe Dashboard panel request only when it names a live socket of its sender and comes from outside any chat, so a request carrying only the login cookie, another user's socket or a chat can no longer run the dashboard's actions ([`c56d761`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/c56d76145767a03432e8afceb6717926b01e859c))
+- end a Pipeline-mode reply after its current tool step when the user sends a message meanwhile on Open WebUI 0.13.4, as Open WebUI's own tool loop does, so that message is answered next ([`b127f50`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/b127f505586717fd98ad43ef960c42ab7db1fd99))
+- run the workers' model-entry checks one at a time under Open WebUI's cross-worker lock, so workers loading a new pipe copy together no longer run Postgres out of connections ([`1d0ea84`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/1d0ea84b12ea948ec90c6357e5218af91d26bac7))
+
+### 📚 Documentation
+
+- empty the pending release notes after 2.9.1 ([`ca0fa7a`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/ca0fa7aecf95a78c5d11a835f2f28f796aa8905f))
+
+### 🧪 Testing
+
+- give the Open Terminal parity tests' compiled copy of Open WebUI's process_tool_result the MCPAppResult it checks for, so they exercise Open WebUI's processing on 0.13.x ([`d1a68a7`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/d1a68a744d4dd83b008f18bbe24efeff897be4a8))
+- make the repeated-unprocessable-tool-result test reach Open WebUI's failing helper and check that it ran, instead of falling back on a missing context field ([`e8daace`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/e8daace02fbc58bcff1240c42de0527789ff6531))
 ## [2.9.1](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.9.1) — 2026-11-10
 
 ### 🐛 Bug Fixes
@@ -24,6 +43,7 @@ Each entry links to the commit that introduced it.
 ### 📚 Documentation
 
 - empty the pending release notes after 2.9.0 ([`4f71bf1`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/4f71bf132986cc67635efc7b16da677e82b0a880))
+- regenerate changelog for v2.9.1 ([`bf42a38`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/bf42a381787842cfdbc9aeab7d397dcb19087c97))
 
 ### 🧪 Testing
 
