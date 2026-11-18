@@ -205,7 +205,7 @@ from ..storage.multimodal import (
     image_extension_for_mime,
     resolve_download_type,
 )
-from ..storage.owui_chats import read_chat_message
+from ..storage.owui_chats import read_chat_message, user_message_waiting
 from ..storage.owui_files import (
     _is_api_caller,
     _is_chatless_caller,
@@ -4614,6 +4614,12 @@ class StreamingHandler:
                                 cancel_thinking()
                             self.logger.debug("Received tool result\n%s", _tool_result_for_log(output))
                         if loop_index > max_loops:
+                            break
+                        if not fusion_inner_call and await user_message_waiting(chat_id, message_id):
+                            self.logger.info(
+                                "The user sent a message while this reply ran; stopping after this tool step "
+                                "so that message is answered next"
+                            )
                             break
                         round_refusals: list[tuple[str, str, str]] = []
                         _round_seen, _round_budget = _request_address_budget(

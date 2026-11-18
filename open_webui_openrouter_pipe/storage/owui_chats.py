@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, cast
 
 from ..core.warn_latch import warn_level
+from .owui_files import is_linkable_chat
 
 logger = logging.getLogger(__name__)
 
@@ -85,3 +86,34 @@ async def read_chat_owner_id(
     if chat is None:
         return None
     return str(getattr(chat, "user_id", "") or "")
+
+
+def _owui_queued_check() -> Callable[[str, str], Awaitable[Any]] | None:
+    try:
+        from open_webui.models.chat_messages import ChatMessages
+    except ImportError:
+        return None
+    check = getattr(ChatMessages, "has_queued_message", None)
+    if not callable(check):
+        return None
+    return cast(Callable[[str, str], Awaitable[Any]], check)
+
+
+async def user_message_waiting(chat_id: Any, message_id: Any) -> bool:
+    if not message_id or not is_linkable_chat(chat_id):
+        return False
+    check = _owui_queued_check()
+    if check is None:
+        return False
+    try:
+        return bool(await check(str(chat_id), str(message_id)))
+    except Exception as exc:
+        level = warn_level(_warned_narrow_chat_read, f"queued:{type(exc).__name__}")
+        logger.log(
+            level,
+            "Could not ask Open WebUI whether the user sent a message while this reply ran (%s); "
+            "the reply carries on with its tool steps",
+            type(exc).__name__,
+            exc_info=True,
+        )
+        return False

@@ -22,7 +22,7 @@ The pipe runs the tool loop itself:
 
 - Provider returns `function_call` items.
 - The pipe executes those tools (Open WebUI registry tools + Direct Tool Servers where available), except for a request with no chat, where it runs none of the model's calls and hands them back (see [A request with no chat](#a-request-with-no-chat)).
-- The pipe appends `function_call_output` items and re-calls the provider until the model stops requesting tools or `MAX_FUNCTION_CALL_LOOPS` is reached (at which point the model gets a synthesis turn, and each call abandoned at the cap is shown as a **failed** card).
+- The pipe appends `function_call_output` items and re-calls the provider until the model stops requesting tools, `MAX_FUNCTION_CALL_LOOPS` is reached (at which point the model gets a synthesis turn, and each call abandoned at the cap is shown as a **failed** card), or the person sends a message while the reply runs (Open WebUI 0.13.4 and later).
 
 **You gain:**
 - Pipe-level concurrency controls, timeouts, and breaker protections around tool execution.
@@ -134,6 +134,7 @@ Tool execution happens in the request loop that follows each Responses API call:
 4. The pipe executes the tools and converts each result into `function_call_output` items.
 5. The `function_call` items (normalized) and their outputs are appended to the next request’s `input[]`, and the loop continues until either:
    - no more `function_call` items are returned, or
+   - the person sends a message while the reply runs, in a saved chat on Open WebUI 0.13.4 or later — after each tool step the pipe asks Open WebUI whether a message is waiting, as Open WebUI's own tool loop does, and if one is, the reply ends with that step's calls and results and no further model request; Open WebUI then answers the waiting message, and the model sees the step's results there as it sees any earlier turn's (see `PERSIST_TOOL_RESULTS`). A Fusion panel member does not stop this way. Earlier Open WebUI releases have no such check, and the pipe does not ask them, or
    - `MAX_FUNCTION_CALL_LOOPS` is reached — pending tool calls receive stub responses and the model gets one additional turn after them to synthesize a final answer, so a turn that reaches the cap bills `MAX_FUNCTION_CALL_LOOPS + 2` model requests. Each abandoned call is also shown to the person as a **failed** card, the shape a genuinely failed tool produces, when tool cards are on. A model that still asks for a tool on that last turn ends the reply with the note `Tool-call limit reached (<cap> iterations).`: in a saved chat it is the message's error on a streamed reply, and a reply returned whole, or streamed to a caller with no chat, carries it at the end of the answer text.
 
 Notes:
