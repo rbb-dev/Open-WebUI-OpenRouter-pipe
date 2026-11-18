@@ -329,19 +329,22 @@ few minutes ago opens in the DISCONNECTED state and says so; press **Connect** f
 panel you have just opened with the command is unaffected.
 
 **Several Open WebUI workers.** With more than one worker (`UVICORN_WORKERS`), the dashboard answers
-whichever worker a browser connects to. It uses the Redis link that Open WebUI's own live features
-use between workers (`WEBSOCKET_MANAGER=redis`, which Open WebUI needs for several workers anyway):
-the panel's sign-up and every tab click travel over Open WebUI's relay to a worker that is running
-the pipe, and one worker at a time sends the live figures to every open panel. A worker that loads a
-new version of the pipe — after an update in Workspace → Functions or from the Update tab — starts
-the dashboard again on the first dashboard request it receives. Just after Open WebUI starts, before
-any worker has run the pipe, no worker can answer: after about fifteen seconds the panel says so
-instead of waiting. Send a message to one of the pipe's models, then press **Connect**.
+whichever worker a browser reaches. The panel sends its sign-up and every tab click as a request to
+the dashboard model through Open WebUI's own chat endpoint, which every worker accepts; a worker that
+has not run the pipe yet loads it on the spot. For the live figures the dashboard uses the Redis link
+that Open WebUI's own live features use between workers (`WEBSOCKET_MANAGER=redis`, which Open WebUI
+needs for several workers anyway): one worker at a time sends them to every open panel. A worker that
+loads a new version of the pipe — after an update in Workspace → Functions or from the Update tab —
+starts the dashboard again on the first dashboard request it receives. Dashboard requests are
+answered ahead of the pipe's chat limits: a full request queue, or a user whose chats are refused
+after repeated errors, still gets the dashboard, and an update started from the Update tab is not cut
+short. A panel saved in a chat by an earlier release keeps its old way of sending, which Open WebUI
+0.13.4 no longer carries; open the dashboard again with the `dashboard` command to get the current
+panel.
 
 **An API-key caller is governed by Open WebUI's own API-key settings.** The dashboard's own tabs
-send their actions over Open WebUI's socket relay; the HTTP action route
-`/api/pipe/dashboard/action` runs the same actions for programs and for dashboard panels saved in
-chats by earlier releases. The route stands behind Open WebUI's `get_verified_user`, so an `sk-` API
+send their actions through Open WebUI's chat endpoint to the dashboard model; the HTTP action route
+`/api/pipe/dashboard/action` runs the same actions for programs. The route stands behind Open WebUI's `get_verified_user`, so an `sk-` API
 key is accepted exactly where Open WebUI accepts one — subject to **Settings → Authentication → API keys**
 (`auth.enable_api_keys`), the `features.api_keys` permission for a non-admin key holder, and
 `auth.api_key.endpoint_restrictions`, whose allow-list names `/api/pipe/dashboard/action`. A key

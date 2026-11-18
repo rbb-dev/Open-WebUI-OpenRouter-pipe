@@ -5,7 +5,7 @@ import secrets
 from typing import Any
 
 from .._socketio_client import SOCKETIO_UMD
-from ..cluster import RELAY_TOPIC, REPLY_EVENT, remember_dashboard_user
+from ..cluster import PANEL_REQUEST_KEY
 from ..command_registry import register_command
 from ..config_tab_assets import CONFIG_TAB_CSS, CONFIG_TAB_JS
 from ..context import CommandContext
@@ -24,7 +24,6 @@ _PD_SUB_RETRY_MS = 3000
 _PD_SUB_TRIES = 5
 _PD_STALL_MS = 20000
 _PD_WATCH_MS = 5000
-_PD_RELAY_READY_MS = 15000
 _PD_ACTION_MS = 30000
 _PD_LONG_ACTION_MS = 600000
 
@@ -1683,75 +1682,43 @@ def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
       reportHeight();
     }}
 
-    function httpCallAction(name, args) {{
-      var token = null;
-      try {{ token = localStorage.getItem("token"); }} catch (e) {{}}
-      if (!token) return Promise.reject("no token");
-      return fetch("/api/pipe/dashboard/action", {{
-        method: "POST",
-        headers: {{ "Content-Type": "application/json", "Authorization": "Bearer " + token }},
-        body: JSON.stringify({{ action: name, args: args || {{}}, pipe: "{pid}" }})
-      }}).then(function(r) {{ return r.json(); }});
-    }}
-
-    var relay = null;
-    var relayWaiters = [];
-    var pending = {{}};
     var LONG_ACTIONS = {{ update_apply: 1, update_restore: 1 }};
 
-    function newRid() {{
-      return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
-    }}
-
-    function relayReady() {{
-      return !!(relay && sock && sock.connected);
-    }}
-
-    function whenRelayReady(ms) {{
-      if (relayReady()) return Promise.resolve();
-      return new Promise(function(resolve, reject) {{
-        var waiter = {{ resolve: resolve, timer: null }};
-        waiter.timer = setTimeout(function() {{
-          relayWaiters = relayWaiters.filter(function(w) {{ return w !== waiter; }});
-          reject("not connected");
-        }}, ms);
-        relayWaiters.push(waiter);
-      }});
-    }}
-
-    function relayOpened() {{
-      var waiters = relayWaiters;
-      relayWaiters = [];
-      waiters.forEach(function(w) {{ clearTimeout(w.timer); w.resolve(); }});
-    }}
-
-    function failPending(reason) {{
-      Object.keys(pending).forEach(function(rid) {{
-        var p = pending[rid];
-        delete pending[rid];
-        clearTimeout(p.timer);
-        p.reject(reason);
+    function panelRequest(req, ms) {{
+      var token = freshToken();
+      if (!token) return Promise.reject("no token");
+      var ctl = typeof AbortController !== "undefined" ? new AbortController() : null;
+      var timer = setTimeout(function() {{ if (ctl) ctl.abort(); }}, ms);
+      var wrapped = {{}};
+      wrapped["{PANEL_REQUEST_KEY}"] = req;
+      return fetch("/api/chat/completions", {{
+        method: "POST",
+        headers: {{ "Content-Type": "application/json", "Authorization": "Bearer " + token }},
+        body: JSON.stringify({{
+          model: "{pid}.pipe-dashboard",
+          stream: false,
+          messages: [{{ role: "user", content: JSON.stringify(wrapped) }}]
+        }}),
+        signal: ctl ? ctl.signal : undefined
+      }}).then(function(r) {{
+        clearTimeout(timer);
+        if (!r.ok) throw "HTTP " + r.status;
+        return r.json();
+      }}, function(e) {{
+        clearTimeout(timer);
+        throw e;
+      }}).then(function(b) {{
+        var msg = b && b.choices && b.choices[0] && b.choices[0].message;
+        return JSON.parse((msg && msg.content) || "null");
       }});
     }}
 
     function callAction(name, args) {{
-      if (typeof io === "undefined") return httpCallAction(name, args);
-      return whenRelayReady({_PD_RELAY_READY_MS}).then(function() {{
-        return new Promise(function(resolve, reject) {{
-          var rid = newRid();
-          var timer = setTimeout(function() {{
-            delete pending[rid];
-            reject("timeout");
-          }}, LONG_ACTIONS[name] ? {_PD_LONG_ACTION_MS} : {_PD_ACTION_MS});
-          pending[rid] = {{ resolve: resolve, reject: reject, timer: timer }};
-          try {{
-            sock.emit(relay, {{ op: "act", rid: rid, sid: sock.id, action: name, args: args || {{}} }});
-          }} catch (e) {{
-            clearTimeout(timer);
-            delete pending[rid];
-            reject(e);
-          }}
-        }});
+      return panelRequest(
+        {{ op: "act", action: name, args: args || {{}} }},
+        LONG_ACTIONS[name] ? {_PD_LONG_ACTION_MS} : {_PD_ACTION_MS}
+      ).then(function(r) {{
+        return (r && r.body) || {{}};
       }});
     }}
     window.pipeDashboardCallAction = callAction;
@@ -1769,38 +1736,43 @@ def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
     var lastData = 0;
     var watchTimer = null;
 
-    function stopRelayTimers() {{
+    function stopSignUpTimers() {{
       if (subTimer) {{ clearInterval(subTimer); subTimer = null; }}
       if (watchTimer) {{ clearInterval(watchTimer); watchTimer = null; }}
     }}
 
-    function relaySignUp() {{
-      if (!relayReady()) return;
-      try {{ sock.emit(relay, {{ op: "sub", rid: newRid(), sid: sock.id }}); }} catch (e) {{}}
+    function signUp() {{
+      if (!sock || !sock.connected || !sock.id) return;
+      panelRequest({{ op: "sub", sid: sock.id }}, {_PD_ACTION_MS}).then(function(r) {{
+        if (r && r.ok === true) {{
+          subAnswered = true;
+          lastData = Date.now();
+        }}
+      }}, function() {{}});
     }}
 
     function startSignUp() {{
       subAnswered = false;
       subTries = 1;
       if (subTimer) clearInterval(subTimer);
-      relaySignUp();
+      signUp();
       subTimer = setInterval(function() {{
         if (subAnswered) {{ clearInterval(subTimer); subTimer = null; return; }}
         if (subTries >= {_PD_SUB_TRIES}) {{
-          stopRelayTimers();
+          stopSignUpTimers();
           try {{ if (sock) sock.disconnect(); }} catch (e) {{}}
-          setReplayed("No Open WebUI worker has the pipe running yet (Open WebUI may have just restarted). Send a message to one of its models, then press Connect.");
+          setReplayed("The dashboard did not answer its sign-up. Press Connect to try again.");
           return;
         }}
         subTries += 1;
-        relaySignUp();
+        signUp();
       }}, {_PD_SUB_RETRY_MS});
     }}
 
     function startWatch() {{
       if (watchTimer) clearInterval(watchTimer);
       watchTimer = setInterval(function() {{
-        if (!relayReady() || !subAnswered) return;
+        if (!sock || !sock.connected || !subAnswered) return;
         if (Date.now() - lastData > {_PD_STALL_MS}) {{
           lastData = Date.now();
           startSignUp();
@@ -1827,31 +1799,14 @@ def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
         try {{
           sock.emit("user-join", {{ auth: {{ token: freshToken() || token }} }}, function(me) {{
             var uid = me && typeof me.id === "string" ? me.id : "";
-            if (uid && uid.indexOf(":") < 0) {{
-              relay = uid + ":{RELAY_TOPIC}:{pid}";
-              relayOpened();
+            if (uid) {{
               startSignUp();
               startWatch();
             }} else {{
-              relay = null;
               try {{ sock.emit("{SUB_EVENT}", {{"pipe": "{pid}"}}); }} catch (e) {{}}
             }}
           }});
         }} catch (e) {{}}
-      }});
-      sock.on("{REPLY_EVENT}", function(r) {{
-        if (!r || typeof r !== "object" || typeof r.rid !== "string") return;
-        var p = pending[r.rid];
-        if (p) {{
-          delete pending[r.rid];
-          clearTimeout(p.timer);
-          p.resolve(r.body || {{}});
-          return;
-        }}
-        if (r.ok === true) {{
-          subAnswered = true;
-          lastData = Date.now();
-        }}
       }});
       sock.on("{DASHBOARD_EVENT}", function(data) {{
         if (!data || typeof data !== "object") return;
@@ -1874,9 +1829,7 @@ def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
       }});
       sock.on("disconnect", function(reason) {{
         if (hbTimer) {{ clearInterval(hbTimer); hbTimer = null; }}
-        stopRelayTimers();
-        relay = null;
-        failPending("disconnected");
+        stopSignUpTimers();
         if (reason === "io client disconnect" || reason === "io server disconnect") setDisconnected(); else setReconnecting();
       }});
       sock.on("connect_error", function() {{
@@ -1886,7 +1839,7 @@ def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
 
     $(ID + '-btn-disconnect').addEventListener('click', function() {{
       if (hbTimer) {{ clearInterval(hbTimer); hbTimer = null; }}
-      stopRelayTimers();
+      stopSignUpTimers();
       if (sock) sock.disconnect();
       setDisconnected();
     }});
@@ -1925,7 +1878,6 @@ async def handle_dashboard(ctx: CommandContext) -> str:
     register_socket_handler()
     dash_id = "dash-" + secrets.token_hex(8)
     pipe_id = str(getattr(getattr(ctx, "pipe", None), "id", "") or "")
-    await remember_dashboard_user(pipe_id, str((getattr(ctx, "user", None) or {}).get("id") or ""))
     await ctx.emit_html(_build_dashboard_shell(dash_id, pipe_id))
     return (
         "Live dashboard rendered above. If no panel appears, enable iframe embeds "

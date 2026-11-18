@@ -93,6 +93,14 @@ class PluginBase:
     ) -> dict[str, Any] | str | None:
         return None
 
+    async def on_own_request(
+        self,
+        body: dict[str, Any],
+        user: dict[str, Any],
+        **kwargs: Any,
+    ) -> dict[str, Any] | None:
+        return None
+
     async def on_request_transform(
         self,
         body: dict[str, Any],

@@ -26,7 +26,7 @@ from ._collectors import (
     collect_transport_session_state,
     collect_video_pool,
 )
-from .cluster import PublisherLock, maybe_refresh_inboxes, owui_redis, shared_viewers
+from .cluster import PublisherLock, owui_redis, shared_viewers
 from .dashboard_socket import (
     consume_resync,
     emit_dashboard,
@@ -718,7 +718,6 @@ async def run_dashboard_publisher(
                 continue
 
             pipe_id = _pipe_id(pipe)
-            await maybe_refresh_inboxes(pipe_id)
 
             relay = owui_redis()
             shared = await shared_viewers(pipe_id) if relay is not None else None

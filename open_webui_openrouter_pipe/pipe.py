@@ -2891,6 +2891,13 @@ class Pipe:
             if not isinstance(__metadata__, dict):
                 __metadata__ = {}
 
+            if self.valves.ENABLE_PLUGIN_SYSTEM:
+                own_reply = await self._ensure_plugin_registry().dispatch_on_own_request(
+                    body, __user__, request=__request__
+                )
+                if own_reply is not None:
+                    return own_reply
+
             safe_event_emitter = self._event_emitter_handler._wrap_safe_event_emitter(
                 _task_visible_channel_emitter(__event_emitter__, __task__)
             )

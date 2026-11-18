@@ -18,6 +18,7 @@ _PR_DISPATCH_TIMEOUT = 30.0
 
 _PR_SUBSCRIBABLE_HOOKS = frozenset({
     "on_models",
+    "on_own_request",
     "on_request",
     "on_request_transform",
     "on_emitter_wrap",
@@ -180,6 +181,22 @@ class PluginRegistry:
                     "Plugin '%s' on_request failed", plugin.plugin_id, exc_info=True,
                 )
         return result
+
+    async def dispatch_on_own_request(
+        self, body: dict[str, Any], user: dict[str, Any], **kwargs: Any
+    ) -> dict[str, Any] | None:
+        for plugin, _priority in self._hook_subscribers.get("on_own_request", ()):
+            try:
+                answered = await plugin.on_own_request(body, user, **kwargs)
+            except Exception:
+                logger.warning(
+                    "Plugin '%s' failed to answer a request for its own model",
+                    plugin.plugin_id, exc_info=True,
+                )
+                continue
+            if answered is not None:
+                return answered
+        return None
 
     async def dispatch_on_request_transform(
         self,

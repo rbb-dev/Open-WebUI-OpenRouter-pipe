@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import importlib
+import json
 import sys
 import types
 from types import SimpleNamespace
@@ -20,14 +21,11 @@ from open_webui_openrouter_pipe.plugins.pipe_dashboard import (
     dashboard_socket,
     http_routes,
 )
-from open_webui_openrouter_pipe.plugins.pipe_dashboard.commands.dashboard_cmd import handle_dashboard
-from open_webui_openrouter_pipe.plugins.pipe_dashboard.context import CommandContext
 from tests._owui_auth_stub import install_open_webui_auth, token_for
 from conftest import arm_dashboard_pipe
 
 _LIFECYCLE_KEY = "_openrouter_pipe_lifecycle"
 _ADMIN = SimpleNamespace(id="admin-1", role="admin", email="admin-1@example.com")
-_REPLY_EVENT = "openrouter:pipe_dashboard:reply"
 _REAL_SLEEP = asyncio.sleep
 
 
@@ -119,15 +117,20 @@ async def _closed(pipe: Pipe) -> None:
     raise AssertionError("the replaced copy never closed")
 
 
-async def _replied(sio: Mock, rid: str) -> None:
-    for _ in range(300):
-        if any(
-            call.args[:1] == (_REPLY_EVENT,) and (call.args[1] or {}).get("rid") == rid
-            for call in sio.emit.await_args_list
-        ):
-            return
-        await _REAL_SLEEP(0.01)
-    raise AssertionError(f"no answer reached the viewer's socket for request {rid}")
+def _panel_body(pipe: Pipe, request: dict) -> dict:
+    return {
+        "model": f"{pipe.id}.pipe-dashboard",
+        "stream": False,
+        "messages": [{"role": "user", "content": json.dumps({"pipe_dashboard_panel": request})}],
+    }
+
+
+async def _panel_reply(pipe: Pipe, request: dict) -> dict:
+    reply = await pipe.pipe(
+        _panel_body(pipe, request), {"id": "admin-1", "role": "admin"}, None, None, None, {}, None
+    )
+    assert isinstance(reply, dict), f"the panel's request was not answered by the dashboard: {reply!r}"
+    return json.loads(reply["choices"][0]["message"]["content"])
 
 
 def _open_webui_hands_out(monkeypatch, pipe: Pipe) -> None:
@@ -199,46 +202,57 @@ async def test_after_a_pipe_update_the_worker_that_loaded_the_new_copy_still_ans
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("request_kind", ["sign-up", "tab click"])
-async def test_a_viewer_whose_socket_is_on_a_worker_without_the_pipe_is_answered_through_open_webuis_relay(
+async def test_a_panel_on_any_worker_is_answered_through_open_webuis_chat_route_to_the_dashboard_model(
     request_kind, monkeypatch
 ):
-    queues: dict = {}
     sio = _socket_layer(
-        monkeypatch,
-        EVENT_QUEUES=queues,
-        REDIS=None,
-        get_user_id_from_session_pool=lambda sid: "admin-1" if sid == "sid-elsewhere" else None,
+        monkeypatch, get_user_id_from_session_pool=lambda sid: "admin-1" if sid == "sid-elsewhere" else None
     )
+    monkeypatch.setattr(dashboard_socket, "resolve_user", AsyncMock(return_value=_ADMIN))
+    monkeypatch.setattr(dashboard_socket, "can_view", AsyncMock(return_value=True))
+    cluster = importlib.import_module("open_webui_openrouter_pipe.plugins.pipe_dashboard.cluster")
+    monkeypatch.setattr(cluster, "resolve_user", AsyncMock(return_value=_ADMIN))
+    pipe = _running_pipe()
+    try:
+        if request_kind == "sign-up":
+            reply = await _panel_reply(pipe, {"op": "sub", "sid": "sid-elsewhere"})
+            assert reply == {"ok": True}
+            sio.enter_room.assert_any_await("sid-elsewhere", dashboard_socket.viewers_room(pipe.id))
+        else:
+            _dispatcher_reporting_who_it_served(monkeypatch)
+            reply = await _panel_reply(pipe, {"op": "act", "action": "whoami", "args": {}})
+            assert reply == {"status": 200, "body": {"ok": True, "result": {"action": "whoami", "user": "admin-1"}}}
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+async def test_a_panel_request_is_answered_while_the_callers_chats_are_refused_after_repeated_errors(monkeypatch):
+    _socket_layer(monkeypatch)
+    cluster = importlib.import_module("open_webui_openrouter_pipe.plugins.pipe_dashboard.cluster")
+    monkeypatch.setattr(cluster, "resolve_user", AsyncMock(return_value=_ADMIN))
+    _dispatcher_reporting_who_it_served(monkeypatch)
+    pipe = _running_pipe()
+    try:
+        for _ in range(pipe.valves.BREAKER_MAX_FAILURES + 1):
+            pipe._circuit_breaker.record_failure("admin-1")
+        assert not pipe._circuit_breaker.allows("admin-1")
+        reply = await _panel_reply(pipe, {"op": "act", "action": "whoami", "args": {}})
+        assert reply == {"status": 200, "body": {"ok": True, "result": {"action": "whoami", "user": "admin-1"}}}
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+async def test_a_panel_sign_up_naming_another_users_socket_is_refused(monkeypatch):
+    sio = _socket_layer(monkeypatch, get_user_id_from_session_pool=lambda sid: "someone-else")
     monkeypatch.setattr(dashboard_socket, "resolve_user", AsyncMock(return_value=_ADMIN))
     monkeypatch.setattr(dashboard_socket, "can_view", AsyncMock(return_value=True))
     pipe = _running_pipe()
     try:
-        await handle_dashboard(
-            CommandContext(
-                pipe=pipe, args="", user={"id": "admin-1", "role": "admin"},
-                metadata={}, event_emitter=AsyncMock(),
-            )
-        )
-        channel = f"admin-1:pipe_dashboard:{pipe.id}"
-        assert channel in queues, "Open WebUI's relay drops an event nobody registered a queue for"
-        cluster = importlib.import_module("open_webui_openrouter_pipe.plugins.pipe_dashboard.cluster")
-        monkeypatch.setattr(cluster, "resolve_user", AsyncMock(return_value=_ADMIN))
-        if request_kind == "sign-up":
-            await queues[channel].put({"op": "sub", "rid": "r1", "sid": "sid-elsewhere"})
-            await _replied(sio, "r1")
-            sio.enter_room.assert_any_await("sid-elsewhere", dashboard_socket.viewers_room(pipe.id))
-            sio.emit.assert_any_await(_REPLY_EVENT, {"rid": "r1", "ok": True}, to="sid-elsewhere")
-        else:
-            _dispatcher_reporting_who_it_served(monkeypatch)
-            await queues[channel].put(
-                {"op": "act", "rid": "r2", "sid": "sid-elsewhere", "action": "whoami", "args": {}}
-            )
-            await _replied(sio, "r2")
-            sio.emit.assert_any_await(
-                _REPLY_EVENT,
-                {"rid": "r2", "status": 200, "body": {"ok": True, "result": {"action": "whoami", "user": "admin-1"}}},
-                to="sid-elsewhere",
-            )
+        reply = await _panel_reply(pipe, {"op": "sub", "sid": "sid-of-someone-else"})
+        assert reply == {"ok": False}
+        sio.enter_room.assert_not_awaited()
     finally:
         await pipe.close()
 
@@ -249,10 +263,8 @@ async def test_with_open_webuis_redis_only_the_worker_holding_the_dashboard_lock
     lock, monkeypatch
 ):
     redis = _OpenWebUIRedis()
-    queues: dict = {}
     sio = _socket_layer(
         monkeypatch,
-        EVENT_QUEUES=queues,
         REDIS=redis,
         get_user_id_from_session_pool=lambda sid: "admin-1" if sid == "sid-elsewhere" else None,
     )
@@ -262,9 +274,7 @@ async def test_with_open_webuis_redis_only_the_worker_holding_the_dashboard_lock
     pipe = SimpleNamespace(id="test-pipe", valves=SimpleNamespace(ENABLE_PLUGIN_SYSTEM=True))
     arm_dashboard_pipe(pipe)
     cluster = importlib.import_module("open_webui_openrouter_pipe.plugins.pipe_dashboard.cluster")
-    await cluster.remember_dashboard_user(pipe.id, "admin-1")
-    await queues[f"admin-1:pipe_dashboard:{pipe.id}"].put({"op": "sub", "rid": "r1", "sid": "sid-elsewhere"})
-    await _replied(sio, "r1")
+    assert await dashboard_socket.admit_viewer("sid-elsewhere", pipe.id, "admin-1")
     if lock == "held by another worker":
         assert await cluster.PublisherLock(pipe.id).hold(redis)
 

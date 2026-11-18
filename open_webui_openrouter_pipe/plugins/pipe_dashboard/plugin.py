@@ -14,7 +14,7 @@ from ..registry import PluginRegistry
 from .actions import _dashboard_enabled
 from .auth import ACCESS_DENIED_MD, UNDETERMINED_MD
 from .authz import UNDETERMINED, can_view_known, model_id, resolve_user
-from .cluster import unregister_inboxes
+from .cluster import answer_panel_request, panel_request_of
 from .command_registry import CommandRegistry
 from .commands.help_cmd import handle_help as _pd_commands_loaded  # noqa: F401
 from .config_service import persisted_dashboard_enabled
@@ -161,6 +161,7 @@ class PipeDashboardPlugin(PluginBase):
     plugin_version = "1.0.0"
     hooks: ClassVar[dict[str, int]] = {
         "on_models": 50,
+        "on_own_request": 50,
         "on_request": 50,
         "on_emitter_wrap": 50,
         "on_tool_result": 50,
@@ -593,6 +594,26 @@ class PipeDashboardPlugin(PluginBase):
             result = f"## Command Error\n\n`{entry.name}` failed: {safe_exc}"
         return self.ctx.build_response(model=_PIPE_DASHBOARD_MODEL_ID, content=result)
 
+    async def on_own_request(
+        self, body: dict[str, Any], user: dict[str, Any], **kwargs: Any
+    ) -> dict[str, Any] | None:
+        if not self._is_our_model(str(body.get("model", ""))):
+            return None
+        request = panel_request_of(self._extract_user_message(body))
+        if request is None:
+            return None
+        user_id = str((user or {}).get("id") or "")
+        try:
+            reply = await answer_panel_request(self.ctx.pipe, user_id, request, kwargs.get("request"))
+        except Exception:
+            logger.warning("pipe_dashboard: a dashboard panel request failed", exc_info=True)
+            reply = (
+                {"ok": False}
+                if request.get("op") == "sub"
+                else {"status": 500, "body": {"error": "internal error"}}
+            )
+        return self.ctx.build_response(model=_PIPE_DASHBOARD_MODEL_ID, content=json.dumps(reply))
+
     def _is_our_model(self, candidate: str) -> bool:
         if not candidate:
             return False
@@ -822,4 +843,3 @@ def release_registrations_for(pipe: Any) -> None:
             plugin._clear_module_registrations()
         except Exception:
             logger.debug("pipe_dashboard module-global teardown failed", exc_info=True)
-    unregister_inboxes(str(getattr(pipe, "id", "") or ""))

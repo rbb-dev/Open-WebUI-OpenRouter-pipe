@@ -833,9 +833,8 @@ class TestDashboardShell:
         assert '"/ws/socket.io"' in html
         assert 'localStorage.getItem("token")' in html
         assert "openrouter:pipe_dashboard" in html
-        # No SSE remnants; the HTTP action route IS present
         assert "EventSource" not in html
-        assert "/api/pipe/dashboard/action" in html
+        assert "/api/chat/completions" in html
 
     @pytest.mark.asyncio
     async def test_dashboard_command_returns_fallback_text(self):
@@ -878,7 +877,7 @@ class TestDashboardShell:
         )
         html = _build_dashboard_shell("dash-act")
         assert "callAction" in html
-        assert "/api/pipe/dashboard/action" in html
+        assert "/api/chat/completions" in html
         assert "Authorization" in html and "Bearer" in html
         assert "openrouter:pipe_dashboard:denied" in html
         assert ".textContent" in html
