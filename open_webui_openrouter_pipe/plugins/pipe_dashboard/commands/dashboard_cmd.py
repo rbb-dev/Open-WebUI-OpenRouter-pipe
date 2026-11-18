@@ -25,6 +25,7 @@ _PD_SUB_TRIES = 5
 _PD_STALL_MS = 20000
 _PD_WATCH_MS = 5000
 _PD_ACTION_MS = 30000
+_PD_SOCKET_READY_MS = 15000
 _PD_LONG_ACTION_MS = 600000
 
 
@@ -1713,11 +1714,46 @@ def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
       }});
     }}
 
+    var joinedSid = null;
+    var joinWaiters = [];
+
+    function whenJoined(ms) {{
+      if (joinedSid && sock && sock.connected) return Promise.resolve(joinedSid);
+      return new Promise(function(resolve, reject) {{
+        var waiter = {{ resolve: resolve, timer: null }};
+        waiter.timer = setTimeout(function() {{
+          joinWaiters = joinWaiters.filter(function(w) {{ return w !== waiter; }});
+          reject("not connected");
+        }}, ms);
+        joinWaiters.push(waiter);
+      }});
+    }}
+
+    function socketJoined(sid) {{
+      joinedSid = sid;
+      var waiters = joinWaiters;
+      joinWaiters = [];
+      waiters.forEach(function(w) {{ clearTimeout(w.timer); w.resolve(sid); }});
+    }}
+
+    function httpCallAction(name, args) {{
+      var token = freshToken();
+      if (!token) return Promise.reject("no token");
+      return fetch("/api/pipe/dashboard/action", {{
+        method: "POST",
+        headers: {{ "Content-Type": "application/json", "Authorization": "Bearer " + token }},
+        body: JSON.stringify({{ action: name, args: args || {{}}, pipe: "{pid}" }})
+      }}).then(function(r) {{ return r.json(); }});
+    }}
+
     function callAction(name, args) {{
-      return panelRequest(
-        {{ op: "act", action: name, args: args || {{}} }},
-        LONG_ACTIONS[name] ? {_PD_LONG_ACTION_MS} : {_PD_ACTION_MS}
-      ).then(function(r) {{
+      if (typeof io === "undefined") return httpCallAction(name, args);
+      return whenJoined({_PD_SOCKET_READY_MS}).then(function(sid) {{
+        return panelRequest(
+          {{ op: "act", sid: sid, action: name, args: args || {{}} }},
+          LONG_ACTIONS[name] ? {_PD_LONG_ACTION_MS} : {_PD_ACTION_MS}
+        );
+      }}).then(function(r) {{
         return (r && r.body) || {{}};
       }});
     }}
@@ -1800,6 +1836,7 @@ def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
           sock.emit("user-join", {{ auth: {{ token: freshToken() || token }} }}, function(me) {{
             var uid = me && typeof me.id === "string" ? me.id : "";
             if (uid) {{
+              socketJoined(sock.id);
               startSignUp();
               startWatch();
             }} else {{
@@ -1830,6 +1867,7 @@ def _build_dashboard_shell(dash_id: str, pipe_id: str = "") -> str:
       sock.on("disconnect", function(reason) {{
         if (hbTimer) {{ clearInterval(hbTimer); hbTimer = null; }}
         stopSignUpTimers();
+        joinedSid = null;
         if (reason === "io client disconnect" || reason === "io server disconnect") setDisconnected(); else setReconnecting();
       }});
       sock.on("connect_error", function() {{

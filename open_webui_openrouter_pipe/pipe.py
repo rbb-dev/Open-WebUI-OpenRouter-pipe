@@ -2893,7 +2893,7 @@ class Pipe:
 
             if self.valves.ENABLE_PLUGIN_SYSTEM:
                 own_reply = await self._ensure_plugin_registry().dispatch_on_own_request(
-                    body, __user__, request=__request__
+                    body, __user__, request=__request__, metadata=__metadata__
                 )
                 if own_reply is not None:
                     return own_reply

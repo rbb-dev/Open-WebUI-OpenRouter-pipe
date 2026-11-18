@@ -125,9 +125,9 @@ def _panel_body(pipe: Pipe, request: dict) -> dict:
     }
 
 
-async def _panel_reply(pipe: Pipe, request: dict) -> dict:
+async def _panel_reply(pipe: Pipe, request: dict, metadata: dict | None = None) -> dict:
     reply = await pipe.pipe(
-        _panel_body(pipe, request), {"id": "admin-1", "role": "admin"}, None, None, None, {}, None
+        _panel_body(pipe, request), {"id": "admin-1", "role": "admin"}, None, None, None, metadata or {}, None
     )
     assert isinstance(reply, dict), f"the panel's request was not answered by the dashboard: {reply!r}"
     return json.loads(reply["choices"][0]["message"]["content"])
@@ -144,8 +144,11 @@ def _open_webui_hands_out(monkeypatch, pipe: Pipe) -> None:
     monkeypatch.setattr(http_routes, "get_owui_app", lambda: SimpleNamespace(state=SimpleNamespace()))
 
 
-def _dispatcher_reporting_who_it_served(monkeypatch, served_copy: Pipe | None = None) -> None:
+def _dispatcher_reporting_who_it_served(monkeypatch, served_copy: Pipe | None = None) -> list:
+    ran: list = []
+
     async def dispatch(pipe, user, name, args, **kwargs):
+        ran.append(name)
         result = {"action": name, "user": user.id}
         if served_copy is not None:
             result["served_by_the_new_copy"] = pipe is served_copy
@@ -153,6 +156,7 @@ def _dispatcher_reporting_who_it_served(monkeypatch, served_copy: Pipe | None = 
 
     monkeypatch.setattr(http_routes, "_live_dispatch", lambda: dispatch)
     http_routes._coarse_state.clear()
+    return ran
 
 
 @pytest.mark.asyncio
@@ -220,7 +224,7 @@ async def test_a_panel_on_any_worker_is_answered_through_open_webuis_chat_route_
             sio.enter_room.assert_any_await("sid-elsewhere", dashboard_socket.viewers_room(pipe.id))
         else:
             _dispatcher_reporting_who_it_served(monkeypatch)
-            reply = await _panel_reply(pipe, {"op": "act", "action": "whoami", "args": {}})
+            reply = await _panel_reply(pipe, {"op": "act", "sid": "sid-elsewhere", "action": "whoami", "args": {}})
             assert reply == {"status": 200, "body": {"ok": True, "result": {"action": "whoami", "user": "admin-1"}}}
     finally:
         await pipe.close()
@@ -228,7 +232,7 @@ async def test_a_panel_on_any_worker_is_answered_through_open_webuis_chat_route_
 
 @pytest.mark.asyncio
 async def test_a_panel_request_is_answered_while_the_callers_chats_are_refused_after_repeated_errors(monkeypatch):
-    _socket_layer(monkeypatch)
+    _socket_layer(monkeypatch, get_user_id_from_session_pool=lambda sid: "admin-1" if sid == "sid-1" else None)
     cluster = importlib.import_module("open_webui_openrouter_pipe.plugins.pipe_dashboard.cluster")
     monkeypatch.setattr(cluster, "resolve_user", AsyncMock(return_value=_ADMIN))
     _dispatcher_reporting_who_it_served(monkeypatch)
@@ -237,8 +241,44 @@ async def test_a_panel_request_is_answered_while_the_callers_chats_are_refused_a
         for _ in range(pipe.valves.BREAKER_MAX_FAILURES + 1):
             pipe._circuit_breaker.record_failure("admin-1")
         assert not pipe._circuit_breaker.allows("admin-1")
-        reply = await _panel_reply(pipe, {"op": "act", "action": "whoami", "args": {}})
+        reply = await _panel_reply(pipe, {"op": "act", "sid": "sid-1", "action": "whoami", "args": {}})
         assert reply == {"status": 200, "body": {"ok": True, "result": {"action": "whoami", "user": "admin-1"}}}
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sid", [None, "sid-of-someone-else"])
+async def test_a_panel_action_runs_only_with_the_callers_own_live_socket(sid, monkeypatch):
+    _socket_layer(monkeypatch, get_user_id_from_session_pool=lambda s: "someone-else" if s else None)
+    cluster = importlib.import_module("open_webui_openrouter_pipe.plugins.pipe_dashboard.cluster")
+    monkeypatch.setattr(cluster, "resolve_user", AsyncMock(return_value=_ADMIN))
+    ran = _dispatcher_reporting_who_it_served(monkeypatch)
+    pipe = _running_pipe()
+    try:
+        request = {"op": "act", "action": "config_get", "args": {}}
+        if sid is not None:
+            request["sid"] = sid
+        reply = await _panel_reply(pipe, request)
+        assert reply["status"] == 403, reply
+        assert ran == [], f"an action ran without the caller's live dashboard socket: {ran}"
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+async def test_a_panel_request_sent_within_a_chat_runs_nothing(monkeypatch):
+    _socket_layer(monkeypatch, get_user_id_from_session_pool=lambda sid: "admin-1")
+    cluster = importlib.import_module("open_webui_openrouter_pipe.plugins.pipe_dashboard.cluster")
+    monkeypatch.setattr(cluster, "resolve_user", AsyncMock(return_value=_ADMIN))
+    ran = _dispatcher_reporting_who_it_served(monkeypatch)
+    pipe = _running_pipe()
+    try:
+        await pipe.pipe(
+            _panel_body(pipe, {"op": "act", "sid": "sid-1", "action": "config_get", "args": {}}),
+            {"id": "admin-1", "role": "admin"}, None, None, None, {"chat_id": "chat-1", "message_id": "msg-1"}, None,
+        )
+        assert ran == [], f"a panel request inside a chat ran an action: {ran}"
     finally:
         await pipe.close()
 

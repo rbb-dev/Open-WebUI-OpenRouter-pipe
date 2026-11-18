@@ -599,6 +599,9 @@ class PipeDashboardPlugin(PluginBase):
     ) -> dict[str, Any] | None:
         if not self._is_our_model(str(body.get("model", ""))):
             return None
+        metadata = kwargs.get("metadata")
+        if isinstance(metadata, dict) and (metadata.get("chat_id") or metadata.get("message_id")):
+            return None
         request = panel_request_of(self._extract_user_message(body))
         if request is None:
             return None

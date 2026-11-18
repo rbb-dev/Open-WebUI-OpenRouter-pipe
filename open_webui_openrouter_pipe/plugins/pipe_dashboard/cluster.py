@@ -98,11 +98,16 @@ async def answer_panel_request(
     pipe: Any, user_id: str, request: dict[str, Any], http_request: Any = None
 ) -> dict[str, Any]:
     pipe_id = str(getattr(pipe, "id", "") or "")
-    if request.get("op") == "sub":
-        sid = request.get("sid")
-        if not user_id or not _valid_token(sid) or _session_user_id(sid) != user_id:
-            logger.debug("pipe_dashboard: a panel sign-up named a socket that is not its sender's")
+    sid = request.get("sid")
+    if not user_id or not _valid_token(sid) or _session_user_id(sid) != user_id:
+        logger.warning(
+            "pipe_dashboard: a panel request was refused because it did not name a live socket of its sender (user=%s)",
+            user_id or "?",
+        )
+        if request.get("op") == "sub":
             return {"ok": False}
+        return {"status": 403, "body": {"error": "not from a live dashboard panel"}}
+    if request.get("op") == "sub":
         socket_mod = importlib.import_module(_CLUSTER_SOCKET_MODNAME)
         return {"ok": bool(await socket_mod.admit_viewer(sid, pipe_id, user_id))}
     action = request.get("action")
