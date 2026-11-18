@@ -46,7 +46,7 @@ def _real_owui(*names: str) -> list[Any]:
     namespace: dict[str, Any] = {
         "json": json, "JSONCodec": json, "mimetypes": mimetypes, "os": os, "re": re, "Any": Any, "Optional": Optional,
         "HTMLResponse": HTMLResponse, "log": logging.getLogger("open-webui-compiled"),
-        "get_file_url_from_base64": _no_upload,
+        "get_file_url_from_base64": _no_upload, "MCPAppResult": type("MCPAppResult", (), {}),
     }
     defined: dict[str, ast.stmt] = {}
     for node in tree.body:
