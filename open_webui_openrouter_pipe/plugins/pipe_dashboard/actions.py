@@ -12,6 +12,7 @@ from typing import Any, NamedTuple, cast
 from pydantic import ValidationError
 
 from ...core.config import EncryptedStr, _application_secret
+from ...core.owui_redis_lock import lock_acquire
 from ...core.warn_latch import warn_level
 from .authz import can_act, can_act_known, can_view, can_view_known
 from .config_service import (
@@ -32,7 +33,7 @@ from .dashboard_socket import (
     publish_valves_changed,
     read_config_rev,
 )
-from .update_service import UpdateError, _distributed_lock, _lock_acquire
+from .update_service import UpdateError, _distributed_lock
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,7 @@ async def _acquire_config_lease() -> _ConfigLease | None:
             "save on this worker is guarded by the in-process lock and the revision alone"
         )
         return None
-    acquire = _lock_acquire(lock)
+    acquire = lock_acquire(lock)
     if acquire is None:
         logger.warning(
             "pipe_dashboard: the configuration lease exposes no way to take it, so a save "

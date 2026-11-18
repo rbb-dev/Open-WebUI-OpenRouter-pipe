@@ -13,6 +13,7 @@ from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
+from ...core.owui_redis_lock import lock_acquire, owui_redis_lock
 from ...core.utils import _await_if_needed
 from ...core.warn_latch import warn_level
 from ...storage.persistence import raw_valve_column_decodes
@@ -213,36 +214,7 @@ def _files_model() -> Any:
 def _distributed_lock(
     suffix: str = "update_lock", ttl: int = _PD_UPDATE_XLOCK_TIMEOUT_S
 ) -> Any | None:
-    try:
-        from open_webui.env import (
-            REDIS_KEY_PREFIX,
-            WEBSOCKET_MANAGER,
-            WEBSOCKET_REDIS_CLUSTER,
-            WEBSOCKET_REDIS_URL,
-            WEBSOCKET_SENTINEL_HOSTS,
-            WEBSOCKET_SENTINEL_PORT,
-        )
-        from open_webui.socket.utils import RedisLock
-        from open_webui.utils.redis import get_sentinels_from_env
-
-        if str(WEBSOCKET_MANAGER or "").lower() != "redis" or not WEBSOCKET_REDIS_URL:
-            return None
-        return RedisLock(
-            redis_url=WEBSOCKET_REDIS_URL,
-            lock_name=f"{REDIS_KEY_PREFIX}:{FUNCTION_ID}:{suffix}",
-            timeout_secs=ttl,
-            redis_sentinels=get_sentinels_from_env(
-                WEBSOCKET_SENTINEL_HOSTS, WEBSOCKET_SENTINEL_PORT
-            ),
-            redis_cluster=bool(WEBSOCKET_REDIS_CLUSTER),
-        )
-    except Exception:
-        logger.warning("update: cross-worker lock unavailable", exc_info=True)
-        return None
-
-
-def _lock_acquire(lock: Any) -> Any:
-    return getattr(lock, "acquire_lock", None) or getattr(lock, "aquire_lock", None)
+    return owui_redis_lock(f"{FUNCTION_ID}:{suffix}", ttl)
 
 
 _LOCK_UNTAKABLE = (
@@ -1081,7 +1053,7 @@ class UpdateService:
         lock = _distributed_lock()
         if lock is None:
             return None
-        acquire = _lock_acquire(lock)
+        acquire = lock_acquire(lock)
         if acquire is None:
             raise UpdateError("internal", _LOCK_UNTAKABLE)
         acquired = await asyncio.to_thread(acquire)
@@ -1801,7 +1773,7 @@ class UpdateService:
                     await self._lead(None)
                     continue
                 try:
-                    acquire = _lock_acquire(lease)
+                    acquire = lock_acquire(lease)
                     if acquire is None:
                         raise UpdateError("internal", _LOCK_UNTAKABLE)
                     acquired = await asyncio.to_thread(acquire)

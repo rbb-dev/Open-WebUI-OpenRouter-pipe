@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import random
 import re
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping
@@ -12,6 +13,7 @@ from urllib.parse import quote
 import aiohttp
 
 from ..core.logging_system import SessionLogger
+from ..core.owui_redis_lock import lock_acquire, owui_lock_timeout, owui_redis_lock
 from ..core.timing_logger import timed
 from ..core.url_scheme import is_inline_data_url, url_scheme
 from ..core.warn_latch import warn_level
@@ -1254,7 +1256,7 @@ class ModelCatalogManager:
             gate_transitioned and not syncs_owui_models(valves, provider_routing_enabled)
         )
         self._model_metadata_sync_task = asyncio.create_task(
-            self._sync_model_metadata_to_owui(
+            self._sync_model_metadata_in_turn(
                 models_copy,
                 pipe_identifier=pipe_identifier,
             )
@@ -1263,6 +1265,41 @@ class ModelCatalogManager:
             self._model_metadata_sync_task.add_done_callback(self._task_done_callback)
         self._model_metadata_sync_task.add_done_callback(self._on_model_metadata_sync_done)
         self._model_metadata_sync_task.add_done_callback(self._model_metadata_sync_floor_cleared)
+
+    async def _sync_model_metadata_in_turn(
+        self,
+        models: list[dict[str, Any]],
+        *,
+        pipe_identifier: str,
+    ) -> list[str] | None:
+        lock = owui_redis_lock(f"{pipe_identifier}:model_sync_lock", owui_lock_timeout())
+        acquire = lock_acquire(lock) if lock is not None else None
+        if lock is None or acquire is None:
+            return await self._sync_model_metadata_to_owui(models, pipe_identifier=pipe_identifier)
+        timeout = float(getattr(lock, "timeout_secs", owui_lock_timeout()))
+        retry_delay = random.uniform(timeout / 2, timeout)
+        while not await asyncio.to_thread(acquire):
+            self.logger.debug("Model check lock held by another worker. Retrying.")
+            await asyncio.sleep(retry_delay)
+        keeper = asyncio.create_task(self._keep_model_sync_lock(lock, max(timeout / 2, 0.5)))
+        try:
+            return await self._sync_model_metadata_to_owui(models, pipe_identifier=pipe_identifier)
+        finally:
+            keeper.cancel()
+            await asyncio.to_thread(lock.release_lock)
+
+    async def _keep_model_sync_lock(self, lock: Any, every: float) -> None:
+        renew = getattr(lock, "renew_lock", None)
+        if renew is None:
+            return
+        while True:
+            await asyncio.sleep(every)
+            if not await asyncio.to_thread(renew):
+                self.logger.warning(
+                    "Unable to renew the model check lock; this check finishes, and another "
+                    "worker may start its own meanwhile"
+                )
+                return
 
     def _on_model_metadata_sync_done(self, task: asyncio.Task) -> None:
         if self._model_metadata_sync_task is not task and self._model_metadata_sync_task is not None:
