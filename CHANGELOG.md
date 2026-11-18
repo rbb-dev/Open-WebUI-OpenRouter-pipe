@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Each entry links to the commit that introduced it.
 
+## [2.9.3](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.9.3) — 2026-11-18
+
+### 🐛 Bug Fixes
+
+- require the Authorization header on Pipe Dashboard panel requests, as the dashboard's own action route does, so the login cookie alone answers none, and read a panel request only within that route's size and nesting limits ([`54e65ca`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/54e65ca33a1328a5062f1de4a390d43c52f6e155))
+
+### 📚 Documentation
+
+- empty the pending release notes after 2.9.2 ([`63fced9`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/63fced991df9e67513566319e99468a6c05b3259))
 ## [2.9.2](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.9.2) — 2026-11-18
 
 ### 🐛 Bug Fixes
@@ -20,6 +29,7 @@ Each entry links to the commit that introduced it.
 ### 📚 Documentation
 
 - empty the pending release notes after 2.9.1 ([`ca0fa7a`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/ca0fa7aecf95a78c5d11a835f2f28f796aa8905f))
+- regenerate changelog for v2.9.2 ([`babfc5f`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/babfc5f24d972458dd2d2a447d2951ebe369930f))
 
 ### 🧪 Testing
 
