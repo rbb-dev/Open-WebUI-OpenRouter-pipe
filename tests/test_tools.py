@@ -4467,13 +4467,27 @@ async def test_a_repeatedly_unprocessable_tool_result_is_reported_once(
 
     from tests.log_capture import emitted
 
-    async def _boom(**_kwargs):
+    boom_calls: list[str] = []
+
+    async def _boom(**kwargs):
+        boom_calls.append(kwargs.get("tool_function_name", ""))
         raise RuntimeError("owui cannot render this")
 
     monkeypatch.setattr(te, "_owui_process_tool_result", _boom)
     executor = pipe_instance_async._ensure_tool_executor()
     executor._owui_result_warn_ts.clear()
-    context = cast(Any, SimpleNamespace(user={"id": "u1"}, request=None, metadata={}))
+    context = cast(
+        Any,
+        SimpleNamespace(
+            user={"id": "u1"},
+            request=None,
+            metadata={},
+            fusion_inner=False,
+            resolved_user_done=True,
+            resolved_user_error=None,
+            resolved_user=None,
+        ),
+    )
 
     reported = "could not process the result"
 
@@ -4496,6 +4510,10 @@ async def test_a_repeatedly_unprocessable_tool_result_is_reported_once(
         )
         after_other = list(_warnings())
 
+    assert boom_calls == ["lookup"] * 5 + ["other_tool"], (
+        f"Open WebUI's processing was reached {len(boom_calls)} times, not 6, so the fallback "
+        "was taken before the failing helper ran and this test is not checking its route"
+    )
     assert text, "the fallback rendering was lost; the model receives nothing for this call"
     assert len(after_five) == 1, (
         f"five unprocessable results for one tool produced {len(after_five)} warnings "
