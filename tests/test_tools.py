@@ -4410,6 +4410,41 @@ def test_server_tool_cards_report_the_tools_own_outcome():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("helper_takes_direct_tool", [False, True])
+async def test_open_webui_processes_a_tool_result_whether_or_not_its_helper_still_takes_direct_tool(
+    pipe_instance_async, monkeypatch, helper_takes_direct_tool
+):
+    from open_webui_openrouter_pipe.tools import tool_executor as te
+
+    image = "data:image/png;base64,iVBORw0KGgo="
+    seen: dict[str, Any] = {}
+
+    if helper_takes_direct_tool:
+        async def process(request, tool_function_name, tool_result, tool_type, direct_tool=False, metadata=None,
+                          user=None):
+            seen["direct_tool"] = direct_tool
+            return f"{tool_function_name}: Image file read successfully.", [{"type": "image", "url": tool_result}], []
+    else:
+        async def process(request, tool_function_name, tool_result, tool_type, metadata=None, user=None):
+            return f"{tool_function_name}: Image file read successfully.", [{"type": "image", "url": tool_result}], []
+
+    monkeypatch.setattr(te, "_owui_process_tool_result", process)
+    executor = pipe_instance_async._ensure_tool_executor()
+    context = cast(Any, SimpleNamespace(user={"id": "u1"}, request=None, metadata={}, fusion_inner=False,
+                                        resolved_user_done=True, resolved_user_error=None, resolved_user=None))
+
+    text, files, _embeds = await executor._process_tool_result_safe(
+        "chart_snapshot", "external", image, context, is_direct_tool=helper_takes_direct_tool
+    )
+
+    assert (text, files) == ("chart_snapshot: Image file read successfully.", [{"type": "image", "url": image}]), (
+        f"Open WebUI's processing was skipped, so the model reads the raw result: {text[:80]!r}, files {files}"
+    )
+    if helper_takes_direct_tool:
+        assert seen == {"direct_tool": True}, f"a direct tool lost its flag on a release that still reads it: {seen}"
+
+
+@pytest.mark.asyncio
 async def test_a_repeatedly_unprocessable_tool_result_is_reported_once(
     pipe_instance_async, monkeypatch, caplog
 ):

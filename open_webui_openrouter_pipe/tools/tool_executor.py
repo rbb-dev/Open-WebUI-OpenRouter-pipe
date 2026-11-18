@@ -4,6 +4,7 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import inspect
 import json
 import logging
 import mimetypes
@@ -308,6 +309,16 @@ async def _read_user_row(context: _ToolExecutionContext) -> Any:
         if user_id:
             user_obj = await _Users.get_user_by_id(user_id)
     return user_obj
+
+
+def _owui_takes_keyword(fn: Any, name: str) -> bool:
+    try:
+        parameters = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return True
+    return name in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+    )
 
 
 async def _resolved_user_obj(context: _ToolExecutionContext) -> Any:
@@ -667,12 +678,17 @@ class ToolExecutor:
             if _owui_process_tool_result is not None and context is not None:
                 try:
                     user_obj = await _resolved_user_obj(context)
+                    direct_flag = (
+                        {"direct_tool": is_direct_tool}
+                        if _owui_takes_keyword(_owui_process_tool_result, "direct_tool")
+                        else {}
+                    )
                     processed_result, files, embeds = await _owui_process_tool_result(
                         request=context.request,
                         tool_function_name=tool_name,
                         tool_result=raw_result,
                         tool_type=tool_type,
-                        direct_tool=is_direct_tool,
+                        **direct_flag,
                         metadata=(
                             {**(context.metadata or {}), "chat_id": None, "message_id": None, "session_id": None}
                             if context.fusion_inner
