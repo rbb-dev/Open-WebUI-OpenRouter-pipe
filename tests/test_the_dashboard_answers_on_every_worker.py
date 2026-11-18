@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, Mock
 import httpx
 import pytest
 from fastapi import FastAPI
+from starlette.requests import Request
 
 pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
 
@@ -42,6 +43,11 @@ def _plugin_system_saved_on(monkeypatch):
     import open_webui.models.functions as functions_mod
 
     monkeypatch.setattr(functions_mod, "Functions", _StoredSettings())
+
+
+@pytest.fixture(autouse=True)
+def _open_webui_reads_the_authorization_header(monkeypatch):
+    install_open_webui_auth(monkeypatch, user=_ADMIN)
 
 
 @pytest.fixture(autouse=True)
@@ -125,9 +131,23 @@ def _panel_body(pipe: Pipe, request: dict) -> dict:
     }
 
 
-async def _panel_reply(pipe: Pipe, request: dict, metadata: dict | None = None) -> dict:
+_PANEL_HEADERS = {"Authorization": "Bearer panel-token-of-admin-1"}
+
+
+def _http_request(headers: dict[str, str]) -> Request:
+    return Request({
+        "type": "http", "method": "POST", "path": "/api/chat/completions", "query_string": b"",
+        "headers": [(name.lower().encode(), value.encode()) for name, value in headers.items()],
+        "client": ("203.0.113.7", 50000), "scheme": "http", "server": ("owui.example.com", 80),
+    })
+
+
+async def _panel_reply(
+    pipe: Pipe, request: dict, metadata: dict | None = None, headers: dict[str, str] | None = None
+) -> dict:
     reply = await pipe.pipe(
-        _panel_body(pipe, request), {"id": "admin-1", "role": "admin"}, None, None, None, metadata or {}, None
+        _panel_body(pipe, request), {"id": "admin-1", "role": "admin"},
+        _http_request(_PANEL_HEADERS if headers is None else headers), None, None, metadata or {}, None,
     )
     assert isinstance(reply, dict), f"the panel's request was not answered by the dashboard: {reply!r}"
     return json.loads(reply["choices"][0]["message"]["content"])
@@ -262,6 +282,50 @@ async def test_a_panel_action_runs_only_with_the_callers_own_live_socket(sid, mo
         reply = await _panel_reply(pipe, request)
         assert reply["status"] == 403, reply
         assert ran == [], f"an action ran without the caller's live dashboard socket: {ran}"
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("op", ["act", "sub"])
+async def test_a_panel_request_carrying_only_the_login_cookie_is_refused_even_with_the_callers_own_socket(
+    op, monkeypatch
+):
+    sio = _socket_layer(monkeypatch, get_user_id_from_session_pool=lambda sid: "admin-1" if sid == "sid-1" else None)
+    monkeypatch.setattr(dashboard_socket, "resolve_user", AsyncMock(return_value=_ADMIN))
+    monkeypatch.setattr(dashboard_socket, "can_view", AsyncMock(return_value=True))
+    cluster = importlib.import_module("open_webui_openrouter_pipe.plugins.pipe_dashboard.cluster")
+    monkeypatch.setattr(cluster, "resolve_user", AsyncMock(return_value=_ADMIN))
+    ran = _dispatcher_reporting_who_it_served(monkeypatch)
+    pipe = _running_pipe()
+    try:
+        request = {"op": op, "sid": "sid-1"}
+        if op == "act":
+            request.update(action="config_get", args={})
+        reply = await _panel_reply(pipe, request, headers={"Cookie": "token=login-cookie-of-admin-1"})
+        if op == "act":
+            assert reply["status"] == 401, reply
+            assert ran == [], f"an action ran on a request carrying only the login cookie: {ran}"
+        else:
+            assert reply == {"ok": False}, reply
+            sio.enter_room.assert_not_awaited()
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+async def test_a_panel_request_nested_too_deeply_is_not_parsed(monkeypatch):
+    _socket_layer(monkeypatch, get_user_id_from_session_pool=lambda sid: "admin-1")
+    ran = _dispatcher_reporting_who_it_served(monkeypatch)
+    pipe = _running_pipe()
+    try:
+        deep = "[" * 100_000 + "]" * 100_000
+        text = '{"pipe_dashboard_panel": {"op": "act", "sid": "sid-1", "action": "config_get", "args": {"x": ' + deep + "}}}"
+        body = {"model": f"{pipe.id}.pipe-dashboard", "stream": False, "messages": [{"role": "user", "content": text}]}
+        cluster = importlib.import_module("open_webui_openrouter_pipe.plugins.pipe_dashboard.cluster")
+        assert cluster.panel_request_of(text) is None
+        await pipe.pipe(body, {"id": "admin-1", "role": "admin"}, _http_request(_PANEL_HEADERS), None, None, {}, None)
+        assert ran == [], f"a panel request nested past the action route's limit ran an action: {ran}"
     finally:
         await pipe.close()
 

@@ -82,6 +82,9 @@ def _session_user_id(sid: str) -> str | None:
 def panel_request_of(text: Any) -> dict[str, Any] | None:
     if not isinstance(text, str) or PANEL_REQUEST_KEY not in text:
         return None
+    routes = importlib.import_module(_CLUSTER_ROUTES_MODNAME)
+    if routes._exceeds_json_depth(text.encode("utf-8")):
+        return None
     try:
         parsed = json.loads(text)
     except ValueError:
@@ -94,10 +97,28 @@ def panel_request_of(text: Any) -> dict[str, Any] | None:
     return request
 
 
+async def _sent_with_bearer_header(http_request: Any) -> bool:
+    if http_request is None:
+        return False
+    try:
+        from open_webui.utils.auth import bearer_security
+    except ImportError:
+        return False
+    return await bearer_security(http_request) is not None
+
+
 async def answer_panel_request(
     pipe: Any, user_id: str, request: dict[str, Any], http_request: Any = None
 ) -> dict[str, Any]:
     pipe_id = str(getattr(pipe, "id", "") or "")
+    if not await _sent_with_bearer_header(http_request):
+        logger.warning(
+            "pipe_dashboard: a panel request was refused because it did not carry the Authorization header the panel sends (user=%s)",
+            user_id or "?",
+        )
+        if request.get("op") == "sub":
+            return {"ok": False}
+        return {"status": 401, "body": {"error": "authorization header required"}}
     sid = request.get("sid")
     if not user_id or not _valid_token(sid) or _session_user_id(sid) != user_id:
         logger.warning(
