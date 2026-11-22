@@ -2036,6 +2036,7 @@ pipe(body, ...)
         └─ multimodal model → chat completions
               ├─ image_config fitted to the same kind of record, with any
               │  provider setting kept inside image_config
+              ├─ the size tier leaves as image_config.image_size
               ├─ response carries message.images
               ├─ chat_completions_adapter parses message.images
               ├─ streaming_core materialises the entry → persists → file URL
@@ -2095,7 +2096,16 @@ false`) and lists no `options` — and OpenRouter documents chat's
 `image_config` as "provider-specific image configuration options" in its
 own right. So on chat completions a provider setting the record does name
 stays inside `image_config`. A model whose contract is not in hand is left
-exactly as it arrived; a read that failed is not a contract that shrank.
+as it arrived; a read that failed is not a contract that shrank.
+
+The size tier is the one name the two routes spell differently. The record
+publishes it as `resolution`, the filter writes that name and the pipe checks
+the value under it, but on `/responses` and `/chat/completions` OpenRouter
+reads the tier only as `image_config.image_size` and accepts `resolution`
+without acting on it: a tier sent under that name comes back at the model's
+default size, with no error. So on the chat routes the tier always leaves as
+`image_size`, whether or not the contract was in hand. The image endpoint
+keeps `resolution`, the name it reads.
 A read of one model's `/images/models/<id>/endpoints` that fails is paced
 for 30 seconds: the generations in that window make no request and get back
 exactly what the failed read returned, and a read that succeeds clears the

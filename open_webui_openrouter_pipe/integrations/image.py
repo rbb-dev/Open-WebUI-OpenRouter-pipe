@@ -142,6 +142,8 @@ _LEGACY_PARAM_NAMES = {
     "image_size": "resolution",
 }
 
+_CHAT_TIER_NAME = "image_size"
+
 _TIER_TWIN = {equivalent: name for name, equivalent in TIER_EQUIVALENT.items()}
 
 _warned_image_endpoints: set[str] = set()
@@ -803,6 +805,28 @@ class ImageGenerationAdapter:
             )
 
     async def fit_chat_image_config(
+        self,
+        *,
+        responses_body: Any,
+        published: list[dict[str, Any]] | None,
+        metadata: dict[str, Any] | None,
+        event_emitter: Any,
+        api_model_id: str,
+    ) -> None:
+        await self._fit_chat_image_config(
+            responses_body=responses_body,
+            published=published,
+            metadata=metadata,
+            event_emitter=event_emitter,
+            api_model_id=api_model_id,
+        )
+        config = getattr(responses_body, "image_config", None)
+        if isinstance(config, dict) and "resolution" in config:
+            wired = {key: value for key, value in config.items() if key != "resolution"}
+            wired[_CHAT_TIER_NAME] = config["resolution"]
+            responses_body.image_config = wired
+
+    async def _fit_chat_image_config(
         self,
         *,
         responses_body: Any,

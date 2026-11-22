@@ -172,11 +172,13 @@ def b64(raw: bytes) -> str:
 async def test_a_chat_models_size_tier_goes_out_under_the_name_its_contract_publishes(
     spelled, value
 ):
-    """One knob, two spellings, and only one of them means anything to anybody.
+    """One knob, two spellings, and the chat routes read only one of them.
 
-    ``image_size`` is what the retired fixed-variant filter wrote; ``resolution`` is what
-    every one of these models publishes and the only one named in any OpenRouter document.
-    Both have to arrive as the published one or the two filters disagree on the wire.
+    The contract publishes the tier as ``resolution`` and the filter writes that name, but
+    on ``/responses`` and ``/chat/completions`` OpenRouter reads ``image_config.image_size``
+    and accepts ``resolution`` without acting on it: measured on 2026-11-23 against
+    google/gemini-3-pro-image, 2K under ``image_size`` returned 2752x1536 and under
+    ``resolution`` 1376x768, the default. Both spellings have to leave as ``image_size``.
     """
     pipe = _Pipe()
     body = _Body({spelled: value})
@@ -187,7 +189,7 @@ async def test_a_chat_models_size_tier_goes_out_under_the_name_its_contract_publ
         event_emitter=object(),
         api_model_id=GEMINI,
     )
-    assert body.image_config == {"resolution": value}
+    assert body.image_config == {"image_size": value}
 
 
 @pytest.mark.parametrize(("ratio", "published"), [("21:9", True), ("32:9", False)])
@@ -244,11 +246,15 @@ async def test_a_provider_option_the_contract_names_survives_the_chat_route(
 
 
 @pytest.mark.parametrize(
-    "config", [{"resolution": "9K", "zzz_not_published": "1"}, {"aspect_ratio": "32:9"}]
+    ("config", "expected"),
+    [
+        ({"resolution": "9K", "zzz_not_published": "1"}, {"image_size": "9K", "zzz_not_published": "1"}),
+        ({"aspect_ratio": "32:9"}, {"aspect_ratio": "32:9"}),
+    ],
 )
 @pytest.mark.parametrize("published", [None])
 @pytest.mark.asyncio
-async def test_a_chat_request_is_left_alone_when_no_contract_is_in_hand(config, published):
+async def test_a_chat_request_is_left_alone_when_no_contract_is_in_hand(config, expected, published):
     """A contract that could not be read is not a contract that shrank.
 
     Fitting a request to an empty contract deletes every setting the user chose, which is
@@ -263,13 +269,13 @@ async def test_a_chat_request_is_left_alone_when_no_contract_is_in_hand(config, 
         event_emitter=object(),
         api_model_id=GEMINI,
     )
-    assert body.image_config == config
+    assert body.image_config == expected
     assert pipe._event_emitter_handler.notices == []
 
 
 @pytest.mark.parametrize(
     ("pinned", "expected"),
-    [("google-ai-studio", {"resolution": "4K"}), ("google-vertex", None)],
+    [("google-ai-studio", {"image_size": "4K"}), ("google-vertex", None)],
 )
 @pytest.mark.asyncio
 async def test_the_chat_route_reads_the_contract_of_the_provider_that_was_pinned(
@@ -332,7 +338,7 @@ async def test_the_chat_route_answers_the_same_however_the_records_are_ordered(t
         event_emitter=object(),
         api_model_id=GEMINI,
     )
-    assert body.image_config == {"resolution": tier}, (
+    assert body.image_config == {"image_size": tier}, (
         f"{order} order dropped a tier the model publishes: {body.image_config!r}"
     )
     expected_pin = ["google-ai-studio/global"] if tier == "4K" else None
@@ -416,7 +422,7 @@ async def test_the_routing_pin_is_the_field_openrouter_designates_for_pinning(ta
         event_emitter=object(),
         api_model_id=GEMINI,
     )
-    assert body.image_config == {"resolution": "4K"}
+    assert body.image_config == {"image_size": "4K"}
     assert (body.provider or {}).get("only") == expected, (
         f"the pin named {(body.provider or {}).get('only')!r}; `provider_tag` is the "
         "field OpenRouter documents for pinning"
@@ -457,7 +463,7 @@ async def test_no_pin_is_written_where_no_candidate_publishes_a_routing_tag(tags
         event_emitter=object(),
         api_model_id=GEMINI,
     )
-    assert body.image_config == {"resolution": "4K"}
+    assert body.image_config == {"image_size": "4K"}
     assert "only" not in (body.provider or {}), (
         f"a pin was written from something other than a routing tag: {body.provider!r}"
     )
@@ -838,7 +844,7 @@ async def test_the_filters_provider_options_survive_to_the_image_request(typed):
 
 @pytest.mark.parametrize(
     ("ignored", "expected"),
-    [("google-vertex", {"resolution": "4K"}), ("google-ai-studio", None)],
+    [("google-vertex", {"image_size": "4K"}), ("google-ai-studio", None)],
 )
 @pytest.mark.asyncio
 async def test_the_chat_route_stops_reading_the_contract_of_a_provider_the_operator_excluded(
@@ -891,7 +897,7 @@ async def test_a_pin_naming_a_provider_that_does_not_serve_this_model_says_so():
         f"{pipe._event_emitter_handler.notices}"
     )
     assert "does not serve this model" in said, said
-    assert body.image_config == {"resolution": "4K"}, (
+    assert body.image_config == {"image_size": "4K"}, (
         "an unmatched pin must not also silently drop the settings the user chose"
     )
 
