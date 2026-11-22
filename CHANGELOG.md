@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Each entry links to the commit that introduced it.
 
+## [2.9.4](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.9.4) — 2026-11-22
+
+### 🐛 Bug Fixes
+
+- send a chat image model's size as image_size, the name OpenRouter's chat routes read, so a 2K or 4K choice no longer comes back at 1K ([`62aa591`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/62aa5914c563fa3ffe463783f69d09e69b63a685))
+
+### 📚 Documentation
+
+- empty the pending release notes after 2.9.3 ([`e9fca79`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/e9fca79d336ca05282901d54c059950b114ab703))
 ## [2.9.3](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.9.3) — 2026-11-18
 
 ### 🐛 Bug Fixes
@@ -15,6 +24,7 @@ Each entry links to the commit that introduced it.
 ### 📚 Documentation
 
 - empty the pending release notes after 2.9.2 ([`63fced9`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/63fced991df9e67513566319e99468a6c05b3259))
+- regenerate changelog for v2.9.3 ([`54aea84`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/54aea8401f799285d24735b9c33ad02553a159c7))
 ## [2.9.2](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.9.2) — 2026-11-18
 
 ### 🐛 Bug Fixes
