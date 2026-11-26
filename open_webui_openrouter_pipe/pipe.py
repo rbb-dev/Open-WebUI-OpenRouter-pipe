@@ -82,7 +82,8 @@ except Exception:
     )
     _OwuiConfig = None  # type: ignore
 
-_TERMINAL_SITE_DEFAULT_MEMO: dict[str, tuple[float, str | None]] = {}
+_TERMINAL_SITE_DEFAULT_MEMO: dict[str, tuple[float, dict[str, str]]] = {}
+_FILE_DISPLAY_KEYS = ("machineFileDisplay", "terminalFileDisplay")
 _TERMINAL_SITE_DEFAULT_TTL = 30.0
 _TERMINAL_SITE_DEFAULT_MAX = 256
 
@@ -640,7 +641,7 @@ def _connector_kwargs(
     }
 
 
-async def _terminal_site_default(logger: Any) -> str | None:
+async def _terminal_site_defaults(logger: Any) -> dict[str, str]:
     now = time.monotonic()
     hit = _TERMINAL_SITE_DEFAULT_MEMO.get("value")
     if hit is not None and now - hit[0] < _TERMINAL_SITE_DEFAULT_TTL:
@@ -650,8 +651,11 @@ async def _terminal_site_default(logger: Any) -> str | None:
     except Exception:
         logger.debug("Open WebUI's interface defaults could not be read", exc_info=True)
         defaults = None
-    site = defaults.get("terminalFileDisplay") if isinstance(defaults, dict) else None
-    choice = site if isinstance(site, str) else None
+    choice = {
+        key: value
+        for key in _FILE_DISPLAY_KEYS
+        if isinstance(defaults, dict) and isinstance(value := defaults.get(key), str)
+    }
     if len(_TERMINAL_SITE_DEFAULT_MEMO) >= _TERMINAL_SITE_DEFAULT_MAX:
         for key in [
             k for k, (at, _) in _TERMINAL_SITE_DEFAULT_MEMO.items() if now - at >= _TERMINAL_SITE_DEFAULT_TTL
@@ -5189,10 +5193,17 @@ class Pipe:
     async def _terminal_files_shown_inline(self, user: Any) -> bool:
         settings = user.get("settings") if isinstance(user, dict) else None
         ui = settings.get("ui") if isinstance(settings, dict) else None
-        choice = ui.get("terminalFileDisplay") if isinstance(ui, dict) else None
-        if choice is None and _OwuiConfig is not None:
-            choice = await _terminal_site_default(self.logger)
-        return choice == "inline"
+        mine = ui if isinstance(ui, dict) else {}
+        site: dict[str, str] = {}
+        if mine.get(_FILE_DISPLAY_KEYS[0]) is None and _OwuiConfig is not None:
+            site = await _terminal_site_defaults(self.logger)
+        for key in _FILE_DISPLAY_KEYS:
+            choice = mine.get(key)
+            if choice is None:
+                choice = site.get(key)
+            if choice is not None:
+                return choice == "inline"
+        return False
 
     async def _shutdown_tool_context(self, context: _ToolExecutionContext) -> None:
         self._ensure_tool_executor()._withdraw_unstarted_calls(context)

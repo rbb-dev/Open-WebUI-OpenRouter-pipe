@@ -55,9 +55,14 @@ if TYPE_CHECKING:
 from ..streaming.event_emitter import EventEmitter
 
 try:
-    from open_webui.utils.middleware import (  # pyright: ignore[reportMissingImports]
-        terminal_event_handler as _owui_terminal_event_handler,
-    )
+    try:
+        from open_webui.utils.middleware import (
+            machine_event_handler as _owui_terminal_event_handler,  # type: ignore[import-not-found]
+        )
+    except ImportError:
+        from open_webui.utils.middleware import (
+            terminal_event_handler as _owui_terminal_event_handler,  # type: ignore[import-not-found]
+        )
 except ImportError:
     _owui_terminal_event_handler = None  # type: ignore[assignment]
 except Exception:
@@ -83,9 +88,14 @@ except Exception:
     _owui_store_tool_result_image = None  # type: ignore[assignment]
 
 try:
-    from open_webui.utils.middleware import (  # pyright: ignore[reportMissingImports]
-        build_terminal_file_tool_result as _owui_build_terminal_file_tool_result,
-    )
+    try:
+        from open_webui.utils.middleware import (
+            build_machine_file_tool_result as _owui_build_terminal_file_tool_result,  # type: ignore[import-not-found]
+        )
+    except ImportError:
+        from open_webui.utils.middleware import (
+            build_terminal_file_tool_result as _owui_build_terminal_file_tool_result,  # type: ignore[import-not-found]
+        )
 except ImportError:
     _owui_build_terminal_file_tool_result = None  # type: ignore[assignment]
 except Exception:

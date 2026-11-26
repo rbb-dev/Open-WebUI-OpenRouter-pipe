@@ -176,10 +176,15 @@ _NEWER_THAN_OUR_FLOOR: dict[tuple[str, str], str] = {
     ("open_webui.utils.tool_search", "resolve_tool_call"): "0.12.2",
     ("open_webui.utils.misc", "chat_completion_chunk_template"): "0.13.0",
     ("open_webui.utils.tools", "guard_tool_enabled"): "0.13.0",
+    ("open_webui.utils.tool_calling", "FINAL_ANSWER_PROMPT"): "0.13.1",
+    ("open_webui.utils.middleware", "machine_event_handler"): "0.13.5",
+    ("open_webui.utils.middleware", "build_machine_file_tool_result"): "0.13.5",
 }
 
 _REMOVED_AFTER_OUR_FLOOR: dict[tuple[str, str], str] = {
     ("open_webui.utils.misc", "openai_chat_chunk_message_template"): "0.13.0",
+    ("open_webui.utils.middleware", "terminal_event_handler"): "0.13.5",
+    ("open_webui.utils.middleware", "build_terminal_file_tool_result"): "0.13.5",
 }
 
 

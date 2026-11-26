@@ -36,24 +36,32 @@ CHAT = {"chat_id": "chat-1", "message_id": "m1", "session_id": "s1", "terminal_i
 def _real_owui(*names: str) -> list[Any]:
     """Open WebUI's own functions, compiled from the installed `utils/middleware.py` together with the module-level
     helpers and constants they call, which the next release may add to (0.11.4 added two)."""
-    path = open_webui_package_dir() / "utils" / "middleware.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    utils = open_webui_package_dir() / "utils"
+    sources = [path for path in (utils / "machines" / "__init__.py", utils / "middleware.py") if path.is_file()]
+    trees = [(path, ast.parse(path.read_text(encoding="utf-8"))) for path in sources]
     from starlette.responses import HTMLResponse
 
     async def _no_upload(*_a, **_k):
         return "http://files/x"
 
+    class _UnsetConfig:
+        @staticmethod
+        async def get(_key, default=None):
+            return default
+
     namespace: dict[str, Any] = {
         "json": json, "JSONCodec": json, "mimetypes": mimetypes, "os": os, "re": re, "Any": Any, "Optional": Optional,
         "HTMLResponse": HTMLResponse, "log": logging.getLogger("open-webui-compiled"),
         "get_file_url_from_base64": _no_upload, "MCPAppResult": type("MCPAppResult", (), {}),
+        "Config": _UnsetConfig,
     }
     defined: dict[str, ast.stmt] = {}
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            defined[node.name] = node
-        elif isinstance(node, ast.Assign):
-            defined.update((target.id, node) for target in node.targets if isinstance(target, ast.Name))
+    for _path, tree in trees:
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                defined[node.name] = node
+            elif isinstance(node, ast.Assign):
+                defined.update((target.id, node) for target in node.targets if isinstance(target, ast.Name))
     missing = set(names) - defined.keys()
     assert not missing, missing
     wanted: set[str] = set()
@@ -66,10 +74,21 @@ def _real_owui(*names: str) -> list[Any]:
         pending.extend(
             used.id for used in ast.walk(defined[name]) if isinstance(used, ast.Name) and used.id in defined
         )
-    for node in tree.body:
-        if node in {defined[name] for name in wanted}:
-            exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), "exec"), namespace)
+    chosen = {defined[name] for name in wanted}
+    for path, tree in trees:
+        for node in tree.body:
+            if node in chosen:
+                exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), "exec"), namespace)
     return [namespace[name] for name in names]
+
+
+def _open_terminal_helpers() -> tuple[Any, Any, Any, str]:
+    middleware = (open_webui_package_dir() / "utils" / "middleware.py").read_text(encoding="utf-8")
+    if "def build_machine_file_tool_result(" in middleware:
+        return (*_real_owui("build_machine_file_tool_result", "machine_event_handler", "process_tool_result"),
+                "machine")
+    return (*_real_owui("build_terminal_file_tool_result", "terminal_event_handler", "process_tool_result"),
+            "terminal")
 
 
 _DECLARED_ARGUMENTS: dict[str, dict[str, Any]] = {
@@ -143,9 +162,7 @@ async def test_a_file_shown_inline_is_reported_displayed_only_when_a_card_shows_
     from open_webui_openrouter_pipe import Pipe
     import open_webui_openrouter_pipe.tools.tool_executor as tool_executor
 
-    build, handler, process = _real_owui(
-        "build_terminal_file_tool_result", "terminal_event_handler", "process_tool_result"
-    )
+    build, handler, process, events = _open_terminal_helpers()
     monkeypatch.setattr(tool_executor, "_owui_build_terminal_file_tool_result", build)
     monkeypatch.setattr(tool_executor, "_owui_terminal_event_handler", handler)
     monkeypatch.setattr(tool_executor, "_owui_process_tool_result", process)
@@ -168,7 +185,7 @@ async def test_a_file_shown_inline_is_reported_displayed_only_when_a_card_shows_
             )
     finally:
         await pipe.close()
-    assert seen == {False: (False, ["terminal:display_file"]), True: (True, [])}
+    assert seen == {False: (False, [f"{events}:display_file"]), True: (True, [])}
 
 
 @pytest.mark.asyncio
@@ -244,3 +261,90 @@ async def test_with_cards_off_a_chat_file_runs_the_file_tool_and_keeps_its_card_
         and event["item"].get("type") in ("function_call", "function_call_output")
     }
     assert (ran, carded) == (["file", "terminal"], {("function_call", "call-0"), ("function_call_output", "call-0")})
+
+
+_HELPER_NAMES_PROBE = """
+import importlib, json, sys
+sys.path[:0] = [__TESTS__, __ROOT__]
+import owui_stubs  # noqa: F401
+middleware = sys.modules["open_webui.utils.middleware"]
+helper_names = {
+    "0.13.5": ("machine_event_handler", "build_machine_file_tool_result"),
+    "0.13.4": ("terminal_event_handler", "build_terminal_file_tool_result"),
+}
+seen = {}
+tool_executor = None
+for release, (events_name, build_name) in helper_names.items():
+    for name in (*helper_names["0.13.5"], *helper_names["0.13.4"]):
+        if hasattr(middleware, name):
+            delattr(middleware, name)
+
+    async def events(*_args):
+        return None
+
+    def build(*_args):
+        return None
+
+    setattr(middleware, events_name, events)
+    setattr(middleware, build_name, build)
+    if tool_executor is None:
+        from open_webui_openrouter_pipe.tools import tool_executor
+    else:
+        tool_executor = importlib.reload(tool_executor)
+    seen[release] = [
+        tool_executor._owui_terminal_event_handler is events,
+        tool_executor._owui_build_terminal_file_tool_result is build,
+    ]
+print("HELPER_NAMES:" + json.dumps(seen))
+"""
+
+
+@pytest.fixture(scope="module")
+def helper_bindings_by_release() -> dict[str, list[bool]]:
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    tests_dir = Path(__file__).resolve().parent
+    script = _HELPER_NAMES_PROBE.replace("__TESTS__", repr(str(tests_dir))).replace(
+        "__ROOT__", repr(str(tests_dir.parent))
+    )
+    proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=180,
+                          cwd=tests_dir.parent)
+    lines = [line for line in proc.stdout.splitlines() if line.startswith("HELPER_NAMES:")]
+    assert proc.returncode == 0 and lines, proc.stderr[-3000:]
+    return json.loads(lines[-1].removeprefix("HELPER_NAMES:"))
+
+
+@pytest.mark.parametrize("release", ["0.13.5", "0.13.4"])
+def test_the_pipe_uses_open_webuis_open_terminal_helpers_under_the_names_the_release_gives_them(
+    helper_bindings_by_release, release
+):
+    assert helper_bindings_by_release[release] == [True, True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "person, site",
+    [({"machineFileDisplay": "inline", "terminalFileDisplay": "sidebar"}, None),
+     ({}, {"machineFileDisplay": "inline"})],
+)
+async def test_an_inline_file_display_choice_saved_under_open_webuis_current_name_is_honoured(person, site):
+    from open_webui.models.config import Config as owui_config
+    from open_webui_openrouter_pipe import Pipe
+
+    rows = owui_config._rows
+    saved = rows.get("ui.default_interface_settings", None)
+    had = "ui.default_interface_settings" in rows
+    rows.pop("ui.default_interface_settings", None)
+    if site is not None:
+        rows["ui.default_interface_settings"] = site
+    pipe = Pipe()
+    try:
+        shown_inline = await pipe._terminal_files_shown_inline({"id": "user-1", "settings": {"ui": person}})
+    finally:
+        await pipe.close()
+        rows.pop("ui.default_interface_settings", None)
+        if had:
+            rows["ui.default_interface_settings"] = saved
+    assert shown_inline is True

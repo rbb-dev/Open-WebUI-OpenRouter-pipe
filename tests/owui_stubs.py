@@ -805,6 +805,12 @@ def _install_open_webui_stubs() -> None:
     ask_user_mod.get_ask_user_tool_calls = _get_ask_user_tool_calls
     ask_user_mod.normalize_ask_user_request = _normalize_ask_user_request
 
+    tool_calling_mod = cast(Any, _ensure_module("open_webui.utils.tool_calling"))
+    tool_calling_mod.FINAL_ANSWER_PROMPT = (
+        'Tool use has stopped for this response. Use the results already available to answer the user. '
+        'Explain any unfinished work briefly. Do not request or describe additional tool calls.'
+    )
+
     # Open WebUI 0.12.0 `utils/chat_id.py`, copied verbatim: the pipe asks it whether a chat is saved, because only
     # a saved chat is reloaded from the database with its structured output, so only there does Open WebUI replay
     # a recorded tool round. A stand-in that called every id saved would hide the temporary-chat case.
@@ -827,6 +833,7 @@ def _install_open_webui_stubs() -> None:
     chat_id_mod.is_saved_chat_id = _is_saved_chat_id
     chat_id_mod.is_temporary_chat_id = _is_temporary_chat_id
     utils_pkg.ask_user = ask_user_mod
+    utils_pkg.tool_calling = tool_calling_mod
 
     # Open WebUI 0.13.3 `utils/tools.py`, copied verbatim: the pipe re-binds a tool's `__messages__` and `__files__`
     # through Open WebUI's own re-binder, so a stand-in would test a re-bind Open WebUI does not do.

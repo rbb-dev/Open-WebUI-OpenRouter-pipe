@@ -60,6 +60,20 @@ if _owui_is_tool_result_error is None:
         "of the tool-result classifier",
     )
 
+try:
+    from open_webui.utils.tool_calling import (  # pyright: ignore[reportMissingImports]
+        FINAL_ANSWER_PROMPT as _OWUI_FINAL_ANSWER_PROMPT,
+    )
+except ImportError:
+    _OWUI_FINAL_ANSWER_PROMPT = None  # type: ignore
+except Exception:
+    logging.getLogger(__name__).warning(
+        "open_webui.utils.tool_calling failed to import for a reason other than absence; "
+        "the features that depend on it are now disabled",
+        exc_info=True,
+    )
+    _OWUI_FINAL_ANSWER_PROMPT = None  # type: ignore
+
 _T = TypeVar("_T")
 
 TOOL_CALL_STATUSES = frozenset({"in_progress", "completed", "incomplete"})
@@ -495,10 +509,28 @@ def continued_turn_counts(items: Any) -> tuple[int, int, bool]:
 OPEN_WEBUI_TOOL_IMAGES_TEXT = "Here are the images from the tool results above. Please analyze them."
 
 
+def is_open_webui_final_answer(message: Any) -> bool:
+    if not (_OWUI_FINAL_ANSWER_PROMPT and isinstance(message, dict) and message.get("role") == "user"):
+        return False
+    content = message.get("content")
+    if isinstance(content, list) and len(content) == 1 and isinstance(content[0], dict):
+        content = content[0].get("text")
+    return content == _OWUI_FINAL_ANSWER_PROMPT
+
+
 def opens_a_turn(items: list[Any], index: int) -> bool:
     item = items[index]
     if not (isinstance(item, dict) and item.get("type") == "message" and item.get("role") == "user"):
         return False
+    if is_open_webui_final_answer(item):
+        for pos in range(index - 1, -1, -1):
+            candidate = items[pos]
+            if isinstance(candidate, dict) and candidate.get("type") == "reasoning":
+                continue
+            if isinstance(candidate, dict) and candidate.get("type") == "message" and candidate.get("role") == "user":
+                return opens_a_turn(items, pos)
+            return not (isinstance(candidate, dict) and candidate.get("type") == "function_call_output")
+        return True
     content = item.get("content")
     first, *rest = content if isinstance(content, list) and content else [None]
     if not (
@@ -606,6 +638,8 @@ def brings_tool_results(body: dict[str, Any], metadata: Any = None) -> bool:
     messages = body.get("messages")
     if not isinstance(messages, list) or not messages or not isinstance(messages[-1], dict):
         return False
+    if len(messages) > 1 and is_open_webui_final_answer(messages[-1]):
+        return brings_tool_results({"messages": messages[:-1]}, metadata)
     if messages[-1].get("role") == "tool":
         call_id = messages[-1].get("tool_call_id")
         return not (isinstance(call_id, str) and call_id.strip() in open_webui_context_call_ids(metadata))

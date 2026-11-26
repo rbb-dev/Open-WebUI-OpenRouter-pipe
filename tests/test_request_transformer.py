@@ -5718,3 +5718,22 @@ async def test_a_picture_cited_twice_is_downloaded_once_without_a_chat_and_in_th
     )
 
     assert (without_a_chat, downloads) == ([url], [url])
+
+
+@pytest.mark.asyncio
+async def test_open_webuis_final_answer_request_keeps_the_tool_results_of_the_reply_it_finishes(pipe_instance):
+    import importlib
+
+    final_answer = importlib.import_module("open_webui.utils.tool_calling").FINAL_ANSWER_PROMPT
+    whole = {"c0": "secret word: lantern-42"}
+    items = await transform_messages_to_input(
+        pipe_instance,
+        [
+            {"role": "user", "content": "What is the secret word for the topic 'garden'?"},
+            *_round("c0", whole["c0"]),
+            {"role": "user", "content": final_answer},
+        ],
+        valves=pipe_instance.valves.model_copy(update={"PERSIST_TOOL_RESULTS": False}),
+    )
+
+    assert _round_verdicts(items, whole=whole) == {"c0": "intact"}

@@ -57,6 +57,7 @@ from ..core.utils import (
     _extract_plain_text_content,
     _iter_marker_spans,
     _tool_result_failed,
+    is_open_webui_final_answer,
     is_picture_output,
     is_server_tool_call_id,
     is_text_part_output,
@@ -1075,6 +1076,18 @@ def _is_tool_image_handoff_at(
     return answer
 
 
+def _finishes_a_tool_round_at(
+    messages: list[dict[str, Any]], position: int, handoff_back_at: dict[int, bool]
+) -> bool:
+    if not (position and is_open_webui_final_answer(messages[position])):
+        return False
+    previous = messages[position - 1]
+    role = (previous.get("role") or "").lower() if isinstance(previous, dict) else ""
+    return role == "tool" or (
+        role == "user" and _is_tool_image_handoff_at(messages, position - 1, handoff_back_at)
+    )
+
+
 def _handoff_back_answers(messages: list[dict[str, Any]]) -> dict[int, bool]:
     answers: dict[int, bool] = {}
     for position, message in enumerate(messages):
@@ -1103,7 +1116,10 @@ def compute_turn_indices(
         role = (msg.get("role") or "").lower()
         turn_idx: int | None = None
 
-        if role == "user" and _is_tool_image_handoff_at(messages, position, handoff_back_at):
+        if role == "user" and (
+            _is_tool_image_handoff_at(messages, position, handoff_back_at)
+            or _finishes_a_tool_round_at(messages, position, handoff_back_at)
+        ):
             turn_idx = current_turn if current_turn >= 0 else None
         elif role == "user":
             if last_dialog_role != "user":
