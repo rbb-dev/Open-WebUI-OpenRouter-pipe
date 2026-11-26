@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Each entry links to the commit that introduced it.
 
+## [2.9.5](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.9.5) — 2026-11-26
+
+### 🐛 Bug Fixes
+
+- work with Open WebUI 0.13.5 by using its renamed Open Terminal helpers and file-display setting, and keep a reply's own tool results when Open WebUI asks the model to finish ([`9c1577f`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/9c1577fd893217ed7c1414c62345bc9ca78c0475))
+
+### 📚 Documentation
+
+- empty the pending release notes after 2.9.4 ([`f861bab`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/f861bab2d798b96ece3b1167ea9566d57154f613))
 ## [2.9.4](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.9.4) — 2026-11-22
 
 ### 🐛 Bug Fixes
@@ -15,6 +24,7 @@ Each entry links to the commit that introduced it.
 ### 📚 Documentation
 
 - empty the pending release notes after 2.9.3 ([`e9fca79`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/e9fca79d336ca05282901d54c059950b114ab703))
+- regenerate changelog for v2.9.4 ([`8d4510e`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/8d4510ebf90681937cdf4b59926f503ea3b3cf61))
 ## [2.9.3](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.9.3) — 2026-11-18
 
 ### 🐛 Bug Fixes
