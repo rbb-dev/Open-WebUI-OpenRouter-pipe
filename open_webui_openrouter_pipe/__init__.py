@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING, Any
 
-_FALLBACK_VERSION = "2.9.4"
+_FALLBACK_VERSION = "2.9.5"
 
 __version__ = _FALLBACK_VERSION
 try:
